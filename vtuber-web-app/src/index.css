@@ -1,0 +1,62 @@
+/* 日式動漫風格全局設置 */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=M+PLUS+Rounded+1c:wght@400;500;700;800&display=swap');
+
+:root {
+  /* 日式動漫配色 - 櫻花粉系 */
+  --anime-primary: #FF6B9D;
+  --anime-secondary: #C9A9E9;
+  --anime-accent: #FFC0CB;
+  --anime-sky: #87CEEB;
+  --anime-sunset: linear-gradient(135deg, #FF6B9D 0%, #FFA07A 50%, #FFD700 100%);
+  
+  /* 背景層次 */
+  --bg-main: linear-gradient(180deg, #FFF5F7 0%, #E8F4F8 100%);
+  --bg-card: rgba(255, 255, 255, 0.85);
+  --bg-overlay: rgba(255, 255, 255, 0.95);
+  
+  /* 文字顏色 */
+  --text-primary: #2D2D2D;
+  --text-secondary: #666666;
+  --text-accent: #FF6B9D;
+  
+  /* 陰影 */
+  --shadow-soft: 0 8px 32px rgba(255, 107, 157, 0.15);
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-glow: 0 0 20px rgba(255, 107, 157, 0.3);
+  
+  /* 邊框 */
+  --border-radius: 24px;
+  --border-color: rgba(255, 107, 157, 0.2);
+  
+  /* 動畫 */
+  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-bounce: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  
+  /* 字體 */
+  --font-main: 'M PLUS Rounded 1c', 'Noto Sans JP', sans-serif;
+  --font-display: 'M PLUS Rounded 1c', sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-main);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--bg-main);
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}

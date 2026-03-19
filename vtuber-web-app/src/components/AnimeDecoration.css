@@ -1,0 +1,126 @@
+/* 日式動漫裝飾容器 */
+.anime-decoration {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 999;
+  overflow: hidden;
+}
+
+/* 櫻花動畫 */
+.sakura-container {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: -50px;
+}
+
+.sakura {
+  position: absolute;
+  font-size: 24px;
+  opacity: 0.7;
+  animation: sakura-fall linear infinite;
+  filter: drop-shadow(0 0 8px rgba(255, 192, 203, 0.6));
+}
+
+@keyframes sakura-fall {
+  0% {
+    transform: translateY(-50px) translateX(0) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.7;
+  }
+  90% {
+    opacity: 0.7;
+  }
+  100% {
+    transform: translateY(100vh) translateX(100px) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+/* 星星動畫 */
+.star-container {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+}
+
+.star {
+  position: absolute;
+  font-size: 16px;
+  animation: twinkle-star 3s ease-in-out infinite;
+}
+
+@keyframes twinkle-star {
+  0%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+/* 泡泡動畫 */
+.bubble-container {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  bottom: -100px;
+}
+
+.bubble {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 30% 30%,
+    rgba(255, 255, 255, 0.8),
+    rgba(255, 192, 203, 0.4)
+  );
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  animation: bubble-rise linear infinite;
+  box-shadow: 
+    inset 0 0 20px rgba(255, 255, 255, 0.5),
+    0 0 20px rgba(255, 192, 203, 0.3);
+}
+
+@keyframes bubble-rise {
+  0% {
+    transform: translateY(0) scale(0.5);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.8;
+  }
+  90% {
+    opacity: 0.8;
+  }
+  100% {
+    transform: translateY(-100vh) scale(1);
+    opacity: 0;
+  }
+}
+
+/* 響應式調整 */
+@media (max-width: 768px) {
+  .sakura {
+    font-size: 18px;
+  }
+  
+  .star {
+    font-size: 14px;
+  }
+  
+  .bubble {
+    width: 30px;
+    height: 30px;
+  }
+}

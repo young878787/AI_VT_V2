@@ -1,0 +1,101 @@
+/**
+ * Hit Area 覆蓋層樣式
+ */
+
+.hit-area-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.hit-area-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.hit-area-info {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(10px);
+  border: 2px solid #FF6B9D;
+  border-radius: 16px;
+  padding: 20px;
+  color: #FFF;
+  font-family: 'Noto Sans JP', sans-serif;
+  box-shadow: 0 8px 32px rgba(255, 107, 157, 0.3);
+  max-width: 300px;
+}
+
+.hit-area-info h3 {
+  margin: 0 0 12px 0;
+  font-size: 18px;
+  color: #FF6B9D;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hit-area-info p {
+  margin: 6px 0;
+  font-size: 13px;
+  color: #DDD;
+  line-height: 1.6;
+}
+
+.hit-area-list {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 107, 157, 0.3);
+}
+
+.hit-area-list strong {
+  color: #FF6B9D;
+  font-size: 14px;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.hit-area-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0 0;
+}
+
+.hit-area-list li {
+  padding: 6px 12px;
+  margin: 4px 0;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  font-size: 13px;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.hit-area-list li.active {
+  background: rgba(255, 107, 157, 0.2);
+  border-color: #FF6B9D;
+  color: #FF6B9D;
+  font-weight: 600;
+  transform: translateX(4px);
+}
+
+/* 動畫效果 */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.hit-area-list li.active {
+  animation: pulse 1.5s ease-in-out infinite;
+}

@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+websockets
+openai
+python-dotenv
+tiktoken
