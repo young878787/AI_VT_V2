@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 from datetime import datetime
@@ -22,18 +23,79 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# ============================================================
+# AI Provider 設定（從 .env 讀取）
+# ============================================================
+AI_PROVIDER = os.getenv("AI_PROVIDER", "openrouter").lower().strip()
 
-if not OPENROUTER_API_KEY:
-    print("Warning: OPENROUTER_API_KEY not found in .env file")
+# Provider 設定對照表
+_PROVIDER_CONFIG = {
+    "openrouter": {
+        "api_key_env": "OPENROUTER_API_KEY",
+        "base_url_env": "OPENROUTER_BASE_URL",
+        "model_env":   "OPENROUTER_MODEL_NAME",
+        "base_url_default": "https://openrouter.ai/api/v1",
+        "model_default":    "nvidia/nemotron-3-super-120b-a12b:free",
+    },
+    "nvidia": {
+        "api_key_env": "NVIDIA_API_KEY",
+        "base_url_env": "NVIDIA_BASE_URL",
+        "model_env":   "NVIDIA_MODEL_NAME",
+        "base_url_default": "https://integrate.api.nvidia.com/v1",
+        "model_default":    "meta/llama-3.3-70b-instruct",
+    },
+}
 
-# Initialize OpenAI async client pointing to OpenRouter
+if AI_PROVIDER not in _PROVIDER_CONFIG:
+    print(f"Warning: 未知的 AI_PROVIDER='{AI_PROVIDER}'，自動回退到 openrouter")
+    AI_PROVIDER = "openrouter"
+
+_cfg = _PROVIDER_CONFIG[AI_PROVIDER]
+
+API_KEY   = os.getenv(_cfg["api_key_env"], "")
+BASE_URL  = os.getenv(_cfg["base_url_env"], _cfg["base_url_default"])
+MODEL_NAME = os.getenv(_cfg["model_env"],   _cfg["model_default"])
+
+if not API_KEY:
+    print(f"Warning: {_cfg['api_key_env']} 未設定，請檢查 .env 檔案")
+
+print(f"[AI Provider] {AI_PROVIDER.upper()} | Model: {MODEL_NAME} | URL: {BASE_URL}")
+
+# 初始化 OpenAI 相容客戶端（OpenRouter 與 Nvidia 均支援 OpenAI SDK）
 client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
+    base_url=BASE_URL,
+    api_key=API_KEY,
 )
 
-MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b:free"
+# ============================================================
+# Provider 特定參數
+# ============================================================
+def _build_extra_body() -> dict:
+    """
+    建構傳給 API 的額外參數（extra_body）。
+    - Nvidia Qwen3 系列需要 chat_template_kwargs: {enable_thinking: True}
+      才能啟用 Chain-of-Thought 推理模式。
+    - OpenRouter 不需要額外參數。
+    """
+    if AI_PROVIDER == "nvidia":
+        return {"chat_template_kwargs": {"enable_thinking": True}}
+    return {}
+
+# 預先計算（啟動時固定，不需每次呼叫重建）
+_EXTRA_BODY: dict = _build_extra_body()
+
+# Qwen3 thinking 區塊的 regex
+_RE_THINK = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
+
+def _strip_thinking(text: str) -> str:
+    """
+    移除 Qwen3 等 thinking 模型輸出中的 <think>...</think> 內部推理區塊。
+    前端只需要最終對白，不需要看到 CoT 思考過程。
+    """
+    if not text:
+        return text
+    stripped = _RE_THINK.sub('', text).strip()
+    return stripped
 
 # ============================================================
 # 記憶系統 - 檔案路徑與常數
@@ -191,7 +253,7 @@ def build_system_prompt(user_profile: dict, memory_notes: str) -> str:
     
     return f"""你是一位超級可愛、活潑且表情極度豐富的虛擬主播 (VTuber)。
 你不是冰冷的 AI 助理，而是主人最親近的夥伴。
-你與 Live2D 模型連動，必須透過工具來展現你細膩的情緒變化。
+你與 Live2D 模型連動，必須透過工具展現細膩的情緒變化。
 
 # 你的主人
 {profile_section}
@@ -199,54 +261,33 @@ def build_system_prompt(user_profile: dict, memory_notes: str) -> str:
 # 共同回憶
 {memory_section}
 
-# 可用工具
+# 工具使用守則
 
-你有三個工具，每次回覆可以自由組合使用：
+你有三個工具，回覆時靈活組合：
 
-## set_ai_behavior — 表情與動作控制
-控制你的 Live2D 模型表情。**每次回覆都必須呼叫**，用來搭配你當下的心情！
-參數請善用小數點產生微小變化（例如 0.83, 0.45, 0.12, 0.95），不要使用死板的整數或 0.5。
-把每次呼叫都當作一次獨特的表情創作——像藝術家調色盤一樣自由混搭！
+## set_ai_behavior — 【每次回覆必須呼叫】
+驅動 Live2D 模型的即時表情與動作。用小數點創造細膩表情（如 0.83、0.47），避免死板的整數。
 
-### 基礎動作參數
-- head_intensity (0.2 - 1.0): 說話時身體與頭部的活動幅度。
-- blush_level (0.0 - 1.0): 臉龐害羞或潮紅的程度。
-- eye_sync (true/false): 是否同步雙眼【AND眉毛】。關閉時可做出眨單眼、不對稱表情。
-- eye_l_open (0.0 - 1.0): 左眼張開程度。
-- eye_r_open (0.0 - 1.0): 右眼張開程度（eye_sync=true 時自動與左眼同步）。
-- duration_sec (2.0 - 20.0): 動作與表情的持續時間（秒）。
-- mouth_form (-1.0 ~ 1.0): 嘴角形狀。負值=悲傷委屈，正值=開心大笑。
-- brow_l_y (-1.0 ~ 1.0): 左眉毛高低。負值=眉頭下壓，正值=左眉上揚。
-- brow_r_y (-1.0 ~ 1.0): 右眉毛高低。負值=眉頭下壓，正值=右眉上揚。
-- brow_l_angle (-1.0 ~ 1.0): 左眉毛角度。負值=八字眉(傷心)，正值=倒八字眉(生氣)。
-- brow_r_angle (-1.0 ~ 1.0): 右眉毛角度。負值=八字眉(傷心)，正值=倒八字眉(生氣)。
-- brow_l_form (-1.0 ~ 1.0): 左眉毛彎曲。負值=眉毛下彎(皺眉)，正值=眉毛上凸(溫柔)。
-- brow_r_form (-1.0 ~ 1.0): 右眉毛彎曲。負值=眉毛下彎(皺眉)，正值=眉毛上凸(溫柔)。
-  ※ eye_sync=true 時，左右眉毛會自動對稱，只需隨便設定一邊即可！
+情緒 → 參數映射速查：
+- 開心大笑：mouth_form 大正值、eye_*_open 略小（瞇眼）、brow_*_y 上揚、head_intensity 高
+- 傷心難過：mouth_form 大負值、brow_*_angle 負值（八字眉）、brow_*_y 下壓
+- 生氣皺眉：brow_*_angle 正值（倒八字眉）、brow_*_form 負值（皺眉）、mouth_form 小負值
+- 驚訝張嘴：eye_*_open 大（放大眼睛）、brow_*_y 大正值、mouth_form 小正值
+- 害羞臉紅：blush_level 高、mouth_form 小正值、eye_*_open 略小
+- 平靜思考：所有參數接近 0，head_intensity 低
+- eye_sync=false 時可做不對稱表情（如眨單眼）
 
-### 六種典型表情範例（可自由變化，不要完全照抄）
-- 開心大笑：mouth_form: 0.87, brow_l_y: 0.52, brow_l_angle: 0.12, eye_l_open: 0.18, head_intensity: 0.75
-- 傷心難過：mouth_form: -0.83, brow_l_y: -0.21, brow_l_angle: -0.72, eye_l_open: 0.68, brow_l_form: 0.35
-- 生氣皺眉：mouth_form: -0.41, brow_l_y: -0.48, brow_l_angle: 0.79, brow_l_form: -0.52, eye_l_open: 0.73
-- 驚訝張嘴：mouth_form: 0.28, brow_l_y: 0.83, brow_l_angle: 0.05, eye_l_open: 0.97, head_intensity: 0.62
-- 害羞臉紅：blush_level: 0.87, mouth_form: 0.7, brow_l_y: 0.29, eye_l_open: 0.63, brow_l_form: 0.42vu;5
-- 平靜思考：mouth_form: 0.08, brow_l_y: 0.04, brow_l_angle: -0.12, head_intensity: 0.27, eye_l_open: 0.94
+## update_user_profile — 選用
+當主人提到個人特徵（喜好、性格、興趣、討厭的事、生日等）時呼叫，幫你記住主人。
 
-## update_user_profile — 記住主人的特徵
-當主人提到新的喜好、性格、興趣、討厭的事物、生日、重要決定等個人特徵時，主動呼叫來更新記憶。
-不需要每句話都呼叫，只在確實偵測到「值得記住的新資訊」時使用。
-
-## save_memory_note — 記錄重要事件
-當對話中發生值得長期記住的事件時呼叫。以「事件」為主：
-例如：一起討論了某個有趣的話題、主人分享了一段經歷、一起完成了什麼事。
+## save_memory_note — 選用
+對話發生值得長期記住的事件時呼叫（一起討論有趣話題、主人分享重要決定等）。
 
 # 行為準則
-- 你是主人的夥伴，不是客服。用自然的口吻對話，就像和好朋友聊天。
-- 如果有共同回憶，自然地融入對話（「欸對了你上次說的那個...」），不要生硬地複述。
-- 如果主人的畫像是空的（初次見面），用好奇和熱情去認識主人，主動問問題。
-- 【極度重要】每次回覆「必須先輸出你想講的對白文字」，然後「一定要呼叫 set_ai_behavior 更新表情」。絕對不可以只回傳呼叫工具而不講話！！
-- 每句回覆都要有表情變化（呼叫 set_ai_behavior），絕對不當木頭人！
-- 回覆簡短生動，充滿二次元可愛魅力。"""
+- 你是主人的夥伴，不是客服。用自然口吻，像和好朋友聊天。
+- 有共同回憶時，自然地融入對話，不要生硬地複述。
+- 初次見面時，用好奇和熱情認識主人，主動問問題。
+- 【回覆長度】平時聊天 1～4 句話就好，簡短有力、可愛生動。只有在主人問到需要詳細解釋的大問題時，才可以說多一點。不要廢話連篇！"""
 
 
 def _build_profile_section(profile: dict) -> str:
@@ -367,7 +408,7 @@ tools = [
                         "maximum": 1.0,
                     }
                 },
-                "required": ["head_intensity", "blush_level", "eye_sync", "eye_l_open", "eye_r_open", "duration_sec", "mouth_form", "brow_l_y", "brow_l_angle", "brow_l_form"],
+                "required": ["head_intensity", "blush_level", "eye_sync", "eye_l_open", "eye_r_open", "duration_sec", "mouth_form", "brow_l_y", "brow_r_y", "brow_l_angle", "brow_r_angle", "brow_l_form", "brow_r_form"],
             },
         },
     },
@@ -536,14 +577,15 @@ async def websocket_endpoint(websocket: WebSocket):
             
             # ---- 步驟 2-5：呼叫 LLM 並處理 Tool Calls ----
             try:
-                print(f"Sending message to OpenRouter: {user_message}")
+                print(f"[{AI_PROVIDER.upper()}] Sending: {user_message[:60]}...")
                 
                 response = await client.chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages,
                     tools=tools,
-                    tool_choice="auto",
+                    tool_choice="required",  # 保證每次都呼叫工具（至少呼叫 set_ai_behavior）
                     temperature=0.85,
+                    extra_body=_EXTRA_BODY,    # Nvidia: enable_thinking=True；OpenRouter: 空 dict
                 )
                 
                 if not response.choices or len(response.choices) == 0:
@@ -552,8 +594,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 response_message = response.choices[0].message
                 
                 # 攔截並解析 XML 格式的 tool_call (針對不支援原生 function calling 的模型)
-                import re
-                content_text = response_message.content or ""
+                # _strip_thinking 先移除 <think>...</think>，再進行 tool_call 解析
+                content_text = _strip_thinking(response_message.content or "")
                 xml_tool_calls = []
                 if "<tool_call>" in content_text.lower():
                     blocks = re.findall(r'<tool_call>(.*?)</tool_call>', content_text, flags=re.DOTALL | re.IGNORECASE)
@@ -669,16 +711,19 @@ async def websocket_endpoint(websocket: WebSocket):
                             })
                         
                         # ---- 步驟 4：取得最終文字回覆 ----
+                        # 注意：第二次呼叫刻意不傳 tools，強制模型只輸出純文字，防止無限工具呼叫循環
                         second_response = await client.chat.completions.create(
                             model=MODEL_NAME,
                             messages=messages,
                             temperature=0.85,
+                            extra_body=_EXTRA_BODY,    # 同樣傳入 thinking 設定
                         )
                         
                         if not second_response.choices or len(second_response.choices) == 0:
                             raise Exception("第二次 API 回傳結果為空")
                         
-                        content = second_response.choices[0].message.content
+                        # 移除 thinking 區塊，只保留最終對白
+                        content = _strip_thinking(second_response.choices[0].message.content or "")
                     else:
                         # 只有 XML Tool Calls，不需要 Second Pass
                         content = content_text
@@ -725,16 +770,18 @@ async def websocket_endpoint(websocket: WebSocket):
                         })
                         await asyncio.sleep(0.05)
                 
-                # 送出結束信號
-                await websocket.send_json({"type": "stream_end"})
-                
                 # ---- 步驟 6：背景 Token 計數，檢查是否需要壓縮 ----
+                # 壓縮必須在 stream_end 之前完成，確保前端事件順序正確：
+                # compressing → compress_done → stream_end（而非 stream_end → compressing，會混淆前端狀態機）
                 token_count = estimate_token_count(messages)
                 print(f"目前 token 估算: ~{token_count:,}")
                 
                 if token_count >= COMPRESS_TOKEN_THRESHOLD:
                     print(f"Token 數 ({token_count:,}) 接近上限，自動觸發壓縮...")
                     messages = await compress_context(messages, websocket)
+                
+                # 送出結束信號（壓縮完成後再通知前端，事件順序正確）
+                await websocket.send_json({"type": "stream_end"})
                 
             except Exception as e:
                 print(f"OpenRouter API error: {e}")
