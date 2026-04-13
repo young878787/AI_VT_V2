@@ -3,14 +3,22 @@ import { useAppStore } from '../store/appStore';
 class WSService {
     private ws: WebSocket | null = null;
     private currentAssistantMessageId: string | null = null;
+    private retryCount: number = 0;
+    private readonly MAX_RETRIES = 5;
+    private readonly RETRY_DELAY_MS = 3000;
 
     public connect() {
         if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
 
-        this.ws = new WebSocket('ws://localhost:8000/ws/chat');
+        // 已達重連上限，不再嘗試
+        if (this.retryCount >= this.MAX_RETRIES) return;
+
+        const backendPort = import.meta.env.VITE_BACKEND_PORT || '9999';
+        this.ws = new WebSocket(`ws://localhost:${backendPort}/ws/chat`);
 
         this.ws.onopen = () => {
             console.log('WebSocket connected');
+            this.retryCount = 0; // 成功連線後重置重試計數
         };
 
         this.ws.onmessage = (event) => {
@@ -62,13 +70,31 @@ class WSService {
         };
 
         this.ws.onclose = () => {
-            console.log('WebSocket disconnected. Reconnecting...');
             this.ws = null;
-            setTimeout(() => this.connect(), 3000);
+            this.currentAssistantMessageId = null;
+            const store = useAppStore.getState();
+
+            // 防呆：斷線時確保 AI 狀態歸零
+            store.setAiTyping(false);
+            store.setCompressing(false);
+
+            this.retryCount++;
+            if (this.retryCount >= this.MAX_RETRIES) {
+                console.warn(`WebSocket 已斷線，重連 ${this.MAX_RETRIES} 次後仍失敗，停止重連。`);
+                store.appendChatMessage({
+                    role: 'system',
+                    content: `⚠️ 系統：與後端的連線已中斷，嘗試重連 ${this.MAX_RETRIES} 次後失敗。請重新整理頁面。`
+                });
+            } else {
+                console.log(`WebSocket 斷線，${this.RETRY_DELAY_MS / 1000} 秒後嘗試第 ${this.retryCount} 次重連...`);
+                setTimeout(() => this.connect(), this.RETRY_DELAY_MS);
+            }
         };
 
         this.ws.onerror = (error) => {
             console.error('WebSocket error:', error);
+            // 防呆：連線錯誤時確保 AI 打字狀態歸零
+            useAppStore.getState().setAiTyping(false);
         };
     }
 

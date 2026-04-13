@@ -33,7 +33,7 @@ client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
 )
 
-MODEL_NAME = "stepfun/step-3.5-flash:free"
+MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b:free"
 
 # ============================================================
 # 記憶系統 - 檔案路徑與常數
@@ -53,17 +53,27 @@ try:
 except Exception:
     _encoding = None
 
+# ============================================================
+# In-Memory Cache（減少每輪對話的磁碟 I/O）
+# ============================================================
+_profile_cache: dict | None = None
+_memory_cache: str | None = None
+
 
 # ============================================================
 # 記憶系統 - 讀寫輔助函式
 # ============================================================
 def load_user_profile() -> dict:
-    """讀取 user_profile.json，若不存在則回傳預設結構"""
+    """讀取 user_profile.json（優先從 cache，減少磁碟 I/O）"""
+    global _profile_cache
+    if _profile_cache is not None:
+        return _profile_cache
     try:
         with open(USER_PROFILE_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            _profile_cache = json.load(f)
+            return _profile_cache
     except (FileNotFoundError, json.JSONDecodeError):
-        return {
+        _profile_cache = {
             "updated_at": "",
             "core_traits": [],
             "communication_style": "",
@@ -71,35 +81,45 @@ def load_user_profile() -> dict:
             "recent_interests": [],
             "custom_notes": []
         }
+        return _profile_cache
 
 
 def save_user_profile(profile: dict):
-    """寫入 user_profile.json，自動更新 updated_at"""
+    """寫入 user_profile.json，同步更新 cache"""
+    global _profile_cache
     profile["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     os.makedirs(MEMORY_DIR, exist_ok=True)
     with open(USER_PROFILE_PATH, "w", encoding="utf-8") as f:
         json.dump(profile, f, ensure_ascii=False, indent=2)
+    _profile_cache = profile  # 同步更新 cache
 
 
 def load_memory_notes(max_lines: int = 50) -> str:
-    """讀取 memory.md 最後 N 行，回傳字串"""
+    """讀取 memory.md 最後 N 行（優先從 cache，減少磁碟 I/O）"""
+    global _memory_cache
+    if _memory_cache is not None:
+        return _memory_cache
     try:
         with open(MEMORY_MD_PATH, "r", encoding="utf-8") as f:
             lines = f.readlines()
         # 跳過標題行，取最後 max_lines 條有效內容
         content_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith("# ")]
         recent = content_lines[-max_lines:] if len(content_lines) > max_lines else content_lines
-        return "\n".join(recent)
+        _memory_cache = "\n".join(recent)
+        return _memory_cache
     except FileNotFoundError:
-        return ""
+        _memory_cache = ""
+        return _memory_cache
 
 
 def append_memory_note(note: str):
-    """追加一條記憶到 memory.md，自動加上日期前綴"""
+    """追加一條記憶到 memory.md，並使 cache 失效（下次重新讀取）"""
+    global _memory_cache
     os.makedirs(MEMORY_DIR, exist_ok=True)
     date_prefix = datetime.now().strftime("[%m/%d %H:%M]")
     with open(MEMORY_MD_PATH, "a", encoding="utf-8") as f:
         f.write(f"\n- {date_prefix} {note}")
+    _memory_cache = None  # 使 cache 失效，下次重新讀取最新內容
 
 
 def execute_profile_update(action: str, field: str, value: str):
@@ -224,6 +244,7 @@ def build_system_prompt(user_profile: dict, memory_notes: str) -> str:
 - 你是主人的夥伴，不是客服。用自然的口吻對話，就像和好朋友聊天。
 - 如果有共同回憶，自然地融入對話（「欸對了你上次說的那個...」），不要生硬地複述。
 - 如果主人的畫像是空的（初次見面），用好奇和熱情去認識主人，主動問問題。
+- 【極度重要】每次回覆「必須先輸出你想講的對白文字」，然後「一定要呼叫 set_ai_behavior 更新表情」。絕對不可以只回傳呼叫工具而不講話！！
 - 每句回覆都要有表情變化（呼叫 set_ai_behavior），絕對不當木頭人！
 - 回覆簡短生動，充滿二次元可愛魅力。"""
 
@@ -530,6 +551,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 response_message = response.choices[0].message
                 
+                # 攔截並解析 XML 格式的 tool_call (針對不支援原生 function calling 的模型)
+                import re
+                content_text = response_message.content or ""
+                xml_tool_calls = []
+                if "<tool_call>" in content_text.lower():
+                    blocks = re.findall(r'<tool_call>(.*?)</tool_call>', content_text, flags=re.DOTALL | re.IGNORECASE)
+                    for block in blocks:
+                        func_match = re.search(r'<function=([^>]+)>', block)
+                        if func_match:
+                            func_name = func_match.group(1).strip()
+                            args = {}
+                            param_matches = re.finditer(r'<parameter=([^>]+)>(.*?)</parameter>', block, flags=re.DOTALL | re.IGNORECASE)
+                            for p in param_matches:
+                                p_name = p.group(1).strip()
+                                p_val = p.group(2).strip()
+                                if p_val.lower() == 'true': p_val = True
+                                elif p_val.lower() == 'false': p_val = False
+                                else:
+                                    try: p_val = float(p_val)
+                                    except: pass
+                                args[p_name] = p_val
+                            xml_tool_calls.append({"name": func_name, "arguments": args})
+                    
+                    # 移除 XML 區塊，留下純文字作為回覆
+                    content_text = re.sub(r'<tool_call>.*?</tool_call>', '', content_text, flags=re.DOTALL | re.IGNORECASE).strip()
+                    response_message.content = content_text
+
                 # 預設動作參數
                 head_intensity = 0.3
                 blush_level = 0.0
@@ -547,16 +595,26 @@ async def websocket_endpoint(websocket: WebSocket):
                 has_tool_call = False
                 
                 # ---- 步驟 3：處理所有 Tool Calls ----
-                if response_message.tool_calls:
+                if response_message.tool_calls or xml_tool_calls:
                     has_tool_call = True
                     
-                    for tool_call in response_message.tool_calls:
-                        fn_name = tool_call.function.name
-                        try:
-                            args = json.loads(tool_call.function.arguments)
-                        except json.JSONDecodeError as e:
-                            print(f"Tool call 參數解析失敗 ({fn_name}): {e}")
-                            continue
+                    # 合併原生 tool_calls 和 解析出來的 xml_tool_calls
+                    all_calls = []
+                    if response_message.tool_calls:
+                        for tc in response_message.tool_calls:
+                            try:
+                                args = json.loads(tc.function.arguments)
+                                all_calls.append({"name": tc.function.name, "arguments": args})
+                            except json.JSONDecodeError as e:
+                                print(f"Tool call 參數解析失敗 ({tc.function.name}): {e}")
+                    
+                    if xml_tool_calls:
+                        print(f"偵測到 XML Tool Calls: {len(xml_tool_calls)} 個")
+                        all_calls.extend(xml_tool_calls)
+                        
+                    for call in all_calls:
+                        fn_name = call["name"]
+                        args = call["arguments"]
                         
                         if fn_name == "set_ai_behavior":
                             head_intensity = float(args.get("head_intensity", 0.3))
@@ -564,8 +622,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             eye_sync = args.get("eye_sync", True)
                             eye_l_open = float(args.get("eye_l_open", 1.0))
                             eye_r_open = float(args.get("eye_r_open", 1.0))
-                            if eye_sync:
-                                eye_r_open = eye_l_open
+                            # eye_sync 的對稱處理由前端 LAppModel 負責，後端只傳原始值
                             duration_sec = float(args.get("duration_sec", 5.0))
                             mouth_form = float(args.get("mouth_form", 0.0))
                             brow_l_y = float(args.get("brow_l_y", 0.0))
@@ -588,42 +645,48 @@ async def websocket_endpoint(websocket: WebSocket):
                                 append_memory_note(content)
                                 print(f"Memory note 已記錄: {content}")
                     
-                    # 將 AI 的 tool calls 訊息加入歷史
-                    messages.append(response_message)
-                    
-                    # 模擬每個 tool 的回傳結果
-                    for tool_call in response_message.tool_calls:
-                        fn_name = tool_call.function.name
-                        if fn_name == "set_ai_behavior":
-                            result = "表情已更新"
-                        elif fn_name == "update_user_profile":
-                            result = "主人的資料已記住了"
-                        elif fn_name == "save_memory_note":
-                            result = "已記錄到回憶裡"
-                        else:
-                            result = "完成"
+                    if response_message.tool_calls:
+                        # 將 AI 的 tool calls 訊息加入歷史
+                        messages.append(response_message)
                         
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": fn_name,
-                            "content": result
-                        })
-                    
-                    # ---- 步驟 4：取得最終文字回覆 ----
-                    second_response = await client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=messages,
-                        temperature=0.85,
-                    )
-                    
-                    if not second_response.choices or len(second_response.choices) == 0:
-                        raise Exception("第二次 API 回傳結果為空")
-                    
-                    content = second_response.choices[0].message.content
+                        # 模擬每個 tool 的回傳結果
+                        for tool_call in response_message.tool_calls:
+                            fn_name = tool_call.function.name
+                            if fn_name == "set_ai_behavior":
+                                result = "表情已更新"
+                            elif fn_name == "update_user_profile":
+                                result = "主人的資料已記住了"
+                            elif fn_name == "save_memory_note":
+                                result = "已記錄到回憶裡"
+                            else:
+                                result = "完成"
+                            
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "name": fn_name,
+                                "content": result
+                            })
+                        
+                        # ---- 步驟 4：取得最終文字回覆 ----
+                        second_response = await client.chat.completions.create(
+                            model=MODEL_NAME,
+                            messages=messages,
+                            temperature=0.85,
+                        )
+                        
+                        if not second_response.choices or len(second_response.choices) == 0:
+                            raise Exception("第二次 API 回傳結果為空")
+                        
+                        content = second_response.choices[0].message.content
+                    else:
+                        # 只有 XML Tool Calls，不需要 Second Pass
+                        content = content_text
+                        if not content:
+                            content = "（默默地點頭）"
                 else:
                     # 沒有 Tool Calls，直接取文字
-                    content = response_message.content
+                    content = content_text
                 
                 # ---- 步驟 5：送出文字與動作到前端 ----
                 if content:
@@ -687,4 +750,5 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("BACKEND_PORT", 9999))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

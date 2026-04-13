@@ -17,7 +17,8 @@ export const HitAreaOverlay = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { hitAreaDebug } = useAppStore();
   const [hitAreas, setHitAreas] = useState<HitArea[]>([]);
-  const [mousePos, setMousePos] = useState<[number, number]>([0, 0]);
+  // useRef 不觸發 re-render，避免每次滑鼠移動都重建 setInterval
+  const mousePosRef = useRef<[number, number]>([0, 0]);
 
   // 更新 Hit Areas 位置
   useEffect(() => {
@@ -106,9 +107,10 @@ export const HitAreaOverlay = () => {
         let isHit = false;
         try {
           // 將滑鼠螢幕座標轉為 Clip 空間，然後只取反 Projection * View
-          // (不能取反 Model，因為 hitTest 內建會處理 ModelMatrix 取反)
-          const clipMouseX = ((mousePos[0] - rect.left) / rect.width) * 2.0 - 1.0;
-          const clipMouseY = -(((mousePos[1] - rect.top) / rect.height) * 2.0 - 1.0);
+          // (not 取反 Model，因為 hitTest 內建會處理 ModelMatrix 取反)
+          const [mouseX, mouseY] = mousePosRef.current;
+          const clipMouseX = ((mouseX - rect.left) / rect.width) * 2.0 - 1.0;
+          const clipMouseY = -(((mouseY - rect.top) / rect.height) * 2.0 - 1.0);
           const projView = delegate.createProjViewMatrix();
           if (projView) {
             const inverseProjView = projView.getInvert();
@@ -132,12 +134,12 @@ export const HitAreaOverlay = () => {
       setHitAreas(areas);
     };
 
-    // 定期更新（模型可能在移動）
+    // interval 只依賴 hitAreaDebug，不再因 mousePos 重建
     const interval = setInterval(updateHitAreas, 100);
     updateHitAreas();
 
     return () => clearInterval(interval);
-  }, [hitAreaDebug, mousePos]);
+  }, [hitAreaDebug]);
 
   // 繪製 Hit Areas
   useEffect(() => {
@@ -203,10 +205,10 @@ export const HitAreaOverlay = () => {
     });
   }, [hitAreas, hitAreaDebug]);
 
-  // 追蹤滑鼠位置
+  // 追蹤滑鼠位置（使用 ref 避免 re-render）
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
-      setMousePos([e.clientX, e.clientY]);
+      mousePosRef.current = [e.clientX, e.clientY];
     };
 
     window.addEventListener('mousemove', handleMouseMove);

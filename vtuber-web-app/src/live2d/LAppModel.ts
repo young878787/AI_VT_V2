@@ -73,6 +73,9 @@ export class LAppModel extends CubismUserModel {
   private _eyeTrackingEnabled: boolean = true;  // 視線追蹤
   private _physicsEnabled: boolean = true;      // 物理效果
 
+  // Draw debug 旗標（私有屬性，切換模型時會自動重置）
+  private _drawDebugLogged: boolean = false;
+
   // 模型變換屬性
   private _modelPositionX: number = 0;           // 模型 X 位置
   private _modelPositionY: number = 0;           // 模型 Y 位置
@@ -849,33 +852,48 @@ export class LAppModel extends CubismUserModel {
         this._model.addParameterValueById(this._idParamBodyAngleX, Math.sin(time * freqZ) * (ampZ * 0.6));
       }
       
-      // 目標表情值維持不變
-      var targetBlush = this._aiBlushLevel;
-      var targetEyeL = this._aiEyeLOpen;
-      var targetEyeR = this._aiEyeROpen;
-      var targetMouthForm = this._aiMouthForm;
-      var targetBrowLY = this._aiBrowLY;
-      var targetBrowRY = this._aiBrowRY;
-      var targetBrowLAngle = this._aiBrowLAngle;
-      var targetBrowRAngle = this._aiBrowRAngle;
-      var targetBrowLForm = this._aiBrowLForm;
-      var targetBrowRForm = this._aiBrowRForm;
-      
+      // 目標表情值維持不變（在 if 內已由外部 let 賦值，見下方）
     } else {
       this._aiHeadIntensity = 0;
       this._aiBehaviorTimer = 0;
-      
-      // 當行為結束時，表情目標逐漸退回預設狀態
-      var targetBlush = 0.0;
-      var targetEyeL = 1.0;
-      var targetEyeR = 1.0;
-      var targetMouthForm = 0.0;
-      var targetBrowLY = 0.0;
-      var targetBrowRY = 0.0;
-      var targetBrowLAngle = 0.0;
-      var targetBrowRAngle = 0.0;
-      var targetBrowLForm = 0.0;
-      var targetBrowRForm = 0.0;
+    }
+
+    // 使用 let 宣告目標表情值，避免 var 的函式作用域問題
+    let targetBlush: number;
+    let targetEyeL: number;
+    let targetEyeR: number;
+    let targetMouthForm: number;
+    let targetBrowLY: number;
+    let targetBrowRY: number;
+    let targetBrowLAngle: number;
+    let targetBrowRAngle: number;
+    let targetBrowLForm: number;
+    let targetBrowRForm: number;
+
+    if (this._aiBehaviorTimer > 0) {
+      // AI 行為仍在計時：保持目標表情值
+      targetBlush     = this._aiBlushLevel;
+      targetEyeL      = this._aiEyeLOpen;
+      targetEyeR      = this._aiEyeROpen;
+      targetMouthForm = this._aiMouthForm;
+      targetBrowLY    = this._aiBrowLY;
+      targetBrowRY    = this._aiBrowRY;
+      targetBrowLAngle = this._aiBrowLAngle;
+      targetBrowRAngle = this._aiBrowRAngle;
+      targetBrowLForm = this._aiBrowLForm;
+      targetBrowRForm = this._aiBrowRForm;
+    } else {
+      // 行為結束：表情目標逐漸退回預設狀態
+      targetBlush     = 0.0;
+      targetEyeL      = 1.0;
+      targetEyeR      = 1.0;
+      targetMouthForm = 0.0;
+      targetBrowLY    = 0.0;
+      targetBrowRY    = 0.0;
+      targetBrowLAngle = 0.0;
+      targetBrowRAngle = 0.0;
+      targetBrowLForm = 0.0;
+      targetBrowRForm = 0.0;
     }
 
     // 表情平滑過渡 (Lerp) 處理
@@ -972,14 +990,14 @@ export class LAppModel extends CubismUserModel {
     mvpMatrix.setMatrix(matrix.getArray());
     mvpMatrix.multiplyByMatrix(this._modelMatrix);
 
-    // 調試：只輸出一次
-    if (!(window as any)._drawDebugLogged) {
+    // 調試：只輸出一次（使用私有屬性，切換模型時正確重置）
+    if (!this._drawDebugLogged) {
       console.log('[Draw] MVP Matrix:', mvpMatrix.getArray());
       console.log('[Draw] Model Matrix:', this._modelMatrix.getArray());
       console.log('[Draw] Projection Matrix:', matrix.getArray());
       console.log('[Draw] Canvas Size:', this._canvasWidth, this._canvasHeight);
       console.log('[Draw] FrameBuffer:', frameBuffer);
-      (window as any)._drawDebugLogged = true;
+      this._drawDebugLogged = true;
     }
 
     renderer.setMvpMatrix(mvpMatrix);
