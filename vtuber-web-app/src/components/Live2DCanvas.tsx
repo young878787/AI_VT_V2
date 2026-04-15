@@ -5,6 +5,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useAppStore } from '@store/appStore';
 import { LAppDelegate } from '../live2d/LAppDelegate';
+import { canvasSyncService } from '../services/canvasSyncService';
 import './Live2DCanvas.css';
 
 export const Live2DCanvas = () => {
@@ -68,6 +69,11 @@ export const Live2DCanvas = () => {
         delegate.run();
         console.log('✓ 渲染循環已啟動');
 
+        // Hook 進渲染迴圈：每幀 render() 後立即擷取畫面廣播給 /display 頁面
+        // 相較於獨立 rAF，消除 0–1 幀延遲，確保顯示端與主頁面像素完全同步
+        canvasSyncService.attachToRenderLoop(delegate);
+        console.log('✓ Canvas 幀廣播已啟動（render loop hook）');
+
         setModelLoaded(true);
         setModelLoading(false);
         console.log('========================================');
@@ -96,6 +102,7 @@ export const Live2DCanvas = () => {
     // 清理函數
     return () => {
       clearTimeout(timer);
+      canvasSyncService.stopBroadcasting();
       if (delegateRef.current) {
         delegateRef.current.stop();
         LAppDelegate.releaseInstance();

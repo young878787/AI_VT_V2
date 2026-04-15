@@ -19,6 +19,22 @@ print(f"[ENV] Loaded from: {ENV_PATH}")
 
 app = FastAPI()
 
+# ============================================================
+# Display WebSocket 連線管理（供 /ws/display 訂閱者使用）
+# ============================================================
+_display_connections: set = set()
+
+
+async def _broadcast_to_displays(data: dict) -> None:
+    """向所有已連線的 /ws/display 客戶端廣播行為數據（fire-and-forget）。"""
+    dead: set = set()
+    for ws in list(_display_connections):
+        try:
+            await ws.send_json(data)
+        except Exception:
+            dead.add(ws)
+    _display_connections.difference_update(dead)
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     """讀取布林型環境變數。支援: 1/true/yes/on。"""
@@ -26,6 +42,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
 
 # Add CORS middleware
 app.add_middleware(
@@ -60,7 +77,9 @@ _PROVIDER_CONFIG = {
 }
 
 if not AI_PROVIDER:
-    raise RuntimeError("AI_PROVIDER 未設定，請在 .env 設定 AI_PROVIDER=nvidia 或 AI_PROVIDER=openrouter")
+    raise RuntimeError(
+        "AI_PROVIDER 未設定，請在 .env 設定 AI_PROVIDER=nvidia 或 AI_PROVIDER=openrouter"
+    )
 
 if AI_PROVIDER not in _PROVIDER_CONFIG:
     raise RuntimeError(
@@ -347,14 +366,18 @@ async def stream_final_text(messages: list, websocket: WebSocket) -> str:
     return _strip_thinking("".join(chunks).strip())
 
 
-async def synthesize_and_send_voice(websocket: WebSocket, text: str, speaking_rate: float):
+async def synthesize_and_send_voice(
+    websocket: WebSocket, text: str, speaking_rate: float
+):
     """背景執行 TTS，避免阻塞文字串流完成事件。"""
     tts_service = get_tts_service()
     if not tts_service.is_enabled():
         return
 
     try:
-        tts_result = await tts_service.synthesize(text=text, speaking_rate=speaking_rate)
+        tts_result = await tts_service.synthesize(
+            text=text, speaking_rate=speaking_rate
+        )
         if tts_result:
             await websocket.send_json(
                 {
@@ -756,6 +779,29 @@ async def compress_context(messages: list, websocket: WebSocket) -> list:
 
 
 # ============================================================
+# Display WebSocket 端點（OBS Browser Source 用）
+# ============================================================
+@app.websocket("/ws/display")
+async def display_endpoint(websocket: WebSocket):
+    """
+    供 /display 頁面（或 OBS Browser Source）連線，接收 AI 行為廣播。
+    此端點只推送，不處理客戶端訊息；客戶端可發送任意文字保持連線。
+    """
+    await websocket.accept()
+    _display_connections.add(websocket)
+    try:
+        while True:
+            # 接收並忽略客戶端訊息（如 ping），維持連線存活
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[display ws] 連線異常斷線: {e}")
+    finally:
+        _display_connections.discard(websocket)
+
+
+# ============================================================
 # WebSocket 主迴圈
 # ============================================================
 @app.websocket("/ws/chat")
@@ -978,24 +1024,24 @@ async def websocket_endpoint(websocket: WebSocket):
 
                         # ---- 步驟 4：串流取得最終文字回覆 ----
                         # 注意：第二次呼叫刻意不傳 tools，強制模型只輸出純文字，防止無限工具呼叫循環
-                        await websocket.send_json(
-                            {
-                                "type": "behavior",
-                                "headIntensity": head_intensity,
-                                "blushLevel": blush_level,
-                                "eyeSync": eye_sync,
-                                "eyeLOpen": eye_l_open,
-                                "eyeROpen": eye_r_open,
-                                "durationSec": duration_sec,
-                                "mouthForm": mouth_form,
-                                "browLY": brow_l_y,
-                                "browRY": brow_r_y,
-                                "browLAngle": brow_l_angle,
-                                "browRAngle": brow_r_angle,
-                                "browLForm": brow_l_form,
-                                "browRForm": brow_r_form,
-                            }
-                        )
+                        behavior_payload = {
+                            "type": "behavior",
+                            "headIntensity": head_intensity,
+                            "blushLevel": blush_level,
+                            "eyeSync": eye_sync,
+                            "eyeLOpen": eye_l_open,
+                            "eyeROpen": eye_r_open,
+                            "durationSec": duration_sec,
+                            "mouthForm": mouth_form,
+                            "browLY": brow_l_y,
+                            "browRY": brow_r_y,
+                            "browLAngle": brow_l_angle,
+                            "browRAngle": brow_r_angle,
+                            "browLForm": brow_l_form,
+                            "browRForm": brow_r_form,
+                        }
+                        await websocket.send_json(behavior_payload)
+                        await _broadcast_to_displays(behavior_payload)
                         content = await stream_final_text(messages, websocket)
                         streamed_output = True
                     else:
@@ -1018,25 +1064,27 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     # 工具流程未先送 behavior 時，在這裡補送
                     if not streamed_output:
+                        behavior_payload = {
+                            "type": "behavior",
+                            "headIntensity": head_intensity,
+                            "blushLevel": blush_level,
+                            "eyeSync": eye_sync,
+                            "eyeLOpen": eye_l_open,
+                            "eyeROpen": eye_r_open,
+                            "durationSec": duration_sec,
+                            "mouthForm": mouth_form,
+                            "browLY": brow_l_y,
+                            "browRY": brow_r_y,
+                            "browLAngle": brow_l_angle,
+                            "browRAngle": brow_r_angle,
+                            "browLForm": brow_l_form,
+                            "browRForm": brow_r_form,
+                        }
+                        await websocket.send_json(behavior_payload)
+                        await _broadcast_to_displays(behavior_payload)
                         await websocket.send_json(
-                            {
-                                "type": "behavior",
-                                "headIntensity": head_intensity,
-                                "blushLevel": blush_level,
-                                "eyeSync": eye_sync,
-                                "eyeLOpen": eye_l_open,
-                                "eyeROpen": eye_r_open,
-                                "durationSec": duration_sec,
-                                "mouthForm": mouth_form,
-                                "browLY": brow_l_y,
-                                "browRY": brow_r_y,
-                                "browLAngle": brow_l_angle,
-                                "browRAngle": brow_r_angle,
-                                "browLForm": brow_l_form,
-                                "browRForm": brow_r_form,
-                            }
+                            {"type": "text_stream", "content": content}
                         )
-                        await websocket.send_json({"type": "text_stream", "content": content})
 
                 # ---- 步驟 6：背景 Token 計數，檢查是否需要壓縮 ----
                 # 壓縮必須在 stream_end 之前完成，確保前端事件順序正確：

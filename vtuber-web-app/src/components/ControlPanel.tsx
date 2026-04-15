@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@store/appStore';
+import { useBackgroundStore, type BackgroundType, type BackgroundFit } from '../store/backgroundStore';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { MotionController } from '../live2d/MotionController';
 import { getModelConfig, Priority } from '../live2d/LAppDefine';
@@ -44,6 +45,46 @@ export const ControlPanel = () => {
   const [motionGroups, setMotionGroups] = useState<string[]>([]);
   const [selectedMotionGroup, setSelectedMotionGroup] = useState<string>('Idle');
   const [lipSyncVolume, setLipSyncVolume] = useState<number>(0);
+
+  // 背景設定狀態
+  const {
+    backgroundType,
+    backgroundColor,
+    backgroundImageUrl,
+    backgroundImageFit,
+    outputWidth,
+    outputHeight,
+    setBackgroundType,
+    setBackgroundColor,
+    setBackgroundImageUrl,
+    setBackgroundImageFit,
+    setOutputResolution,
+  } = useBackgroundStore();
+
+  // 輸出分辨率：自訂輸入暫存
+  const [customW, setCustomW] = useState(String(outputWidth));
+  const [customH, setCustomH] = useState(String(outputHeight));
+  // 判斷目前是否為自訂（非常用預設值）
+  const PRESETS = [
+    { label: '1920×1080 (Full HD)', w: 1920, h: 1080 },
+    { label: '1280×720 (HD)', w: 1280, h: 720 },
+    { label: '2560×1440 (2K)', w: 2560, h: 1440 },
+  ] as const;
+  const isCustomResolution = !PRESETS.some((p) => p.w === outputWidth && p.h === outputHeight);
+
+  const handleApplyCustomResolution = useCallback(() => {
+    const w = parseInt(customW, 10);
+    const h = parseInt(customH, 10);
+    if (w > 0 && h > 0) {
+      setOutputResolution(w, h);
+    }
+  }, [customW, customH, setOutputResolution]);
+
+  // 本地圖片上傳狀態（若 store 中已存有 base64 data URL，顯示 [本地圖片] 而非原始字串）
+  const [imageUrlInput, setImageUrlInput] = useState(
+    backgroundImageUrl.startsWith('data:') ? '[本地圖片]' : backgroundImageUrl
+  );
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // LipSync 更新循環
   const lipSyncLoopRef = useRef<number | null>(null);
@@ -201,6 +242,28 @@ export const ControlPanel = () => {
       console.log(`播放隨機動作: ${selectedMotionGroup}`);
     }
   }, [selectedMotionGroup]);
+
+  // 背景圖片：本地上傳 → 轉 data URL → 存入 store
+  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const url = ev.target?.result as string;
+      setBackgroundImageUrl(url);
+      setImageUrlInput('[本地圖片]');
+      setBackgroundType('image');
+    };
+    reader.readAsDataURL(file);
+  }, [setBackgroundImageUrl, setBackgroundType]);
+
+  // 背景圖片：套用 URL 輸入
+  const handleApplyImageUrl = useCallback(() => {
+    if (imageUrlInput.trim() && imageUrlInput !== '[本地圖片]') {
+      setBackgroundImageUrl(imageUrlInput.trim());
+      setBackgroundType('image');
+    }
+  }, [imageUrlInput, setBackgroundImageUrl, setBackgroundType]);
 
   if (!showControls) return null;
 
@@ -394,6 +457,172 @@ export const ControlPanel = () => {
               </button>
             </div>
           </div>
+        </div>
+
+        {/* 背景設定區域 */}
+        <div className="background-section">
+          <h4>OBS 背景設定</h4>
+
+          {/* OBS 提示 */}
+          <div className="obs-hint">
+            <span className="obs-hint__label">OBS Browser Source</span>
+            <code className="obs-hint__url">
+              {window.location.origin}/display
+            </code>
+            <button
+              className="obs-hint__copy"
+              onClick={() => navigator.clipboard?.writeText(`${window.location.origin}/display`)}
+              title="複製網址"
+            >
+              複製
+            </button>
+          </div>
+
+          {/* 輸出分辨率選擇 */}
+          <div className="bg-resolution-section">
+            <label className="bg-label">輸出分辨率</label>
+            <div className="bg-resolution-presets">
+              {PRESETS.map((p) => (
+                <button
+                  key={`${p.w}x${p.h}`}
+                  className={`bg-res-btn ${outputWidth === p.w && outputHeight === p.h ? 'active' : ''}`}
+                  onClick={() => {
+                    setOutputResolution(p.w, p.h);
+                    setCustomW(String(p.w));
+                    setCustomH(String(p.h));
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+              <button
+                className={`bg-res-btn ${isCustomResolution ? 'active' : ''}`}
+                onClick={() => {
+                  // 點「自訂」時不立即套用，讓使用者輸入後按確認
+                }}
+              >
+                自訂
+              </button>
+            </div>
+            {/* 自訂輸入（永遠顯示，方便調整；active 狀態時高亮） */}
+            <div className="bg-resolution-custom">
+              <input
+                type="number"
+                className="bg-res-input"
+                value={customW}
+                min={320}
+                max={7680}
+                onChange={(e) => setCustomW(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleApplyCustomResolution()}
+                placeholder="寬"
+              />
+              <span className="bg-res-sep">×</span>
+              <input
+                type="number"
+                className="bg-res-input"
+                value={customH}
+                min={240}
+                max={4320}
+                onChange={(e) => setCustomH(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleApplyCustomResolution()}
+                placeholder="高"
+              />
+              <button className="bg-apply-btn" onClick={handleApplyCustomResolution}>
+                套用
+              </button>
+            </div>
+            <div className="info-text">
+              目前：{outputWidth} × {outputHeight} px
+            </div>
+          </div>
+
+          {/* 背景類型選擇 */}
+          <div className="bg-type-selector">
+            {(['transparent', 'color', 'image'] as BackgroundType[]).map((t) => (
+              <button
+                key={t}
+                className={`bg-type-btn ${backgroundType === t ? 'active' : ''}`}
+                onClick={() => setBackgroundType(t)}
+              >
+                {t === 'transparent' ? '透明' : t === 'color' ? '純色' : '圖片'}
+              </button>
+            ))}
+          </div>
+
+          {/* 純色設定 */}
+          {backgroundType === 'color' && (
+            <div className="bg-color-row">
+              <label className="bg-label">背景顏色</label>
+              <input
+                type="color"
+                value={backgroundColor}
+                onChange={(e) => setBackgroundColor(e.target.value)}
+                className="bg-color-picker"
+              />
+              <span className="bg-color-value">{backgroundColor}</span>
+              <button
+                className="bg-preset-btn"
+                onClick={() => setBackgroundColor('#00b140')}
+                title="綠幕 (Chroma Key)"
+              >
+                綠幕
+              </button>
+              <button
+                className="bg-preset-btn"
+                onClick={() => setBackgroundColor('#0047ab')}
+                title="藍幕"
+              >
+                藍幕
+              </button>
+            </div>
+          )}
+
+          {/* 圖片設定 */}
+          {backgroundType === 'image' && (
+            <div className="bg-image-settings">
+              <div className="bg-url-row">
+                <input
+                  type="text"
+                  className="bg-url-input"
+                  placeholder="圖片網址 (http://...)"
+                  value={imageUrlInput === '[本地圖片]' ? '' : imageUrlInput}
+                  onChange={(e) => setImageUrlInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleApplyImageUrl()}
+                />
+                <button className="bg-apply-btn" onClick={handleApplyImageUrl}>套用</button>
+              </div>
+              <div className="bg-url-row">
+                <button
+                  className="bg-upload-btn"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  上傳本地圖片
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={handleFileUpload}
+                />
+                {backgroundImageUrl && (
+                  <span className="bg-image-status">已設定</span>
+                )}
+              </div>
+              <div className="bg-fit-row">
+                <label className="bg-label">填充方式</label>
+                {(['cover', 'contain', 'fill'] as BackgroundFit[]).map((f) => (
+                  <button
+                    key={f}
+                    className={`bg-fit-btn ${backgroundImageFit === f ? 'active' : ''}`}
+                    onClick={() => setBackgroundImageFit(f)}
+                  >
+                    {f === 'cover' ? '填滿' : f === 'contain' ? '包含' : '拉伸'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 動作測試區域 */}

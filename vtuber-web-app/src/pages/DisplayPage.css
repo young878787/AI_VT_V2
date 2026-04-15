@@ -1,0 +1,32 @@
+/* OBS 顯示頁：全螢幕，無任何控制 UI，背景可自訂 */
+
+/* 顯示頁時讓 body / html 背景透明，避免壓過自訂背景 */
+html.display-mode,
+body.display-mode {
+  background: transparent !important;
+}
+
+.display-page {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+  background: transparent;
+}
+
+/*
+ * 鏡像 canvas：使用固定 CSS 尺寸（由 outputWidth/outputHeight 決定），
+ * 不隨瀏覽器視窗縮放而改變，確保 OBS Browser Source 輸出的模型大小固定。
+ *
+ * 注意：此處不設定 width/height，由 DisplayPage.tsx 的 inline style 動態注入
+ * (style={{ width: outputWidth, height: outputHeight }})
+ *
+ * ImageBitmap 保留 alpha 通道，透明背景模式下 OBS 可正確擷取透明區域。
+ */
+.display-mirror {
+  display: block;
+  flex-shrink: 0;
+  pointer-events: none;
+}

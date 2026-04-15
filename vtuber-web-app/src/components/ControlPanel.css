@@ -698,8 +698,351 @@
 }
 
 /* ====================================
-   模型調整控制樣式
+   背景設定區塊
    ==================================== */
+
+.background-section {
+  margin-bottom: 20px;
+  padding: 16px;
+  background: linear-gradient(135deg,
+      rgba(135, 206, 235, 0.08) 0%,
+      rgba(201, 169, 233, 0.08) 100%);
+  border-radius: 16px;
+  border: 2px solid rgba(135, 206, 235, 0.25);
+  transition: var(--transition-smooth);
+}
+
+.background-section:hover {
+  border-color: var(--anime-sky);
+  box-shadow: 0 4px 16px rgba(135, 206, 235, 0.15);
+}
+
+.background-section h4 {
+  margin: 0 0 12px 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.background-section h4::before {
+  content: '🖼️';
+  font-size: 18px;
+}
+
+/* OBS 提示框 */
+.obs-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%);
+  border: 2px solid rgba(59, 130, 246, 0.25);
+  border-radius: 10px;
+  margin-bottom: 14px;
+  font-size: 12px;
+}
+
+.obs-hint__label {
+  font-weight: 700;
+  color: #1D4ED8;
+  white-space: nowrap;
+}
+
+.obs-hint__url {
+  flex: 1;
+  font-family: monospace;
+  font-size: 11px;
+  color: #1E40AF;
+  background: rgba(255,255,255,0.6);
+  padding: 3px 8px;
+  border-radius: 6px;
+  word-break: break-all;
+}
+
+.obs-hint__copy {
+  padding: 4px 10px;
+  background: #3B82F6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  white-space: nowrap;
+}
+
+.obs-hint__copy:hover {
+  background: #2563EB;
+  transform: translateY(-1px);
+}
+
+/* 背景類型切換按鈕 */
+.bg-type-selector {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.bg-type-btn {
+  flex: 1;
+  padding: 8px 6px;
+  border: 2px solid rgba(135, 206, 235, 0.3);
+  border-radius: 10px;
+  background: white;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-main);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.bg-type-btn:hover {
+  border-color: var(--anime-sky);
+  color: var(--anime-sky);
+}
+
+.bg-type-btn.active {
+  background: linear-gradient(135deg, var(--anime-sky) 0%, var(--anime-secondary) 100%);
+  border-color: var(--anime-sky);
+  color: white;
+  box-shadow: 0 4px 12px rgba(135, 206, 235, 0.35);
+}
+
+/* 純色設定行 */
+.bg-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.bg-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.bg-color-picker {
+  width: 40px;
+  height: 36px;
+  border: 2px solid rgba(135, 206, 235, 0.4);
+  border-radius: 8px;
+  padding: 2px;
+  cursor: pointer;
+  background: none;
+}
+
+.bg-color-value {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.bg-preset-btn {
+  padding: 6px 10px;
+  border: 2px solid rgba(135, 206, 235, 0.3);
+  border-radius: 8px;
+  background: white;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-main);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.bg-preset-btn:hover {
+  border-color: var(--anime-sky);
+  color: var(--anime-sky);
+  transform: translateY(-1px);
+}
+
+/* 圖片設定 */
+.bg-image-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.bg-url-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.bg-url-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 2px solid rgba(135, 206, 235, 0.3);
+  border-radius: 10px;
+  font-size: 12px;
+  font-family: var(--font-main);
+  background: white;
+  transition: var(--transition-smooth);
+}
+
+.bg-url-input:focus {
+  outline: none;
+  border-color: var(--anime-sky);
+  box-shadow: 0 0 0 3px rgba(135, 206, 235, 0.15);
+}
+
+.bg-apply-btn {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--anime-sky) 0%, var(--anime-secondary) 100%);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-main);
+  cursor: pointer;
+  transition: var(--transition-bounce);
+  white-space: nowrap;
+}
+
+.bg-apply-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(135, 206, 235, 0.4);
+}
+
+.bg-upload-btn {
+  flex: 1;
+  padding: 8px 12px;
+  border: 2px dashed rgba(135, 206, 235, 0.4);
+  border-radius: 10px;
+  background: rgba(135, 206, 235, 0.05);
+  color: var(--anime-sky);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-main);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  text-align: center;
+}
+
+.bg-upload-btn:hover {
+  border-color: var(--anime-sky);
+  background: rgba(135, 206, 235, 0.1);
+  transform: translateY(-1px);
+}
+
+.bg-image-status {
+  font-size: 11px;
+  color: #059669;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 4px 8px;
+  background: #ECFDF5;
+  border-radius: 6px;
+}
+
+/* 圖片填充方式 */
+.bg-fit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bg-fit-btn {
+  flex: 1;
+  padding: 6px 4px;
+  border: 2px solid rgba(135, 206, 235, 0.25);
+  border-radius: 8px;
+  background: white;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-main);
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.bg-fit-btn:hover {
+  border-color: var(--anime-sky);
+  color: var(--anime-sky);
+}
+
+.bg-fit-btn.active {
+  background: linear-gradient(135deg, var(--anime-sky) 0%, var(--anime-secondary) 100%);
+  border-color: var(--anime-sky);
+  color: white;
+}
+
+/* 輸出分辨率區塊 */
+.bg-resolution-section {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bg-resolution-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bg-res-btn {
+  padding: 5px 10px;
+  border: 1.5px solid rgba(255, 107, 157, 0.35);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: var(--text-primary);
+}
+
+.bg-res-btn:hover {
+  border-color: var(--anime-primary);
+  background: rgba(255, 107, 157, 0.08);
+}
+
+.bg-res-btn.active {
+  background: linear-gradient(135deg, var(--anime-sky) 0%, var(--anime-secondary) 100%);
+  border-color: var(--anime-sky);
+  color: white;
+}
+
+.bg-resolution-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.bg-res-input {
+  width: 72px;
+  padding: 5px 8px;
+  border: 1.5px solid rgba(255, 107, 157, 0.35);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.bg-res-input:focus {
+  outline: none;
+  border-color: var(--anime-primary);
+}
+
+.bg-res-sep {
+  font-size: 14px;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
 
 .transform-section {
   margin-top: 24px;

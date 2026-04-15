@@ -24,6 +24,9 @@ export class LAppDelegate {
   private _animationId: number | null = null;
   private _frameBuffer: WebGLFramebuffer | null = null;
 
+  /** 每幀渲染完成後的回呼，由 canvasSyncService 注入，用於零延遲畫面擷取 */
+  private _postRenderCallback: ((canvas: HTMLCanvasElement) => void) | null = null;
+
   // 拖移狀態
   private _isDraggingModel = false;
   private _lastDragX = 0;
@@ -98,13 +101,17 @@ export class LAppDelegate {
     LAppPal.printLog('✓ Live2DCubismCore API 完整');
 
     // 2. 創建 WebGL 上下文
+    // preserveDrawingBuffer: true 讓 canvas.toBlob() / toDataURL() 可正確讀取畫面內容
+    // 這是 /display 鏡像串流的必要條件
     LAppPal.printLog('步驟 2: 開始創建 WebGL 上下文...');
     const gl = canvas.getContext('webgl2', {
       alpha: true,
       premultipliedAlpha: true,
+      preserveDrawingBuffer: true,
     }) || canvas.getContext('webgl', {
       alpha: true,
       premultipliedAlpha: true,
+      preserveDrawingBuffer: true,
     });
 
     if (!gl) {
@@ -269,6 +276,11 @@ export class LAppDelegate {
       // 渲染
       if (this._view) {
         this._view.render();
+      }
+
+      // 渲染完成後立即擷取畫面（canvasSyncService 注入的 hook，零延遲）
+      if (this._postRenderCallback && this._canvas) {
+        this._postRenderCallback(this._canvas);
       }
 
       // 請求下一幀
@@ -508,10 +520,21 @@ export class LAppDelegate {
   }
 
   /**
+   * 設定渲染後回呼（供 canvasSyncService hook 進渲染迴圈，實現零延遲畫面擷取）
+   * 傳入 null 可清除回呼。
+   */
+  public setPostRenderCallback(cb: ((canvas: HTMLCanvasElement) => void) | null): void {
+    this._postRenderCallback = cb;
+  }
+
+  /**
    * 釋放所有資源
    */
   public release(): void {
     LAppPal.printLog('開始釋放 LAppDelegate...');
+
+    // 清除渲染後回呼
+    this._postRenderCallback = null;
 
     // 停止渲染循環
     this.stop();
