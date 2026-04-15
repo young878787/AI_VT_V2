@@ -4,3 +4,7 @@ websockets
 openai
 python-dotenv
 tiktoken
+
+# TTS (Google Cloud Text-to-Speech)
+# 安裝後需設定 GOOGLE_APPLICATION_CREDENTIALS 環境變數
+google-cloud-texttospeech
