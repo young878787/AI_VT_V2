@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
-import { useAppStore } from '@store/appStore';
 import './ModelParamPanel.css';
 
 interface ParamDef {
@@ -35,7 +34,7 @@ const DEFAULT_PARAMS: ParamValues = {
 };
 
 export const ModelParamPanel: React.FC = () => {
-  const { showControls } = useAppStore();
+  // Grid 佈局: 不需要 showControls guard，面板始終存在
   const [params, setParams] = useState<ParamValues>(DEFAULT_PARAMS);
   const [eyeSync, setEyeSync] = useState(true);
   const [isManual, setIsManual] = useState(false);
@@ -129,7 +128,6 @@ export const ModelParamPanel: React.FC = () => {
     }
   }, []);
 
-  if (!showControls) return null;
 
   return (
     <div className="param-panel">

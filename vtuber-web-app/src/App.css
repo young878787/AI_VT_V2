@@ -1,45 +1,100 @@
-.app {
+/* =============================================
+   App Layout — CSS Grid 三欄佈局
+   ============================================= */
+
+.app-layout {
   width: 100vw;
   height: 100vh;
-  margin: 0;
-  padding: 0;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr var(--right-width);
+  grid-template-rows: 1fr var(--bottom-height);
+  gap: var(--gap);
+  padding: var(--gap);
+  background: var(--bg-base);
   overflow: hidden;
   position: relative;
-  background: var(--bg-main);
 }
 
-/* 動漫風格裝飾背景 */
-.app::before {
-  content: '';
-  position: absolute;
-  top: -50%;
-  right: -10%;
-  width: 600px;
-  height: 600px;
-  background: radial-gradient(circle, rgba(255, 107, 157, 0.15) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: float-bubble 20s ease-in-out infinite;
-  pointer-events: none;
-  z-index: 0;
+/* ── 左側：控制面板（跨兩行） ── */
+.app-layout__sidebar {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
 }
 
-.app::after {
-  content: '';
-  position: absolute;
-  bottom: -30%;
-  left: -5%;
-  width: 500px;
-  height: 500px;
-  background: radial-gradient(circle, rgba(201, 169, 233, 0.15) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: float-bubble 25s ease-in-out infinite reverse;
-  pointer-events: none;
-  z-index: 0;
+/* ── 中央：Live2D 即時預覽 ── */
+.app-layout__center {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  min-width: 0;
+  border-radius: var(--border-radius-lg);
+  overflow: hidden;
+  position: relative;
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  z-index: 1;
 }
 
-@keyframes float-bubble {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  25% { transform: translate(30px, -20px) scale(1.05); }
-  50% { transform: translate(-20px, 30px) scale(0.95); }
-  75% { transform: translate(40px, 20px) scale(1.02); }
+/* ── 中下：預留空白 ── */
+.app-layout__bottom-center {
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 0;
+  border-radius: var(--border-radius-lg);
+  border: 1px dashed rgba(74, 143, 212, 0.15);
+  background: rgba(255, 255, 255, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+/* ── 右上：AI 對話 ── */
+.app-layout__chat {
+  grid-column: 3;
+  grid-row: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+
+/* ── 右下：情緒參數 ── */
+.app-layout__params {
+  grid-column: 3;
+  grid-row: 2;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+
+/* ── 響應式 ── */
+@media (max-width: 1024px) {
+  .app-layout {
+    grid-template-columns: 260px 1fr 320px;
+  }
+}
+
+@media (max-width: 768px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto auto auto;
+    overflow-y: auto;
+  }
+
+  .app-layout__sidebar,
+  .app-layout__center,
+  .app-layout__chat,
+  .app-layout__params,
+  .app-layout__bottom-center {
+    grid-column: 1;
+    grid-row: auto;
+  }
 }

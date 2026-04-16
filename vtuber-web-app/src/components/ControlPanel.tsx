@@ -1,6 +1,5 @@
 /**
- * 控制面板元件
- * 提供麥克風開關、模型切換、動作控制和其他功能按鈕
+ * 控制面板元件 — 可折疊手風琴式暗色開發控制台
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@store/appStore';
@@ -10,6 +9,25 @@ import { MotionController } from '../live2d/MotionController';
 import { getModelConfig, Priority } from '../live2d/LAppDefine';
 import { LipSyncManager } from '../audio/LipSyncManager';
 import './ControlPanel.css';
+
+/** 可折疊區塊 key */
+type SectionKey = 'model' | 'controls' | 'transform' | 'background' | 'motion';
+
+const SECTION_LABELS: Record<SectionKey, string> = {
+  model:      '角色模型',
+  controls:   '功能控制',
+  transform:  '模型調整',
+  background: 'OBS 輸出設定',
+  motion:     '動作測試',
+};
+
+const SECTION_ICONS: Record<SectionKey, string> = {
+  model:      '🎭',
+  controls:   '⚡',
+  transform:  '🔧',
+  background: '🖥',
+  motion:     '▶',
+};
 
 export const ControlPanel = () => {
   const {
@@ -41,6 +59,18 @@ export const ControlPanel = () => {
     setMicrophonePermission,
   } = useAppStore();
 
+  // 折疊狀態：預設展開 model、controls
+  const [collapsed, setCollapsed] = useState<Record<SectionKey, boolean>>({
+    model:      false,
+    controls:   false,
+    transform:  true,
+    background: true,
+    motion:     true,
+  });
+
+  const toggleSection = (key: SectionKey) =>
+    setCollapsed(prev => ({ ...prev, [key]: !prev[key] }));
+
   // 動作測試狀態
   const [motionGroups, setMotionGroups] = useState<string[]>([]);
   const [selectedMotionGroup, setSelectedMotionGroup] = useState<string>('Idle');
@@ -61,32 +91,26 @@ export const ControlPanel = () => {
     setOutputResolution,
   } = useBackgroundStore();
 
-  // 輸出分辨率：自訂輸入暫存
+  const PRESETS = [
+    { label: '1920×1080', w: 1920, h: 1080 },
+    { label: '1280×720',  w: 1280, h: 720  },
+    { label: '2560×1440', w: 2560, h: 1440 },
+  ] as const;
+  const isCustomResolution = !PRESETS.some(p => p.w === outputWidth && p.h === outputHeight);
+
   const [customW, setCustomW] = useState(String(outputWidth));
   const [customH, setCustomH] = useState(String(outputHeight));
-  // 判斷目前是否為自訂（非常用預設值）
-  const PRESETS = [
-    { label: '1920×1080 (Full HD)', w: 1920, h: 1080 },
-    { label: '1280×720 (HD)', w: 1280, h: 720 },
-    { label: '2560×1440 (2K)', w: 2560, h: 1440 },
-  ] as const;
-  const isCustomResolution = !PRESETS.some((p) => p.w === outputWidth && p.h === outputHeight);
 
   const handleApplyCustomResolution = useCallback(() => {
     const w = parseInt(customW, 10);
     const h = parseInt(customH, 10);
-    if (w > 0 && h > 0) {
-      setOutputResolution(w, h);
-    }
+    if (w > 0 && h > 0) setOutputResolution(w, h);
   }, [customW, customH, setOutputResolution]);
 
-  // 本地圖片上傳狀態（若 store 中已存有 base64 data URL，顯示 [本地圖片] 而非原始字串）
   const [imageUrlInput, setImageUrlInput] = useState(
     backgroundImageUrl.startsWith('data:') ? '[本地圖片]' : backgroundImageUrl
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // LipSync 更新循環
   const lipSyncLoopRef = useRef<number | null>(null);
 
   // 初始化動作群組
@@ -97,158 +121,95 @@ export const ControlPanel = () => {
       if (model) {
         const groups = model.getMotionGroupNames();
         setMotionGroups(groups);
-        if (groups.length > 0 && !groups.includes(selectedMotionGroup)) {
+        if (groups.length > 0 && !groups.includes(selectedMotionGroup))
           setSelectedMotionGroup(groups[0]);
-        }
       }
     }
   }, [modelLoaded, currentModelName]);
 
   // 自動播放控制
   useEffect(() => {
-    const motionController = MotionController.getInstance();
-
-    if (autoPlayEnabled && modelLoaded) {
-      motionController.startAutoPlay();
-    } else {
-      motionController.stopAutoPlay();
-    }
-
-    // 清理函數
-    return () => {
-      motionController.stopAutoPlay();
-    };
+    const mc = MotionController.getInstance();
+    if (autoPlayEnabled && modelLoaded) mc.startAutoPlay();
+    else mc.stopAutoPlay();
+    return () => mc.stopAutoPlay();
   }, [autoPlayEnabled, modelLoaded]);
 
   // 視線追蹤控制
   useEffect(() => {
     if (!modelLoaded) return;
-
-    const manager = LAppLive2DManager.getInstance();
-    const model = manager.getActiveModel();
-    if (model) {
-      model.setEyeTrackingEnabled(eyeTrackingEnabled);
-    }
+    const model = LAppLive2DManager.getInstance().getActiveModel();
+    if (model) model.setEyeTrackingEnabled(eyeTrackingEnabled);
   }, [eyeTrackingEnabled, modelLoaded]);
 
   // LipSync 循環
   useEffect(() => {
-    const lipSyncManager = LipSyncManager.getInstance();
-
-    const updateLipSync = () => {
+    const lm = LipSyncManager.getInstance();
+    const tick = () => {
       if (microphoneEnabled) {
-        lipSyncManager.update();
-        setLipSyncVolume(lipSyncManager.getCurrentMouthValue());
+        lm.update();
+        setLipSyncVolume(lm.getCurrentMouthValue());
       }
-      lipSyncLoopRef.current = requestAnimationFrame(updateLipSync);
+      lipSyncLoopRef.current = requestAnimationFrame(tick);
     };
-
-    if (microphoneEnabled) {
-      lipSyncLoopRef.current = requestAnimationFrame(updateLipSync);
-    }
-
+    if (microphoneEnabled) lipSyncLoopRef.current = requestAnimationFrame(tick);
     return () => {
-      if (lipSyncLoopRef.current) {
-        cancelAnimationFrame(lipSyncLoopRef.current);
-      }
+      if (lipSyncLoopRef.current) cancelAnimationFrame(lipSyncLoopRef.current);
     };
   }, [microphoneEnabled]);
 
-  // 麥克風開關處理
+  // 麥克風開關
   const handleMicrophoneToggle = useCallback(async () => {
-    const lipSyncManager = LipSyncManager.getInstance();
-
+    const lm = LipSyncManager.getInstance();
     if (!microphoneEnabled) {
-      // 嘗試啟用麥克風
       try {
-        const success = await lipSyncManager.enable();
-        if (success) {
-          setMicrophonePermission('granted');
-          toggleMicrophone();
-        } else {
-          setMicrophonePermission('denied');
-        }
-      } catch (error) {
-        console.error('麥克風啟用失敗:', error);
-        setMicrophonePermission('denied');
-      }
+        const ok = await lm.enable();
+        if (ok) { setMicrophonePermission('granted'); toggleMicrophone(); }
+        else setMicrophonePermission('denied');
+      } catch { setMicrophonePermission('denied'); }
     } else {
-      // 禁用麥克風
-      lipSyncManager.disable();
+      lm.disable();
       toggleMicrophone();
-
-      // 重置模型的 LipSync 值
-      const manager = LAppLive2DManager.getInstance();
-      const model = manager.getActiveModel();
-      if (model) {
-        model.setLipSyncValue(0);
-      }
+      const model = LAppLive2DManager.getInstance().getActiveModel();
+      if (model) model.setLipSyncValue(0);
     }
   }, [microphoneEnabled, toggleMicrophone, setMicrophonePermission]);
 
-  // 模型切換處理函數
+  // 模型切換
   const handleModelSwitch = useCallback(async (modelName: string) => {
-    if (modelName === currentModelName || modelSwitching || modelLoading) {
-      return;
-    }
-
-    const modelConfig = getModelConfig(modelName);
-    if (!modelConfig) {
-      setModelError(`找不到模型配置：${modelName}`);
-      return;
-    }
-
+    if (modelName === currentModelName || modelSwitching || modelLoading) return;
+    const config = getModelConfig(modelName);
+    if (!config) { setModelError(`找不到模型：${modelName}`); return; }
     try {
-      setModelSwitching(true);
-      setModelLoading(true);
-      setModelLoaded(false);
-      setModelError(null);
-
-      const manager = LAppLive2DManager.getInstance();
-
-      // 載入新模型（會自動設為活動模型）
-      await manager.loadModel(modelConfig, true);
-
-      setCurrentModelName(modelName);
-      setModelLoaded(true);
-      console.log(`模型切換成功：${modelConfig.displayName}`);
-
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : '模型切換失敗';
-      setModelError(errorMessage);
-      console.error('模型切換失敗:', error);
+      setModelSwitching(true); setModelLoading(true);
+      setModelLoaded(false); setModelError(null);
+      await LAppLive2DManager.getInstance().loadModel(config, true);
+      setCurrentModelName(modelName); setModelLoaded(true);
+    } catch (e) {
+      setModelError(e instanceof Error ? e.message : '切換失敗');
     } finally {
-      setModelSwitching(false);
-      setModelLoading(false);
+      setModelSwitching(false); setModelLoading(false);
     }
-  }, [currentModelName, modelSwitching, modelLoading, setCurrentModelName, setModelSwitching, setModelLoading, setModelLoaded, setModelError]);
+  }, [currentModelName, modelSwitching, modelLoading,
+      setCurrentModelName, setModelSwitching, setModelLoading, setModelLoaded, setModelError]);
 
-  // 播放指定動作
+  // 動作播放
   const handlePlayMotion = useCallback((index: number) => {
-    const manager = LAppLive2DManager.getInstance();
-    const model = manager.getActiveModel();
-    if (model) {
-      model.startMotion(selectedMotionGroup, index, Priority.Force);
-      console.log(`播放動作: ${selectedMotionGroup}[${index}]`);
-    }
+    const model = LAppLive2DManager.getInstance().getActiveModel();
+    if (model) model.startMotion(selectedMotionGroup, index, Priority.Force);
   }, [selectedMotionGroup]);
 
-  // 播放隨機動作
   const handlePlayRandomMotion = useCallback(() => {
-    const manager = LAppLive2DManager.getInstance();
-    const model = manager.getActiveModel();
-    if (model) {
-      model.startRandomMotion(selectedMotionGroup, Priority.Force);
-      console.log(`播放隨機動作: ${selectedMotionGroup}`);
-    }
+    const model = LAppLive2DManager.getInstance().getActiveModel();
+    if (model) model.startRandomMotion(selectedMotionGroup, Priority.Force);
   }, [selectedMotionGroup]);
 
-  // 背景圖片：本地上傳 → 轉 data URL → 存入 store
+  // 圖片上傳
   const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = ev => {
       const url = ev.target?.result as string;
       setBackgroundImageUrl(url);
       setImageUrlInput('[本地圖片]');
@@ -257,7 +218,6 @@ export const ControlPanel = () => {
     reader.readAsDataURL(file);
   }, [setBackgroundImageUrl, setBackgroundType]);
 
-  // 背景圖片：套用 URL 輸入
   const handleApplyImageUrl = useCallback(() => {
     if (imageUrlInput.trim() && imageUrlInput !== '[本地圖片]') {
       setBackgroundImageUrl(imageUrlInput.trim());
@@ -267,411 +227,367 @@ export const ControlPanel = () => {
 
   if (!showControls) return null;
 
-  // 獲取當前模型的顯示名稱
   const currentModelConfig = availableModels.find(m => m.name === currentModelName);
-
-  // 獲取當前選擇群組的動作數量
   const manager = LAppLive2DManager.getInstance();
   const model = manager.getActiveModel();
   const motionCount = model ? model.getMotionCount(selectedMotionGroup) : 0;
 
+  /** 區塊標題 */
+  const SectionHeader = ({ id, extra }: { id: SectionKey; extra?: React.ReactNode }) => (
+    <button
+      className={`section-header ${collapsed[id] ? 'collapsed' : ''}`}
+      onClick={() => toggleSection(id)}
+      aria-expanded={!collapsed[id]}
+    >
+      <span className="section-header__icon">{SECTION_ICONS[id]}</span>
+      <span className="section-header__label">{SECTION_LABELS[id]}</span>
+      {extra && <span className="section-header__extra">{extra}</span>}
+      <span className="section-header__arrow">›</span>
+    </button>
+  );
+
   return (
-    <div className="control-panel">
-      <div className="control-panel__header">
-        <h3>虛擬主播控制台</h3>
+    <div className="ctrl-panel">
+      {/* ── 頂部品牌列 ── */}
+      <div className="ctrl-panel__topbar">
+        <div className="ctrl-panel__brand">
+          <span className="ctrl-panel__brand-dot" />
+          <span className="ctrl-panel__brand-dot ctrl-panel__brand-dot--2" />
+          <span className="ctrl-panel__brand-dot ctrl-panel__brand-dot--3" />
+          <span className="ctrl-panel__brand-title">VTuber Studio</span>
+        </div>
+        {/* 模型狀態指示器 */}
+        <div className={`ctrl-panel__status-chip ${
+          modelLoading ? 'loading' : modelError ? 'error' : modelLoaded ? 'ready' : 'idle'
+        }`}>
+          <span className="chip-dot" />
+          <span className="chip-label">
+            {modelLoading ? '載入中' : modelError ? '錯誤' : modelLoaded ? '就緒' : '等待'}
+          </span>
+        </div>
       </div>
 
-      <div className="control-panel__content">
-        {/* 模型選擇區域 */}
-        <div className="model-section">
-          <h4>角色模型</h4>
-          <div className="model-selector">
-            <select
-              value={currentModelName}
-              onChange={(e) => handleModelSwitch(e.target.value)}
-              disabled={modelSwitching || modelLoading}
-              className="model-select"
-            >
-              {availableModels.map((model) => (
-                <option key={model.name} value={model.name}>
-                  {model.displayName}
-                </option>
-              ))}
-            </select>
-            {modelSwitching && (
-              <span className="model-loading-indicator">切換中...</span>
-            )}
-          </div>
-          {currentModelConfig?.description && (
-            <p className="model-description">{currentModelConfig.description}</p>
-          )}
+      {/* ── 錯誤訊息 ── */}
+      {modelError && (
+        <div className="ctrl-panel__error">
+          <span>⚠</span> {modelError}
         </div>
+      )}
 
-        {/* 模型狀態 */}
-        <div className="status-section">
-          <h4>模型狀態</h4>
-          {modelLoading && (
-            <div className="status-item loading">
-              <span className="status-dot"></span>
-              <span>模型載入中...</span>
-            </div>
-          )}
-          {modelLoaded && !modelLoading && (
-            <div className="status-item success">
-              <span className="status-dot"></span>
-              <span>模型已就緒</span>
-            </div>
-          )}
-          {modelError && (
-            <div className="status-item error">
-              <span className="status-dot"></span>
-              <span>{modelError}</span>
-            </div>
-          )}
-        </div>
+      {/* ── 可滾動內容 ── */}
+      <div className="ctrl-panel__body">
 
-        {/* 功能控制 */}
-        <div className="controls-section">
-          <h4>功能控制</h4>
-
-          {/* 麥克風開關 */}
-          <div className="feature-item">
-            <label className="feature-label">
-              <span className="icon">🎤</span>
-              <span>麥克風嘴型同步</span>
-            </label>
-            <button
-              onClick={handleMicrophoneToggle}
-              className={`toggle-button ${microphoneEnabled ? 'active' : ''}`}
-              disabled={!modelLoaded || microphonePermission === 'denied'}
-            >
-              <div className="toggle-slider" />
-            </button>
-          </div>
-          <div className="control-item">
-            {microphoneEnabled && (
-              <div className="volume-indicator">
-                <span>音量：</span>
-                <div className="volume-bar">
-                  <div
-                    className="volume-fill"
-                    style={{ width: `${lipSyncVolume * 100}%` }}
-                  />
-                </div>
-              </div>
-            )}
-            {microphonePermission === 'denied' && (
-              <div className="permission-warning">
-                麥克風權限已被拒絕，請在瀏覽器設定中允許
-              </div>
-            )}
-          </div>
-
-          {/* 視線追蹤開關 */}
-          <div className="feature-item">
-            <label className="feature-label">
-              <span className="icon">👁️</span>
-              <span>視線追蹤滑鼠</span>
-            </label>
-            <button
-              onClick={toggleEyeTracking}
-              className={`toggle-button ${eyeTrackingEnabled ? 'active' : ''}`}
-              disabled={!modelLoaded}
-            >
-              <div className="toggle-slider" />
-            </button>
-          </div>
-
-          {/* 自動播放開關 */}
-          <div className="feature-item">
-            <label className="feature-label">
-              <span className="icon">🎬</span>
-              <span>自動播放動作</span>
-            </label>
-            <button
-              onClick={toggleAutoPlay}
-              className={`toggle-button ${autoPlayEnabled ? 'active' : ''}`}
-              disabled={!modelLoaded}
-            >
-              <div className="toggle-slider" />
-            </button>
-          </div>
-        </div>
-
-        {/* 模型調整控制 */}
-        <div className="transform-section">
-          <h4>🔍 模型調整</h4>
-
-          {/* Hit Area 調試開關 */}
-          <div className="feature-item">
-            <label className="feature-label">
-              <span className="icon">🎯</span>
-              <span>點擊區域顯示</span>
-            </label>
-            <button
-              className={`toggle-button ${hitAreaDebug ? 'active' : ''}`}
-              onClick={toggleHitAreaDebug}
-              disabled={!modelLoaded}
-            >
-              <div className="toggle-slider" />
-            </button>
-          </div>
-
-          {/* 提示信息 */}
-          <div className="control-item">
-            <div className="info-text">
-              💡 直接按住模型頭部即可拖動位置
-            </div>
-          </div>
-
-          {/* 縮放控制 */}
-          <div className="control-item scale-control">
-            <label>
-              📏 模型縮放
-              <span className="scale-value">{Math.round(modelScale * 100)}%</span>
-            </label>
-            <div className="scale-controls">
-              <button
-                className="scale-button minus"
-                onClick={scaleModelDown}
-                disabled={!modelLoaded || modelScale <= 0.5}
-                title="縮小 (0.1x)"
+        {/* ━━ 角色模型 ━━ */}
+        <div className="ctrl-section">
+          <SectionHeader id="model" />
+          {!collapsed.model && (
+            <div className="ctrl-section__content">
+              <select
+                className="cp-select"
+                value={currentModelName}
+                onChange={e => handleModelSwitch(e.target.value)}
+                disabled={modelSwitching || modelLoading}
               >
-                <span>−</span>
-              </button>
-              <button
-                className="scale-button reset"
-                onClick={resetModelTransform}
-                disabled={!modelLoaded}
-                title="重置位置與縮放"
-              >
-                <span>🔄</span>
-              </button>
-              <button
-                className="scale-button plus"
-                onClick={scaleModelUp}
-                disabled={!modelLoaded || modelScale >= 2.0}
-                title="放大 (0.1x)"
-              >
-                <span>+</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* 背景設定區域 */}
-        <div className="background-section">
-          <h4>OBS 背景設定</h4>
-
-          {/* OBS 提示 */}
-          <div className="obs-hint">
-            <span className="obs-hint__label">OBS Browser Source</span>
-            <code className="obs-hint__url">
-              {window.location.origin}/display
-            </code>
-            <button
-              className="obs-hint__copy"
-              onClick={() => navigator.clipboard?.writeText(`${window.location.origin}/display`)}
-              title="複製網址"
-            >
-              複製
-            </button>
-          </div>
-
-          {/* 輸出分辨率選擇 */}
-          <div className="bg-resolution-section">
-            <label className="bg-label">輸出分辨率</label>
-            <div className="bg-resolution-presets">
-              {PRESETS.map((p) => (
-                <button
-                  key={`${p.w}x${p.h}`}
-                  className={`bg-res-btn ${outputWidth === p.w && outputHeight === p.h ? 'active' : ''}`}
-                  onClick={() => {
-                    setOutputResolution(p.w, p.h);
-                    setCustomW(String(p.w));
-                    setCustomH(String(p.h));
-                  }}
-                >
-                  {p.label}
-                </button>
-              ))}
-              <button
-                className={`bg-res-btn ${isCustomResolution ? 'active' : ''}`}
-                onClick={() => {
-                  // 點「自訂」時不立即套用，讓使用者輸入後按確認
-                }}
-              >
-                自訂
-              </button>
-            </div>
-            {/* 自訂輸入（永遠顯示，方便調整；active 狀態時高亮） */}
-            <div className="bg-resolution-custom">
-              <input
-                type="number"
-                className="bg-res-input"
-                value={customW}
-                min={320}
-                max={7680}
-                onChange={(e) => setCustomW(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleApplyCustomResolution()}
-                placeholder="寬"
-              />
-              <span className="bg-res-sep">×</span>
-              <input
-                type="number"
-                className="bg-res-input"
-                value={customH}
-                min={240}
-                max={4320}
-                onChange={(e) => setCustomH(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleApplyCustomResolution()}
-                placeholder="高"
-              />
-              <button className="bg-apply-btn" onClick={handleApplyCustomResolution}>
-                套用
-              </button>
-            </div>
-            <div className="info-text">
-              目前：{outputWidth} × {outputHeight} px
-            </div>
-          </div>
-
-          {/* 背景類型選擇 */}
-          <div className="bg-type-selector">
-            {(['transparent', 'color', 'image'] as BackgroundType[]).map((t) => (
-              <button
-                key={t}
-                className={`bg-type-btn ${backgroundType === t ? 'active' : ''}`}
-                onClick={() => setBackgroundType(t)}
-              >
-                {t === 'transparent' ? '透明' : t === 'color' ? '純色' : '圖片'}
-              </button>
-            ))}
-          </div>
-
-          {/* 純色設定 */}
-          {backgroundType === 'color' && (
-            <div className="bg-color-row">
-              <label className="bg-label">背景顏色</label>
-              <input
-                type="color"
-                value={backgroundColor}
-                onChange={(e) => setBackgroundColor(e.target.value)}
-                className="bg-color-picker"
-              />
-              <span className="bg-color-value">{backgroundColor}</span>
-              <button
-                className="bg-preset-btn"
-                onClick={() => setBackgroundColor('#00b140')}
-                title="綠幕 (Chroma Key)"
-              >
-                綠幕
-              </button>
-              <button
-                className="bg-preset-btn"
-                onClick={() => setBackgroundColor('#0047ab')}
-                title="藍幕"
-              >
-                藍幕
-              </button>
-            </div>
-          )}
-
-          {/* 圖片設定 */}
-          {backgroundType === 'image' && (
-            <div className="bg-image-settings">
-              <div className="bg-url-row">
-                <input
-                  type="text"
-                  className="bg-url-input"
-                  placeholder="圖片網址 (http://...)"
-                  value={imageUrlInput === '[本地圖片]' ? '' : imageUrlInput}
-                  onChange={(e) => setImageUrlInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleApplyImageUrl()}
-                />
-                <button className="bg-apply-btn" onClick={handleApplyImageUrl}>套用</button>
-              </div>
-              <div className="bg-url-row">
-                <button
-                  className="bg-upload-btn"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  上傳本地圖片
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={handleFileUpload}
-                />
-                {backgroundImageUrl && (
-                  <span className="bg-image-status">已設定</span>
-                )}
-              </div>
-              <div className="bg-fit-row">
-                <label className="bg-label">填充方式</label>
-                {(['cover', 'contain', 'fill'] as BackgroundFit[]).map((f) => (
-                  <button
-                    key={f}
-                    className={`bg-fit-btn ${backgroundImageFit === f ? 'active' : ''}`}
-                    onClick={() => setBackgroundImageFit(f)}
-                  >
-                    {f === 'cover' ? '填滿' : f === 'contain' ? '包含' : '拉伸'}
-                  </button>
+                {availableModels.map(m => (
+                  <option key={m.name} value={m.name}>{m.displayName}</option>
                 ))}
-              </div>
+              </select>
+              {modelSwitching && <div className="cp-hint cp-hint--loading">⏳ 切換中...</div>}
+              {currentModelConfig?.description && (
+                <div className="cp-hint">{currentModelConfig.description}</div>
+              )}
             </div>
           )}
         </div>
 
-        {/* 動作測試區域 */}
-        <div className="motion-section">
-          <h4>動作測試</h4>
-          <div className="motion-controls">
-            <select
-              value={selectedMotionGroup}
-              onChange={(e) => setSelectedMotionGroup(e.target.value)}
-              disabled={!modelLoaded || motionGroups.length === 0}
-              className="motion-group-select"
-            >
-              {motionGroups.map((group) => (
-                <option key={group} value={group}>{group}</option>
-              ))}
-            </select>
-            <button
-              onClick={handlePlayRandomMotion}
-              className="motion-button"
-              disabled={!modelLoaded || motionCount === 0}
-              title="播放隨機動作"
-            >
-              🎲 隨機
-            </button>
-          </div>
-          {motionCount > 0 && (
-            <div className="motion-list">
-              {Array.from({ length: motionCount }, (_, i) => (
+        {/* ━━ 功能控制 ━━ */}
+        <div className="ctrl-section">
+          <SectionHeader id="controls" />
+          {!collapsed.controls && (
+            <div className="ctrl-section__content">
+
+              {/* 麥克風 */}
+              <div className="cp-toggle-row">
+                <div className="cp-toggle-info">
+                  <span className="cp-toggle-icon">🎤</span>
+                  <span className="cp-toggle-label">麥克風嘴型同步</span>
+                </div>
                 <button
-                  key={i}
-                  onClick={() => handlePlayMotion(i)}
-                  className="motion-item-button"
+                  className={`cp-toggle ${microphoneEnabled ? 'active' : ''}`}
+                  onClick={handleMicrophoneToggle}
+                  disabled={!modelLoaded || microphonePermission === 'denied'}
+                >
+                  <span className="cp-toggle__thumb" />
+                </button>
+              </div>
+              {microphoneEnabled && (
+                <div className="cp-volume">
+                  <span className="cp-volume__label">音量</span>
+                  <div className="cp-volume__bar">
+                    <div className="cp-volume__fill" style={{ width: `${lipSyncVolume * 100}%` }} />
+                  </div>
+                  <span className="cp-volume__val">{(lipSyncVolume * 100).toFixed(0)}%</span>
+                </div>
+              )}
+              {microphonePermission === 'denied' && (
+                <div className="cp-warn">請在瀏覽器允許麥克風權限</div>
+              )}
+
+              {/* 視線追蹤 */}
+              <div className="cp-toggle-row">
+                <div className="cp-toggle-info">
+                  <span className="cp-toggle-icon">👁</span>
+                  <span className="cp-toggle-label">滑鼠視線追蹤</span>
+                </div>
+                <button
+                  className={`cp-toggle ${eyeTrackingEnabled ? 'active' : ''}`}
+                  onClick={toggleEyeTracking}
                   disabled={!modelLoaded}
                 >
-                  動作 {i + 1}
+                  <span className="cp-toggle__thumb" />
                 </button>
-              ))}
+              </div>
+
+              {/* 自動播放 */}
+              <div className="cp-toggle-row">
+                <div className="cp-toggle-info">
+                  <span className="cp-toggle-icon">🎬</span>
+                  <span className="cp-toggle-label">自動播放動作</span>
+                </div>
+                <button
+                  className={`cp-toggle ${autoPlayEnabled ? 'active' : ''}`}
+                  onClick={toggleAutoPlay}
+                  disabled={!modelLoaded}
+                >
+                  <span className="cp-toggle__thumb" />
+                </button>
+              </div>
+
             </div>
           )}
-          <p className="motion-hint">
-            💡 建議關閉自動播放以測試特定動作
-          </p>
+        </div>
+
+        {/* ━━ 模型調整 ━━ */}
+        <div className="ctrl-section">
+          <SectionHeader id="transform" />
+          {!collapsed.transform && (
+            <div className="ctrl-section__content">
+
+              {/* Hit Area */}
+              <div className="cp-toggle-row">
+                <div className="cp-toggle-info">
+                  <span className="cp-toggle-icon">🎯</span>
+                  <span className="cp-toggle-label">點擊區域顯示</span>
+                </div>
+                <button
+                  className={`cp-toggle ${hitAreaDebug ? 'active' : ''}`}
+                  onClick={toggleHitAreaDebug}
+                  disabled={!modelLoaded}
+                >
+                  <span className="cp-toggle__thumb" />
+                </button>
+              </div>
+
+              <div className="cp-hint cp-hint--info">按住模型頭部可拖動位置</div>
+
+              {/* 縮放 */}
+              <div className="cp-scale-row">
+                <span className="cp-scale-row__label">縮放</span>
+                <div className="cp-scale-row__controls">
+                  <button
+                    className="cp-scale-btn"
+                    onClick={scaleModelDown}
+                    disabled={!modelLoaded || modelScale <= 0.5}
+                  >−</button>
+                  <span className="cp-scale-row__val">{Math.round(modelScale * 100)}%</span>
+                  <button
+                    className="cp-scale-btn"
+                    onClick={scaleModelUp}
+                    disabled={!modelLoaded || modelScale >= 2.0}
+                  >+</button>
+                  <button
+                    className="cp-scale-btn cp-scale-btn--reset"
+                    onClick={resetModelTransform}
+                    disabled={!modelLoaded}
+                  >↺</button>
+                </div>
+              </div>
+
+            </div>
+          )}
+        </div>
+
+        {/* ━━ OBS 設定 ━━ */}
+        <div className="ctrl-section">
+          <SectionHeader id="background" />
+          {!collapsed.background && (
+            <div className="ctrl-section__content">
+
+              {/* OBS URL */}
+              <div className="cp-obs-url">
+                <span className="cp-obs-url__label">Browser Source URL</span>
+                <div className="cp-obs-url__row">
+                  <code className="cp-obs-url__code">{window.location.origin}/display</code>
+                  <button
+                    className="cp-btn cp-btn--sm"
+                    onClick={() => navigator.clipboard?.writeText(`${window.location.origin}/display`)}
+                  >複製</button>
+                </div>
+              </div>
+
+              {/* 解析度 */}
+              <div className="cp-field">
+                <label className="cp-field__label">輸出解析度</label>
+                <div className="cp-chip-group">
+                  {PRESETS.map(p => (
+                    <button
+                      key={`${p.w}x${p.h}`}
+                      className={`cp-chip ${outputWidth === p.w && outputHeight === p.h ? 'active' : ''}`}
+                      onClick={() => { setOutputResolution(p.w, p.h); setCustomW(String(p.w)); setCustomH(String(p.h)); }}
+                    >{p.label}</button>
+                  ))}
+                  <button
+                    className={`cp-chip ${isCustomResolution ? 'active' : ''}`}
+                  >自訂</button>
+                </div>
+                <div className="cp-res-custom">
+                  <input
+                    className="cp-input cp-input--sm"
+                    type="number" value={customW} min={320} max={7680}
+                    onChange={e => setCustomW(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleApplyCustomResolution()}
+                    placeholder="寬"
+                  />
+                  <span className="cp-res-sep">×</span>
+                  <input
+                    className="cp-input cp-input--sm"
+                    type="number" value={customH} min={240} max={4320}
+                    onChange={e => setCustomH(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleApplyCustomResolution()}
+                    placeholder="高"
+                  />
+                  <button className="cp-btn cp-btn--sm" onClick={handleApplyCustomResolution}>套用</button>
+                </div>
+                <div className="cp-hint">目前：{outputWidth} × {outputHeight} px</div>
+              </div>
+
+              {/* 背景類型 */}
+              <div className="cp-field">
+                <label className="cp-field__label">背景類型</label>
+                <div className="cp-chip-group">
+                  {(['transparent', 'color', 'image'] as BackgroundType[]).map(t => (
+                    <button
+                      key={t}
+                      className={`cp-chip ${backgroundType === t ? 'active' : ''}`}
+                      onClick={() => setBackgroundType(t)}
+                    >
+                      {t === 'transparent' ? '透明' : t === 'color' ? '純色' : '圖片'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 純色 */}
+              {backgroundType === 'color' && (
+                <div className="cp-color-row">
+                  <input
+                    type="color" value={backgroundColor}
+                    onChange={e => setBackgroundColor(e.target.value)}
+                    className="cp-color-picker"
+                  />
+                  <code className="cp-color-code">{backgroundColor}</code>
+                  <button className="cp-chip" onClick={() => setBackgroundColor('#00b140')}>綠幕</button>
+                  <button className="cp-chip" onClick={() => setBackgroundColor('#0047ab')}>藍幕</button>
+                </div>
+              )}
+
+              {/* 圖片 */}
+              {backgroundType === 'image' && (
+                <div className="cp-image-settings">
+                  <div className="cp-row">
+                    <input
+                      className="cp-input"
+                      type="text"
+                      placeholder="圖片 URL (https://...)"
+                      value={imageUrlInput === '[本地圖片]' ? '' : imageUrlInput}
+                      onChange={e => setImageUrlInput(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleApplyImageUrl()}
+                    />
+                    <button className="cp-btn cp-btn--sm" onClick={handleApplyImageUrl}>套用</button>
+                  </div>
+                  <div className="cp-row">
+                    <button className="cp-btn cp-btn--upload" onClick={() => fileInputRef.current?.click()}>
+                      ↑ 上傳本地圖片
+                    </button>
+                    {backgroundImageUrl && <span className="cp-badge cp-badge--success">已設定</span>}
+                    <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFileUpload} />
+                  </div>
+                  <div className="cp-chip-group">
+                    {(['cover', 'contain', 'fill'] as BackgroundFit[]).map(f => (
+                      <button
+                        key={f}
+                        className={`cp-chip ${backgroundImageFit === f ? 'active' : ''}`}
+                        onClick={() => setBackgroundImageFit(f)}
+                      >
+                        {f === 'cover' ? '填滿' : f === 'contain' ? '包含' : '拉伸'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+            </div>
+          )}
+        </div>
+
+        {/* ━━ 動作測試 ━━ */}
+        <div className="ctrl-section">
+          <SectionHeader id="motion" extra={
+            motionCount > 0 ? <span className="cp-badge">{motionCount}</span> : undefined
+          } />
+          {!collapsed.motion && (
+            <div className="ctrl-section__content">
+              <div className="cp-row">
+                <select
+                  className="cp-select"
+                  value={selectedMotionGroup}
+                  onChange={e => setSelectedMotionGroup(e.target.value)}
+                  disabled={!modelLoaded || motionGroups.length === 0}
+                >
+                  {motionGroups.map(g => <option key={g} value={g}>{g}</option>)}
+                </select>
+                <button
+                  className="cp-btn cp-btn--primary"
+                  onClick={handlePlayRandomMotion}
+                  disabled={!modelLoaded || motionCount === 0}
+                >🎲 隨機</button>
+              </div>
+
+              {motionCount > 0 && (
+                <div className="cp-motion-grid">
+                  {Array.from({ length: motionCount }, (_, i) => (
+                    <button
+                      key={i}
+                      className="cp-motion-btn"
+                      onClick={() => handlePlayMotion(i)}
+                      disabled={!modelLoaded}
+                    >
+                      {i + 1}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="cp-hint">建議關閉自動播放再測試特定動作</div>
+            </div>
+          )}
         </div>
 
       </div>
 
-      {/* 開發資訊 */}
-      <div className="control-panel__footer">
-        <small>Live2D Cubism SDK 5-r.5-beta.3</small>
+      {/* ── 底部資訊列 ── */}
+      <div className="ctrl-panel__footer">
+        <span className="cp-sdk-badge">Live2D SDK 5-r.5-beta.3</span>
       </div>
     </div>
   );

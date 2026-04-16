@@ -1,43 +1,69 @@
-/* 日式動漫風格全局設置 */
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=M+PLUS+Rounded+1c:wght@400;500;700;800&display=swap');
+/* =============================================
+   VTuber Studio — 淡藍色開發控制台主題
+   ============================================= */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
 
 :root {
-  /* 日式動漫配色 - 櫻花粉系 */
-  --anime-primary: #FF6B9D;
-  --anime-secondary: #C9A9E9;
-  --anime-accent: #FFC0CB;
-  --anime-sky: #87CEEB;
-  --anime-sunset: linear-gradient(135deg, #FF6B9D 0%, #FFA07A 50%, #FFD700 100%);
-  
-  /* 背景層次 */
-  --bg-main: linear-gradient(180deg, #FFF5F7 0%, #E8F4F8 100%);
-  --bg-card: rgba(255, 255, 255, 0.85);
-  --bg-overlay: rgba(255, 255, 255, 0.95);
-  
-  /* 文字顏色 */
-  --text-primary: #2D2D2D;
-  --text-secondary: #666666;
-  --text-accent: #FF6B9D;
-  
-  /* 陰影 */
-  --shadow-soft: 0 8px 32px rgba(255, 107, 157, 0.15);
-  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.08);
-  --shadow-glow: 0 0 20px rgba(255, 107, 157, 0.3);
-  
-  /* 邊框 */
-  --border-radius: 24px;
-  --border-color: rgba(255, 107, 157, 0.2);
-  
-  /* 動畫 */
-  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-bounce: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-  
-  /* 字體 */
-  --font-main: 'M PLUS Rounded 1c', 'Noto Sans JP', sans-serif;
-  --font-display: 'M PLUS Rounded 1c', sans-serif;
+  /* ── 主色調 (柔和藍系) ── */
+  --primary:          #4a8fd4;
+  --primary-hover:    #5a9fe4;
+  --primary-dim:      rgba(74, 143, 212, 0.12);
+  --primary-strong:   #3674b5;
+  --secondary:        #6eacde;
+  --accent:           #2d6cb4;
+
+  /* ── 背景層次 ── */
+  --bg-base:          #edf2f9;
+  --bg-surface:       #f5f8fc;
+  --bg-card:          rgba(255, 255, 255, 0.88);
+  --bg-overlay:       rgba(255, 255, 255, 0.95);
+  --bg-hover:         rgba(74, 143, 212, 0.06);
+  --bg-active:        rgba(74, 143, 212, 0.10);
+
+  /* ── 文字 ── */
+  --text-primary:     #1e293b;
+  --text-secondary:   #64748b;
+  --text-muted:       #94a3b8;
+  --text-accent:      #3674b5;
+
+  /* ── 邊框 ── */
+  --border:           rgba(74, 143, 212, 0.12);
+  --border-bright:    rgba(74, 143, 212, 0.35);
+  --border-radius-sm: 8px;
+  --border-radius:    12px;
+  --border-radius-lg: 16px;
+
+  /* ── 狀態顏色 ── */
+  --success:          #10b981;
+  --success-dim:      rgba(16, 185, 129, 0.12);
+  --warning:          #f59e0b;
+  --warning-dim:      rgba(245, 158, 11, 0.12);
+  --error:            #ef4444;
+  --error-dim:        rgba(239, 68, 68, 0.10);
+
+  /* ── 陰影 ── */
+  --shadow-sm:        0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md:        0 4px 16px rgba(74, 143, 212, 0.10), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-lg:        0 8px 32px rgba(74, 143, 212, 0.12);
+  --shadow-inset:     inset 0 1px 0 rgba(255, 255, 255, 0.7);
+
+  /* ── 動畫 ── */
+  --transition:       all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-bounce: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── 字型 ── */
+  --font-ui:   'Inter', 'Noto Sans TC', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* ── 面板尺寸 ── */
+  --sidebar-width: 300px;
+  --right-width: 380px;
+  --bottom-height: 260px;
+  --gap: 12px;
 }
 
-* {
+/* ── Reset ── */
+*, *::before, *::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -47,16 +73,54 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  background: var(--bg-base);
 }
 
 body {
-  font-family: var(--font-main);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: var(--bg-main);
 }
 
 #root {
   width: 100%;
   height: 100%;
+}
+
+/* ── 全域滾動條 ── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(74, 143, 212, 0.25);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 143, 212, 0.45);
+}
+
+/* ── 共用 UI 元素 ── */
+button {
+  font-family: var(--font-ui);
+  cursor: pointer;
+  border: none;
+  outline: none;
+  transition: var(--transition);
+}
+
+input, select {
+  font-family: var(--font-ui);
+  outline: none;
+  transition: var(--transition);
+}
+
+select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }

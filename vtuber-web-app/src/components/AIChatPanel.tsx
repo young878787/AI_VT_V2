@@ -4,7 +4,7 @@ import { wsService } from '../services/wsService';
 import './AIChatPanel.css';
 
 export const AIChatPanel = () => {
-    const { showControls, chatHistory, isAiTyping, isCompressing } = useAppStore();
+    const { chatHistory, isAiTyping, isCompressing } = useAppStore();
     const [inputValue, setInputValue] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -17,8 +17,6 @@ export const AIChatPanel = () => {
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [chatHistory, isAiTyping]);
-
-    if (!showControls) return null;
 
     const handleSend = () => {
         if (!inputValue.trim() || isAiTyping) return;

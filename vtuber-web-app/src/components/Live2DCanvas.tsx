@@ -1,9 +1,11 @@
 /**
  * Live2D 畫布元件
  * 負責顯示 Live2D 模型和處理渲染
+ * 加入背景即時預覽：在主頁即可看到 OBS 輸出的背景效果
  */
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, CSSProperties } from 'react';
 import { useAppStore } from '@store/appStore';
+import { useBackgroundStore } from '../store/backgroundStore';
 import { LAppDelegate } from '../live2d/LAppDelegate';
 import { canvasSyncService } from '../services/canvasSyncService';
 import './Live2DCanvas.css';
@@ -17,6 +19,14 @@ export const Live2DCanvas = () => {
     setModelError,
     eyeTrackingEnabled,
   } = useAppStore();
+
+  // 背景即時預覽
+  const {
+    backgroundType,
+    backgroundColor,
+    backgroundImageUrl,
+    backgroundImageFit,
+  } = useBackgroundStore();
 
   // 初始化 Live2D
   useEffect(() => {
@@ -170,8 +180,31 @@ export const Live2DCanvas = () => {
     // 預留給其他互動使用
   }, []);
 
+  // 背景即時預覽樣式 — 與 DisplayPage 共用相同邏輯
+  const bgStyle: CSSProperties = (() => {
+    if (backgroundType === 'color') {
+      return { backgroundColor };
+    }
+    if (backgroundType === 'image' && backgroundImageUrl) {
+      return {
+        backgroundImage: `url("${backgroundImageUrl}")`,
+        backgroundSize: backgroundImageFit === 'fill' ? '100% 100%' : backgroundImageFit,
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+      };
+    }
+    // transparent — 保持容器預設的透明/白色
+    return {};
+  })();
+
   return (
-    <div className="live2d-canvas-container">
+    <div className="live2d-canvas-container" style={bgStyle}>
+      {/* 背景類型標籤 */}
+      <div className="live2d-bg-badge">
+        {backgroundType === 'transparent' ? '🔲 透明背景' :
+         backgroundType === 'color' ? `🎨 ${backgroundColor}` :
+         '🖼️ 圖片背景'}
+      </div>
       <canvas 
         ref={canvasRef}
         className="live2d-canvas"
