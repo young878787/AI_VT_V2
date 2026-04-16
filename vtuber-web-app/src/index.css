@@ -29,9 +29,9 @@
   /* ── 邊框 ── */
   --border:           rgba(74, 143, 212, 0.12);
   --border-bright:    rgba(74, 143, 212, 0.35);
-  --border-radius-sm: 8px;
-  --border-radius:    12px;
-  --border-radius-lg: 16px;
+  --border-radius-sm: 0px;
+  --border-radius:    0px;
+  --border-radius-lg: 0px;
 
   /* ── 狀態顏色 ── */
   --success:          #10b981;
@@ -99,7 +99,7 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: rgba(74, 143, 212, 0.25);
-  border-radius: 4px;
+  border-radius: 0px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(74, 143, 212, 0.45);

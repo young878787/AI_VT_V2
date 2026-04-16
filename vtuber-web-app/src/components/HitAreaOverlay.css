@@ -24,7 +24,7 @@
   background: rgba(0, 0, 0, 0.85);
   backdrop-filter: blur(10px);
   border: 2px solid #FF6B9D;
-  border-radius: 16px;
+  border-radius: 0px;
   padding: 20px;
   color: #FFF;
   font-family: 'Noto Sans JP', sans-serif;
@@ -72,7 +72,7 @@
   padding: 6px 12px;
   margin: 4px 0;
   background: rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
+  border-radius: 0px;
   font-size: 13px;
   transition: all 0.2s ease;
   border: 1px solid transparent;
