@@ -113,6 +113,10 @@ export class LAppModel extends CubismUserModel {
   private _currentBrowLForm: number = 0.0;
   private _currentBrowRForm: number = 0.0;
 
+  // 原生參數手動覆蓋 (NativeParamPanel 使用者手動控制)
+  // key = paramId (string), value = { value, lastSetAt (performance.now ms) }
+  private _nativeParamOverrides: Map<string, { value: number; lastSetAt: number }> = new Map();
+
   /**
    * 建構函式
    */
@@ -703,6 +707,65 @@ export class LAppModel extends CubismUserModel {
     };
   }
 
+  // ─────────────────────────────────────────────
+  //  原生參數手動覆蓋 API (NativeParamPanel 使用)
+  // ─────────────────────────────────────────────
+
+  /**
+   * 取得模型所有 Cubism 原生參數（供 NativeParamPanel 動態列出）
+   */
+  public getAllParameters(): Array<{
+    id: string;
+    min: number;
+    max: number;
+    defaultVal: number;
+    current: number;
+  }> {
+    if (!this._model) return [];
+    const count = this._model.getParameterCount();
+    const result: Array<{ id: string; min: number; max: number; defaultVal: number; current: number }> = [];
+    for (let i = 0; i < count; i++) {
+      result.push({
+        id:         this._model.getParameterId(i).getString(),
+        min:        this._model.getParameterMinimumValue(i),
+        max:        this._model.getParameterMaximumValue(i),
+        defaultVal: this._model.getParameterDefaultValue(i),
+        current:    this._model.getParameterValueByIndex(i),
+      });
+    }
+    return result;
+  }
+
+  /**
+   * 設定原生參數手動覆蓋值（立即套用，5 秒無操作後由 update() 自動清除）
+   * @param paramId  Cubism 參數 ID 字串（例如 "ParamAngleX"）
+   * @param value    目標值（會被 clamp 到模型 min/max）
+   */
+  public setNativeParamOverride(paramId: string, value: number): void {
+    this._nativeParamOverrides.set(paramId, { value, lastSetAt: performance.now() });
+  }
+
+  /**
+   * 清除指定參數的手動覆蓋，恢復 AI / 眼動追蹤控制
+   */
+  public clearNativeParamOverride(paramId: string): void {
+    this._nativeParamOverrides.delete(paramId);
+  }
+
+  /**
+   * 清除所有手動覆蓋（全部重置按鈕）
+   */
+  public clearAllNativeParamOverrides(): void {
+    this._nativeParamOverrides.clear();
+  }
+
+  /**
+   * 取得目前所有活躍的原生參數覆蓋（供 NativeParamPanel 讀取倒數）
+   */
+  public getNativeParamOverrides(): ReadonlyMap<string, { value: number; lastSetAt: number }> {
+    return this._nativeParamOverrides;
+  }
+
   /**
    * 初始化渲染器（注意：此方法是同步的，但需要异步加载纹理）
    */
@@ -957,6 +1020,29 @@ export class LAppModel extends CubismUserModel {
     // 姿勢
     if (this._pose) {
       this._pose.updateParameters(this._model, deltaTimeSeconds);
+    }
+
+    // ── 原生參數手動覆蓋（最高優先度，最後套用）──
+    // 優先序：NativeParam > AI 表情 > 眼動追蹤 > 呼吸物理
+    // 逾時 5 秒未操作自動清除
+    if (this._nativeParamOverrides.size > 0) {
+      const nowMs = performance.now();
+      const toExpire: string[] = [];
+      for (const [paramId, override] of this._nativeParamOverrides) {
+        if (nowMs - override.lastSetAt > 5000) {
+          toExpire.push(paramId);
+        } else {
+          // 以絕對值覆蓋（不受 add 累積影響）
+          // 透過 IdManager 取得對應的 CubismIdHandle 物件（cached 引用相等性）
+          this._model.setParameterValueById(
+            CubismFramework.getIdManager().getId(paramId),
+            override.value
+          );
+        }
+      }
+      for (const paramId of toExpire) {
+        this._nativeParamOverrides.delete(paramId);
+      }
     }
 
     this._model.update();

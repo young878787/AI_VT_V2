@@ -30,7 +30,7 @@ class DisplaySyncService {
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) return;
 
     this.isConnecting = true;
-    const port = (import.meta as any).env?.VITE_BACKEND_PORT ?? '9999';
+    const port = import.meta.env.BACKEND_PORT ?? '9999';
 
     try {
       this.ws = new WebSocket(`ws://localhost:${port}/ws/display`);

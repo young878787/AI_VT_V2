@@ -54,7 +54,7 @@ AI_VT_V2/
 | Frontend | React 19, TypeScript, Vite (rolldown), Zustand |
 | Live2D | Cubism SDK for Web 5 |
 | Backend | Python, FastAPI, WebSocket |
-| LLM | OpenRouter API (configurable model) |
+| LLM | OpenRouter / NVIDIA / Google AI Studio (configurable model) |
 | Memory | JSON + Markdown flat files |
 
 ---
@@ -63,7 +63,7 @@ AI_VT_V2/
 
 1. The user types a message in the chat panel.
 2. The frontend sends it over WebSocket to the Python backend.
-3. The backend assembles a dynamic system prompt incorporating the user's profile and shared memory, then calls the LLM via OpenRouter.
+3. The backend assembles a dynamic system prompt incorporating the user's profile and shared memory, then calls the LLM via the selected provider (OpenRouter / NVIDIA / Google AI Studio).
 4. The LLM uses structured tool calls to determine expression parameters (`set_ai_behavior`) and optionally update memory (`update_user_profile`, `save_memory_note`).
 5. The backend sends expression data and streamed text back to the frontend simultaneously.
 6. The frontend applies the expression parameters to the Live2D model with smooth interpolated transitions.
@@ -77,14 +77,18 @@ AI_VT_V2/
 - Python 3.10+
 - Node.js 18+
 - Cubism SDK for Web (place in project root as `CubismSdkForWeb-5-r.5-beta.3/`)
-- An [OpenRouter](https://openrouter.ai) API key
+- An API key for one provider ([OpenRouter](https://openrouter.ai), NVIDIA, or Google AI Studio)
 
 ### Environment Variables
 
 Copy `.env.example` to `.env` and fill in your keys:
 
 ```
+AI_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_key_here
+# or Google AI Studio
+# AI_PROVIDER=google
+# GOOGLE_API_KEY=your_key_here
 ```
 
 ### Backend
@@ -97,7 +101,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-The WebSocket server starts at `ws://localhost:8000/ws/chat`.
+The WebSocket server starts at `ws://localhost:${BACKEND_PORT}/ws/chat`.
 
 ### Frontend
 
@@ -107,7 +111,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` in your browser.
+Open `http://localhost:${FRONTEND_PORT}` in your browser.
 
 ---
 

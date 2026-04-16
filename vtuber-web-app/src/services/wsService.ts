@@ -47,7 +47,7 @@ class WSService {
         // 已達重連上限，不再嘗試
         if (this.retryCount >= this.MAX_RETRIES) return;
 
-        const backendPort = import.meta.env.VITE_BACKEND_PORT || '9999';
+        const backendPort = import.meta.env.BACKEND_PORT || '9999';
         this.ws = new WebSocket(`ws://localhost:${backendPort}/ws/chat`);
 
         this.ws.onopen = () => {

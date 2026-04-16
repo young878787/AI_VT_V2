@@ -16,6 +16,7 @@ import { AIChatPanel } from '@components/AIChatPanel';
 import { AnimeDecoration } from '@components/AnimeDecoration';
 import { HitAreaOverlay } from '@components/HitAreaOverlay';
 import { ModelParamPanel } from '@components/ModelParamPanel';
+import { NativeParamPanel } from '@components/NativeParamPanel';
 import './App.css';
 
 function App() {
@@ -35,9 +36,9 @@ function App() {
         <HitAreaOverlay />
       </main>
 
-      {/* ── 中下：預留空白 ── */}
+      {/* ── 中下：原生 Live2D 參數面板 ── */}
       <div className="app-layout__bottom-center">
-        {/* 預留給未來功能，例如 debug log、timeline 等 */}
+        <NativeParamPanel />
       </div>
 
       {/* ── 右上：AI 對話 ── */}

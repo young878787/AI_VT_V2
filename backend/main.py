@@ -74,11 +74,18 @@ _PROVIDER_CONFIG = {
         "base_url_default": "https://integrate.api.nvidia.com/v1",
         "model_default": "meta/llama-3.3-70b-instruct",
     },
+    "google": {
+        "api_key_env": "GOOGLE_API_KEY",
+        "base_url_env": "GOOGLE_BASE_URL",
+        "model_env": "GOOGLE_MODEL_NAME",
+        "base_url_default": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "model_default": "gemini-2.0-flash",
+    },
 }
 
 if not AI_PROVIDER:
     raise RuntimeError(
-        "AI_PROVIDER 未設定，請在 .env 設定 AI_PROVIDER=nvidia 或 AI_PROVIDER=openrouter"
+        "AI_PROVIDER 未設定，請在 .env 設定 AI_PROVIDER=nvidia 或 AI_PROVIDER=openrouter 或 AI_PROVIDER=google"
     )
 
 if AI_PROVIDER not in _PROVIDER_CONFIG:
@@ -104,10 +111,20 @@ if AI_PROVIDER == "openrouter" and "nvidia.com" in base_url_lc:
     raise RuntimeError(
         "AI_PROVIDER=openrouter 但 BASE_URL 指向 NVIDIA，請檢查 OPENROUTER_BASE_URL 設定"
     )
+if AI_PROVIDER == "google" and (
+    "openrouter.ai" in base_url_lc or "nvidia.com" in base_url_lc
+):
+    raise RuntimeError(
+        "AI_PROVIDER=google 但 BASE_URL 指向 OpenRouter/NVIDIA，請檢查 GOOGLE_BASE_URL 設定"
+    )
+if AI_PROVIDER != "google" and "googleapis.com" in base_url_lc:
+    raise RuntimeError(
+        f"AI_PROVIDER={AI_PROVIDER} 但 BASE_URL 指向 Google，請檢查 {_cfg['base_url_env']} 設定"
+    )
 
 print(f"[AI Provider] {AI_PROVIDER.upper()} | Model: {MODEL_NAME} | URL: {BASE_URL}")
 
-# 初始化 OpenAI 相容客戶端（OpenRouter 與 Nvidia 均支援 OpenAI SDK）
+# 初始化 OpenAI 相容客戶端（OpenRouter / Nvidia / Google AI Studio）
 client = AsyncOpenAI(
     base_url=BASE_URL,
     api_key=API_KEY,
@@ -122,7 +139,7 @@ def _build_extra_body() -> dict:
     建構傳給 API 的額外參數（extra_body）。
     - Nvidia Qwen3 系列需要 chat_template_kwargs: {enable_thinking: True}
       才能啟用 Chain-of-Thought 推理模式。
-    - OpenRouter 不需要額外參數。
+        - OpenRouter 與 Google AI Studio 不需要額外參數。
     """
     if AI_PROVIDER == "nvidia" and _env_flag("AI_ENABLE_THINKING", False):
         return {"chat_template_kwargs": {"enable_thinking": True}}

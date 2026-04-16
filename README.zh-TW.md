@@ -54,7 +54,7 @@ AI_VT_V2/
 | 前端 | React 19、TypeScript、Vite（rolldown）、Zustand |
 | Live2D | Cubism SDK for Web 5 |
 | 後端 | Python、FastAPI、WebSocket |
-| LLM | OpenRouter API（模型可設定） |
+| LLM | OpenRouter / NVIDIA / Google AI Studio（模型可設定） |
 | 記憶 | JSON + Markdown 純文字檔 |
 
 ---
@@ -63,7 +63,7 @@ AI_VT_V2/
 
 1. 使用者在聊天面板輸入訊息。
 2. 前端透過 WebSocket 傳送至 Python 後端。
-3. 後端動態組裝 System Prompt（包含使用者畫像與共同回憶），透過 OpenRouter 呼叫 LLM。
+3. 後端動態組裝 System Prompt（包含使用者畫像與共同回憶），透過選定 provider（OpenRouter / NVIDIA / Google AI Studio）呼叫 LLM。
 4. LLM 使用結構化工具呼叫決定表情參數（`set_ai_behavior`），並視情況更新記憶（`update_user_profile`、`save_memory_note`）。
 5. 後端將表情資料與串流文字同步回傳給前端。
 6. 前端以平滑插值的方式將表情參數套用至 Live2D 模型。
@@ -77,14 +77,18 @@ AI_VT_V2/
 - Python 3.10+
 - Node.js 18+
 - Cubism SDK for Web（放置於專案根目錄，命名為 `CubismSdkForWeb-5-r.5-beta.3/`）
-- [OpenRouter](https://openrouter.ai) API 金鑰
+- 任一可用 provider 的 API 金鑰（[OpenRouter](https://openrouter.ai)、NVIDIA 或 Google AI Studio）
 
 ### 環境變數設定
 
 將 `.env.example` 複製為 `.env` 並填入金鑰：
 
 ```
+AI_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_key_here
+# 或使用 Google
+# AI_PROVIDER=google
+# GOOGLE_API_KEY=your_key_here
 ```
 
 ### 後端啟動
@@ -97,7 +101,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-WebSocket 伺服器啟動於 `ws://localhost:8000/ws/chat`。
+WebSocket 伺服器啟動於 `ws://localhost:${BACKEND_PORT}/ws/chat`。
 
 ### 前端啟動
 
@@ -107,7 +111,7 @@ npm install
 npm run dev
 ```
 
-在瀏覽器開啟 `http://localhost:5173`。
+在瀏覽器開啟 `http://localhost:${FRONTEND_PORT}`。
 
 ---
 
