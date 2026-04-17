@@ -34,7 +34,7 @@ backend/memory/memory.md
 vtuber-web-app/node_modules/
 vtuber-web-app/dist/
 vtuber-web-app/.vite/
-
+vtuber-web-app/public/resources/
 # ============================================================
 # Cubism SDK (large binary SDK, should not be committed)
 # ============================================================

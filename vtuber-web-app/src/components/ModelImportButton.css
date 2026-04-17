@@ -1,0 +1,70 @@
+/* ModelImportButton.css — 模型匯入按鈕樣式 */
+
+.model-import-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.model-import-btn-row {
+  display: flex;
+  gap: 6px;
+}
+
+.model-import-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1.5px dashed rgba(120, 160, 255, 0.45);
+  border-radius: 8px;
+  background: rgba(60, 100, 200, 0.08);
+  color: #8ab4f8;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+
+.model-import-btn:hover:not(:disabled) {
+  background: rgba(60, 100, 200, 0.18);
+  border-color: rgba(120, 160, 255, 0.75);
+  color: #aecbfa;
+}
+
+.model-import-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.model-import-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.model-import-progress__fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4a9eff, #7b6ff0);
+  transition: width 0.15s ease;
+}
+
+.model-import-status {
+  font-size: 11px;
+  color: #8ab4f8;
+  text-align: center;
+  min-height: 16px;
+  line-height: 1.4;
+}
+
+.model-import-status--error {
+  color: #f28b82;
+}
+
+.model-import-status--success {
+  color: #81c995;
+}

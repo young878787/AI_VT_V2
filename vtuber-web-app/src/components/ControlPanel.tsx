@@ -8,6 +8,7 @@ import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { MotionController } from '../live2d/MotionController';
 import { getModelConfig, Priority } from '../live2d/LAppDefine';
 import { LipSyncManager } from '../audio/LipSyncManager';
+import { ModelImportButton } from './ModelImportButton';
 import './ControlPanel.css';
 
 /** 可折疊區塊 key */
@@ -57,6 +58,7 @@ export const ControlPanel = () => {
     setModelLoaded,
     setModelError,
     setMicrophonePermission,
+    removeModel,
   } = useAppStore();
 
   // 折疊狀態：預設展開 model、controls
@@ -178,7 +180,7 @@ export const ControlPanel = () => {
   // 模型切換
   const handleModelSwitch = useCallback(async (modelName: string) => {
     if (modelName === currentModelName || modelSwitching || modelLoading) return;
-    const config = getModelConfig(modelName);
+    const config = availableModels.find(m => m.name === modelName);
     if (!config) { setModelError(`找不到模型：${modelName}`); return; }
     try {
       setModelSwitching(true); setModelLoading(true);
@@ -203,6 +205,19 @@ export const ControlPanel = () => {
     const model = LAppLive2DManager.getInstance().getActiveModel();
     if (model) model.startRandomMotion(selectedMotionGroup, Priority.Force);
   }, [selectedMotionGroup]);
+
+  // 刪除匯入模型
+  const handleDeleteModel = useCallback(async (name: string) => {
+    if (!confirm(`確定要刪除模型「${name}」？此操作不可恢復，資料夾也會被刪除。`)) return;
+    try {
+      const { deleteImportedModel } = await import('../services/modelService');
+      await deleteImportedModel(name);
+      removeModel(name);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (e: any) {
+      alert(e.message ?? '刪除失敗');
+    }
+  }, [removeModel]);
 
   // 圖片上傳
   const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -282,20 +297,36 @@ export const ControlPanel = () => {
           <SectionHeader id="model" />
           {!collapsed.model && (
             <div className="ctrl-section__content">
-              <select
-                className="cp-select"
-                value={currentModelName}
-                onChange={e => handleModelSwitch(e.target.value)}
-                disabled={modelSwitching || modelLoading}
-              >
-                {availableModels.map(m => (
-                  <option key={m.name} value={m.name}>{m.displayName}</option>
-                ))}
-              </select>
+              {/* 模型下拉 + 刪除按鈕 */}
+              <div className="cp-row">
+                <select
+                  className="cp-select"
+                  value={currentModelName}
+                  onChange={e => handleModelSwitch(e.target.value)}
+                  disabled={modelSwitching || modelLoading}
+                >
+                  {availableModels.map(m => (
+                    <option key={m.name} value={m.name}>{m.displayName}</option>
+                  ))}
+                </select>
+                {/* 匯入模型才顯示刪除按鈕 */}
+                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                {(availableModels.find(m => m.name === currentModelName) as any)?.imported && (
+                  <button
+                    className="cp-btn cp-btn--danger cp-btn--sm"
+                    title="刪除此匯入模型"
+                    onClick={() => handleDeleteModel(currentModelName)}
+                    disabled={modelSwitching || modelLoading}
+                    id="model-delete-btn"
+                  >🗑️</button>
+                )}
+              </div>
               {modelSwitching && <div className="cp-hint cp-hint--loading">⏳ 切換中...</div>}
               {currentModelConfig?.description && (
                 <div className="cp-hint">{currentModelConfig.description}</div>
               )}
+              {/* 匯入模型按鈕 */}
+              <ModelImportButton />
             </div>
           )}
         </div>

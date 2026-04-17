@@ -4,6 +4,7 @@
 import { create } from 'zustand';
 import { AvailableModels, type ModelConfig } from '../live2d/LAppDefine';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
+import { fetchAvailableModels, type RemoteModelConfig } from '../services/modelService';
 
 export interface ChatMessage {
   id: string;
@@ -84,6 +85,11 @@ interface AppState {
   setCurrentModelName: (name: string) => void;
   setModelSwitching: (switching: boolean) => void;
   getCurrentModelConfig: () => ModelConfig | undefined;
+
+  // 動態模型清單管理
+  loadAvailableModels: () => Promise<void>;
+  addImportedModel: (model: RemoteModelConfig) => void;
+  removeModel: (name: string) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -224,6 +230,47 @@ export const useAppStore = create<AppState>((set, get) => ({
     return state.availableModels.find(m => m.name === state.currentModelName);
   },
 
+  // 動態模型清單管理
+  loadAvailableModels: async () => {
+    try {
+      const remoteModels = await fetchAvailableModels();
+      set({ availableModels: remoteModels as unknown as ModelConfig[] });
+      // 若當前模型不在清單中，切換至第一個
+      const current = get().currentModelName;
+      if (!remoteModels.find(m => m.name === current) && remoteModels.length > 0) {
+        set({ currentModelName: remoteModels[0].name });
+      }
+    } catch (e) {
+      console.warn('[appStore] loadAvailableModels 失敗，使用內建清單:', e);
+    }
+  },
+
+  addImportedModel: (model: RemoteModelConfig) => {
+    set((state) => {
+      const exists = state.availableModels.find(m => m.name === model.name);
+      if (exists) {
+        return {
+          availableModels: state.availableModels.map(m =>
+            m.name === model.name ? { ...m, ...model } as unknown as ModelConfig : m
+          ),
+        };
+      }
+      return {
+        availableModels: [...state.availableModels, model as unknown as ModelConfig],
+      };
+    });
+  },
+
+  removeModel: (name: string) => {
+    set((state) => ({
+      availableModels: state.availableModels.filter(m => m.name !== name),
+      currentModelName:
+        state.currentModelName === name
+          ? (state.availableModels.find(m => m.name !== name)?.name ?? '')
+          : state.currentModelName,
+    }));
+  },
+
   // 聊天與情緒控制動作實作
   appendChatMessage: (message) => {
     const id = Date.now().toString() + Math.random().toString(36).substring(2, 9);
@@ -252,11 +299,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const manager = LAppLive2DManager.getInstance();
     const model = manager.getActiveModel();
     if (model) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (typeof (model as any).setAiBehavior === 'function') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (model as any).setAiBehavior(headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec, mouthForm, browLY, browRY, browLAngle, browRAngle, browLForm, browRForm, eyeSync);
       } else {
         // Fallback to older method if available
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if (typeof (model as any).setAiHappiness === 'function') {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
            (model as any).setAiHappiness(headIntensity, durationSec);
         }
       }

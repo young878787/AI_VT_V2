@@ -492,6 +492,19 @@
   background: var(--primary-dim);
 }
 
+.cp-btn--danger {
+  background: rgba(220, 60, 60, 0.08);
+  border-color: rgba(220, 60, 60, 0.35);
+  color: #e06060;
+  flex-shrink: 0;
+}
+
+.cp-btn--danger:hover:not(:disabled) {
+  background: rgba(220, 60, 60, 0.18);
+  border-color: rgba(220, 60, 60, 0.55);
+  color: #f28b82;
+}
+
 /* ── Chip 群組 ── */
 .cp-chip-group {
   display: flex;

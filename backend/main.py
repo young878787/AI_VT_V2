@@ -2,9 +2,12 @@ import os
 import re
 import json
 import asyncio
+import shutil
 from datetime import datetime
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from typing import List
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import tiktoken
@@ -171,6 +174,42 @@ MEMORY_DIR = os.path.join(os.path.dirname(__file__), "memory")
 USER_PROFILE_PATH = os.path.join(MEMORY_DIR, "user_profile.json")
 MEMORY_MD_PATH = os.path.join(MEMORY_DIR, "memory.md")
 CHAT_SESSION_DIR = os.path.join(MEMORY_DIR, "sessions")
+
+# ============================================================
+# Model Registry — 持久化匯入模型清單
+# ============================================================
+RESOURCES_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "vtuber-web-app", "public", "Resources")
+)
+MODEL_REGISTRY_PATH = os.path.join(os.path.dirname(__file__), "model_registry.json")
+
+
+def load_model_registry() -> list[dict]:
+    """讀取持久化的匯入模型清單（不含內建模型）。"""
+    try:
+        with open(MODEL_REGISTRY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def save_model_registry(registry: list[dict]) -> None:
+    """寫入持久化的匯入模型清單。"""
+    with open(MODEL_REGISTRY_PATH, "w", encoding="utf-8") as f:
+        json.dump(registry, f, ensure_ascii=False, indent=2)
+
+
+def find_model3_json(directory: str) -> tuple[str | None, str | None]:
+    """在目錄（包含子目錄）中尋找 .model3.json，回傳 (相對於 RESOURCES_DIR 的資料夾路徑, 檔名)。"""
+    for root, _, files in os.walk(directory):
+        for name in files:
+            if name.endswith(".model3.json"):
+                rel_dir = os.path.relpath(root, RESOURCES_DIR).replace("\\", "/")
+                return rel_dir, name
+    return None, None
 
 # 對話持久化（可選）
 CHAT_PERSISTENCE_ENABLED = _env_flag("CHAT_PERSISTENCE_ENABLED", False)
@@ -793,6 +832,121 @@ async def compress_context(messages: list, websocket: WebSocket) -> list:
     await websocket.send_json({"type": "compress_done"})
 
     return compressed_messages
+
+
+# ============================================================
+# REST API — 模型管理
+# ============================================================
+
+# 內建模型清單（與前端 LAppDefine.ts 同步）
+_BUILTIN_MODELS = [
+    {"name": "Hiyori", "directory": "Hiyori", "fileName": "Hiyori.model3.json",
+     "displayName": "Hiyori（日和）", "description": "溫柔可愛的少女"},
+    {"name": "Haru",   "directory": "Haru",   "fileName": "Haru.model3.json",
+     "displayName": "Haru（春）",   "description": "元氣少女，活潑開朗"},
+]
+
+
+@app.get("/api/models")
+async def list_models():
+    """回傳所有可用模型（內建 + 匯入）。"""
+    registry = load_model_registry()
+    # 合併，用 name 去重（匯入覆蓋同名內建）
+    merged: dict[str, dict] = {m["name"]: m for m in _BUILTIN_MODELS}
+    for m in registry:
+        merged[m["name"]] = m
+    return {"models": list(merged.values())}
+
+
+@app.post("/api/models/upload")
+async def upload_model(files: List[UploadFile] = File(...)):
+    """
+    接收 Live2D 模型的所有檔案（含子目錄結構），
+    儲存到 public/Resources/<ModelName>/，
+    並將模型加入 model_registry.json。
+    前端以 webkitRelativePath 作為 filename 傳送。
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="未收到任何檔案")
+
+    first_path = files[0].filename or ""
+    parts = first_path.replace("\\", "/").split("/")
+    model_dir_name = parts[0] if parts else ""
+
+    if not model_dir_name:
+        raise HTTPException(status_code=400, detail="無法判斷模型目錄名稱")
+
+    if not re.match(r'^[A-Za-z0-9_\-]+$', model_dir_name):
+        raise HTTPException(status_code=400, detail=f"目錄名稱含非法字元: {model_dir_name}")
+
+    target_dir = os.path.join(RESOURCES_DIR, model_dir_name)
+    os.makedirs(target_dir, exist_ok=True)
+
+    saved_files: list[str] = []
+    for upload in files:
+        rel = (upload.filename or "").replace("\\", "/")
+        rel_sub = "/".join(rel.split("/")[1:]) if "/" in rel else rel
+        if not rel_sub:
+            continue
+        dest_parts = rel_sub.split("/")
+        dest = os.path.join(target_dir, *dest_parts)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        content = await upload.read()
+        with open(dest, "wb") as f:
+            f.write(content)
+        saved_files.append(rel_sub)
+
+    model_json_rel_dir, model_json_name = find_model3_json(target_dir)
+    if not model_json_name:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=422,
+            detail="找不到 .model3.json 檔案，請確認匯入的是完整的 Live2D 模型資料夾"
+        )
+
+    registry = load_model_registry()
+    new_entry = {
+        "name": model_dir_name,
+        "directory": model_json_rel_dir,
+        "fileName": model_json_name,
+        "displayName": model_dir_name,
+        "description": "匯入的模型",
+        "imported": True,
+    }
+    registry = [m for m in registry if m["name"] != model_dir_name]
+    registry.append(new_entry)
+    save_model_registry(registry)
+
+    print(f"[Model Upload] 匯入模型 '{model_dir_name}'，共 {len(saved_files)} 個檔案")
+    return JSONResponse({
+        "success": True,
+        "model": new_entry,
+        "filesCount": len(saved_files),
+    })
+
+
+@app.delete("/api/models/{model_name}")
+async def delete_model(model_name: str):
+    """刪除匯入的模型（不可刪除內建模型）。"""
+    if not re.match(r'^[A-Za-z0-9_\-]+$', model_name):
+        raise HTTPException(status_code=400, detail="非法模型名稱")
+
+    builtin_names = {m["name"] for m in _BUILTIN_MODELS}
+    if model_name in builtin_names:
+        raise HTTPException(status_code=403, detail="不可刪除內建模型")
+
+    registry = load_model_registry()
+    new_registry = [m for m in registry if m["name"] != model_name]
+    if len(new_registry) == len(registry):
+        raise HTTPException(status_code=404, detail="模型不存在於 registry")
+    save_model_registry(new_registry)
+
+    target_dir = os.path.join(RESOURCES_DIR, model_name)
+    if os.path.isdir(target_dir):
+        shutil.rmtree(target_dir)
+        print(f"[Model Delete] 已刪除模型目錄: {target_dir}")
+
+    return {"success": True, "deleted": model_name}
 
 
 # ============================================================

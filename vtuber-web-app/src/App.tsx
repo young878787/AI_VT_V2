@@ -10,6 +10,7 @@
  * │           │  預留空白          │           │
  * └───────────┴───────────────────┴───────────┘
  */
+import { useEffect } from 'react';
 import { Live2DCanvas } from '@components/Live2DCanvas';
 import { ControlPanel } from '@components/ControlPanel';
 import { AIChatPanel } from '@components/AIChatPanel';
@@ -17,9 +18,17 @@ import { AnimeDecoration } from '@components/AnimeDecoration';
 import { HitAreaOverlay } from '@components/HitAreaOverlay';
 import { ModelParamPanel } from '@components/ModelParamPanel';
 import { NativeParamPanel } from '@components/NativeParamPanel';
+import { useAppStore } from '@store/appStore';
 import './App.css';
 
 function App() {
+  const loadAvailableModels = useAppStore(s => s.loadAvailableModels);
+
+  // 啟動時從後端載入模型清單（含匯入的模型）
+  useEffect(() => {
+    loadAvailableModels();
+  }, []);
+
   return (
     <div className="app-layout">
       {/* 背景裝飾 */}
