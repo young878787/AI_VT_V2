@@ -119,6 +119,7 @@ MEMORY_DIR: str = os.path.join(_BACKEND_DIR, "memory")
 USER_PROFILE_PATH: str = os.path.join(MEMORY_DIR, "user_profile.json")
 MEMORY_MD_PATH: str = os.path.join(MEMORY_DIR, "memory.md")
 CHAT_SESSION_DIR: str = os.path.join(MEMORY_DIR, "sessions")
+JPAF_STATE_PATH: str = os.path.join(MEMORY_DIR, "jpaf_state.json")
 
 # ============================================================
 # Model Registry 路徑常數

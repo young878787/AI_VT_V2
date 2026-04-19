@@ -12,6 +12,14 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface JPAFState {
+  persona: string;
+  dominant: string;
+  auxiliary: string;
+  baseWeights: Record<string, number>;
+  turnCount: number;
+}
+
 interface AppState {
   // 麥克風狀態
   microphoneEnabled: boolean;
@@ -86,6 +94,11 @@ interface AppState {
   setModelSwitching: (switching: boolean) => void;
   getCurrentModelConfig: () => ModelConfig | undefined;
 
+  // JPAF 狀態
+  jpafState: JPAFState | null;
+  setJpafState: (state: JPAFState) => void;
+  clearChatHistory: () => void;
+
   // 動態模型清單管理
   loadAvailableModels: () => Promise<void>;
   addImportedModel: (model: RemoteModelConfig) => void;
@@ -126,6 +139,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     eyeLOpen: 1,
     eyeROpen: 1
   },
+
+  // JPAF 初始狀態
+  jpafState: null,
 
   // 模型管理初始狀態
   currentModelName: AvailableModels[0]?.name || 'Hiyori',
@@ -270,6 +286,16 @@ export const useAppStore = create<AppState>((set, get) => ({
           : state.currentModelName,
     }));
   },
+
+  setJpafState: (state) => set({ jpafState: state }),
+
+  clearChatHistory: () => set({
+    chatHistory: [{
+      id: "system-init",
+      role: 'system',
+      content: '系統：AI 對話模組準備就緒。請確保 Python 後端已經啟動。(uvicorn main:app)'
+    }],
+  }),
 
   // 聊天與情緒控制動作實作
   appendChatMessage: (message) => {

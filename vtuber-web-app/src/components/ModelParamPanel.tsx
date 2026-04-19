@@ -13,16 +13,16 @@ interface ParamDef {
 }
 
 const PARAM_DEFS: ParamDef[] = [
-  { key: 'blushLevel',    label: '臉紅',     min: 0,  max: 1,  step: 0.01, emoji: '🌸', color: '#f9a8d4' },
-  { key: 'eyeLOpen',      label: '左眼',     min: 0,  max: 1,  step: 0.01, emoji: '👁',  color: '#7dd3fc' },
-  { key: 'eyeROpen',      label: '右眼',     min: 0,  max: 1,  step: 0.01, emoji: '👁',  color: '#7dd3fc' },
-  { key: 'mouthForm',     label: '嘴形',     min: -1, max: 1,  step: 0.01, emoji: '😊', color: '#86efac' },
-  { key: 'browLY',        label: '左眉高',   min: -1, max: 1,  step: 0.01, emoji: '⬆',  color: '#fde68a' },
-  { key: 'browRY',        label: '右眉高',   min: -1, max: 1,  step: 0.01, emoji: '⬆',  color: '#fde68a' },
-  { key: 'browLAngle',    label: '左角度',   min: -1, max: 1,  step: 0.01, emoji: '↗',  color: '#fde68a' },
-  { key: 'browRAngle',    label: '右角度',   min: -1, max: 1,  step: 0.01, emoji: '↗',  color: '#fde68a' },
-  { key: 'browLForm',     label: '左弧度',   min: -1, max: 1,  step: 0.01, emoji: '〜', color: '#fde68a' },
-  { key: 'browRForm',     label: '右弧度',   min: -1, max: 1,  step: 0.01, emoji: '〜', color: '#fde68a' },
+  { key: 'eyeLOpen',      label: '左眼開合', min: 0,  max: 1,  step: 0.01, emoji: '👁',  color: '#7dd3fc' },
+  { key: 'eyeROpen',      label: '右眼開合', min: 0,  max: 1,  step: 0.01, emoji: '👁',  color: '#7dd3fc' },
+  { key: 'browLY',        label: '左眉高低', min: -1, max: 1,  step: 0.01, emoji: '⬆',  color: '#fde68a' },
+  { key: 'browRY',        label: '右眉高低', min: -1, max: 1,  step: 0.01, emoji: '⬆',  color: '#fde68a' },
+  { key: 'browLAngle',    label: '左眉角度', min: -1, max: 1,  step: 0.01, emoji: '↗',  color: '#fde68a' },
+  { key: 'browRAngle',    label: '右眉角度', min: -1, max: 1,  step: 0.01, emoji: '↗',  color: '#fde68a' },
+  { key: 'browLForm',     label: '左眉形狀', min: -1, max: 1,  step: 0.01, emoji: '〜', color: '#fde68a' },
+  { key: 'browRForm',     label: '右眉形狀', min: -1, max: 1,  step: 0.01, emoji: '〜', color: '#fde68a' },
+  { key: 'mouthForm',     label: '嘴巴形狀', min: -1, max: 1,  step: 0.01, emoji: '😊', color: '#86efac' },
+  { key: 'blushLevel',    label: '臉頰泛紅', min: 0,  max: 1,  step: 0.01, emoji: '🌸', color: '#f9a8d4' },
   { key: 'headIntensity', label: '頭部動作', min: 0,  max: 1,  step: 0.01, emoji: '🎭', color: '#c4b5fd' },
 ];
 

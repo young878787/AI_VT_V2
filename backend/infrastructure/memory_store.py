@@ -12,6 +12,7 @@ from core.config import (
     CHAT_SESSION_DIR,
     MEMORY_DIR,
     CHAT_PERSISTENCE_MAX_MESSAGES,
+    JPAF_STATE_PATH,
 )
 from core.utils import get_msg_field
 
@@ -20,6 +21,7 @@ from core.utils import get_msg_field
 # ============================================================
 _profile_cache: dict | None = None
 _memory_cache: str | None = None
+_jpaf_state_cache: dict | None = None
 
 
 # ============================================================
@@ -91,6 +93,63 @@ def append_memory_note(note: str) -> None:
     with open(MEMORY_MD_PATH, "a", encoding="utf-8") as f:
         f.write(f"\n- {date_prefix} {note}")
     _memory_cache = None  # 使 cache 失效，下次重新讀取最新內容
+
+
+# ============================================================
+# JPAF State（jpaf_state.json）
+# ============================================================
+def load_jpaf_state() -> dict | None:
+    """讀取 jpaf_state.json（優先從 cache）。回傳 None 表示尚未建立。"""
+    global _jpaf_state_cache
+    if _jpaf_state_cache is not None:
+        return _jpaf_state_cache
+    try:
+        with open(JPAF_STATE_PATH, "r", encoding="utf-8") as f:
+            _jpaf_state_cache = json.load(f)
+            return _jpaf_state_cache
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def save_jpaf_state(state: dict) -> None:
+    """寫入 jpaf_state.json，同步更新 cache。"""
+    global _jpaf_state_cache
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    with open(JPAF_STATE_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    _jpaf_state_cache = state
+
+
+# ============================================================
+# 還原（Reset）
+# ============================================================
+def reset_user_profile() -> None:
+    """還原 user_profile.json 為預設值，同步清除 cache。"""
+    default_profile = {
+        "updated_at": "",
+        "core_traits": [],
+        "communication_style": "",
+        "dislikes": [],
+        "recent_interests": [],
+        "custom_notes": [],
+    }
+    save_user_profile(default_profile)
+
+
+def reset_memory_notes() -> None:
+    """清空 memory.md，同步清除 cache。"""
+    global _memory_cache
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    with open(MEMORY_MD_PATH, "w", encoding="utf-8") as f:
+        f.write("# Memory Notes\n")
+    _memory_cache = None
+
+
+def reset_jpaf_state() -> None:
+    """還原 jpaf_state.json 為預設值（預設 persona），同步清除 cache。"""
+    from domain.jpaf import JPAFSession
+    default_session = JPAFSession()
+    save_jpaf_state(default_session.to_dict())
 
 
 # ============================================================

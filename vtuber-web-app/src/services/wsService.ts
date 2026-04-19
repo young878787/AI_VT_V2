@@ -96,6 +96,14 @@ class WSService {
                     store.setCompressing(true);
                 } else if (data.type === 'compress_done') {
                     store.setCompressing(false);
+                } else if (data.type === 'jpaf_update') {
+                    store.setJpafState({
+                        persona: data.persona,
+                        dominant: data.dominant,
+                        auxiliary: data.auxiliary ?? '',
+                        baseWeights: data.baseWeights ?? {},
+                        turnCount: data.turnCount,
+                    });
                 } else if (data.type === 'error') {
                     store.appendChatMessage({ role: 'system', content: data.content });
                     store.setAiTyping(false);

@@ -1,0 +1,16 @@
+{
+  "dominant": "Ti",
+  "auxiliary": "Ne",
+  "base_weights": {
+    "Ti": 0.4,
+    "Ne": 0.24,
+    "Fi": 0.06,
+    "Si": 0.06,
+    "Fe": 0.06,
+    "Te": 0.06,
+    "Se": 0.06,
+    "Ni": 0.06
+  },
+  "current_persona": "happy",
+  "turn_count": 3
+}

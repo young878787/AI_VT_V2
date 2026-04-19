@@ -18,6 +18,7 @@ import { AnimeDecoration } from '@components/AnimeDecoration';
 import { HitAreaOverlay } from '@components/HitAreaOverlay';
 import { ModelParamPanel } from '@components/ModelParamPanel';
 import { NativeParamPanel } from '@components/NativeParamPanel';
+import { JPAFSidebar } from '@components/JPAFSidebar';
 import { useAppStore } from '@store/appStore';
 import './App.css';
 
@@ -45,20 +46,23 @@ function App() {
         <HitAreaOverlay />
       </main>
 
-      {/* ── 中下：原生 Live2D 參數面板 ── */}
-      <div className="app-layout__bottom-center">
-        <NativeParamPanel />
-      </div>
+      {/* ── JPAF 側邊欄 ── */}
+      <section className="app-layout__jpaf">
+        <JPAFSidebar />
+      </section>
 
-      {/* ── 右上：AI 對話 ── */}
+      {/* ── 右側：AI 對話 ── */}
       <section className="app-layout__chat">
         <AIChatPanel />
       </section>
 
-      {/* ── 右下：情緒參數 ── */}
-      <section className="app-layout__params">
-        <ModelParamPanel />
-      </section>
+      {/* ── 底部：參數面板（橫向延伸） ── */}
+      <div className="app-layout__bottom-center">
+        <div className="app-layout__bottom-row">
+          <NativeParamPanel />
+          <ModelParamPanel />
+        </div>
+      </div>
     </div>
   );
 }

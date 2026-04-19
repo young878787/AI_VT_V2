@@ -58,6 +58,7 @@
   /* ── 面板尺寸 ── */
   --sidebar-width: 300px;
   --right-width: 380px;
+  --jpaf-width: 160px;
   --bottom-height: 260px;
   --gap: 12px;
 }

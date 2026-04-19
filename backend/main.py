@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.routes.models_router import router as models_router
 from api.routes.chat_ws import router as chat_router
 from api.routes.display_ws import router as display_router
+from api.routes.memory_router import router as memory_router
 
 app = FastAPI()
 
@@ -24,6 +25,7 @@ app.add_middleware(
 app.include_router(models_router)
 app.include_router(chat_router)
 app.include_router(display_router)
+app.include_router(memory_router)
 
 
 if __name__ == "__main__":

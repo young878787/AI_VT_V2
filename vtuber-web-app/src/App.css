@@ -1,12 +1,12 @@
 /* =============================================
-   App Layout — CSS Grid 三欄佈局
+   App Layout — CSS Grid 四欄佈局
    ============================================= */
 
 .app-layout {
   width: 100vw;
   height: 100vh;
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr var(--right-width);
+  grid-template-columns: var(--sidebar-width) 1fr var(--jpaf-width) var(--right-width);
   grid-template-rows: 1fr var(--bottom-height);
   gap: var(--gap);
   padding: var(--gap);
@@ -41,9 +41,9 @@
   z-index: 1;
 }
 
-/* ── 中下：原生參數面板 ── */
+/* ── 底部：參數面板（橫向延伸） ── */
 .app-layout__bottom-center {
-  grid-column: 2;
+  grid-column: 2 / -1;
   grid-row: 2;
   min-height: 0;
   display: flex;
@@ -51,8 +51,8 @@
   z-index: 10;
 }
 
-/* ── 右上：AI 對話 ── */
-.app-layout__chat {
+/* ── JPAF 側邊欄 ── */
+.app-layout__jpaf {
   grid-column: 3;
   grid-row: 1;
   min-height: 0;
@@ -61,20 +61,38 @@
   z-index: 10;
 }
 
-/* ── 右下：情緒參數 ── */
-.app-layout__params {
-  grid-column: 3;
-  grid-row: 2;
+/* ── 右側：AI 對話 ── */
+.app-layout__chat {
+  grid-column: 4;
+  grid-row: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   z-index: 10;
 }
 
+/* ── 底部橫向排列 ── */
+.app-layout__bottom-row {
+  display: flex;
+  gap: var(--gap);
+  height: 100%;
+  min-height: 0;
+}
+
+.app-layout__bottom-row > *:first-child {
+  flex: 2;
+  min-width: 0;
+}
+
+.app-layout__bottom-row > *:last-child {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ── 響應式 ── */
 @media (max-width: 1024px) {
   .app-layout {
-    grid-template-columns: 260px 1fr 320px;
+    grid-template-columns: 260px 1fr 140px 320px;
   }
 }
 
@@ -88,7 +106,7 @@
   .app-layout__sidebar,
   .app-layout__center,
   .app-layout__chat,
-  .app-layout__params,
+  .app-layout__jpaf,
   .app-layout__bottom-center {
     grid-column: 1;
     grid-row: auto;

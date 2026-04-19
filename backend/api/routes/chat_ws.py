@@ -1,6 +1,6 @@
 """
 Chat WebSocket 端點（/ws/chat）：主對話迴圈。
-負責接收前端訊息、協調各服務、回傳串流文字與行為數據。
+雙 Agent 架構：Agent A (JPAF Chat) → Agent B (Tools)。
 """
 import asyncio
 import json
@@ -15,18 +15,24 @@ from core.config import (
     COMPRESS_KEEP_RECENT,
 )
 from core.utils import strip_thinking, normalize_session_id
+from domain.jpaf import JPAFSession, extract_jpaf_state, strip_jpaf_tags
+from domain.agent_a_prompts import build_agent_a_prompt
+from domain.agent_b_prompts import build_agent_b_prompt
 from domain.tools import tools
-from domain.prompts import build_system_prompt
 from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY
 from infrastructure.memory_store import (
     load_user_profile,
     load_memory_notes,
     load_session_messages,
     save_session_messages,
+    load_jpaf_state,
+    save_jpaf_state,
     append_memory_note,
 )
 from services.chat_service import (
-    stream_final_text,
+    stream_agent_a,
+    collect_agent_a,
+    call_agent_b,
     compress_context,
     estimate_token_count,
     synthesize_and_send_voice,
@@ -42,17 +48,32 @@ router = APIRouter()
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
 
-    # 初始化 messages（system prompt 將在每輪動態組裝）
     messages: list = []
     current_session_id: str | None = None
     tts_tasks: set[asyncio.Task] = set()
 
+    # 載入或初始化 JPAF session
+    jpaf_data = load_jpaf_state()
+    jpaf_session = (
+        JPAFSession.from_dict(jpaf_data) if jpaf_data else JPAFSession()
+    )
+
+    # Send initial JPAF state to frontend
+    await websocket.send_json({
+        "type": "jpaf_update",
+        "persona": jpaf_session.current_persona,
+        "dominant": jpaf_session.dominant,
+        "auxiliary": jpaf_session.auxiliary,
+        "baseWeights": jpaf_session.base_weights,
+        "turnCount": jpaf_session.turn_count,
+    })
+
     try:
         while True:
-            # 接收前端訊息
             data_str = await websocket.receive_text()
             data = json.loads(data_str)
 
+            # ---- Session 切換 ----
             incoming_session_id = normalize_session_id(data.get("session_id"))
             if CHAT_PERSISTENCE_ENABLED and incoming_session_id != current_session_id:
                 if current_session_id and messages:
@@ -64,7 +85,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     else []
                 )
 
-            # 處理手動壓縮指令
+            # ---- 手動壓縮指令 ----
             if data.get("type") == "compress":
                 if len(messages) > COMPRESS_KEEP_RECENT + 1:
                     messages = await compress_context(messages, websocket)
@@ -78,47 +99,73 @@ async def websocket_endpoint(websocket: WebSocket):
             if not user_message:
                 continue
 
-            # ---- 步驟 1：動態組裝 System Prompt ----
+            # ================================================================
+            # 步驟 1：組裝 Agent A 系統 Prompt（VTuber + JPAF）
+            # ================================================================
             user_profile = load_user_profile()
             memory_notes = load_memory_notes()
-            system_prompt = build_system_prompt(user_profile, memory_notes)
+            agent_a_system = build_agent_a_prompt(
+                user_profile, memory_notes, jpaf_session
+            )
 
-            # 更新或插入 system prompt（始終放在 messages[0]）
-            if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
-                messages[0] = {"role": "system", "content": system_prompt}
+            # 更新或插入 system prompt
+            if (
+                messages
+                and isinstance(messages[0], dict)
+                and messages[0].get("role") == "system"
+            ):
+                messages[0] = {"role": "system", "content": agent_a_system}
             else:
-                messages.insert(0, {"role": "system", "content": system_prompt})
+                messages.insert(0, {"role": "system", "content": agent_a_system})
 
-            # 加入使用者訊息
             messages.append({"role": "user", "content": user_message})
 
-            # ---- 步驟 2-5：呼叫 LLM 並處理 Tool Calls ----
             try:
-                print(f"[{AI_PROVIDER.upper()}] Sending: {user_message[:60]}...")
+                print(f"[{AI_PROVIDER.upper()}] Agent A: {user_message[:60]}...")
 
-                response = await chat_create_with_fallback(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    temperature=0.85,
-                    extra_body=EXTRA_BODY,
-                    max_tokens=256,
+                # ============================================================
+                # 步驟 2：Agent A 串流呼叫（JPAF Chat，無 tools）
+                # ============================================================
+                agent_a_text, jpaf_state = await collect_agent_a(
+                    messages
                 )
 
-                if not response.choices or len(response.choices) == 0:
-                    raise Exception("API 回傳結果為空 (choices 陣列長度為 0)")
+                if not agent_a_text:
+                    agent_a_text = "（默默地點頭）"
+                    await websocket.send_json(
+                        {"type": "text_stream", "content": agent_a_text}
+                    )
 
-                response_message = response.choices[0].message
+                # 更新 JPAF session
+                if jpaf_state:
+                    if jpaf_state.get("reflection_triggered"):
+                        jpaf_session.apply_reflection(jpaf_state)
+                    jpaf_session.update_persona(jpaf_state)
 
-                # 攔截並解析 XML 格式的 tool_call（針對不支援原生 function calling 的模型）
-                # strip_thinking 先移除 <think>...</think>，再進行 tool_call 解析
-                content_text = strip_thinking(response_message.content or "")
-                xml_tool_calls, content_text = parse_xml_tool_calls(content_text)
-                if xml_tool_calls:
-                    response_message.content = content_text
+                jpaf_session.increment_turn()
+                save_jpaf_state(jpaf_session.to_dict())
 
-                # 預設動作參數
+                # 將 Agent A 乾淨回覆加入共用 history
+                messages.append({"role": "assistant", "content": agent_a_text})
+
+                # ============================================================
+                # 步驟 3：Agent B 工具決策呼叫
+                # ============================================================
+                print(f"[{AI_PROVIDER.upper()}] Agent B: deciding tools...")
+
+                agent_b_system = build_agent_b_prompt(
+                    agent_a_text, jpaf_state, user_message
+                )
+                agent_b_messages = [
+                    {"role": "system", "content": agent_b_system},
+                    {"role": "user", "content": f"請根據上述上下文決定工具呼叫。"},
+                ]
+
+                response = await call_agent_b(agent_b_messages)
+
+                # ============================================================
+                # 步驟 4：處理 Agent B 的 Tool Calls
+                # ============================================================
                 head_intensity = 0.3
                 blush_level = 0.0
                 eye_l_open = 1.0
@@ -133,14 +180,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 brow_r_form = 0.0
                 eye_sync = True
                 speaking_rate = 1.0
-                has_tool_call = False
-                streamed_output = False
 
-                # ---- 步驟 3：處理所有 Tool Calls ----
-                if response_message.tool_calls or xml_tool_calls:
-                    has_tool_call = True
+                if response.choices and len(response.choices) > 0:
+                    response_message = response.choices[0].message
 
-                    # 合併原生 tool_calls 和解析出來的 xml_tool_calls
+                    # 解析 XML tool calls（針對不支援原生 FC 的模型）
+                    content_text = strip_thinking(response_message.content or "")
+                    xml_tool_calls, _ = parse_xml_tool_calls(content_text)
+
+                    # 合併原生 + XML tool calls
                     all_calls: list[dict] = []
                     if response_message.tool_calls:
                         for tc in response_message.tool_calls:
@@ -150,9 +198,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     {"name": tc.function.name, "arguments": args}
                                 )
                             except json.JSONDecodeError as e:
-                                print(
-                                    f"Tool call 參數解析失敗 ({tc.function.name}): {e}"
-                                )
+                                print(f"Tool call 參數解析失敗 ({tc.function.name}): {e}")
 
                     if xml_tool_calls:
                         print(f"偵測到 XML Tool Calls: {len(xml_tool_calls)} 個")
@@ -191,79 +237,32 @@ async def websocket_endpoint(websocket: WebSocket):
                                 append_memory_note(note_content)
                                 print(f"Memory note 已記錄: {note_content}")
 
-                    if response_message.tool_calls:
-                        # 將 AI 的 tool calls 訊息加入歷史
-                        messages.append(response_message)
+                # ---- 送出 behavior payload (FIRST) ----
+                behavior_payload = _build_behavior_payload(
+                    head_intensity, blush_level, eye_sync,
+                    eye_l_open, eye_r_open, duration_sec,
+                    mouth_form, brow_l_y, brow_r_y,
+                    brow_l_angle, brow_r_angle, brow_l_form, brow_r_form,
+                )
+                await websocket.send_json(behavior_payload)
+                await broadcast_to_displays(behavior_payload)
 
-                        # 模擬每個 tool 的回傳結果
-                        for tool_call in response_message.tool_calls:
-                            fn_name = tool_call.function.name
-                            if fn_name == "set_ai_behavior":
-                                result = "表情已更新"
-                            elif fn_name == "update_user_profile":
-                                result = "主人的資料已記住了"
-                            elif fn_name == "save_memory_note":
-                                result = "已記錄到回憶裡"
-                            else:
-                                result = "完成"
+                # ---- 送出 JPAF 狀態更新 ----
+                await websocket.send_json({
+                    "type": "jpaf_update",
+                    "persona": jpaf_session.current_persona,
+                    "dominant": jpaf_session.dominant,
+                    "auxiliary": jpaf_session.auxiliary,
+                    "baseWeights": jpaf_session.base_weights,
+                    "turnCount": jpaf_session.turn_count,
+                })
 
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call.id,
-                                    "name": fn_name,
-                                    "content": result,
-                                }
-                            )
+                # ---- 送出 buffered 文字 ----
+                await websocket.send_json({"type": "text_stream", "content": agent_a_text})
 
-                        # ---- 步驟 4：串流取得最終文字回覆 ----
-                        # 注意：第二次呼叫刻意不傳 tools，強制模型只輸出純文字，
-                        # 防止無限工具呼叫循環。
-                        behavior_payload = _build_behavior_payload(
-                            head_intensity, blush_level, eye_sync,
-                            eye_l_open, eye_r_open, duration_sec,
-                            mouth_form, brow_l_y, brow_r_y,
-                            brow_l_angle, brow_r_angle, brow_l_form, brow_r_form,
-                        )
-                        await websocket.send_json(behavior_payload)
-                        await broadcast_to_displays(behavior_payload)
-                        content = await stream_final_text(messages, websocket)
-                        streamed_output = True
-                    else:
-                        # 只有 XML Tool Calls，不需要 Second Pass
-                        content = content_text
-                        if not content:
-                            content = "（默默地點頭）"
-                else:
-                    # 沒有 Tool Calls，直接取文字
-                    content = content_text
-
-                # ---- 步驟 5：送出文字與動作到前端 ----
-                if content:
-                    messages.append({"role": "assistant", "content": content})
-
-                    # AI 未呼叫 set_ai_behavior 時的防呆預設
-                    if not has_tool_call:
-                        head_intensity = 0.3
-                        duration_sec = min(5.0 + len(content) * 0.1, 15.0)
-
-                    # 工具流程未先送 behavior 時，在這裡補送
-                    if not streamed_output:
-                        behavior_payload = _build_behavior_payload(
-                            head_intensity, blush_level, eye_sync,
-                            eye_l_open, eye_r_open, duration_sec,
-                            mouth_form, brow_l_y, brow_r_y,
-                            brow_l_angle, brow_r_angle, brow_l_form, brow_r_form,
-                        )
-                        await websocket.send_json(behavior_payload)
-                        await broadcast_to_displays(behavior_payload)
-                        await websocket.send_json(
-                            {"type": "text_stream", "content": content}
-                        )
-
-                # ---- 步驟 6：背景 Token 計數，檢查是否需要壓縮 ----
-                # 壓縮必須在 stream_end 之前完成，確保前端事件順序正確：
-                # compressing → compress_done → stream_end（而非 stream_end → compressing）
+                # ============================================================
+                # 步驟 5：後處理
+                # ============================================================
                 token_count = estimate_token_count(messages)
                 print(f"目前 token 估算: ~{token_count:,}")
 
@@ -276,20 +275,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 if CHAT_PERSISTENCE_ENABLED and current_session_id:
                     save_session_messages(current_session_id, messages)
 
-                # 送出結束信號（壓縮完成後再通知前端，事件順序正確）
                 await websocket.send_json({"type": "stream_end"})
 
-                # 非阻塞 TTS：在 stream_end 後背景執行，不影響首輪回覆速度
-                if content:
+                # 非阻塞 TTS
+                if agent_a_text:
                     task = asyncio.create_task(
-                        synthesize_and_send_voice(websocket, content, speaking_rate)
+                        synthesize_and_send_voice(
+                            websocket, agent_a_text, speaking_rate
+                        )
                     )
                     tts_tasks.add(task)
                     task.add_done_callback(lambda t: tts_tasks.discard(t))
 
             except Exception as e:
                 print(
-                    f"[AI API error][{AI_PROVIDER.upper()}] Model={MODEL_NAME} URL=... | {e}"
+                    f"[AI API error][{AI_PROVIDER.upper()}] Model={MODEL_NAME} | {e}"
                 )
                 await websocket.send_json(
                     {"type": "error", "content": f"API 錯誤: {str(e)}"}

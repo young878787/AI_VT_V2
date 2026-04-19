@@ -10,6 +10,7 @@ from core.config import MODEL_NAME, COMPRESS_KEEP_RECENT
 from core.utils import strip_thinking, get_msg_field
 from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY
 from infrastructure.memory_store import append_memory_note
+from domain.jpaf import extract_jpaf_state, strip_jpaf_tags
 
 import tiktoken
 
@@ -123,6 +124,162 @@ async def stream_final_text(messages: list, websocket: WebSocket) -> str:
             await websocket.send_json({"type": "text_stream", "content": piece})
 
     return strip_thinking("".join(chunks).strip())
+
+
+# ============================================================
+# Agent A：JPAF 人格對話串流
+# ============================================================
+async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dict | None]:
+    """
+    Agent A 串流呼叫：產生角色對話 + JPAF 狀態。
+    回傳 (cleaned_text, jpaf_state_dict_or_None)。
+    串流時即時過濾 <thinking> 和 <jpaf_state> 標籤，只送對話文字到前端。
+    """
+    stream = await chat_create_with_fallback(
+        model=MODEL_NAME,
+        messages=messages,
+        temperature=0.85,
+        extra_body=EXTRA_BODY,
+        stream=True,
+    )
+
+    all_chunks: list[str] = []       # 完整原始文字（含標籤）
+    visible_buffer: list[str] = []   # 可能需要送出的文字暫存
+    inside_hidden_tag: bool = False   # 是否在隱藏標籤內
+    hidden_tag_name: str = ""         # 當前隱藏標籤名稱
+
+    _HIDDEN_OPEN_TAGS = {"<thinking>", "<think>", "<thought>", "<jpaf_state>"}
+    _HIDDEN_CLOSE_MAP = {
+        "thinking": "</thinking>",
+        "think": "</think>",
+        "thought": "</thought>",
+        "jpaf_state": "</jpaf_state>",
+    }
+
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        piece = getattr(delta, "content", None)
+        if not piece:
+            continue
+
+        all_chunks.append(piece)
+
+        # 簡易狀態機：偵測隱藏標籤的開/關
+        if inside_hidden_tag:
+            # 在隱藏標籤內，檢查是否結束
+            close_tag = _HIDDEN_CLOSE_MAP.get(hidden_tag_name, "")
+            # 不送出任何內容
+            # 用累積的全文來檢查結束標籤
+            full_so_far = "".join(all_chunks)
+            if close_tag and close_tag in full_so_far.split(f"<{hidden_tag_name}>")[-1]:
+                inside_hidden_tag = False
+                hidden_tag_name = ""
+        else:
+            # 不在隱藏標籤內，檢查是否有開始標籤
+            combined = "".join(visible_buffer) + piece
+            tag_found = False
+            for open_tag in _HIDDEN_OPEN_TAGS:
+                if open_tag in combined:
+                    # 送出標籤之前的文字
+                    before = combined.split(open_tag)[0]
+                    if before.strip():
+                        await websocket.send_json(
+                            {"type": "text_stream", "content": before}
+                        )
+                    visible_buffer = []
+                    inside_hidden_tag = True
+                    hidden_tag_name = open_tag[1:-1]  # 去掉 < >
+                    tag_found = True
+                    break
+
+            if not tag_found:
+                # 檢查 piece 是否可能是標籤的開頭片段（如 "<thin"）
+                if "<" in piece and not piece.endswith(">"):
+                    visible_buffer.append(piece)
+                else:
+                    # 安全地送出
+                    if visible_buffer:
+                        buffered = "".join(visible_buffer)
+                        visible_buffer = []
+                        await websocket.send_json(
+                            {"type": "text_stream", "content": buffered + piece}
+                        )
+                    else:
+                        await websocket.send_json(
+                            {"type": "text_stream", "content": piece}
+                        )
+
+    # 送出 buffer 中剩餘的文字
+    if visible_buffer and not inside_hidden_tag:
+        remaining = "".join(visible_buffer)
+        if remaining.strip():
+            await websocket.send_json(
+                {"type": "text_stream", "content": remaining}
+            )
+
+    # 從完整原始文字提取 jpaf_state 和乾淨對話
+    raw_text = "".join(all_chunks).strip()
+    jpaf_state = extract_jpaf_state(raw_text)
+    clean_text = strip_jpaf_tags(strip_thinking(raw_text))
+
+    return clean_text, jpaf_state
+
+
+# ============================================================
+# Agent A：JPAF Buffer 模式（不即時串流文字到前端）
+# ============================================================
+async def collect_agent_a(messages: list) -> tuple[str, dict | None]:
+    """
+    Agent A buffer 模式：收集完整回覆後解析 JPAF 狀態，不即時送出文字到前端。
+    用於等 A+B 都完成後再一起送的同步模式。
+    回傳 (cleaned_text, jpaf_state_dict_or_None)。
+    """
+    stream = await chat_create_with_fallback(
+        model=MODEL_NAME,
+        messages=messages,
+        temperature=0.85,
+        extra_body=EXTRA_BODY,
+        stream=True,
+    )
+
+    chunks: list[str] = []
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        piece = getattr(delta, "content", None)
+        if piece:
+            chunks.append(piece)
+
+    raw_text = "".join(chunks).strip()
+    jpaf_state = extract_jpaf_state(raw_text)
+    clean_text = strip_jpaf_tags(strip_thinking(raw_text))
+
+    return clean_text, jpaf_state
+
+
+# ============================================================
+# Agent B：工具決策呼叫
+# ============================================================
+async def call_agent_b(messages: list) -> object:
+    """
+    Agent B 非串流呼叫：決定 Live2D 表情 + 記憶操作。
+    回傳原始 API response（由 chat_ws.py 解析 tool calls）。
+    """
+    from domain.tools import tools
+
+    response = await chat_create_with_fallback(
+        model=MODEL_NAME,
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+        temperature=0.85,
+        extra_body=EXTRA_BODY,
+        max_tokens=256,
+    )
+    return response
 
 
 # ============================================================
