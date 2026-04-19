@@ -84,11 +84,18 @@ _PROVIDER_CONFIG = {
         "base_url_default": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "model_default": "gemini-2.0-flash",
     },
+    "qwen": {
+        "api_key_env": "QWEN_API_KEY",
+        "base_url_env": "QWEN_BASE_URL",
+        "model_env": "QWEN_MODEL_NAME",
+        "base_url_default": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "model_default": "qwen-plus",
+    },
 }
 
 if not AI_PROVIDER:
     raise RuntimeError(
-        "AI_PROVIDER 未設定，請在 .env 設定 AI_PROVIDER=nvidia 或 AI_PROVIDER=openrouter 或 AI_PROVIDER=google"
+        "AI_PROVIDER 未設定，請在 .env 設定 AI_PROVIDER=nvidia | openrouter | google | qwen"
     )
 
 if AI_PROVIDER not in _PROVIDER_CONFIG:
@@ -101,6 +108,11 @@ _cfg = _PROVIDER_CONFIG[AI_PROVIDER]
 API_KEY = os.getenv(_cfg["api_key_env"], "")
 BASE_URL = os.getenv(_cfg["base_url_env"], _cfg["base_url_default"])
 MODEL_NAME = os.getenv(_cfg["model_env"], _cfg["model_default"])
+
+# 後備模型（僅 qwen provider 使用；其他 provider 設為 None）
+_FALLBACK_MODEL: str | None = None
+if AI_PROVIDER == "qwen":
+    _FALLBACK_MODEL = os.getenv("QWEN_FALLBACK_MODEL_NAME") or None
 
 if not API_KEY:
     raise RuntimeError(f"{_cfg['api_key_env']} 未設定，請檢查 .env 檔案")
@@ -124,8 +136,22 @@ if AI_PROVIDER != "google" and "googleapis.com" in base_url_lc:
     raise RuntimeError(
         f"AI_PROVIDER={AI_PROVIDER} 但 BASE_URL 指向 Google，請檢查 {_cfg['base_url_env']} 設定"
     )
+if AI_PROVIDER == "qwen" and (
+    "openrouter.ai" in base_url_lc
+    or "nvidia.com" in base_url_lc
+    or "googleapis.com" in base_url_lc
+):
+    raise RuntimeError(
+        "AI_PROVIDER=qwen 但 BASE_URL 指向非 DashScope 端點，請檢查 QWEN_BASE_URL 設定"
+    )
+if AI_PROVIDER != "qwen" and "dashscope" in base_url_lc:
+    raise RuntimeError(
+        f"AI_PROVIDER={AI_PROVIDER} 但 BASE_URL 指向 DashScope，請檢查 {_cfg['base_url_env']} 設定"
+    )
 
 print(f"[AI Provider] {AI_PROVIDER.upper()} | Model: {MODEL_NAME} | URL: {BASE_URL}")
+if _FALLBACK_MODEL:
+    print(f"[AI Provider] Fallback model: {_FALLBACK_MODEL}")
 
 # 初始化 OpenAI 相容客戶端（OpenRouter / Nvidia / Google AI Studio）
 client = AsyncOpenAI(
@@ -142,10 +168,13 @@ def _build_extra_body() -> dict:
     建構傳給 API 的額外參數（extra_body）。
     - Nvidia Qwen3 系列需要 chat_template_kwargs: {enable_thinking: True}
       才能啟用 Chain-of-Thought 推理模式。
-        - OpenRouter 與 Google AI Studio 不需要額外參數。
+    - DashScope Qwen3 系列需要頂層 enable_thinking: True（欄位路徑不同於 Nvidia）。
+    - OpenRouter 與 Google AI Studio 不需要額外參數。
     """
     if AI_PROVIDER == "nvidia" and _env_flag("AI_ENABLE_THINKING", False):
         return {"chat_template_kwargs": {"enable_thinking": True}}
+    if AI_PROVIDER == "qwen" and _env_flag("AI_ENABLE_THINKING", False):
+        return {"enable_thinking": True}
     return {}
 
 
@@ -399,9 +428,29 @@ def save_session_messages(session_id: str, messages: list):
         print(f"寫入 session 失敗 ({session_id}): {e}")
 
 
+
+async def _chat_create_with_fallback(**kwargs) -> object:
+    """
+    包裝 client.chat.completions.create()。
+    若主模型呼叫失敗且設有後備模型（_FALLBACK_MODEL），
+    自動切換 model= 重試一次。僅 qwen provider 有後備模型，
+    其他 provider 的 _FALLBACK_MODEL 為 None，行為等同直接呼叫。
+    """
+    try:
+        return await client.chat.completions.create(**kwargs)
+    except Exception as e:
+        if _FALLBACK_MODEL and kwargs.get("model") != _FALLBACK_MODEL:
+            print(
+                f"[Fallback] 主模型失敗 ({e})，切換至後備模型: {_FALLBACK_MODEL}"
+            )
+            fallback_kwargs = {**kwargs, "model": _FALLBACK_MODEL}
+            return await client.chat.completions.create(**fallback_kwargs)
+        raise
+
+
 async def stream_final_text(messages: list, websocket: WebSocket) -> str:
     """使用 OpenAI 相容串流，將 token 即時轉發給前端。"""
-    stream = await client.chat.completions.create(
+    stream = await _chat_create_with_fallback(
         model=MODEL_NAME,
         messages=messages,
         temperature=0.85,
@@ -786,7 +835,7 @@ async def compress_context(messages: list, websocket: WebSocket) -> list:
             and _get_msg_field(m, "content", "")
         )
 
-        summary_response = await client.chat.completions.create(
+        summary_response = await _chat_create_with_fallback(
             model=MODEL_NAME,
             messages=[
                 {
@@ -1033,7 +1082,7 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 print(f"[{AI_PROVIDER.upper()}] Sending: {user_message[:60]}...")
 
-                response = await client.chat.completions.create(
+                response = await _chat_create_with_fallback(
                     model=MODEL_NAME,
                     messages=messages,
                     tools=tools,
