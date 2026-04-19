@@ -1,0 +1,241 @@
+"""
+Chat 服務：LLM 串流、Context 壓縮、XML Tool Call 解析、Token 計數、TTS 合成轉發。
+"""
+import re
+import json
+
+from fastapi import WebSocket
+
+from core.config import MODEL_NAME, COMPRESS_KEEP_RECENT
+from core.utils import strip_thinking, get_msg_field
+from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY
+from infrastructure.memory_store import append_memory_note
+
+import tiktoken
+
+# tiktoken 編碼器（使用 cl100k_base 作為通用估算）
+try:
+    _encoding = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    _encoding = None
+
+# XML tool call regex
+_RE_XML_TOOL_BLOCK = re.compile(
+    r"<tool_call>(.*?)</tool_call>", re.DOTALL | re.IGNORECASE
+)
+_RE_XML_FUNC_NAME = re.compile(r"<function=([^>]+)>")
+_RE_XML_PARAM = re.compile(
+    r"<parameter=([^>]+)>(.*?)</parameter>", re.DOTALL | re.IGNORECASE
+)
+
+
+# ============================================================
+# Token 計數
+# ============================================================
+def estimate_token_count(messages: list) -> int:
+    """估算 messages 列表的總 token 數"""
+    if _encoding is None:
+        # 粗略估算：每 4 個字元約 1 token
+        total_chars = 0
+        for m in messages:
+            if isinstance(m, dict):
+                total_chars += len(json.dumps(m, ensure_ascii=False))
+            else:
+                total_chars += len(json.dumps(m.model_dump(), ensure_ascii=False))
+        return total_chars // 4
+
+    total = 0
+    for msg in messages:
+        content = get_msg_field(msg, "content", "")
+        if isinstance(content, str):
+            total += len(_encoding.encode(content))
+        total += 4  # 每條 message 基礎 overhead
+    return total
+
+
+# ============================================================
+# XML Tool Call 解析
+# ============================================================
+def parse_xml_tool_calls(content_text: str) -> tuple[list[dict], str]:
+    """
+    解析 content_text 中的 XML 格式 tool_call 區塊。
+    回傳 (tool_calls_list, cleaned_text)。
+    針對不支援原生 function calling 的模型。
+    """
+    if "<tool_call>" not in content_text.lower():
+        return [], content_text
+
+    xml_tool_calls: list[dict] = []
+    for block_match in _RE_XML_TOOL_BLOCK.finditer(content_text):
+        block = block_match.group(1)
+        func_match = _RE_XML_FUNC_NAME.search(block)
+        if not func_match:
+            continue
+        func_name = func_match.group(1).strip()
+        args: dict = {}
+        for p in _RE_XML_PARAM.finditer(block):
+            p_name = p.group(1).strip()
+            p_val: str | bool | float = p.group(2).strip()
+            if isinstance(p_val, str) and p_val.lower() == "true":
+                p_val = True
+            elif isinstance(p_val, str) and p_val.lower() == "false":
+                p_val = False
+            else:
+                try:
+                    p_val = float(p_val)  # type: ignore[assignment]
+                except (ValueError, TypeError):
+                    pass
+            args[p_name] = p_val
+        xml_tool_calls.append({"name": func_name, "arguments": args})
+
+    # 移除 XML 區塊，留下純文字作為回覆
+    cleaned = re.sub(
+        r"<tool_call>.*?</tool_call>",
+        "",
+        content_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+
+    return xml_tool_calls, cleaned
+
+
+# ============================================================
+# LLM 串流
+# ============================================================
+async def stream_final_text(messages: list, websocket: WebSocket) -> str:
+    """使用 OpenAI 相容串流，將 token 即時轉發給前端。"""
+    stream = await chat_create_with_fallback(
+        model=MODEL_NAME,
+        messages=messages,
+        temperature=0.85,
+        extra_body=EXTRA_BODY,
+        stream=True,
+    )
+
+    chunks: list[str] = []
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        piece = getattr(delta, "content", None)
+        if piece:
+            chunks.append(piece)
+            await websocket.send_json({"type": "text_stream", "content": piece})
+
+    return strip_thinking("".join(chunks).strip())
+
+
+# ============================================================
+# TTS 合成轉發
+# ============================================================
+async def synthesize_and_send_voice(
+    websocket: WebSocket, text: str, speaking_rate: float
+) -> None:
+    """背景執行 TTS，避免阻塞文字串流完成事件。"""
+    from tts_service import get_tts_service  # 延遲匯入，避免啟動時強制 TTS 初始化
+
+    tts_service = get_tts_service()
+    if not tts_service.is_enabled():
+        return
+
+    try:
+        tts_result = await tts_service.synthesize(
+            text=text, speaking_rate=speaking_rate
+        )
+        if tts_result:
+            await websocket.send_json(
+                {
+                    "type": "voice",
+                    "audio": tts_result["audio_base64"],
+                    "durationMs": tts_result["duration_ms"],
+                    "format": tts_result["format"],
+                }
+            )
+    except Exception as tts_error:
+        print(f"[TTS] 合成錯誤（不影響文字回覆）: {tts_error}")
+
+
+# ============================================================
+# Context 壓縮
+# ============================================================
+async def compress_context(messages: list, websocket: WebSocket) -> list:
+    """
+    壓縮對話上下文。
+    保留最近 COMPRESS_KEEP_RECENT 條 messages，
+    將較舊的部分呼叫 LLM 產生摘要，寫入 memory.md。
+    """
+    # 通知前端：壓縮開始
+    await websocket.send_json({"type": "compressing"})
+
+    try:
+        # 一般情況下 messages[0] 是 system prompt；若不是，則完整視為 history
+        has_system_prompt = (
+            bool(messages)
+            and isinstance(messages[0], dict)
+            and messages[0].get("role") == "system"
+        )
+        history = messages[1:] if has_system_prompt else messages
+
+        if len(history) <= COMPRESS_KEEP_RECENT:
+            # 不需要壓縮
+            await websocket.send_json({"type": "compress_done"})
+            return messages
+
+        # 分離：要壓縮的舊訊息 vs 要保留的近期訊息
+        old_messages = history[:-COMPRESS_KEEP_RECENT]
+        recent_messages = history[-COMPRESS_KEEP_RECENT:]
+
+        # 組裝摘要提示
+        old_text = "\n".join(
+            f"[{get_msg_field(m, 'role', 'unknown')}]: {get_msg_field(m, 'content', '')}"
+            for m in old_messages
+            if isinstance(get_msg_field(m, "content", ""), str)
+            and get_msg_field(m, "content", "")
+        )
+
+        summary_response = await chat_create_with_fallback(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一個對話摘要助手。請將以下對話內容壓縮成簡潔的重點摘要，保留關鍵資訊、情感和重要事件。用繁體中文，以條列式呈現。",
+                },
+                {"role": "user", "content": f"請摘要以下對話：\n\n{old_text}"},
+            ],
+            temperature=0.3,
+        )
+
+        summary_text = (
+            summary_response.choices[0].message.content
+            if summary_response.choices
+            else "（摘要生成失敗）"
+        )
+
+        # 寫入 memory.md
+        append_memory_note(f"[對話摘要] {summary_text}")
+
+        # 重建 messages：system prompt + 摘要上下文 + 近期訊息
+        compressed_messages: list = []
+        if has_system_prompt:
+            compressed_messages.append(messages[0])  # 最新的 system prompt
+
+        compressed_messages.extend(
+            [
+                {
+                    "role": "system",
+                    "content": f"[以下是稍早對話的摘要，幫助你維持對話連貫性]\n{summary_text}",
+                },
+                *recent_messages,
+            ]
+        )
+
+        print(f"Context 壓縮完成：{len(messages)} 條 → {len(compressed_messages)} 條")
+
+    except Exception as e:
+        print(f"壓縮過程發生錯誤: {e}")
+        compressed_messages = messages  # 壓縮失敗時保留原始 messages
+
+    # 通知前端：壓縮完成
+    await websocket.send_json({"type": "compress_done"})
+
+    return compressed_messages
