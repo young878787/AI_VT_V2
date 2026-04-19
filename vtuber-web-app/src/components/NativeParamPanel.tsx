@@ -5,12 +5,17 @@
  * - 依類別分組，多欄格線顯示
  * - 每個滑桿獨立 5 秒倒數計時器；無操作後自動釋放控制權
  * - 覆蓋優先序：NativeParam > AI 表情 > 眼動追蹤（由 LAppModel.update() 保證）
+ * - 自動偵測：滑鼠追蹤期間數值有變動的參數，永久移至「物理/追蹤驅動」區塊（localStorage 持久化）
  */
 import React, {
   useState, useEffect, useCallback, useRef, useMemo
 } from 'react';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
+import { useAppStore } from '../store/appStore';
 import './NativeParamPanel.css';
+
+const LS_KEY = 'native-panel-auto-detected';
+const DETECT_THRESHOLD = 0.01; // 變化超過此值才視為被追蹤驅動
 
 // ── 已知參數 ID → 中文名稱 ──────────────────────────────────────────
 const PARAM_LABELS: Record<string, string> = {
@@ -106,7 +111,31 @@ export const NativeParamPanel: React.FC = () => {
   const [params, setParams]       = useState<ParamInfo[]>([]);
   const [overrides, setOverrides] = useState<Record<string, OverrideEntry>>({});
   const [activeGroup, setActiveGroup] = useState<Category | '全部'>('全部');
-  const prevParamIdsRef = useRef<string>('');
+  // autoDetectedCount 僅用於觸發 re-render；實際資料存在 Ref 中避免 RAF stale closure
+  const [autoDetectedCount, setAutoDetectedCount] = useState(0);
+
+  const prevParamIdsRef      = useRef<string>('');
+  const autoDetectedIdsRef   = useRef<Set<string>>(new Set());
+  const prevValuesRef        = useRef<Record<string, number>>({});
+  const eyeTrackingEnabledRef = useRef(true);
+
+  // 讀取 eyeTrackingEnabled（Zustand），同步到 Ref 讓 RAF callback 可直接存取
+  const eyeTrackingEnabled = useAppStore(state => state.eyeTrackingEnabled);
+  useEffect(() => {
+    eyeTrackingEnabledRef.current = eyeTrackingEnabled;
+  }, [eyeTrackingEnabled]);
+
+  // 從 localStorage 恢復自動偵測紀錄
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(LS_KEY);
+      if (stored) {
+        const ids: string[] = JSON.parse(stored);
+        autoDetectedIdsRef.current = new Set(ids);
+        setAutoDetectedCount(ids.length);
+      }
+    } catch { /* 忽略解析錯誤 */ }
+  }, []);
 
   // ── 10fps 輪詢：讀取模型參數 + 清除過期覆蓋 ──────────────────────
   useEffect(() => {
@@ -121,15 +150,39 @@ export const NativeParamPanel: React.FC = () => {
           const fresh: ParamInfo[] = (model as any).getAllParameters();
           setParams(fresh);
 
-          // 偵測模型切換（參數 ID 集合改變）→ 清除舊覆蓋
+          // 偵測模型切換（參數 ID 集合改變）→ 清除舊覆蓋與自動偵測紀錄
           const idsKey = fresh.map(p => p.id).join(',');
           if (prevParamIdsRef.current && idsKey !== prevParamIdsRef.current) {
             setOverrides({});
+            autoDetectedIdsRef.current = new Set();
+            setAutoDetectedCount(0);
+            prevValuesRef.current = {};
+            localStorage.removeItem(LS_KEY);
             if (typeof (model as any).clearAllNativeParamOverrides === 'function') {
               (model as any).clearAllNativeParamOverrides();
             }
           }
           prevParamIdsRef.current = idsKey;
+
+          // ── 自動偵測：滑鼠追蹤啟用時，比較前後幀數值 ──────────────
+          const prev = prevValuesRef.current;
+          let hasNewDetected = false;
+          for (const p of fresh) {
+            // 只在 tracking 開啟且尚未偵測過時才檢查
+            if (eyeTrackingEnabledRef.current && !autoDetectedIdsRef.current.has(p.id)) {
+              const prevVal = prev[p.id];
+              if (prevVal !== undefined && Math.abs(p.current - prevVal) > DETECT_THRESHOLD) {
+                autoDetectedIdsRef.current.add(p.id);
+                hasNewDetected = true;
+              }
+            }
+            prev[p.id] = p.current; // 無論 tracking 是否開啟都更新基準值
+          }
+          if (hasNewDetected) {
+            const ids = [...autoDetectedIdsRef.current];
+            localStorage.setItem(LS_KEY, JSON.stringify(ids));
+            setAutoDetectedCount(ids.length);
+          }
         }
 
         // 清除過期的 React side 覆蓋記錄（model 端由 update() 自動清除）
@@ -176,6 +229,13 @@ export const NativeParamPanel: React.FC = () => {
     setOverrides({});
   }, []);
 
+  // ── 清除自動偵測紀錄 ───────────────────────────────────────────────
+  const handleClearAutoDetected = useCallback(() => {
+    autoDetectedIdsRef.current = new Set();
+    setAutoDetectedCount(0);
+    localStorage.removeItem(LS_KEY);
+  }, []);
+
   // ── 分組 & 過濾 ───────────────────────────────────────────────────────
   const displayParams = useMemo(() => {
     return activeGroup === '全部'
@@ -183,7 +243,30 @@ export const NativeParamPanel: React.FC = () => {
       : params.filter(p => getCategory(p.id) === activeGroup);
   }, [params, activeGroup]);
 
-  // 統計各分類數量（含覆蓋標記）
+  // 物理/追蹤分區僅在「全部」與「物理其他」篩選下啟用
+  const shouldSplitPhysicsSection = activeGroup === '全部' || activeGroup === '物理其他';
+
+  // ── 分離：可調整參數 vs 物理/追蹤驅動參數 ─────────────────────────
+  const { stableParams, physicsParams } = useMemo(() => {
+    if (!shouldSplitPhysicsSection) {
+      return { stableParams: displayParams, physicsParams: [] as ParamInfo[] };
+    }
+
+    const stable: ParamInfo[] = [];
+    const physics: ParamInfo[] = [];
+    for (const p of displayParams) {
+      if (autoDetectedIdsRef.current.has(p.id)) {
+        physics.push(p);
+      } else {
+        stable.push(p);
+      }
+    }
+    return { stableParams: stable, physicsParams: physics };
+    // autoDetectedCount 用於在 ref 更新後觸發此 useMemo 重新計算
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayParams, autoDetectedCount, shouldSplitPhysicsSection]);
+
+  // 統計各分類數量
   const categoryCounts = useMemo(() => {
     const counts: Partial<Record<Category | '全部', number>> = { '全部': params.length };
     for (const p of params) {
@@ -195,7 +278,6 @@ export const NativeParamPanel: React.FC = () => {
 
   // 活躍覆蓋總數（用於標題徽章）
   const activeOverrideCount = Object.keys(overrides).length;
-  const now = Date.now();
 
   // ── 空狀態 ────────────────────────────────────────────────────────────
   if (params.length === 0) {
@@ -208,6 +290,76 @@ export const NativeParamPanel: React.FC = () => {
     );
   }
 
+  // ── 共用：渲染單一參數列 ──────────────────────────────────────────────
+  const renderParamRow = (param: ParamInfo) => {
+    const ts         = Date.now();
+    const override   = overrides[param.id];
+    const hasOverride = override && ts < override.expiresAt;
+    const displayVal  = hasOverride ? override.value : param.current;
+    const remainSec   = hasOverride ? Math.ceil((override.expiresAt - ts) / 1000) : 0;
+    const range       = param.max - param.min;
+    const pct         = range > 0 ? ((displayVal - param.min) / range) * 100 : 50;
+    const cat         = getCategory(param.id);
+    const catColor    = CATEGORY_COLORS[cat];
+    const label       = PARAM_LABELS[param.id] ?? param.id;
+    const fillColor   = hasOverride ? '#f59e0b' : catColor;
+
+    return (
+      <div
+        key={param.id}
+        className={`native-row ${hasOverride ? 'native-row--active' : ''}`}
+      >
+        {/* 左：標籤 + 值 */}
+        <div className="native-row__left">
+          <span
+            className="native-row__dot"
+            style={{ background: catColor }}
+          />
+          <span className="native-row__label" title={param.id}>
+            {label}
+          </span>
+          <span
+            className="native-row__value"
+            style={{ color: fillColor }}
+          >
+            {displayVal.toFixed(1)}
+          </span>
+        </div>
+
+        {/* 滑桿 */}
+        <div className="native-row__track">
+          {param.min < 0 && (
+            <div className="native-row__center-line" />
+          )}
+          <input
+            type="range"
+            min={param.min}
+            max={param.max}
+            step={range > 2 ? 0.5 : 0.01}
+            value={displayVal}
+            onChange={e => handleChange(param.id, parseFloat(e.target.value))}
+            className="native-row__slider"
+            style={{
+              '--fill':  fillColor,
+              '--pct':   `${pct}%`,
+            } as React.CSSProperties}
+          />
+        </div>
+
+        {/* 右：倒數 Badge */}
+        <div className="native-row__badge-col">
+          {hasOverride && (
+            <span
+              className={`native-row__timer ${remainSec <= 1 ? 'native-row__timer--urgent' : ''}`}
+            >
+              {remainSec}s
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // ── 渲染 ──────────────────────────────────────────────────────────────
   return (
     <div className="native-panel">
@@ -218,6 +370,12 @@ export const NativeParamPanel: React.FC = () => {
           {activeOverrideCount > 0 && (
             <span className="native-panel__override-badge">
               {activeOverrideCount} 覆蓋中
+            </span>
+          )}
+          {/* 追蹤偵測中指示燈 */}
+          {eyeTrackingEnabled && (
+            <span className="native-panel__tracking-indicator" title="滑鼠追蹤啟用中：自動偵測被驅動的參數">
+              追蹤偵測中
             </span>
           )}
         </div>
@@ -248,78 +406,34 @@ export const NativeParamPanel: React.FC = () => {
 
       {/* ── 參數格線 ── */}
       <div className="native-panel__body">
+
+        {/* ── 上方：可手動精調的參數 ── */}
         <div className="native-panel__grid">
-          {displayParams.map(param => {
-            const override   = overrides[param.id];
-            const hasOverride = override && now < override.expiresAt;
-            const displayVal  = hasOverride ? override.value : param.current;
-            const remainSec   = hasOverride ? Math.ceil((override.expiresAt - now) / 1000) : 0;
-            const range       = param.max - param.min;
-            const pct         = range > 0 ? ((displayVal - param.min) / range) * 100 : 50;
-            const cat         = getCategory(param.id);
-            const catColor    = CATEGORY_COLORS[cat];
-            const label       = PARAM_LABELS[param.id] ?? param.id;
-
-            // 百分比填充 (用於 slider 背景)
-            const fillColor = hasOverride ? '#f59e0b' : catColor;
-
-            return (
-              <div
-                key={param.id}
-                className={`native-row ${hasOverride ? 'native-row--active' : ''}`}
-              >
-                {/* 左：標籤 + 值 */}
-                <div className="native-row__left">
-                  <span
-                    className="native-row__dot"
-                    style={{ background: catColor }}
-                  />
-                  <span className="native-row__label" title={param.id}>
-                    {label}
-                  </span>
-                  <span
-                    className="native-row__value"
-                    style={{ color: fillColor }}
-                  >
-                    {displayVal.toFixed(1)}
-                  </span>
-                </div>
-
-                {/* 滑桿 */}
-                <div className="native-row__track">
-                  {/* 中心線（params 有正負值時顯示） */}
-                  {param.min < 0 && (
-                    <div className="native-row__center-line" />
-                  )}
-                  <input
-                    type="range"
-                    min={param.min}
-                    max={param.max}
-                    step={(range) > 2 ? 0.5 : 0.01}
-                    value={displayVal}
-                    onChange={e => handleChange(param.id, parseFloat(e.target.value))}
-                    className="native-row__slider"
-                    style={{
-                      '--fill':  fillColor,
-                      '--pct':   `${pct}%`,
-                    } as React.CSSProperties}
-                  />
-                </div>
-
-                {/* 右：倒數 Badge */}
-                <div className="native-row__badge-col">
-                  {hasOverride && (
-                    <span
-                      className={`native-row__timer ${remainSec <= 1 ? 'native-row__timer--urgent' : ''}`}
-                    >
-                      {remainSec}s
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          {stableParams.map(renderParamRow)}
         </div>
+
+        {/* ── 分隔線 + 物理/追蹤驅動區塊 ── */}
+        {shouldSplitPhysicsSection && physicsParams.length > 0 && (
+          <>
+            <div className="native-panel__physics-divider">
+              <div className="native-panel__physics-divider-line" />
+              <span className="native-panel__physics-divider-label">
+                物理 / 追蹤驅動（自動偵測）
+              </span>
+              <div className="native-panel__physics-divider-line" />
+              <button
+                className="native-panel__clear-detected-btn"
+                onClick={handleClearAutoDetected}
+                title="清除自動偵測記錄，所有參數回到上方可調整區"
+              >
+                清除
+              </button>
+            </div>
+            <div className="native-panel__grid native-panel__grid--physics">
+              {physicsParams.map(renderParamRow)}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -337,3 +337,84 @@
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
 }
+
+/* =============================================
+   物理 / 追蹤驅動 分隔區
+   ============================================= */
+
+/* 追蹤偵測中指示燈（標題列） */
+.native-panel__tracking-indicator {
+  font-size: 9px;
+  font-weight: 700;
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.25);
+  padding: 1px 6px;
+  border-radius: 0px;
+  white-space: nowrap;
+  animation: tracking-pulse 2s ease-in-out infinite;
+  letter-spacing: 0.3px;
+}
+
+@keyframes tracking-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.55; }
+}
+
+/* 分隔線列 */
+.native-panel__physics-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px 4px;
+  margin-top: 2px;
+}
+
+.native-panel__physics-divider-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(74, 143, 212, 0.2),
+    transparent
+  );
+}
+
+.native-panel__physics-divider-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  opacity: 1;
+  user-select: none;
+}
+
+/* 清除自動偵測按鈕 */
+.native-panel__clear-detected-btn {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  font-size: 9px;
+  font-weight: 600;
+  border: 1px solid rgba(209, 213, 219, 0.3);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 0px;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+
+.native-panel__clear-detected-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border-color: var(--border-bright);
+}
+
+/* 物理/追蹤驅動區格線 — 整體略微淡化，暗示非精調區域 */
+.native-panel__grid--physics {
+  opacity: 1;
+}
