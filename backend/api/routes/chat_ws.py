@@ -182,6 +182,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 將 Agent A 乾淨回覆加入共用 history
                 messages.append({"role": "assistant", "content": agent_a_text})
 
+                # 注入 JPAF weights snapshot 到短期記憶（模型可看到 weights 演化軌跡）
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        f"[JPAF Turn {jpaf_session.turn_count}] "
+                        f"dom={jpaf_session.dominant}, aux={jpaf_session.auxiliary}, "
+                        f"persona={jpaf_session.current_persona} | "
+                        f"weights: {jpaf_session.weights_inline()}"
+                    ),
+                })
+
                 # ============================================================
                 # 步驟 3：Agent B 工具決策呼叫
                 # ============================================================

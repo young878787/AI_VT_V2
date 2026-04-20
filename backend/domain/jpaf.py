@@ -199,6 +199,12 @@ class JPAFSession:
         """每輪對話後遞增 turn 計數。"""
         self.turn_count += 1
 
+    def weights_inline(self) -> str:
+        """回傳權重的行內字串格式（供 prompt 和 snapshot 使用）。"""
+        return " | ".join(
+            f"{fn}:{self.base_weights[fn]:.2f}" for fn in FUNCTION_ORDER
+        )
+
     def apply_active_function(self, active_fn: str) -> dict:
         """
         程式化 TemporaryWeight 追蹤 + 自動 Reflection。
@@ -357,13 +363,52 @@ class JPAFSession:
             self.auxiliary = new_aux
 
     def update_persona(self, jpaf_state: dict) -> None:
-        """根據模型輸出的 jpaf_state 更新 current_persona。"""
+        """根據模型輸出的 jpaf_state 更新 current_persona。
+        若 persona 實際切換，同步採用目標 profile 的 dominant/auxiliary
+        並強制新 dominant 權重達到 JPAF_A。"""
+        old_persona = self.current_persona
+
         suggested = jpaf_state.get("suggested_persona")
         if suggested and suggested in PERSONA_PROFILES:
             self.current_persona = suggested
         else:
             af = jpaf_state.get("active_function") or self.dominant
             self.current_persona = FUNCTION_TO_PERSONA.get(af, DEFAULT_PERSONA)
+
+        # Persona 實際改變時，採用目標 profile 的 dominant/auxiliary
+        if self.current_persona != old_persona:
+            target = PERSONA_PROFILES[self.current_persona]
+            old_dom = self.dominant
+            old_aux = self.auxiliary
+            self.dominant = target["dominant"]
+            self.auxiliary = target["auxiliary"]
+            self._enforce_persona_switch(old_dom)
+            print(
+                f"[JPAF] Persona 切換: {old_persona} → {self.current_persona} | "
+                f"dom: {old_dom} → {self.dominant}, "
+                f"aux: {old_aux} → {self.auxiliary}"
+            )
+
+    def _enforce_persona_switch(self, old_dominant: str) -> None:
+        """Persona 切換後，確保新 dominant 權重 >= JPAF_A。
+        優先從舊 dominant 扣除差額（舊 dom 至少保留 JPAF_B）。"""
+        new_dom = self.dominant
+        if self.base_weights[new_dom] >= JPAF_A:
+            return  # 已達標
+
+        deficit = round(JPAF_A - self.base_weights[new_dom], 4)
+        # 從舊 dominant 扣（它通常有最多餘裕）
+        available = round(self.base_weights[old_dominant] - JPAF_B, 4)
+        take = min(deficit, max(0.0, available))
+        if take > 0:
+            self.base_weights[old_dominant] = round(
+                self.base_weights[old_dominant] - take, 4
+            )
+            self.base_weights[new_dom] = round(
+                self.base_weights[new_dom] + take, 4
+            )
+        # 安全網：若仍不足，強制拉到 JPAF_A 並重新正規化
+        self._enforce_constraints()
 
     def to_dict(self) -> dict:
         """序列化為可持久化的 dict。"""

@@ -1,17 +1,21 @@
 {
-  "dominant": "Ti",
-  "auxiliary": "Ne",
+  "dominant": "Fe",
+  "auxiliary": "Ni",
   "base_weights": {
-    "Ti": 0.4,
+    "Ti": 0.16,
     "Ne": 0.24,
     "Fi": 0.06,
     "Si": 0.06,
-    "Fe": 0.06,
+    "Fe": 0.3,
     "Te": 0.06,
     "Se": 0.06,
     "Ni": 0.06
   },
-  "current_persona": "tsundere",
-  "turn_count": 0,
-  "active_history": []
+  "current_persona": "seductive",
+  "turn_count": 3,
+  "active_history": [
+    "Ne",
+    "Te",
+    "Fe"
+  ]
 }

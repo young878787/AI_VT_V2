@@ -37,11 +37,11 @@ def build_agent_a_prompt(
     # JPAF 框架部分
     if session.turn_count == 0:
         jpaf_section = _build_jpaf_init(
-            session, effective_meta, profile["jpaf_character"], persona_key
+            session, effective_meta, profile["jpaf_character"], persona_key, profile
         )
     else:
         jpaf_section = _build_jpaf_compact(
-            session, effective_meta, profile["jpaf_compact"], persona_key
+            session, effective_meta, profile["jpaf_compact"], persona_key, profile
         )
 
     return f"""{base_character}
@@ -96,6 +96,7 @@ def _build_jpaf_init(
     effective_meta: dict,
     character_desc: str,
     persona_key: str,
+    target_profile: dict,
 ) -> str:
     """第 1 輪使用的完整 JPAF 系統提示詞。"""
     w = session.base_weights
@@ -128,6 +129,9 @@ def _build_jpaf_init(
     weights_block = "\n".join(weight_lines)
     total = sum(w.values())
 
+    # 目標 Persona 參考
+    target_ref = _build_target_reference(target_profile, persona_key)
+
     return f"""【角色設定】
 {character_desc}
 
@@ -140,7 +144,7 @@ def _build_jpaf_init(
 {weights_block}
 ─────────────────────────────────
 合計: {total:.2f} ✓
-
+{target_ref}
 【JPAF 三機制運作規則】
 
 1. Dominant-Auxiliary Coordination（每次回應都執行）
@@ -199,6 +203,7 @@ def _build_jpaf_compact(
     effective_meta: dict,
     character_desc: str,
     persona_key: str,
+    target_profile: dict,
 ) -> str:
     """第 2 輪起使用的精簡 JPAF 系統提示詞。"""
     w = session.base_weights
@@ -208,11 +213,23 @@ def _build_jpaf_compact(
 
     weights_inline = " | ".join(f"{fn}:{w[fn]:.2f}" for fn in FUNCTION_ORDER)
 
+    # 目標 Persona 參考（精簡版）
+    target_w = target_profile["weights"]
+    target_dom = target_profile["dominant"]
+    target_aux = target_profile["auxiliary"]
+    target_inline = " | ".join(f"{fn}:{target_w[fn]:.2f}" for fn in FUNCTION_ORDER)
+    target_line = (
+        f"目標 Persona ({persona_key}): {target_inline} | "
+        f"dom={target_dom}, aux={target_aux}"
+    )
+
     return f"""[JPAF 持續對話 - 第 {turn} 輪]
 {character_desc}
 
 當前 BaseWeights: {weights_inline}
 dominant={dom}({w[dom]:.2f}), auxiliary={aux}({w[aux]:.2f})
+{target_line}
+→ 以目前權重為基礎，自然融入目標風格特質。
 
 規則提醒：
 - Coordination: 根據情境選 {dom}-only / {aux}-only / 協作
@@ -232,6 +249,23 @@ dominant={dom}({w[dom]:.2f}), auxiliary={aux}({w[aux]:.2f})
 <jpaf_state>
 {{"active_function": "<Ti|Ne|Fi|Si|Fe|Te|Se|Ni>", "suggested_persona": "<tsundere|happy|angry|seductive>"}}
 </jpaf_state>"""
+
+
+def _build_target_reference(target_profile: dict, persona_key: str) -> str:
+    """組裝目標 Persona 參考區塊（Init prompt 用）。"""
+    target_w = target_profile["weights"]
+    target_dom = target_profile["dominant"]
+    target_aux = target_profile["auxiliary"]
+    target_desc = target_profile["description"]
+    target_inline = " | ".join(
+        f"{fn}:{target_w[fn]:.2f}" for fn in FUNCTION_ORDER
+    )
+    return f"""
+【目標 Persona 參考：{persona_key}（{target_desc}）】
+理想權重: {target_inline}
+dominant={target_dom}, auxiliary={target_aux}
+→ 認知風格正往此方向演化。以目前權重為基礎，自然融入目標風格特質。
+"""
 
 
 def _build_profile_section(profile: dict) -> str:
