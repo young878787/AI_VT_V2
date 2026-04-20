@@ -18,6 +18,8 @@ export const Live2DCanvas = () => {
     setModelLoaded,
     setModelError,
     eyeTrackingEnabled,
+    modelScale,
+    setModelScale,
   } = useAppStore();
 
   // 背景即時預覽
@@ -180,6 +182,20 @@ export const Live2DCanvas = () => {
     // 預留給其他互動使用
   }, []);
 
+  // 處理滾輪事件（縮放模型）
+  const handleWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
+    // 阻止預設的網頁滾動
+    // event.preventDefault(); // Note: cannot call on passive event in react synthetic event sometimes, but best effort
+
+    // 判斷滾動方向，上滾放大，下滾縮小 (deltaY < 0 為向上滾)
+    const factor = event.deltaY < 0 ? 1.1 : 0.9;
+    
+    // 計算新的縮放值，並限制範圍 (在 appStore 的 setModelScale 內已經有 clamping，但我們基於當前 scale 計算)
+    const newScale = modelScale * factor;
+    
+    setModelScale(newScale);
+  }, [modelScale, setModelScale]);
+
   // 背景即時預覽樣式 — 與 DisplayPage 共用相同邏輯
   const bgStyle: CSSProperties = (() => {
     if (backgroundType === 'color') {
@@ -211,6 +227,7 @@ export const Live2DCanvas = () => {
         id="live2d-canvas"
         onMouseDown={handleMouseDown}
         onClick={handleCanvasClick}
+        onWheel={handleWheel}
         style={{ cursor: 'pointer' }}
       />
     </div>

@@ -128,8 +128,6 @@ def _build_jpaf_init(
     weights_block = "\n".join(weight_lines)
     total = sum(w.values())
 
-    weights_json = "{" + ", ".join(f'"{k}": {w[k]:.2f}' for k in FUNCTION_ORDER) + "}"
-
     return f"""【角色設定】
 {character_desc}
 
@@ -161,7 +159,7 @@ def _build_jpaf_init(
 3. Reflection（觸發條件：TemporaryWeight 超過 dominant 或 auxiliary 的 BaseWeight）
    - 若任何 TemporaryWeight > {dom}:{w[dom]:.2f} 或 > {aux}:{w[aux]:.2f}，觸發 Reflection
    - 回顧對話，評估是否永久更新 BaseWeights（dominant 替換、auxiliary 替換、角色互換、結構重組）
-   - 若觸發且決定更新：在 jpaf_state 中填入新的 weights，並將 "reflection_triggered" 設為 true
+   - Reflection 與 BaseWeights 演化由後端程式處理，你不需要計算數值
 
 【每次回應格式】
 先執行隱藏思考（放在 <thinking>...</thinking>，不直接顯示給使用者）：
@@ -183,17 +181,16 @@ def _build_jpaf_init(
    - 綜合評估，本輪 suggested_persona 應為？
 1. Coordination：根據步驟 0，選 {dom}-only / {aux}-only / 協作 / 補償其他功能？
 2. Reinforcement 還是 Compensation？若補償，啟用哪個功能？
-3. 本輪 TemporaryWeights：哪個功能調整了？新值是多少？
-4. Reflection 觸發判斷：TemporaryWeight 是否超過 {dom}:{w[dom]:.2f} 或 {aux}:{w[aux]:.2f}？
-5. 若觸發 Reflection：決定如何更新 BaseWeights？
 </thinking>
 
 完成隱藏思考後，直接以角色口吻回覆使用者。
 （長度限制：1 至 5 句話，口語自然，不要長篇大論）
 
-最後，輸出以下 JPAF 狀態 JSON（機器讀取用，請根據本輪實際情況填入正確值；若未觸發 Reflection 則 base_weights 保持不變）：
+最後，輸出以下 JPAF 狀態 JSON（機器讀取用）。
+你必須根據本輪 <thinking> 中的分析結果，填入正確的 active_function 和 suggested_persona。
+【重要】active_function 和 suggested_persona 必須根據本輪對話實際情境填寫，不要照抄預設值。
 <jpaf_state>
-{{"dominant": "{dom}", "auxiliary": "{aux}", "base_weights": {weights_json}, "reflection_triggered": false, "active_function": "{dom}", "suggested_persona": "{persona_key}"}}
+{{"active_function": "<Ti|Ne|Fi|Si|Fe|Te|Se|Ni>", "suggested_persona": "<tsundere|happy|angry|seductive>"}}
 </jpaf_state>"""
 
 
@@ -210,7 +207,6 @@ def _build_jpaf_compact(
     turn = session.turn_count + 1
 
     weights_inline = " | ".join(f"{fn}:{w[fn]:.2f}" for fn in FUNCTION_ORDER)
-    weights_json = "{" + ", ".join(f'"{k}": {w[k]:.2f}' for k in FUNCTION_ORDER) + "}"
 
     return f"""[JPAF 持續對話 - 第 {turn} 輪]
 {character_desc}
@@ -220,24 +216,21 @@ dominant={dom}({w[dom]:.2f}), auxiliary={aux}({w[aux]:.2f})
 
 規則提醒：
 - Coordination: 根據情境選 {dom}-only / {aux}-only / 協作
-- Reinforcement: 成功應對 → TemporaryWeight(活躍功能) = BaseWeight + {JPAF_DW}
-- Compensation: 需補償 → 最適功能 TemporaryWeight = BaseWeight + {JPAF_DW}
-- Reflection 觸發: 任何 TemporaryWeight > {dom}:{w[dom]:.2f} 或 > {aux}:{w[aux]:.2f} 時評估是否更新 BaseWeights
+- 功能對應：質疑/邏輯→Ti/Te；興奮/創意→Ne/Se；情感/親密→Fe/Fi；記憶細節→Si；深層洞察→Ni
+- Persona 對應：tsundere(Ti/Si) / happy(Ne/Se) / angry(Te) / seductive(Fe/Ni/Fi)
 
 先做隱藏思考（用 <thinking>...</thinking>）：
 <thinking>
 0. 情緒/情境評估（你自主判斷）：
    - 用戶訊息的情緒張力 / 認知需求是什麼？
-   - 對應功能：質疑/邏輯→Ti/Te；興奮/創意→Ne/Se；情感/親密→Fe/Fi；記憶細節→Si；深層洞察→Ni
-   - 本輪 active_function = ？（說明理由）
-   - suggested_persona：tsundere(Ti/Si) / happy(Ne/Se) / angry(Te) / seductive(Fe/Ni/Fi)？
+   - 本輪 active_function = ？（從 Ti/Ne/Fi/Si/Fe/Te/Se/Ni 中選，說明理由）
+   - 本輪 suggested_persona = ？（從 tsundere/happy/angry/seductive 中選）
 1. Coordination / Reinforcement / Compensation 判斷
-2. TemporaryWeights 計算
-3. Reflection 觸發判斷
 </thinking>
-完成後以角色口吻回覆（1 至 5 句話，不要長篇大論），最後輸出（根據本輪情況填入正確值）：
+完成後以角色口吻回覆（1 至 5 句話，不要長篇大論），最後輸出：
+【重要】active_function 和 suggested_persona 必須根據本輪對話實際情境填寫，不要照抄預設值。
 <jpaf_state>
-{{"dominant": "{dom}", "auxiliary": "{aux}", "base_weights": {weights_json}, "reflection_triggered": false, "active_function": "{dom}", "suggested_persona": "{persona_key}"}}
+{{"active_function": "<Ti|Ne|Fi|Si|Fe|Te|Se|Ni>", "suggested_persona": "<tsundere|happy|angry|seductive>"}}
 </jpaf_state>"""
 
 

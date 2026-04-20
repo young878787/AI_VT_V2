@@ -428,13 +428,13 @@ export const ControlPanel = () => {
                   <button
                     className="cp-scale-btn"
                     onClick={scaleModelDown}
-                    disabled={!modelLoaded || modelScale <= 0.5}
+                    disabled={!modelLoaded || modelScale <= 0.1}
                   >−</button>
                   <span className="cp-scale-row__val">{Math.round(modelScale * 100)}%</span>
                   <button
                     className="cp-scale-btn"
                     onClick={scaleModelUp}
-                    disabled={!modelLoaded || modelScale >= 2.0}
+                    disabled={!modelLoaded || modelScale >= 500.0}
                   >+</button>
                   <button
                     className="cp-scale-btn cp-scale-btn--reset"

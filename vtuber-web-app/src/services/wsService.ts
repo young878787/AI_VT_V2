@@ -184,6 +184,16 @@ class WSService {
     public stopTTS(): void {
         this.ttsPlayer.stop();
     }
+
+    /**
+     * 通知後端清空 in-memory 短期記憶並重置 JPAF session。
+     * 應在 REST /api/reset-memory 成功後呼叫。
+     */
+    public sendReset(): void {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'reset' }));
+        }
+    }
 }
 
 export const wsService = new WSService();

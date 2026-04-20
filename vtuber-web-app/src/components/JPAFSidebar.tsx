@@ -1,4 +1,5 @@
 import { useAppStore } from '@store/appStore';
+import { wsService } from '../services/wsService';
 import './JPAFSidebar.css';
 
 const PERSONA_LABELS: Record<string, string> = {
@@ -31,6 +32,8 @@ export const JPAFSidebar = () => {
       });
       if (res.ok) {
         clearChatHistory();
+        // 通知後端清空 in-memory 短期記憶並重置 JPAF session（turn_count → 0）
+        wsService.sendReset();
       } else {
         console.error('Reset failed:', await res.text());
       }

@@ -39,8 +39,8 @@ export class LAppPal {
   }
 
   public static updateTime(): void {
-    this.currentFrame = Date.now();
-    this.deltaTime = (this.currentFrame - this.lastFrame) / 1000;
+    this.currentFrame = performance.now();
+    this.deltaTime = (this.currentFrame - this.lastFrame) / 1000.0;
     this.lastFrame = this.currentFrame;
   }
 
@@ -80,7 +80,7 @@ export class LAppPal {
     console.error('[Live2D]', ...args);
   }
 
-  static lastUpdate = Date.now();
+  static lastUpdate = performance.now();
 
   static currentFrame = 0.0;
   static lastFrame = 0.0;

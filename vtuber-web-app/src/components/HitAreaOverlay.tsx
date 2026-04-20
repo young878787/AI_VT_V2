@@ -34,102 +34,83 @@ export const HitAreaOverlay = () => {
       const rect = canvas.getBoundingClientRect();
       const areas: HitArea[] = [];
 
-      // 獲取模型的所有 hit areas
-      const modelSetting = (model as any)._modelSetting;
-      if (!modelSetting) return;
+      // 獲取模型核心物件
+      const coreModel = model.getModel();
+      if (!coreModel) return;
 
-      const hitAreaCount = modelSetting.getHitAreasCount();
+      // 不再依賴 model3.json 設定的 HitAreas（因為有些模型設定不良）
+      // 我們動態計算整個模型所有 Drawable 網格的總邊界框，將整個模型當作一個統一的 'Body' 點擊區域
+      const drawableCount = coreModel.getDrawableCount();
+      let globalMinX = Infinity, globalMaxX = -Infinity;
+      let globalMinY = Infinity, globalMaxY = -Infinity;
+      let hasValidVertices = false;
 
-      // 處理所有配置的 hit areas
-      const processedAreas: string[] = [];
+      for (let i = 0; i < drawableCount; i++) {
+        const vertexCount = coreModel.getDrawableVertexCount(i);
+        if (vertexCount === 0) continue;
+        // 過濾掉不透明度為 0 的部件或隱藏的部件（可選，但為了確保完整我們直接計算全部有效網格）
+        // 若要更精確可檢查 coreModel.getDrawableOpacity(i) > 0，但通常全拿也可以
+        if (coreModel.getDrawableOpacity(i) <= 0.01) continue; 
 
-      for (let i = 0; i < hitAreaCount; i++) {
-        const name = modelSetting.getHitAreaName(i);
-        const drawableId = modelSetting.getHitAreaId(i);
-
-        if (!name || !drawableId || processedAreas.includes(name)) continue;
-        processedAreas.push(name);
-
-        // 從模型獲取 drawable 的實際頂點數據
-        const coreModel = model.getModel();
-        const drawableIndex = coreModel.getDrawableIndex(drawableId);
-
-        if (drawableIndex < 0) {
-          console.warn(`[Hit Area Overlay] Drawable ID "${drawableId}" not found`);
-          continue;
-        }
-
-        // 獲取 drawable 的頂點數據來計算邊界框
-        const vertexCount = coreModel.getDrawableVertexCount(drawableIndex);
-        const vertexArray = coreModel.getDrawableVertices(drawableIndex);
-
-        if (vertexCount === 0 || !vertexArray) {
-          console.warn(`[Hit Area Overlay] No vertices for drawable "${drawableId}"`);
-          continue;
-        }
-
-        // 計算頂點的邊界框（在模型座標系中）
-        let minX = Infinity, maxX = -Infinity;
-        let minY = Infinity, maxY = -Infinity;
-
+        const vertexArray = coreModel.getDrawableVertices(i);
         for (let v = 0; v < vertexCount; v++) {
-          const x = vertexArray[v * 2];
-          const y = vertexArray[v * 2 + 1];
-          minX = Math.min(minX, x);
-          maxX = Math.max(maxX, x);
-          minY = Math.min(minY, y);
-          maxY = Math.max(maxY, y);
+          const vx = vertexArray[v * 2];
+          const vy = vertexArray[v * 2 + 1];
+          globalMinX = Math.min(globalMinX, vx);
+          globalMaxX = Math.max(globalMaxX, vx);
+          globalMinY = Math.min(globalMinY, vy);
+          globalMaxY = Math.max(globalMaxY, vy);
+          hasValidVertices = true;
         }
-
-        // 將模型座標的邊界框轉換為屏幕座標
-        // 取得完整的 MVP 變換矩陣
-        const mvp = delegate.createMVPMatrix();
-        if (!mvp) continue;
-
-        const points: [number, number][] = [
-          [minX, minY],  // 左下
-          [maxX, minY],  // 右下
-          [maxX, maxY],  // 右上
-          [minX, maxY],  // 左上
-        ].map(([mx, my]) => {
-          // 應用 MVP 變換轉換為剪裁空間 (-1 到 1)
-          const clipX = mvp.transformX(mx);
-          const clipY = mvp.transformY(my);
-
-          // 剪裁空間轉換為屏幕座標 (注意 WebGL Y 軸朝上)
-          const screenX = rect.left + ((clipX + 1.0) / 2.0) * rect.width;
-          const screenY = rect.top + ((1.0 - clipY) / 2.0) * rect.height;
-
-          return [screenX, screenY];
-        });
-
-        // 檢查滑鼠是否在區域內
-        let isHit = false;
-        try {
-          // 將滑鼠螢幕座標轉為 Clip 空間，然後只取反 Projection * View
-          // (not 取反 Model，因為 hitTest 內建會處理 ModelMatrix 取反)
-          const [mouseX, mouseY] = mousePosRef.current;
-          const clipMouseX = ((mouseX - rect.left) / rect.width) * 2.0 - 1.0;
-          const clipMouseY = -(((mouseY - rect.top) / rect.height) * 2.0 - 1.0);
-          const projView = delegate.createProjViewMatrix();
-          if (projView) {
-            const inverseProjView = projView.getInvert();
-            const viewMouseX = inverseProjView.transformX(clipMouseX);
-            const viewMouseY = inverseProjView.transformY(clipMouseY);
-
-            // 使用模型的 hitTest 方法，傳入區域名稱
-            isHit = model.hitTest(viewMouseX, viewMouseY, name);
-          }
-        } catch (e) {
-          // 忽略錯誤，繼續繪製
-        }
-
-        areas.push({
-          name,
-          points,
-          isHit,
-        });
       }
+
+      if (!hasValidVertices) return;
+
+      // 取得完整的 MVP 變換矩陣將模型座標轉換為屏幕座標
+      const mvp = delegate.createMVPMatrix();
+      if (!mvp) return;
+
+      const points: [number, number][] = [
+        [globalMinX, globalMinY],  // 左下
+        [globalMaxX, globalMinY],  // 右下
+        [globalMaxX, globalMaxY],  // 右上
+        [globalMinX, globalMaxY],  // 左上
+      ].map(([mx, my]) => {
+        // 應用 MVP 變換轉換為剪裁空間 (-1 到 1)
+        const clipX = mvp.transformX(mx);
+        const clipY = mvp.transformY(my);
+
+        // 剪裁空間轉換為屏幕座標 (注意 WebGL Y 軸朝上)
+        const screenX = rect.left + ((clipX + 1.0) / 2.0) * rect.width;
+        const screenY = rect.top + ((1.0 - clipY) / 2.0) * rect.height;
+
+        return [screenX, screenY];
+      });
+
+      // 檢查滑鼠是否在範圍內
+      let isHit = false;
+      try {
+        const [mouseX, mouseY] = mousePosRef.current;
+        const clipMouseX = ((mouseX - rect.left) / rect.width) * 2.0 - 1.0;
+        const clipMouseY = -(((mouseY - rect.top) / rect.height) * 2.0 - 1.0);
+        const projView = delegate.createProjViewMatrix();
+        if (projView) {
+          const inverseProjView = projView.getInvert();
+          const viewMouseX = inverseProjView.transformX(clipMouseX);
+          const viewMouseY = inverseProjView.transformY(clipMouseY);
+
+          // 使用 'Body' 參數呼叫 hitTest，我們稍後會修改 LAppModel 讓它泛指全模型
+          isHit = model.hitTest(viewMouseX, viewMouseY, 'Body');
+        }
+      } catch (e) {
+        // 忽略錯誤
+      }
+
+      areas.push({
+        name: 'Body',
+        points,
+        isHit,
+      });
 
       setHitAreas(areas);
     };

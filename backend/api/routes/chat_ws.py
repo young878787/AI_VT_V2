@@ -95,6 +95,32 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "compress_done"})
                 continue
 
+            # ---- 記憶還原指令 ----
+            # 由前端 handleReset 在 REST /api/reset-memory 成功後發送，
+            # 負責清空後端 in-memory 短期記憶，並重新載入已重置的 JPAF session。
+            if data.get("type") == "reset":
+                # 1. 清空短期記憶（in-memory 對話歷史）
+                messages = []
+                # 2. 清空 session 持久化檔案（避免下次連線重新載入舊歷史）
+                if CHAT_PERSISTENCE_ENABLED and current_session_id:
+                    save_session_messages(current_session_id, [])
+                # 3. 重新從磁碟載入已被 REST API 重置的 JPAF session
+                jpaf_data = load_jpaf_state()
+                jpaf_session = (
+                    JPAFSession.from_dict(jpaf_data) if jpaf_data else JPAFSession()
+                )
+                # 4. 通知前端最新 JPAF 狀態（turn_count = 0）
+                await websocket.send_json({
+                    "type": "jpaf_update",
+                    "persona": jpaf_session.current_persona,
+                    "dominant": jpaf_session.dominant,
+                    "auxiliary": jpaf_session.auxiliary,
+                    "baseWeights": jpaf_session.base_weights,
+                    "turnCount": jpaf_session.turn_count,
+                })
+                await websocket.send_json({"type": "reset_done"})
+                continue
+
             user_message = data.get("content", "")
             if not user_message:
                 continue
@@ -132,14 +158,22 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 if not agent_a_text:
                     agent_a_text = "（默默地點頭）"
-                    await websocket.send_json(
-                        {"type": "text_stream", "content": agent_a_text}
-                    )
 
                 # 更新 JPAF session
                 if jpaf_state:
+                    # (1) LLM 主動觸發的 Reflection（備用路徑）
                     if jpaf_state.get("reflection_triggered"):
                         jpaf_session.apply_reflection(jpaf_state)
+                    # (2) 程式化 TemporaryWeight 追蹤 + 自動 Reflection
+                    active_fn = jpaf_state.get("active_function") or jpaf_session.dominant
+                    evolution = jpaf_session.apply_active_function(active_fn)
+                    if evolution["reflection_triggered"]:
+                        print(
+                            f"[JPAF] 程式化 Reflection 觸發："
+                            f"active={active_fn}, "
+                            f"temp_w={evolution['temporary_weight']:.2f}"
+                        )
+                    # (3) Persona 更新（每輪都執行）
                     jpaf_session.update_persona(jpaf_state)
 
                 jpaf_session.increment_turn()

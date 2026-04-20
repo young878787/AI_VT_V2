@@ -438,8 +438,8 @@ export class LAppModel extends CubismUserModel {
    * 設置模型縮放
    */
   public setModelScale(scale: number): void {
-    // 限制縮放範圍在 0.5 到 2.0 之間
-    this._modelScale = Math.max(0.5, Math.min(2.0, scale));
+    // 限制縮放範圍在 0.1 到 500.0 之間
+    this._modelScale = Math.max(0.1, Math.min(500.0, scale));
     this.updateModelMatrix();
   }
 
@@ -495,10 +495,49 @@ export class LAppModel extends CubismUserModel {
    * @returns 是否點擊在指定區域
    */
   public hitTest(x: number, y: number, hitAreaName?: string): boolean {
-    if (!this._modelSetting || !this._model) return false;
+    if (!this._model) return false;
 
-    // 如果指定了區域名稱，查找對應的區域
-    if (hitAreaName) {
+    // 將整個模型視為單一的可點擊 Body 區域（無論點擊模型哪個部分都算數）
+    // 如果沒有傳入名稱，或者名稱是 'Body'，則檢測整個模型的外邊界
+    if (!hitAreaName || hitAreaName.toLowerCase() === 'body') {
+      const drawableCount = this._model.getDrawableCount();
+      const tx: number = this._modelMatrix.invertTransformX(x);
+      const ty: number = this._modelMatrix.invertTransformY(y);
+
+      for (let i = 0; i < drawableCount; i++) {
+        const vertexCount = this._model.getDrawableVertexCount(i);
+        if (vertexCount === 0) continue;
+        
+        // 可選：跳過完全透明的部件
+        if (this._model.getDrawableOpacity(i) <= 0.01) continue;
+
+        const vertices = this._model.getDrawableVertices(i);
+        
+        let left = vertices[0];
+        let right = vertices[0];
+        let top = vertices[1];
+        let bottom = vertices[1];
+
+        for (let j = 1; j < vertexCount; ++j) {
+          const vx = vertices[j * 2];
+          const vy = vertices[j * 2 + 1];
+          if (vx < left) left = vx;
+          if (vx > right) right = vx;
+          if (vy < top) top = vy;
+          if (vy > bottom) bottom = vy;
+        }
+
+        // 只要點中任何一個有效網格的包圍盒即算作點擊了 Body
+        if (left <= tx && tx <= right && top <= ty && ty <= bottom) {
+          return true; 
+        }
+      }
+      // 如果需要保留對傳統 HitArea 的兼容性，可以繼續往下執行，但我們為了統一，沒點中網格就直接返回 false
+      return false;
+    }
+
+    // 若需要精確檢查其他特定的 Area (例如 Head)
+    if (this._modelSetting) {
       const hitAreaCount = this._modelSetting.getHitAreasCount();
       for (let i = 0; i < hitAreaCount; i++) {
         const name = this._modelSetting.getHitAreaName(i);
@@ -508,16 +547,6 @@ export class LAppModel extends CubismUserModel {
             return this.isHit(drawableId, x, y);
           }
         }
-      }
-      return false;
-    }
-
-    // 沒有指定區域，檢查所有點擊區域
-    const hitAreaCount = this._modelSetting.getHitAreasCount();
-    for (let i = 0; i < hitAreaCount; i++) {
-      const hitAreaId = this._modelSetting.getHitAreaId(i);
-      if (hitAreaId && this.isHit(hitAreaId, x, y)) {
-        return true;
       }
     }
 

@@ -197,7 +197,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
 
   setModelScale: (scale: number) => {
-    const clampedScale = Math.max(0.5, Math.min(2.0, scale));
+    // 限制縮放範圍從 0.1 到 500 倍
+    const clampedScale = Math.max(0.1, Math.min(500.0, scale));
     set({ modelScale: clampedScale });
 
     // 同步到模型
@@ -210,12 +211,15 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   scaleModelUp: () => {
     const currentScale = get().modelScale;
-    get().setModelScale(currentScale + 0.1);
+    // 使用乘法來實現平滑且能快速抵達 500 的縮放
+    const delta = currentScale < 1.0 ? 0.1 : (currentScale * 0.1);
+    get().setModelScale(currentScale + delta);
   },
 
   scaleModelDown: () => {
     const currentScale = get().modelScale;
-    get().setModelScale(currentScale - 0.1);
+    const delta = currentScale <= 1.0 ? 0.1 : (currentScale * 0.1);
+    get().setModelScale(currentScale - delta);
   },
 
   resetModelTransform: () => {

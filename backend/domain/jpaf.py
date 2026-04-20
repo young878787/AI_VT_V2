@@ -14,6 +14,7 @@ from typing import Optional
 JPAF_B: float = 0.06       # undifferentiated 上限
 JPAF_A: float = 0.30       # dominant 下限
 JPAF_DW: float = 0.06      # TemporaryWeight 增量（固定）
+REFLECTION_WINDOW: int = 8  # Reflection 判斷回看的歷史輪數
 
 FUNCTION_ORDER: list[str] = ["Ti", "Ne", "Fi", "Si", "Fe", "Te", "Se", "Ni"]
 
@@ -181,6 +182,7 @@ class JPAFSession:
         auxiliary: str | None = None,
         base_weights: dict[str, float] | None = None,
         turn_count: int = 0,
+        active_history: list[str] | None = None,
     ):
         profile = PERSONA_PROFILES.get(persona_key, PERSONA_PROFILES[DEFAULT_PERSONA])
         self.dominant: str = dominant or profile["dominant"]
@@ -190,13 +192,156 @@ class JPAFSession:
         )
         self.current_persona: str = persona_key
         self.turn_count: int = turn_count
+        # 近 N 輪的 active_function 歷史，用於程式化 Reflection 判斷
+        self.active_history: list[str] = list(active_history or [])
 
     def increment_turn(self) -> None:
         """每輪對話後遞增 turn 計數。"""
         self.turn_count += 1
 
+    def apply_active_function(self, active_fn: str) -> dict:
+        """
+        程式化 TemporaryWeight 追蹤 + 自動 Reflection。
+        根據模型回傳的 active_function：
+        1. 計算 TemporaryWeight = BaseWeight + JPAF_DW
+        2. 若 TemporaryWeight 超過 dominant 或 auxiliary 的 BaseWeight → 觸發 Reflection
+        3. Reflection：將 JPAF_DW 永久併入 BaseWeights，重新正規化至總和 1.0
+        4. 若該功能持續主導（歷史中佔多數），考慮 dominant/auxiliary 替換
+
+        回傳 dict 描述本輪發生的事：
+        {
+          "active_function": str,
+          "temporary_weight": float,
+          "reflection_triggered": bool,
+          "weight_changes": dict | None,      # 若有更新，新舊值差異
+          "dominant_changed": bool,
+          "auxiliary_changed": bool,
+        }
+        """
+        if active_fn not in self.base_weights:
+            return {
+                "active_function": active_fn,
+                "temporary_weight": 0.0,
+                "reflection_triggered": False,
+                "weight_changes": None,
+                "dominant_changed": False,
+                "auxiliary_changed": False,
+            }
+
+        # 記錄歷史（保留最近 REFLECTION_WINDOW 輪）
+        self.active_history.append(active_fn)
+        if len(self.active_history) > REFLECTION_WINDOW:
+            self.active_history = self.active_history[-REFLECTION_WINDOW:]
+
+        # 計算 TemporaryWeight
+        base_w = self.base_weights[active_fn]
+        temp_w = base_w + JPAF_DW
+
+        # Reflection 觸發條件：TemporaryWeight 超過 dominant 或 auxiliary 的 BaseWeight
+        dom_w = self.base_weights[self.dominant]
+        aux_w = self.base_weights[self.auxiliary]
+        reflection_triggered = (
+            active_fn != self.dominant
+            and active_fn != self.auxiliary
+            and (temp_w > dom_w or temp_w > aux_w)
+        )
+
+        weight_changes = None
+        dominant_changed = False
+        auxiliary_changed = False
+
+        if reflection_triggered:
+            # Reflection：永久性 weight 更新
+            old_weights = deepcopy(self.base_weights)
+
+            # 將 JPAF_DW 從最低的非活躍功能轉移給 active_fn
+            # 找出權重最低的非活躍功能作為「捐贈者」
+            donor_fn = min(
+                (fn for fn in FUNCTION_ORDER if fn != active_fn),
+                key=lambda fn: self.base_weights[fn],
+            )
+            self.base_weights[active_fn] = round(base_w + JPAF_DW, 4)
+            self.base_weights[donor_fn] = round(
+                self.base_weights[donor_fn] - JPAF_DW, 4
+            )
+
+            # 確保不低於 0，若 donor 已經太低則從次低的取
+            if self.base_weights[donor_fn] < 0.0:
+                self.base_weights[donor_fn] = 0.0
+                # 重新正規化
+                self._renormalize()
+
+            # 強制約束：dominant >= JPAF_A, undifferentiated <= JPAF_B
+            self._enforce_constraints()
+
+            weight_changes = {
+                fn: round(self.base_weights[fn] - old_weights[fn], 4)
+                for fn in FUNCTION_ORDER
+                if abs(self.base_weights[fn] - old_weights[fn]) > 0.0001
+            }
+
+            # 檢查是否需要替換 auxiliary
+            # 條件：active_fn 在近 N 輪中出現次數 > auxiliary 出現次數
+            if len(self.active_history) >= REFLECTION_WINDOW // 2:
+                fn_counts = {}
+                for fn in self.active_history:
+                    fn_counts[fn] = fn_counts.get(fn, 0) + 1
+
+                active_count = fn_counts.get(active_fn, 0)
+                aux_count = fn_counts.get(self.auxiliary, 0)
+
+                if (
+                    active_fn != self.dominant
+                    and active_fn != self.auxiliary
+                    and active_count > aux_count
+                    and self.base_weights[active_fn] > self.base_weights[self.auxiliary]
+                ):
+                    old_aux = self.auxiliary
+                    self.auxiliary = active_fn
+                    auxiliary_changed = True
+                    print(
+                        f"[JPAF Reflection] Auxiliary 替換: {old_aux} → {active_fn} "
+                        f"(近 {len(self.active_history)} 輪 active 次數: "
+                        f"{active_fn}={active_count}, {old_aux}={aux_count})"
+                    )
+
+            if weight_changes:
+                print(
+                    f"[JPAF Reflection] Weight 更新: "
+                    + ", ".join(f"{fn}: {d:+.4f}" for fn, d in weight_changes.items())
+                )
+
+        return {
+            "active_function": active_fn,
+            "temporary_weight": round(temp_w, 4),
+            "reflection_triggered": reflection_triggered,
+            "weight_changes": weight_changes,
+            "dominant_changed": dominant_changed,
+            "auxiliary_changed": auxiliary_changed,
+        }
+
+    def _renormalize(self) -> None:
+        """重新正規化 base_weights 使總和 = 1.0。"""
+        total = sum(self.base_weights.values())
+        if total > 0 and abs(total - 1.0) > 0.001:
+            for fn in self.base_weights:
+                self.base_weights[fn] = round(self.base_weights[fn] / total, 4)
+            # 修正浮點誤差
+            diff = 1.0 - sum(self.base_weights.values())
+            self.base_weights[self.dominant] = round(
+                self.base_weights[self.dominant] + diff, 4
+            )
+
+    def _enforce_constraints(self) -> None:
+        """強制論文數學約束：dominant >= JPAF_A, undifferentiated <= JPAF_B。"""
+        # dominant 不能低於 JPAF_A
+        if self.base_weights[self.dominant] < JPAF_A:
+            self.base_weights[self.dominant] = JPAF_A
+            self._renormalize()
+
     def apply_reflection(self, state: dict) -> None:
-        """驗證並套用 LLM 輸出的 jpaf_state 更新（Reflection 觸發時）。"""
+        """驗證並套用 LLM 輸出的 jpaf_state 更新（Reflection 觸發時）。
+        保留作為 LLM 主動觸發 Reflection 的備用路徑。"""
         new_w = state.get("base_weights")
         if isinstance(new_w, dict) and set(new_w.keys()) == set(DEFAULT_WEIGHTS.keys()):
             total = sum(new_w.values())
@@ -228,6 +373,7 @@ class JPAFSession:
             "base_weights": self.base_weights,
             "current_persona": self.current_persona,
             "turn_count": self.turn_count,
+            "active_history": self.active_history,
         }
 
     @classmethod
@@ -240,6 +386,7 @@ class JPAFSession:
             auxiliary=data.get("auxiliary"),
             base_weights=data.get("base_weights"),
             turn_count=data.get("turn_count", 0),
+            active_history=data.get("active_history"),
         )
 
 

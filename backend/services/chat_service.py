@@ -275,7 +275,7 @@ async def call_agent_b(messages: list) -> object:
         messages=messages,
         tools=tools,
         tool_choice="auto",
-        temperature=0.85,
+        temperature=0.5,
         extra_body=EXTRA_BODY,
         max_tokens=256,
     )
@@ -355,7 +355,7 @@ async def compress_context(messages: list, websocket: WebSocket) -> list:
             messages=[
                 {
                     "role": "system",
-                    "content": "你是一個對話摘要助手。請將以下對話內容壓縮成簡潔的重點摘要，保留關鍵資訊、情感和重要事件。用繁體中文，以條列式呈現。",
+                    "content": "你是一個對話摘要助手。請將以下對話內容壓縮成簡潔的重點摘要，保留關鍵資訊、情感和重要事件。同時記錄對話中角色人格的情緒模式變化（如哪些認知功能被頻繁啟用、角色語氣是否有明顯轉變）。用繁體中文，以條列式呈現。",
                 },
                 {"role": "user", "content": f"請摘要以下對話：\n\n{old_text}"},
             ],
