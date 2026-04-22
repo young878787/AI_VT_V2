@@ -49,6 +49,12 @@ def build_live2d_prompt(
         for item in _LIVE2D_CFG["speaking_rate_hints"]
     )
 
+    # 眨眼控制提示
+    blink_lines = "\n".join(
+        f"- **{item['action']}**：{item['description']}（建議 {item.get('duration_hint', item.get('interval_hint', ''))}）"
+        for item in _LIVE2D_CFG.get("blink_control_hints", [])
+    )
+
     return f"""你是 {_LIVE2D_CFG['system_role']}。
 {_LIVE2D_CFG['task_description']}
 
@@ -73,7 +79,17 @@ def build_live2d_prompt(
 {emotion_lines}
 
 ## 語音語速 (speaking_rate)
-{rate_lines}"""
+{rate_lines}
+
+## 眨眼控制 (blink_control) — 選用
+你可以使用 blink_control 工具來控制眨眼，讓角色更自然：
+{blink_lines}
+
+**使用時機建議**：
+- 長時間對話後：呼叫 force_blink 模擬自然眨眼
+- 凝視/專注時：呼叫 pause 暫停眨眼 2-3 秒
+- 撒嬌/害羞時：可以加快眨眼頻率 (set_interval min=0.8, max=1.5)
+- 驚訝/震驚時：可以先 pause 暫停眨眼，再 force_blink"""
 
 
 def build_memory_prompt(

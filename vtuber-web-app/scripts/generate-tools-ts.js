@@ -25,6 +25,10 @@ function main() {
   const tool = openaiLive2d[0];
   const toolName = tool.function.name;
 
+  // 找出 blink_control 工具（如果存在）
+  const blinkTool = openaiLive2d.find((t) => t.function.name === 'blink_control');
+  const hasBlinkControl = !!blinkTool;
+
   // --- 產生 ParamDef interface ---
   const paramDefInterface = `export interface ParamDef {
   key: string;
@@ -90,6 +94,15 @@ function main() {
   // --- 產生工具名稱 ---
   const toolNameDecl = `export const LIVE2D_TOOL_NAME = '${toolName}';`;
 
+  // --- 產生 blink_control 工具資訊 ---
+  const blinkToolDecl = hasBlinkControl
+    ? `export const BLINK_CONTROL_TOOL = {
+  name: '${blinkTool.function.name}',
+  description: '${blinkTool.function.description.replace(/'/g, "\\'")}',
+  actions: ${JSON.stringify(blinkTool.function.parameters.properties.action.enum)},
+} as const;`
+    : `export const BLINK_CONTROL_TOOL = null;`;
+
   // --- 組裝完整檔案 ---
   const output = `// ============================================
 // 自動生成檔案 — 請勿手動修改
@@ -110,6 +123,8 @@ ${eyeSyncDecl}
 ${coverageDecl}
 
 ${toolNameDecl}
+
+${blinkToolDecl}
 `;
 
   if (!fs.existsSync(OUT_DIR)) {

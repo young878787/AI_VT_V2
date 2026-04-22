@@ -46,6 +46,53 @@ export class CubismEyeBlink {
   }
 
   /**
+   * まばたきの間隔の範囲を設定
+   * @param minInterval 最小間隔[秒]
+   * @param maxInterval 最大間隔[秒]
+   */
+  public setBlinkingIntervalRange(minInterval: number, maxInterval: number): void {
+    this._blinkingIntervalMin = minInterval;
+    this._blinkingIntervalMax = maxInterval;
+  }
+
+  /**
+   * 自動まばたきを一時停止
+   * @param durationSec 停止時間[秒]（0=無期限）
+   */
+  public pause(durationSec: number = 0): void {
+    this._paused = true;
+    this._pauseEndTime = durationSec > 0 ? this._userTimeSeconds + durationSec : 0;
+  }
+
+  /**
+   * 自動まばたきを再開
+   */
+  public resume(): void {
+    this._paused = false;
+    this._pauseEndTime = 0;
+    this._nextBlinkingTime = this.determinNextBlinkingTiming();
+  }
+
+  /**
+   * 強制まばたき（即座に1回まばたきを実行）
+   * @param pauseAfterSec 眨眼完成後暫停自動眨眼的時間（秒），0=不暫停
+   */
+  public forceBlink(pauseAfterSec: number = 0): void {
+    this._blinkingState = EyeState.EyeState_Closing;
+    this._stateStartTimeSeconds = this._userTimeSeconds;
+    if (pauseAfterSec > 0) {
+      this._pendingPauseDuration = pauseAfterSec;
+    }
+  }
+
+  /**
+   * 一時停止中かどうか
+   */
+  public isPaused(): boolean {
+    return this._paused;
+  }
+
+  /**
    * まばたきのモーションの詳細設定
    * @param closing   まぶたを閉じる動作の所要時間[秒]
    * @param closed    まぶたを閉じている動作の所要時間[秒]
@@ -84,6 +131,17 @@ export class CubismEyeBlink {
    */
   public updateParameters(model: CubismModel, deltaTimeSeconds: number): void {
     this._userTimeSeconds += deltaTimeSeconds;
+
+    // 暫停中自動恢復檢查
+    if (this._paused && this._pauseEndTime > 0 && this._userTimeSeconds >= this._pauseEndTime) {
+      this.resume();
+    }
+
+    // 暫停中跳過更新
+    if (this._paused) {
+      return;
+    }
+
     let parameterValue: number;
     let t = 0.0;
     const blinkingState: EyeState = this._blinkingState;
@@ -125,6 +183,12 @@ export class CubismEyeBlink {
           t = 1.0;
           this._blinkingState = EyeState.EyeState_Interval;
           this._nextBlinkingTime = this.determinNextBlinkingTiming();
+
+          // 眨眼完成後，執行待處理的暫停請求
+          if (this._pendingPauseDuration > 0) {
+            this.pause(this._pendingPauseDuration);
+            this._pendingPauseDuration = 0;
+          }
         }
 
         parameterValue = t;
@@ -165,12 +229,17 @@ export class CubismEyeBlink {
     this._blinkingState = EyeState.EyeState_First;
     this._nextBlinkingTime = 0.0;
     this._stateStartTimeSeconds = 0.0;
-    this._blinkingIntervalSeconds = 4.0;
+    this._blinkingIntervalSeconds = 2.5;
+    this._blinkingIntervalMin = 1.0;
+    this._blinkingIntervalMax = 4.0;
     this._closingSeconds = 0.1;
     this._closedSeconds = 0.05;
     this._openingSeconds = 0.15;
     this._userTimeSeconds = 0.0;
     this._parameterIds = new Array<CubismIdHandle>();
+    this._paused = false;
+    this._pauseEndTime = 0.0;
+    this._pendingPauseDuration = 0.0;
 
     if (modelSetting == null) {
       return;
@@ -189,20 +258,23 @@ export class CubismEyeBlink {
    */
   public determinNextBlinkingTiming(): number {
     const r: number = Math.random();
-    return (
-      this._userTimeSeconds + r * (2.0 * this._blinkingIntervalSeconds - 1.0)
-    );
+    return this._userTimeSeconds + this._blinkingIntervalMin + r * (this._blinkingIntervalMax - this._blinkingIntervalMin);
   }
 
   _blinkingState: number; // 現在の状態
   _parameterIds: Array<CubismIdHandle>; // 操作対象のパラメータのIDのリスト
   _nextBlinkingTime: number; // 次のまばたきの時刻[秒]
   _stateStartTimeSeconds: number; // 現在の状態が開始した時刻[秒]
-  _blinkingIntervalSeconds: number; // まばたきの間隔[秒]
+  _blinkingIntervalSeconds: number; // まばたきの間隔[秒]（互換用）
+  _blinkingIntervalMin: number; // まばたきの最小間隔[秒]
+  _blinkingIntervalMax: number; // まばたきの最大間隔[秒]
   _closingSeconds: number; // まぶたを閉じる動作の所要時間[秒]
   _closedSeconds: number; // まぶたを閉じている動作の所要時間[秒]
   _openingSeconds: number; // まぶたを開く動作の所要時間[秒]
   _userTimeSeconds: number; // デルタ時間の積算値[秒]
+  _paused: boolean; // 自動まばたき一時停止フラグ
+  _pauseEndTime: number; // 一時停止終了時刻（0=無期限）
+  _pendingPauseDuration: number; // 眨眼完成後待處理的暫停時間[秒]
 
   /**
    * IDで指定された目のパラメータが、0のときに閉じるなら true 、1の時に閉じるなら false 。

@@ -78,6 +78,7 @@ interface AppState {
   setAiTyping: (isTyping: boolean) => void;
   setCompressing: (isCompressing: boolean) => void;
   setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean) => void;
+  setBlinkControl: (action: string, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
 
   // 模型變換動作
   toggleModelDrag: () => void;
@@ -341,6 +342,38 @@ export const useAppStore = create<AppState>((set, get) => ({
            (model as any).setAiHappiness(headIntensity, durationSec);
         }
       }
+    }
+  },
+
+  setBlinkControl: (action, durationSec = 0, intervalMin, intervalMax) => {
+    const manager = LAppLive2DManager.getInstance();
+    const model = manager.getActiveModel();
+    if (!model) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = model as any;
+
+    switch (action) {
+      case 'force_blink':
+        if (typeof m.forceBlink === 'function') {
+          m.forceBlink(durationSec);
+        }
+        break;
+      case 'pause':
+        if (typeof m.pauseAutoBlink === 'function') {
+          m.pauseAutoBlink(durationSec);
+        }
+        break;
+      case 'resume':
+        if (typeof m.resumeAutoBlink === 'function') {
+          m.resumeAutoBlink();
+        }
+        break;
+      case 'set_interval':
+        if (typeof m.setBlinkInterval === 'function' && intervalMin !== undefined && intervalMax !== undefined) {
+          m.setBlinkInterval(intervalMin, intervalMax);
+        }
+        break;
     }
   },
 }));

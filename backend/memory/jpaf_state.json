@@ -11,10 +11,7 @@
     "Se": 0.06,
     "Ni": 0.06
   },
-  "current_persona": "happy",
-  "turn_count": 3,
-  "active_history": [
-    "Ne",
-    "Se"
-  ]
+  "current_persona": "tsundere",
+  "turn_count": 0,
+  "active_history": []
 }

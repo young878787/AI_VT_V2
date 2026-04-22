@@ -86,6 +86,14 @@ class WSService {
                         data.browRForm ?? 0.0,
                         data.eyeSync ?? true
                     );
+                } else if (data.type === 'blink_control') {
+                    console.log(`Received blink control: action=${data.action}, duration=${data.durationSec}`);
+                    store.setBlinkControl(
+                        data.action,
+                        data.durationSec ?? 0,
+                        data.intervalMin,
+                        data.intervalMax
+                    );
                 } else if (data.type === 'stream_end') {
                     this.currentAssistantMessageId = null;
                     store.setAiTyping(false);

@@ -111,6 +111,42 @@
             ]
           }
         }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "blink_control",
+          "description": "控制 Live2D 模型的眨眼行為。用於強制眨眼、暫停/恢復自動眨眼、調整眨眼頻率。AI 可以主動使用來模擬更自然的互動。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": ["force_blink", "pause", "resume", "set_interval"],
+                "description": "眨眼控制動作：force_blink=立即眨眼一次、pause=暫停自動眨眼、resume=恢復自動眨眼、set_interval=設置眨眼間隔範圍"
+              },
+              "duration_sec": {
+                "type": "number",
+                "description": "持續時間（秒）。force_blink 時=眨眼後暫停自動眨眼的時間；pause 時=暫停多久。0=無期限（需手動 resume）。範圍 0-30",
+                "minimum": 0,
+                "maximum": 30
+              },
+              "interval_min": {
+                "type": "number",
+                "description": "設置眨眼最小間隔（秒），僅 action=set_interval 時使用。範圍 0.5-10",
+                "minimum": 0.5,
+                "maximum": 10
+              },
+              "interval_max": {
+                "type": "number",
+                "description": "設置眨眼最大間隔（秒），僅 action=set_interval 時使用。範圍 0.5-15",
+                "minimum": 0.5,
+                "maximum": 15
+              }
+            },
+            "required": ["action"]
+          }
+        }
       }
     ],
     "memory": [
@@ -355,6 +391,12 @@
         { "mood": "撒嬌", "range": "0.9～1.0", "note": "稍慢、拉長" },
         { "mood": "驚訝", "range": "1.1～1.2", "note": "稍快" },
         { "mood": "正常對話", "range": "1.0", "note": "" }
+      ],
+      "blink_control_hints": [
+        { "action": "force_blink", "description": "立即眨眼一次。用於強調語氣、撒嬌、或長時間對話後自然眨眼", "duration_hint": "1.0~2.0秒" },
+        { "action": "pause", "description": "暫停自動眨眼。用於凝視、專注看著對方、或戲劇性時刻", "duration_hint": "2.0~5.0秒" },
+        { "action": "resume", "description": "恢復自動眨眼。暫停後使用，讓角色恢復自然狀態" },
+        { "action": "set_interval", "description": "調整眨眼頻率。興奮時加快(0.8-1.5s)、放鬆時放慢(2-4s)、撒嬌時加快(1-2s)", "interval_hint": "min: 0.5-5s, max: 1-10s" }
       ]
     },
     "memory": {

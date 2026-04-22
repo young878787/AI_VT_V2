@@ -12,11 +12,12 @@ import { ModelImportButton } from './ModelImportButton';
 import './ControlPanel.css';
 
 /** 可折疊區塊 key */
-type SectionKey = 'model' | 'controls' | 'transform' | 'background' | 'motion';
+type SectionKey = 'model' | 'controls' | 'blink' | 'transform' | 'background' | 'motion';
 
 const SECTION_LABELS: Record<SectionKey, string> = {
   model:      '角色模型',
   controls:   '功能控制',
+  blink:      '眨眼控制',
   transform:  '模型調整',
   background: 'OBS 輸出設定',
   motion:     '動作測試',
@@ -25,6 +26,7 @@ const SECTION_LABELS: Record<SectionKey, string> = {
 const SECTION_ICONS: Record<SectionKey, string> = {
   model:      '🎭',
   controls:   '⚡',
+  blink:      '👁',
   transform:  '🔧',
   background: '🖥',
   motion:     '▶',
@@ -61,10 +63,11 @@ export const ControlPanel = () => {
     removeModel,
   } = useAppStore();
 
-  // 折疊狀態：預設展開 model、controls
+  // 折疊狀態：預設展開 model、controls、blink
   const [collapsed, setCollapsed] = useState<Record<SectionKey, boolean>>({
     model:      false,
     controls:   false,
+    blink:      false,
     transform:  true,
     background: true,
     motion:     true,
@@ -77,6 +80,10 @@ export const ControlPanel = () => {
   const [motionGroups, setMotionGroups] = useState<string[]>([]);
   const [selectedMotionGroup, setSelectedMotionGroup] = useState<string>('Idle');
   const [lipSyncVolume, setLipSyncVolume] = useState<number>(0);
+
+  // 眨眼控制狀態
+  const [blinkPaused, setBlinkPaused] = useState(false);
+  const [blinkInterval, setBlinkInterval] = useState({ min: 1.0, max: 4.0 });
 
   // 背景設定狀態
   const {
@@ -205,6 +212,43 @@ export const ControlPanel = () => {
     const model = LAppLive2DManager.getInstance().getActiveModel();
     if (model) model.startRandomMotion(selectedMotionGroup, Priority.Force);
   }, [selectedMotionGroup]);
+
+  // 眨眼控制
+  const handleForceBlink = useCallback(() => {
+    const model = LAppLive2DManager.getInstance().getActiveModel();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (model && typeof (model as any).forceBlink === 'function') {
+      (model as any).forceBlink(1.5);
+    }
+  }, []);
+
+  const handlePauseBlink = useCallback(() => {
+    const model = LAppLive2DManager.getInstance().getActiveModel();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (model && typeof (model as any).pauseAutoBlink === 'function') {
+      (model as any).pauseAutoBlink(3.0);
+      setBlinkPaused(true);
+      setTimeout(() => setBlinkPaused(false), 3000);
+    }
+  }, []);
+
+  const handleResumeBlink = useCallback(() => {
+    const model = LAppLive2DManager.getInstance().getActiveModel();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (model && typeof (model as any).resumeAutoBlink === 'function') {
+      (model as any).resumeAutoBlink();
+      setBlinkPaused(false);
+    }
+  }, []);
+
+  const handleSetBlinkInterval = useCallback((min: number, max: number) => {
+    const model = LAppLive2DManager.getInstance().getActiveModel();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (model && typeof (model as any).setBlinkInterval === 'function') {
+      (model as any).setBlinkInterval(min, max);
+      setBlinkInterval({ min, max });
+    }
+  }, []);
 
   // 刪除匯入模型
   const handleDeleteModel = useCallback(async (name: string) => {
@@ -394,6 +438,48 @@ export const ControlPanel = () => {
                 </button>
               </div>
 
+            </div>
+          )}
+        </div>
+
+        {/* ━━ 眨眼控制 ━━ */}
+        <div className="ctrl-section">
+          <SectionHeader id="blink" />
+          {!collapsed.blink && (
+            <div className="ctrl-section__content">
+              {/* 狀態指示 */}
+              <div className="cp-blink-status">
+                <span className={`cp-blink-dot ${blinkPaused ? 'paused' : 'active'}`} />
+                <span className="cp-blink-label">{blinkPaused ? '暫停中' : '自動眨眼運行中'}</span>
+              </div>
+
+              {/* 控制按鈕 */}
+              <div className="cp-blink-buttons">
+                <button className="cp-blink-btn" onClick={handleForceBlink} title="立即眨眼一次">
+                  👁 強制眨眼
+                </button>
+                <button className="cp-blink-btn" onClick={handlePauseBlink} disabled={blinkPaused} title="暫停自動眨眼3秒">
+                  ⏸ 暫停
+                </button>
+                <button className="cp-blink-btn" onClick={handleResumeBlink} disabled={!blinkPaused} title="恢復自動眨眼">
+                  ▶ 恢復
+                </button>
+              </div>
+
+              {/* 間隔調整 */}
+              <div className="cp-blink-interval">
+                <span className="cp-blink-interval-label">間隔：</span>
+                <button className={`cp-blink-int-chip ${blinkInterval.min === 0.8 && blinkInterval.max === 1.5 ? 'active' : ''}`} onClick={() => handleSetBlinkInterval(0.8, 1.5)}>
+                  快
+                </button>
+                <button className={`cp-blink-int-chip ${blinkInterval.min === 1.0 && blinkInterval.max === 4.0 ? 'active' : ''}`} onClick={() => handleSetBlinkInterval(1.0, 4.0)}>
+                  正常
+                </button>
+                <button className={`cp-blink-int-chip ${blinkInterval.min === 2.0 && blinkInterval.max === 6.0 ? 'active' : ''}`} onClick={() => handleSetBlinkInterval(2.0, 6.0)}>
+                  慢
+                </button>
+              </div>
+              <div className="cp-hint">目前：{blinkInterval.min.toFixed(1)}s ~ {blinkInterval.max.toFixed(1)}s</div>
             </div>
           )}
         </div>

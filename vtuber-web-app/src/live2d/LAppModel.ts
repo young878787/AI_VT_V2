@@ -91,6 +91,8 @@ export class LAppModel extends CubismUserModel {
   private _aiBlushLevel: number = 0;
   private _aiEyeLOpen: number = 1.0;
   private _aiEyeROpen: number = 1.0;
+  private _aiEyeBaseLOpen: number = 1.0;
+  private _aiEyeBaseROpen: number = 1.0;
   private _aiMouthForm: number = 0.0;
   private _aiBrowLY: number = 0.0;
   private _aiBrowRY: number = 0.0;
@@ -416,6 +418,64 @@ export class LAppModel extends CubismUserModel {
     this._physicsEnabled = enabled;
   }
 
+  // ─────────────────────────────────────────────
+  //  AI 眨眼控制 API（blink_control tool 使用）
+  // ─────────────────────────────────────────────
+
+  /**
+   * 強制立即眨眼（AI 優先，眨眼完成後暫停自動眨眼）
+   * @param pauseAfterSec 眨眼完成後暫停自動眨眼的時間（秒），0=不暫停
+   */
+  public forceBlink(pauseAfterSec: number = 0): void {
+    if (this._eyeBlink) {
+      this._eyeBlink.forceBlink(pauseAfterSec);
+    }
+  }
+
+  /**
+   * 暫停自動眨眼（AI 接管期間）
+   * @param durationSec 暫停時間（秒），0=無期限（需手動 resume）
+   */
+  public pauseAutoBlink(durationSec: number = 0): void {
+    if (this._eyeBlink) {
+      this._eyeBlink.pause(durationSec);
+    }
+  }
+
+  /**
+   * 恢復自動眨眼
+   */
+  public resumeAutoBlink(): void {
+    if (this._eyeBlink) {
+      this._eyeBlink.resume();
+    }
+  }
+
+  /**
+   * 設置自動眨眼間隔範圍
+   * @param minSec 最小間隔（秒）
+   * @param maxSec 最大間隔（秒）
+   */
+  public setBlinkInterval(minSec: number, maxSec: number): void {
+    if (this._eyeBlink) {
+      this._eyeBlink.setBlinkingIntervalRange(minSec, maxSec);
+    }
+  }
+
+  /**
+   * 取得眨眼狀態（供 UI 顯示）
+   */
+  public getBlinkState(): { paused: boolean; intervalMin: number; intervalMax: number } {
+    if (this._eyeBlink) {
+      return {
+        paused: this._eyeBlink.isPaused(),
+        intervalMin: this._eyeBlink['_blinkingIntervalMin'],
+        intervalMax: this._eyeBlink['_blinkingIntervalMax'],
+      };
+    }
+    return { paused: false, intervalMin: 1.0, intervalMax: 4.0 };
+  }
+
   /**
    * 設置模型位置（絕對位置）
    */
@@ -688,6 +748,8 @@ export class LAppModel extends CubismUserModel {
     this._aiBlushLevel = Math.max(0, Math.min(1, blushLevel));
     this._aiEyeLOpen = Math.max(0, Math.min(1, eyeLOpen));
     this._aiEyeROpen = Math.max(0, Math.min(1, eyeROpen));
+    this._aiEyeBaseLOpen = this._aiEyeLOpen;
+    this._aiEyeBaseROpen = this._aiEyeROpen;
     this._aiMouthForm = Math.max(-1, Math.min(1, mouthForm));
     this._aiBrowLY = Math.max(-1, Math.min(1, browLY));
     this._aiBrowRY = Math.max(-1, Math.min(1, browRY));
@@ -881,76 +943,7 @@ export class LAppModel extends CubismUserModel {
 
     this._model.saveParameters();
 
-    // 眨眼（只在自動效果啟用時）
-    if (this._eyeBlink && this._autoEffectsEnabled) {
-      this._eyeBlink.updateParameters(this._model, deltaTimeSeconds);
-    }
-
-    // 表情
-    if (this._expressionManager) {
-      this._expressionManager.updateMotion(this._model, deltaTimeSeconds);
-    }
-
-    // 視線追蹤效果 - 只在視線追蹤啟用時
-    if (this._eyeTrackingEnabled) {
-      // 頭部轉向（柔和的跟隨）
-      this._model.addParameterValueById(this._idParamAngleX, this._dragX * 45);
-      this._model.addParameterValueById(this._idParamAngleY, this._dragY * 45);
-      this._model.addParameterValueById(this._idParamAngleZ, this._dragX * this._dragY * -45);
-
-      // 身體也稍微跟隨
-      this._model.addParameterValueById(this._idParamBodyAngleX, this._dragX * 15);
-
-      // 眼球追蹤（更靈敏，讓眼睛更有生動感）
-      // 眼球的移動範圍比頭部大，讓角色看起來更專注於滑鼠位置
-      this._model.addParameterValueById(this._idParamEyeBallX, this._dragX * 1.5);
-      this._model.addParameterValueById(this._idParamEyeBallY, this._dragY * 1.5);
-    }
-
-    // LipSync（嘴型同步）
-    if (this._lipSyncValue > 0) {
-      this._model.addParameterValueById(this._idParamMouthOpenY, this._lipSyncValue);
-    }
-
-    // AI Behavior 控制頭部與身體擺動 (Lissajous curve 提升立體感)
-    if (this._aiBehaviorTimer > 0) {
-      this._aiBehaviorTimer -= deltaTimeSeconds;
-
-      let activeIntensity = this._aiHeadIntensity;
-      // 當剩下不到 1 秒時，平滑降至 0
-      if (this._aiBehaviorTimer < 1.0) {
-        activeIntensity = this._aiHeadIntensity * this._aiBehaviorTimer;
-      }
-
-      if (activeIntensity > 0.001) {
-        const time = Date.now() / 1000;
-        
-        // ∞ 字形擺動頻率設定
-        const freqZ = 2.0 + (3.0 * this._aiHeadIntensity);
-        const freqX = freqZ * 0.5; // 利薩如曲線 X軸頻率通常是Z(左右搖)的一半，形成點頭感
-        const freqY = freqZ * 0.5; 
-
-        // 動作幅度設定
-        const ampZ = 25 * activeIntensity; // 左右搖頭最大 25 度
-        const ampX = 15 * activeIntensity; // 俯仰最大 15 度
-        const ampY = 10 * activeIntensity; // 轉向最大 10 度
-
-        this._model.addParameterValueById(this._idParamAngleZ, Math.sin(time * freqZ) * ampZ);
-        // 使用 cos 製造相位差，讓頭部呈現橢圓/∞字形而非單純斜線運動
-        this._model.addParameterValueById(this._idParamAngleX, Math.cos(time * freqX) * ampX);
-        this._model.addParameterValueById(this._idParamAngleY, Math.cos(time * freqY + Math.PI/4) * ampY);
-        
-        // 身體跟隨頭部連動
-        this._model.addParameterValueById(this._idParamBodyAngleX, Math.sin(time * freqZ) * (ampZ * 0.6));
-      }
-      
-      // 目標表情值維持不變（在 if 內已由外部 let 賦值，見下方）
-    } else {
-      this._aiHeadIntensity = 0;
-      this._aiBehaviorTimer = 0;
-    }
-
-    // 使用 let 宣告目標表情值，避免 var 的函式作用域問題
+    // ── AI 表情計算（先計算基礎值，供眨眼疊加使用）──
     let targetBlush: number;
     let targetEyeL: number;
     let targetEyeR: number;
@@ -963,7 +956,31 @@ export class LAppModel extends CubismUserModel {
     let targetBrowRForm: number;
 
     if (this._aiBehaviorTimer > 0) {
-      // AI 行為仍在計時：保持目標表情值
+      this._aiBehaviorTimer -= deltaTimeSeconds;
+
+      let activeIntensity = this._aiHeadIntensity;
+      if (this._aiBehaviorTimer < 1.0) {
+        activeIntensity = this._aiHeadIntensity * this._aiBehaviorTimer;
+      }
+
+      if (activeIntensity > 0.001) {
+        const time = Date.now() / 1000;
+        const freqZ = 2.0 + (3.0 * this._aiHeadIntensity);
+        const freqX = freqZ * 0.5;
+        const freqY = freqZ * 0.5;
+        const ampZ = 25 * activeIntensity;
+        const ampX = 15 * activeIntensity;
+        const ampY = 10 * activeIntensity;
+
+        this._model.addParameterValueById(this._idParamAngleZ, Math.sin(time * freqZ) * ampZ);
+        this._model.addParameterValueById(this._idParamAngleX, Math.cos(time * freqX) * ampX);
+        this._model.addParameterValueById(this._idParamAngleY, Math.cos(time * freqY + Math.PI/4) * ampY);
+        this._model.addParameterValueById(this._idParamBodyAngleX, Math.sin(time * freqZ) * (ampZ * 0.6));
+      } else {
+        this._aiHeadIntensity = 0;
+        this._aiBehaviorTimer = 0;
+      }
+
       targetBlush     = this._aiBlushLevel;
       targetEyeL      = this._aiEyeLOpen;
       targetEyeR      = this._aiEyeROpen;
@@ -975,7 +992,7 @@ export class LAppModel extends CubismUserModel {
       targetBrowLForm = this._aiBrowLForm;
       targetBrowRForm = this._aiBrowRForm;
     } else {
-      // 行為結束：表情目標逐漸退回預設狀態
+      this._aiHeadIntensity = 0;
       targetBlush     = 0.0;
       targetEyeL      = 1.0;
       targetEyeR      = 1.0;
@@ -988,7 +1005,6 @@ export class LAppModel extends CubismUserModel {
       targetBrowRForm = 0.0;
     }
 
-    // 表情平滑過渡 (Lerp) 處理
     const lerpFactor = Math.min(1.0, 5.0 * deltaTimeSeconds);
     this._currentBlushLevel += (targetBlush - this._currentBlushLevel) * lerpFactor;
     this._currentEyeLOpen += (targetEyeL - this._currentEyeLOpen) * lerpFactor;
@@ -1001,20 +1017,58 @@ export class LAppModel extends CubismUserModel {
     this._currentBrowLForm += (targetBrowLForm - this._currentBrowLForm) * lerpFactor;
     this._currentBrowRForm += (targetBrowRForm - this._currentBrowRForm) * lerpFactor;
 
-    // 計算右側眉毛（若 eye_sync 為 true，強制覆蓋右側當前值以對齊左側）
-    // brow_angle 鏡像：左眉正值=右側偏外=對稱需取負
-    if (this._aiEyeSync && this._aiBehaviorTimer > 0) {
+    if (this._aiEyeSync && (this._aiBehaviorTimer > 0 || targetEyeL < 0.99)) {
       this._currentBrowRY = this._currentBrowLY;
       this._currentBrowRAngle = -this._currentBrowLAngle;
       this._currentBrowRForm = this._currentBrowLForm;
       this._currentEyeROpen = this._currentEyeLOpen;
     }
 
-    // 只有在有表情控制時才注入（避免鎖死自動眨眼系統）
+    // 更新 AI 眼睛基礎值（供眨眼疊加使用）
+    this._aiEyeBaseLOpen = this._currentEyeLOpen;
+    this._aiEyeBaseROpen = this._currentEyeROpen;
+
+    // ── 眨眼（在 AI 眼睛基礎值上疊加）──
+    if (this._eyeBlink) {
+      // 先設置 AI 眼睛基礎值
+      this._model.setParameterValueById(this._idParamEyeLOpen, this._aiEyeBaseLOpen);
+      this._model.setParameterValueById(this._idParamEyeROpen, this._aiEyeBaseROpen);
+
+      // 執行眨眼
+      this._eyeBlink.updateParameters(this._model, deltaTimeSeconds);
+
+      // 如果 AI 有設置瞇眼（基礎值 < 1.0），縮放眨眼結果實現「瞇小眼眨眼」
+      if (this._aiEyeBaseLOpen < 0.99 || this._aiEyeBaseROpen < 0.99) {
+        const blinkL = this._model.getParameterValueById(this._idParamEyeLOpen);
+        const blinkR = this._model.getParameterValueById(this._idParamEyeROpen);
+        this._model.setParameterValueById(this._idParamEyeLOpen, blinkL * this._aiEyeBaseLOpen);
+        this._model.setParameterValueById(this._idParamEyeROpen, blinkR * this._aiEyeBaseROpen);
+      }
+    }
+
+    // 表情
+    if (this._expressionManager) {
+      this._expressionManager.updateMotion(this._model, deltaTimeSeconds);
+    }
+
+    // 視線追蹤效果 - 只在視線追蹤啟用時
+    if (this._eyeTrackingEnabled) {
+      this._model.addParameterValueById(this._idParamAngleX, this._dragX * 45);
+      this._model.addParameterValueById(this._idParamAngleY, this._dragY * 45);
+      this._model.addParameterValueById(this._idParamAngleZ, this._dragX * this._dragY * -45);
+      this._model.addParameterValueById(this._idParamBodyAngleX, this._dragX * 15);
+      this._model.addParameterValueById(this._idParamEyeBallX, this._dragX * 1.5);
+      this._model.addParameterValueById(this._idParamEyeBallY, this._dragY * 1.5);
+    }
+
+    // LipSync（嘴型同步）
+    if (this._lipSyncValue > 0) {
+      this._model.addParameterValueById(this._idParamMouthOpenY, this._lipSyncValue);
+    }
+
+    // 注入其他 AI 表情參數（不含眼睛，眼睛已由眨眼處理）
     const hasExpression = this._aiBehaviorTimer > 0
       || this._currentBlushLevel > 0.01
-      || this._currentEyeLOpen < 0.99
-      || this._currentEyeROpen < 0.99
       || Math.abs(this._currentMouthForm) > 0.01
       || Math.abs(this._currentBrowLY) > 0.01
       || Math.abs(this._currentBrowRY) > 0.01
@@ -1025,8 +1079,6 @@ export class LAppModel extends CubismUserModel {
 
     if (hasExpression) {
       this._model.setParameterValueById(this._idParamTere, this._currentBlushLevel);
-      this._model.setParameterValueById(this._idParamEyeLOpen, this._currentEyeLOpen);
-      this._model.setParameterValueById(this._idParamEyeROpen, this._currentEyeROpen);
       this._model.setParameterValueById(this._idParamMouthForm, this._currentMouthForm);
       this._model.setParameterValueById(this._idParamBrowLY, this._currentBrowLY);
       this._model.setParameterValueById(this._idParamBrowRY, this._currentBrowRY);

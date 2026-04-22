@@ -306,6 +306,27 @@ async def websocket_endpoint(websocket: WebSocket):
                         brow_r_form = float(args.get("brow_r_form", 0.0))
                         speaking_rate = float(args.get("speaking_rate", 1.0))
 
+                    elif fn_name == "blink_control":
+                        blink_action = args.get("action", "")
+                        blink_duration = float(args.get("duration_sec", 0))
+                        blink_interval_min = args.get("interval_min")
+                        blink_interval_max = args.get("interval_max")
+
+                        blink_payload = {
+                            "type": "blink_control",
+                            "action": blink_action,
+                        }
+                        if blink_duration > 0:
+                            blink_payload["durationSec"] = blink_duration
+                        if blink_interval_min is not None:
+                            blink_payload["intervalMin"] = float(blink_interval_min)
+                        if blink_interval_max is not None:
+                            blink_payload["intervalMax"] = float(blink_interval_max)
+
+                        await websocket.send_json(blink_payload)
+                        await broadcast_to_displays(blink_payload)
+                        print(f"[BlinkControl] action={blink_action}, duration={blink_duration}")
+
                     elif fn_name == "update_user_profile":
                         action = args.get("action", "add")
                         field = args.get("field", "custom_notes")

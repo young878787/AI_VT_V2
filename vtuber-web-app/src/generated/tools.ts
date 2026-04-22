@@ -185,3 +185,9 @@ export const EYE_SYNC_DEFAULT = true;
 export const COVERAGE_INFO = { connected: 13, total: 14 };
 
 export const LIVE2D_TOOL_NAME = 'set_ai_behavior';
+
+export const BLINK_CONTROL_TOOL = {
+  name: 'blink_control',
+  description: '控制 Live2D 模型的眨眼行為。用於強制眨眼、暫停/恢復自動眨眼、調整眨眼頻率。AI 可以主動使用來模擬更自然的互動。',
+  actions: ["force_blink","pause","resume","set_interval"],
+} as const;
