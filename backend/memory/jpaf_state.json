@@ -12,9 +12,8 @@
     "Ni": 0.06
   },
   "current_persona": "happy",
-  "turn_count": 3,
+  "turn_count": 1,
   "active_history": [
-    "Ne",
-    "Se"
+    "Ne"
   ]
 }

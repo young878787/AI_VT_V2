@@ -31,6 +31,42 @@ _RE_XML_PARAM = re.compile(
 
 
 # ============================================================
+# Behavior Params 解析
+# ============================================================
+def parse_behavior_params(content_text: str) -> dict:
+    """
+    解析 content_text 中的 <behavior_params> JSON 區塊。
+    回傳解析後的 dict，若無法解析則回傳空 dict。
+    """
+    start_tag = "<behavior_params>"
+    end_tag = "</behavior_params>"
+    start_idx = content_text.find(start_tag)
+    if start_idx == -1:
+        return {}
+    end_idx = content_text.find(end_tag, start_idx)
+    if end_idx == -1:
+        return {}
+
+    json_text = content_text[start_idx + len(start_tag) : end_idx].strip()
+    try:
+        return json.loads(json_text)
+    except json.JSONDecodeError:
+        print(f"[Behavior] JSON parse failed: {json_text[:100]}")
+        return {}
+
+
+def strip_behavior_params(content_text: str) -> str:
+    """移除 content_text 中的 <behavior_params>...</behavior_params> 區塊。"""
+    cleaned = re.sub(
+        r"<behavior_params>.*?</behavior_params>",
+        "",
+        content_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+    return cleaned
+
+
+# ============================================================
 # Token 計數
 # ============================================================
 def estimate_token_count(messages: list) -> int:
@@ -141,6 +177,7 @@ async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dic
         temperature=0.85,
         extra_body=EXTRA_BODY,
         stream=True,
+        max_tokens=1024,
     )
 
     all_chunks: list[str] = []       # 完整原始文字（含標籤）
@@ -148,12 +185,13 @@ async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dic
     inside_hidden_tag: bool = False   # 是否在隱藏標籤內
     hidden_tag_name: str = ""         # 當前隱藏標籤名稱
 
-    _HIDDEN_OPEN_TAGS = {"<thinking>", "<think>", "<thought>", "<jpaf_state>"}
+    _HIDDEN_OPEN_TAGS = {"<thinking>", "<think>", "<thought>", "<jpaf_state>", "<behavior_params>"}
     _HIDDEN_CLOSE_MAP = {
         "thinking": "</thinking>",
         "think": "</think>",
         "thought": "</thought>",
         "jpaf_state": "</jpaf_state>",
+        "behavior_params": "</behavior_params>",
     }
 
     async for chunk in stream:
@@ -242,6 +280,7 @@ async def collect_agent_a(messages: list) -> tuple[str, dict | None]:
         temperature=0.85,
         extra_body=EXTRA_BODY,
         stream=True,
+        max_tokens=1024,
     )
 
     chunks: list[str] = []
@@ -261,7 +300,73 @@ async def collect_agent_a(messages: list) -> tuple[str, dict | None]:
 
 
 # ============================================================
-# Agent B-1：Live2D 表情控制
+# Agent A：JPAF 人格對話串流
+# ============================================================
+# Unified Agent A：收集完整串流 + 提前解析 Live2D 表情參數
+# ============================================================
+async def stream_unified_agent_a(
+    messages: list,
+    websocket: WebSocket,
+    on_behavior: callable,
+) -> tuple[str, dict | None]:
+    """
+    Unified Agent A 收集模式：
+    - 收集完整 LLM 串流輸出（不即時送文字，避免隱藏標籤洩漏）
+    - 一旦偵測到 </behavior_params> 立即觸發 on_behavior callback（提前送 Live2D 表情）
+    - 串流結束後，一次清理所有隱藏標籤再送出對話文字
+    - 回傳 (cleaned_text, jpaf_state)
+    """
+    stream = await chat_create_with_fallback(
+        model=MODEL_NAME,
+        messages=messages,
+        temperature=0.85,
+        extra_body=EXTRA_BODY,
+        stream=True,
+        max_tokens=1024,
+    )
+
+    all_chunks: list[str] = []
+    behavior_sent: bool = False
+
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        piece = getattr(delta, "content", None)
+        if not piece:
+            continue
+
+        all_chunks.append(piece)
+
+        # 只在含有 ">" 的 piece 時才做偵測，減少不必要的字串拼接
+        if not behavior_sent and ">" in piece:
+            full_so_far = "".join(all_chunks)
+            if "</behavior_params>" in full_so_far:
+                behavior = parse_behavior_params(full_so_far)
+                if behavior:
+                    await on_behavior(behavior)
+                    behavior_sent = True
+
+    raw_text = "".join(all_chunks).strip()
+
+    # Fallback：串流中未解析到 behavior，從完整文字再試一次
+    if not behavior_sent:
+        behavior = parse_behavior_params(raw_text)
+        if behavior:
+            await on_behavior(behavior)
+
+    jpaf_state = extract_jpaf_state(raw_text)
+    clean_text = strip_behavior_params(strip_jpaf_tags(strip_thinking(raw_text)))
+
+    # 將乾淨對話文字一次送出前端
+    if clean_text:
+        await websocket.send_json({"type": "text_stream", "content": clean_text})
+
+    return clean_text, jpaf_state
+
+
+# ============================================================
+# Agent B-1：Live2D 表情控制（已棄用，保留向後相容）
 # ============================================================
 async def call_live2d_agent(messages: list) -> object:
     """

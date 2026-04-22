@@ -17,9 +17,8 @@ from core.config import (
 from core.utils import strip_thinking, normalize_session_id
 from domain.jpaf import JPAFSession, extract_jpaf_state, strip_jpaf_tags
 from domain.agent_a_prompts import build_agent_a_prompt
-from domain.agent_b_prompts import build_live2d_prompt, build_memory_prompt
-from domain.tools import live2d_tools, memory_tools
-from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY
+from domain.agent_b_prompts import build_memory_prompt
+
 from infrastructure.memory_store import (
     load_user_profile,
     load_memory_notes,
@@ -30,20 +29,96 @@ from infrastructure.memory_store import (
     append_memory_note,
 )
 from services.chat_service import (
-    stream_agent_a,
-    collect_agent_a,
-    call_live2d_agent,
+    stream_unified_agent_a,
     call_memory_agent,
     compress_context,
     estimate_token_count,
     synthesize_and_send_voice,
     parse_xml_tool_calls,
 )
+
 from services.memory_service import execute_profile_update
 from api.display_manager import broadcast_to_displays
 from core.prompt_logger import log_turn, reset_log
 
+# 記憶操作鎖，防止背景任務 race condition
+memory_lock = asyncio.Lock()
+
 router = APIRouter()
+
+
+async def _process_memory_async(
+    user_message: str,
+    agent_a_text: str,
+    turn_count: int,
+) -> list[str]:
+    """
+    背景執行記憶管理（Agent B-2）。
+    不阻塞主對話流程，獨立判斷是否需要記憶操作。
+    """
+    memory_system = build_memory_prompt(user_message, agent_a_text)
+    memory_messages = [
+        {"role": "system", "content": memory_system},
+        {"role": "user", "content": "請分析用戶訊息，判斷是否需要記憶操作。"},
+    ]
+
+    try:
+        memory_response = await call_memory_agent(memory_messages)
+    except Exception as e:
+        print(f"[Memory Agent] 呼叫失敗: {e}")
+        return []
+
+    tool_names: list[str] = []
+    all_calls: list[dict] = []
+
+    if memory_response.choices and len(memory_response.choices) > 0:
+        mem_msg = memory_response.choices[0].message
+        print(f"[Memory Agent] content: {(mem_msg.content or 'None')[:100]}")
+        print(
+            f"[Memory Agent] tool_calls count: {len(mem_msg.tool_calls) if mem_msg.tool_calls else 0}"
+        )
+
+        mem_content = strip_thinking(mem_msg.content or "")
+        mem_xml_calls, _ = parse_xml_tool_calls(mem_content)
+
+        if mem_msg.tool_calls:
+            for tc in mem_msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                    all_calls.append({"name": tc.function.name, "arguments": args})
+                    print(
+                        f"[Memory Agent] tool: {tc.function.name} => {tc.function.arguments[:100]}"
+                    )
+                except json.JSONDecodeError as e:
+                    print(f"Memory tool call 解析失敗: {e}")
+        if mem_xml_calls:
+            print(f"[Memory Agent] XML tool calls: {len(mem_xml_calls)}")
+            all_calls.extend(mem_xml_calls)
+    else:
+        print("[Memory Agent] No choices returned!")
+
+    # 執行記憶操作（加鎖保護檔案寫入）
+    async with memory_lock:
+        for call in all_calls:
+            fn_name = call["name"]
+            args = call["arguments"]
+
+            if fn_name == "update_user_profile":
+                action = args.get("action", "add")
+                field = args.get("field", "custom_notes")
+                value = args.get("value", "")
+                execute_profile_update(action, field, value)
+                print(f"User profile 已更新 [{action}] {field}: {value}")
+                tool_names.append(fn_name)
+
+            elif fn_name == "save_memory_note":
+                note_content = args.get("content", "")
+                if note_content:
+                    append_memory_note(note_content)
+                    print(f"Memory note 已記錄: {note_content}")
+                    tool_names.append(fn_name)
+
+    return tool_names
 
 
 @router.websocket("/ws/chat")
@@ -154,10 +229,53 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(f"[{AI_PROVIDER.upper()}] Agent A: {user_message[:60]}...")
 
                 # ============================================================
-                # 步驟 2：Agent A 串流呼叫（JPAF Chat，無 tools）
+                # 步驟 2：Unified Agent A（串流對話 + 提前解析 Live2D 表情）
                 # ============================================================
-                agent_a_text, jpaf_state = await collect_agent_a(
-                    messages
+                print(f"[{AI_PROVIDER.upper()}] Unified Agent A: streaming...")
+
+                # Live2D 預設值（若 LLM 未輸出 behavior_params 時使用）
+                behavior_state = {
+                    "head_intensity": 0.3,
+                    "blush_level": 0.0,
+                    "eye_l_open": 1.0,
+                    "eye_r_open": 1.0,
+                    "duration_sec": 5.0,
+                    "mouth_form": 0.0,
+                    "brow_l_y": 0.0,
+                    "brow_r_y": 0.0,
+                    "brow_l_angle": 0.0,
+                    "brow_r_angle": 0.0,
+                    "brow_l_form": 0.0,
+                    "brow_r_form": 0.0,
+                    "eye_sync": True,
+                    "speaking_rate": 1.0,
+                }
+
+                async def _on_behavior(behavior: dict):
+                    """當串流中解析到 behavior_params 時即時送出 Live2D 表情。"""
+                    nonlocal behavior_state
+                    behavior_state.update(behavior)
+                    payload = _build_behavior_payload(
+                        behavior_state["head_intensity"],
+                        behavior_state["blush_level"],
+                        behavior_state["eye_sync"],
+                        behavior_state["eye_l_open"],
+                        behavior_state["eye_r_open"],
+                        behavior_state["duration_sec"],
+                        behavior_state["mouth_form"],
+                        behavior_state["brow_l_y"],
+                        behavior_state["brow_r_y"],
+                        behavior_state["brow_l_angle"],
+                        behavior_state["brow_r_angle"],
+                        behavior_state["brow_l_form"],
+                        behavior_state["brow_r_form"],
+                    )
+                    await websocket.send_json(payload)
+                    await broadcast_to_displays(payload)
+                    print(f"[Live2D] 表情提前送出: mouth_form={behavior.get('mouth_form', 'N/A')}")
+
+                agent_a_text, jpaf_state = await stream_unified_agent_a(
+                    messages, websocket, _on_behavior
                 )
 
                 if not agent_a_text:
@@ -186,7 +304,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 將 Agent A 乾淨回覆加入共用 history
                 messages.append({"role": "assistant", "content": agent_a_text})
 
-                # 注入 JPAF weights snapshot 到短期記憶（模型可看到 weights 演化軌跡）
+                # 注入 JPAF weights snapshot 到短期記憶
                 messages.append({
                     "role": "system",
                     "content": (
@@ -198,156 +316,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
                 # ============================================================
-                # 步驟 3：Agent B-1 (Live2D) + B-2 (Memory) 並行呼叫
+                # 步驟 3：Agent B（記憶管理，背景非同步執行）
                 # ============================================================
-                print(f"[{AI_PROVIDER.upper()}] Agent B: parallel live2d + memory...")
-
-                # B-1 Live2D prompt
-                live2d_system = build_live2d_prompt(agent_a_text, jpaf_state)
-                live2d_messages = [
-                    {"role": "system", "content": live2d_system},
-                    {"role": "user", "content": "請根據上述上下文呼叫 set_ai_behavior。"},
-                ]
-
-                # B-2 Memory prompt
-                memory_system = build_memory_prompt(user_message, agent_a_text)
-                memory_messages = [
-                    {"role": "system", "content": memory_system},
-                    {"role": "user", "content": "請分析用戶訊息，判斷是否需要記憶操作。"},
-                ]
-
-                # 並行呼叫
-                live2d_response, memory_response = await asyncio.gather(
-                    call_live2d_agent(live2d_messages),
-                    call_memory_agent(memory_messages),
+                print(f"[{AI_PROVIDER.upper()}] Agent B: memory background task...")
+                memory_task = asyncio.create_task(
+                    _process_memory_async(user_message, agent_a_text, jpaf_session.turn_count)
                 )
-
-                # ============================================================
-                # 步驟 4：處理 Tool Calls
-                # ============================================================
-                head_intensity = 0.3
-                blush_level = 0.0
-                eye_l_open = 1.0
-                eye_r_open = 1.0
-                duration_sec = 5.0
-                mouth_form = 0.0
-                brow_l_y = 0.0
-                brow_r_y = 0.0
-                brow_l_angle = 0.0
-                brow_r_angle = 0.0
-                brow_l_form = 0.0
-                brow_r_form = 0.0
-                eye_sync = True
-                speaking_rate = 1.0
-
-                all_calls: list[dict] = []
-
-                # --- 解析 Live2D response ---
-                if live2d_response.choices and len(live2d_response.choices) > 0:
-                    l2d_msg = live2d_response.choices[0].message
-                    print(f"[Live2D Agent] content: {(l2d_msg.content or 'None')[:100]}")
-
-                    l2d_content = strip_thinking(l2d_msg.content or "")
-                    l2d_xml_calls, _ = parse_xml_tool_calls(l2d_content)
-
-                    if l2d_msg.tool_calls:
-                        for tc in l2d_msg.tool_calls:
-                            try:
-                                args = json.loads(tc.function.arguments)
-                                all_calls.append({"name": tc.function.name, "arguments": args})
-                            except json.JSONDecodeError as e:
-                                print(f"Live2D tool call 解析失敗: {e}")
-                    if l2d_xml_calls:
-                        all_calls.extend(l2d_xml_calls)
-
-                # --- 解析 Memory response ---
-                if memory_response.choices and len(memory_response.choices) > 0:
-                    mem_msg = memory_response.choices[0].message
-                    print(f"[Memory Agent] content: {(mem_msg.content or 'None')[:100]}")
-                    print(f"[Memory Agent] tool_calls count: {len(mem_msg.tool_calls) if mem_msg.tool_calls else 0}")
-
-                    mem_content = strip_thinking(mem_msg.content or "")
-                    mem_xml_calls, _ = parse_xml_tool_calls(mem_content)
-
-                    if mem_msg.tool_calls:
-                        for tc in mem_msg.tool_calls:
-                            try:
-                                args = json.loads(tc.function.arguments)
-                                all_calls.append({"name": tc.function.name, "arguments": args})
-                                print(f"[Memory Agent] tool: {tc.function.name} => {tc.function.arguments[:100]}")
-                            except json.JSONDecodeError as e:
-                                print(f"Memory tool call 解析失敗: {e}")
-                    if mem_xml_calls:
-                        print(f"[Memory Agent] XML tool calls: {len(mem_xml_calls)}")
-                        all_calls.extend(mem_xml_calls)
-                else:
-                    print("[Memory Agent] No choices returned!")
-
-                print(f"[Agent B] all_calls 總數: {len(all_calls)}, names: {[c['name'] for c in all_calls]}")
-
-                # --- 執行 tool calls ---
-                for call in all_calls:
-                    fn_name = call["name"]
-                    args = call["arguments"]
-
-                    if fn_name == "set_ai_behavior":
-                        head_intensity = float(args.get("head_intensity", 0.3))
-                        blush_level = float(args.get("blush_level", 0.0))
-                        eye_sync = args.get("eye_sync", True)
-                        eye_l_open = float(args.get("eye_l_open", 1.0))
-                        eye_r_open = float(args.get("eye_r_open", 1.0))
-                        duration_sec = float(args.get("duration_sec", 5.0))
-                        mouth_form = float(args.get("mouth_form", 0.0))
-                        brow_l_y = float(args.get("brow_l_y", 0.0))
-                        brow_r_y = float(args.get("brow_r_y", 0.0))
-                        brow_l_angle = float(args.get("brow_l_angle", 0.0))
-                        brow_r_angle = float(args.get("brow_r_angle", 0.0))
-                        brow_l_form = float(args.get("brow_l_form", 0.0))
-                        brow_r_form = float(args.get("brow_r_form", 0.0))
-                        speaking_rate = float(args.get("speaking_rate", 1.0))
-
-                    elif fn_name == "update_user_profile":
-                        action = args.get("action", "add")
-                        field = args.get("field", "custom_notes")
-                        value = args.get("value", "")
-                        execute_profile_update(action, field, value)
-                        print(f"User profile 已更新 [{action}] {field}: {value}")
-
-                    elif fn_name == "save_memory_note":
-                        note_content = args.get("content", "")
-                        if note_content:
-                            append_memory_note(note_content)
-                            print(f"Memory note 已記錄: {note_content}")
 
                 # ---- Prompt Log ----
                 _a_tokens = estimate_token_count(
                     [{"role": "assistant", "content": agent_a_text}]
                 )
-                _b_tokens = 0
-                for resp in (live2d_response, memory_response):
-                    try:
-                        if hasattr(resp, "usage") and resp.usage:
-                            _b_tokens += getattr(resp.usage, "completion_tokens", 0) or 0
-                    except Exception:
-                        pass
                 log_turn(
                     turn_count=jpaf_session.turn_count,
                     system_prompt=agent_a_system,
                     user_message=user_message,
                     agent_a_output=agent_a_text,
-                    tool_names=[c["name"] for c in all_calls],
-                    output_tokens=_a_tokens + _b_tokens,
+                    tool_names=[],
+                    output_tokens=_a_tokens,
                 )
 
-                # ---- 送出 behavior payload (FIRST) ----
-                behavior_payload = _build_behavior_payload(
-                    head_intensity, blush_level, eye_sync,
-                    eye_l_open, eye_r_open, duration_sec,
-                    mouth_form, brow_l_y, brow_r_y,
-                    brow_l_angle, brow_r_angle, brow_l_form, brow_r_form,
-                )
-                await websocket.send_json(behavior_payload)
-                await broadcast_to_displays(behavior_payload)
+                # ---- 若 behavior 尚未提前送出，在這裡補送 ----
+                #（通常已經在 stream_unified_agent_a 中送出）
+                # 為了安全，這裡不額外送，避免重複
 
                 # ---- 送出 JPAF 狀態更新 ----
                 await websocket.send_json({
@@ -359,8 +350,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     "turnCount": jpaf_session.turn_count,
                 })
 
-                # ---- 送出 buffered 文字 ----
-                await websocket.send_json({"type": "text_stream", "content": agent_a_text})
+                # ---- stream_end ----
+                await websocket.send_json({"type": "stream_end"})
 
                 # ============================================================
                 # 步驟 5：後處理
@@ -377,13 +368,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 if CHAT_PERSISTENCE_ENABLED and current_session_id:
                     save_session_messages(current_session_id, messages)
 
-                await websocket.send_json({"type": "stream_end"})
-
                 # 非阻塞 TTS
                 if agent_a_text:
                     task = asyncio.create_task(
                         synthesize_and_send_voice(
-                            websocket, agent_a_text, speaking_rate
+                            websocket, agent_a_text, behavior_state["speaking_rate"]
                         )
                     )
                     tts_tasks.add(task)

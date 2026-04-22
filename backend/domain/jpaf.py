@@ -473,4 +473,6 @@ def strip_jpaf_tags(text: str) -> str:
         text = re.sub(rf"</?{tag}>", "", text, flags=re.IGNORECASE)
     # 移除 jpaf_state
     text = re.sub(r"<jpaf_state>.*?</jpaf_state>", "", text, flags=re.DOTALL)
+    # 移除 behavior_params
+    text = re.sub(r"<behavior_params>.*?</behavior_params>", "", text, flags=re.DOTALL)
     return text.strip()

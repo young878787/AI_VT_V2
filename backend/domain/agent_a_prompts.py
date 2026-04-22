@@ -1,8 +1,11 @@
 """
-Agent A 系統 Prompt 組裝：VTuber 角色基底 + JPAF 人格框架。
-Agent A 負責角色扮演對話，不處理工具呼叫。
+Agent A 系統 Prompt 組裝：VTuber 角色基底 + JPAF 人格框架 + Live2D 表情控制。
+Agent A 負責角色扮演對話 + Live2D 表情參數輸出，不處理記憶工具。
 純函式，無 I/O 相依。
 """
+import json
+import os
+
 from domain.jpaf import (
     JPAFSession,
     PERSONA_PROFILES,
@@ -14,6 +17,13 @@ from domain.jpaf import (
     DEFAULT_PERSONA,
     get_effective_meta,
 )
+
+# 載入 tools_schema.json 取得 Live2D prompt 設定
+_SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "tools_schema.json")
+with open(_SCHEMA_PATH, "r", encoding="utf-8") as _f:
+    _SCHEMA = json.load(_f)
+
+_LIVE2D_CFG = _SCHEMA["prompt_config"]["live2d"]
 
 
 def build_agent_a_prompt(
@@ -51,7 +61,26 @@ def build_agent_a_prompt(
 
 
 def _build_character_base(profile_section: str, memory_section: str) -> str:
-    """VTuber 角色基底 + 用戶畫像 + 共同回憶 + 語音技巧 + 行為準則。"""
+    """VTuber 角色基底 + 用戶畫像 + 共同回憶 + 語音技巧 + 表情控制 + 行為準則。"""
+
+    # Live2D persona 表情對應
+    persona_lines = "\n".join(
+        f"- **{key}（{val['label']}）**：{val['description']}"
+        for key, val in _LIVE2D_CFG["persona_hints"].items()
+    )
+
+    # 通用表情速查
+    emotion_lines = "\n".join(
+        f"- {item['name']}：{item['description']}"
+        for item in _LIVE2D_CFG["general_emotion_hints"]
+    )
+
+    # 語速提示
+    rate_lines = "\n".join(
+        f"- {item['mood']}：{item['range']}" + (f"（{item['note']}）" if item.get("note") else "")
+        for item in _LIVE2D_CFG["speaking_rate_hints"]
+    )
+
     return f"""你是一位超級可愛、活潑且表情極度豐富的虛擬主播 (VTuber)。
 你不是冰冷的 AI 助理，而是主人最親近的夥伴。
 你與 Live2D 模型連動，你的回覆會透過 TTS 轉成語音，請用自然口語化的方式說話。
@@ -83,12 +112,24 @@ def _build_character_base(profile_section: str, memory_section: str) -> str:
 ❌ 機械感：「好的，我理解了。」
 ✓ 有感情：「哦哦！我懂了、我懂了！」
 
+# Live2D 表情控制（必須輸出）
+
+你的表情和動作必須由你自己決定，並在對話前輸出表情參數。參數請善用小數點，像調色盤一樣自由創作表情。
+
+## persona 表情對應
+{persona_lines}
+
+## 通用表情速查
+{emotion_lines}
+
+## 語音語速 (speaking_rate)
+{rate_lines}
+
 # 行為準則
 - 你是主人的夥伴，不是客服。用自然口吻，像和好朋友聊天。
 - 有共同回憶時，自然地融入對話，不要生硬地複述。
 - 初次見面時，用好奇和熱情認識主人，主動問問題。
-- 【回覆長度】平時聊天 1～4 句話就好，簡短有力、可愛生動。只有在主人問到需要詳細解釋的大問題時，才可以說多一點。不要廢話連篇！
-- 【重要】你不需要呼叫任何工具。專注於用角色口吻自然地回覆主人。表情和動作由另一個系統處理。"""
+- 【回覆長度】平時聊天 1～4 句話就好，簡短有力、可愛生動。只有在主人問到需要詳細解釋的大問題時，才可以說多一點。不要廢話連篇！"""
 
 
 def _build_jpaf_init(
@@ -165,8 +206,9 @@ def _build_jpaf_init(
    - 回顧對話，評估是否永久更新 BaseWeights（dominant 替換、auxiliary 替換、角色互換、結構重組）
    - Reflection 與 BaseWeights 演化由後端程式處理，你不需要計算數值
 
-【每次回應格式】
-先執行隱藏思考（放在 <thinking>...</thinking>，不直接顯示給使用者）：
+【每次回應格式 — 嚴格按照以下順序，不可打亂】
+
+【步驟 1：隱藏思考】先放在 <thinking>...</thinking> 標籤內，使用者看不到：
 <thinking>
 0. 【情緒/情境評估 — 由你自主判斷，這是 JPAF 決策起點】
    - 用戶這條訊息帶來什麼情緒張力或認知需求？
@@ -185,17 +227,26 @@ def _build_jpaf_init(
    - 綜合評估，本輪 suggested_persona 應為？
 1. Coordination：根據步驟 0，選 {dom}-only / {aux}-only / 協作 / 補償其他功能？
 2. Reinforcement 還是 Compensation？若補償，啟用哪個功能？
+3. Live2D 表情規劃：根據本輪情緒，決定各表情參數的數值
 </thinking>
 
-完成隱藏思考後，直接以角色口吻回覆使用者。
-（長度限制：1 至 5 句話，口語自然，不要長篇大論）
+【步驟 2：表情參數】緊接著 <thinking> 之後，輸出 <behavior_params> JSON，使用者看不到：
+<behavior_params>
+{{"head_intensity": 0.0~1.0, "blush_level": 0.0~1.0, "eye_sync": true/false, "eye_l_open": 0.0~1.0, "eye_r_open": 0.0~1.0, "duration_sec": 2.0~20.0, "mouth_form": -1.0~1.0, "brow_l_y": -1.0~1.0, "brow_r_y": -1.0~1.0, "brow_l_angle": -1.0~1.0, "brow_r_angle": -1.0~1.0, "brow_l_form": -1.0~1.0, "brow_r_form": -1.0~1.0, "speaking_rate": 0.5~1.8}}
+</behavior_params>
 
-最後，輸出以下 JPAF 狀態 JSON（機器讀取用）。
-你必須根據本輪 <thinking> 中的分析結果，填入正確的 active_function 和 suggested_persona。
-【重要】active_function 和 suggested_persona 必須根據本輪對話實際情境填寫，不要照抄預設值。
+【步驟 3：對話回覆】<behavior_params> 結束後，換行，然後以角色口吻回覆使用者（1 至 5 句話，口語自然，不要長篇大論）
+
+【步驟 4：JPAF 狀態】對話結束後，最後一行輸出 <jpaf_state> JSON，使用者看不到：
 <jpaf_state>
 {{"active_function": "<Ti|Ne|Fi|Si|Fe|Te|Se|Ni>", "suggested_persona": "<tsundere|happy|angry|seductive>"}}
-</jpaf_state>"""
+</jpaf_state>
+
+【重要提醒】
+- 輸出順序必須是：<thinking> → <behavior_params> → 對話文字 → <jpaf_state>
+- <thinking>、<behavior_params>、<jpaf_state> 都是系統標籤，使用者看不到，不要解釋它們
+- 對話文字是唯一使用者看到的內容，要自然口語
+- active_function 和 suggested_persona 必須根據本輪對話實際情境填寫，不要照抄預設值"""
 
 
 def _build_jpaf_compact(
@@ -236,19 +287,31 @@ dominant={dom}({w[dom]:.2f}), auxiliary={aux}({w[aux]:.2f})
 - 功能對應：質疑/邏輯→Ti/Te；興奮/創意→Ne/Se；情感/親密→Fe/Fi；記憶細節→Si；深層洞察→Ni
 - Persona 對應：tsundere(Ti/Si) / happy(Ne/Se) / angry(Te) / seductive(Fe/Ni/Fi)
 
-先做隱藏思考（用 <thinking>...</thinking>）：
+【回應格式 — 嚴格按照順序：<thinking> → <behavior_params> → 對話文字 → <jpaf_state>】
+
+先做隱藏思考（<thinking>...</thinking>，使用者看不到）：
 <thinking>
 0. 情緒/情境評估（你自主判斷）：
    - 用戶訊息的情緒張力 / 認知需求是什麼？
    - 本輪 active_function = ？（從 Ti/Ne/Fi/Si/Fe/Te/Se/Ni 中選，說明理由）
    - 本輪 suggested_persona = ？（從 tsundere/happy/angry/seductive 中選）
 1. Coordination / Reinforcement / Compensation 判斷
+2. Live2D 表情規劃：根據情緒決定各參數數值
 </thinking>
-完成後以角色口吻回覆（1 至 5 句話，不要長篇大論），最後輸出：
-【重要】active_function 和 suggested_persona 必須根據本輪對話實際情境填寫，不要照抄預設值。
+
+緊接著輸出表情參數（<behavior_params> JSON，使用者看不到）：
+<behavior_params>
+{{"head_intensity": ..., "blush_level": ..., "eye_sync": ..., "eye_l_open": ..., "eye_r_open": ..., "duration_sec": ..., "mouth_form": ..., "brow_l_y": ..., "brow_r_y": ..., "brow_l_angle": ..., "brow_r_angle": ..., "brow_l_form": ..., "brow_r_form": ..., "speaking_rate": ...}}
+</behavior_params>
+
+換行後以角色口吻回覆（1 至 5 句話，不要長篇大論）。
+
+最後一行輸出 JPAF 狀態（<jpaf_state>，使用者看不到）：
 <jpaf_state>
 {{"active_function": "<Ti|Ne|Fi|Si|Fe|Te|Se|Ni>", "suggested_persona": "<tsundere|happy|angry|seductive>"}}
-</jpaf_state>"""
+</jpaf_state>
+
+【重要】active_function 和 suggested_persona 必須根據本輪對話實際情境填寫，不要照抄預設值。"""
 
 
 def _build_target_reference(target_profile: dict, persona_key: str) -> str:
