@@ -77,7 +77,7 @@ interface AppState {
   updateChatMessage: (id: string, content: string) => void;
   setAiTyping: (isTyping: boolean) => void;
   setCompressing: (isCompressing: boolean) => void;
-  setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean) => void;
+  setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number) => void;
   setBlinkControl: (action: string, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
 
   // 模型變換動作
@@ -323,7 +323,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setCompressing: (isCompressing) => set({ isCompressing }),
 
-  setAiBehavior: (headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec = 5.0, mouthForm = 0.0, browLY = 0.0, browRY = 0.0, browLAngle = 0.0, browRAngle = 0.0, browLForm = 0.0, browRForm = 0.0, eyeSync = true) => {
+  setAiBehavior: (headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec = 5.0, mouthForm = 0.0, browLY = 0.0, browRY = 0.0, browLAngle = 0.0, browRAngle = 0.0, browLForm = 0.0, browRForm = 0.0, eyeSync = true, eyeLSmile = 0.0, eyeRSmile = 0.0, browLX = 0.0, browRX = 0.0) => {
     set({ aiBehavior: { headIntensity, blushLevel, eyeLOpen, eyeROpen } });
 
     // 同步到 Live2D 模型
@@ -333,7 +333,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (typeof (model as any).setAiBehavior === 'function') {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (model as any).setAiBehavior(headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec, mouthForm, browLY, browRY, browLAngle, browRAngle, browLForm, browRForm, eyeSync);
+        (model as any).setAiBehavior(headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec, mouthForm, browLY, browRY, browLAngle, browRAngle, browLForm, browRForm, eyeSync, eyeLSmile, eyeRSmile, browLX, browRX);
       } else {
         // Fallback to older method if available
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -51,7 +51,8 @@ export class LAppModel extends CubismUserModel {
   private _lipSyncValue: number = 0;
 
   // 表情參數 ID (AI 控制)
-  private _idParamTere: CubismIdHandle;
+  private _idParamTere: CubismIdHandle;   // Haru 等舊模型用
+  private _idParamCheek: CubismIdHandle;  // Hiyori / huohuo 等新模型用（自動偵測）
   private _idParamEyeLOpen: CubismIdHandle;
   private _idParamEyeROpen: CubismIdHandle;
 
@@ -63,6 +64,12 @@ export class LAppModel extends CubismUserModel {
   private _idParamBrowRAngle: CubismIdHandle;
   private _idParamBrowLForm: CubismIdHandle;
   private _idParamBrowRForm: CubismIdHandle;
+
+  // 笑眼與眉毛水平位移參數 ID (AI 控制)
+  private _idParamEyeLSmile: CubismIdHandle;  // 左眼笑眼（三個模型均有）
+  private _idParamEyeRSmile: CubismIdHandle;  // 右眼笑眼（三個模型均有）
+  private _idParamBrowLX: CubismIdHandle;     // 左眉水平（Hiyori/Haru 有，huohuo no-op）
+  private _idParamBrowRX: CubismIdHandle;     // 右眉水平（Hiyori/Haru 有，huohuo no-op）
 
   // 眨眼和嘴型同步 ID 陣列（用於動作效果）
   private _eyeBlinkIds: CubismIdHandle[] = [];
@@ -100,6 +107,10 @@ export class LAppModel extends CubismUserModel {
   private _aiBrowRAngle: number = 0.0;
   private _aiBrowLForm: number = 0.0;
   private _aiBrowRForm: number = 0.0;
+  private _aiEyeLSmile: number = 0.0;
+  private _aiEyeRSmile: number = 0.0;
+  private _aiBrowLX: number = 0.0;
+  private _aiBrowRX: number = 0.0;
   private _aiEyeSync: boolean = true;  // 是否同步（含眉毛）
   private _aiBehaviorTimer: number = 0;
 
@@ -114,6 +125,10 @@ export class LAppModel extends CubismUserModel {
   private _currentBrowRAngle: number = 0.0;
   private _currentBrowLForm: number = 0.0;
   private _currentBrowRForm: number = 0.0;
+  private _currentEyeLSmile: number = 0.0;
+  private _currentEyeRSmile: number = 0.0;
+  private _currentBrowLX: number = 0.0;
+  private _currentBrowRX: number = 0.0;
 
   // 原生參數手動覆蓋 (NativeParamPanel 使用者手動控制)
   // key = paramId (string), value = { value, lastSetAt (performance.now ms) }
@@ -140,7 +155,8 @@ export class LAppModel extends CubismUserModel {
     this._idParamEyeBallY = idManager.getId(CubismDefaultParameterId.ParamEyeBallY);
 
     // 表情與眼睛參數 ID
-    this._idParamTere = idManager.getId('ParamTere');
+    this._idParamTere = idManager.getId('ParamTere');    // Haru 等舊模型
+    this._idParamCheek = idManager.getId('ParamCheek');  // Hiyori / huohuo 新模型
     this._idParamEyeLOpen = idManager.getId(CubismDefaultParameterId.ParamEyeLOpen);
     this._idParamEyeROpen = idManager.getId(CubismDefaultParameterId.ParamEyeROpen);
 
@@ -152,6 +168,12 @@ export class LAppModel extends CubismUserModel {
     this._idParamBrowRAngle = idManager.getId('ParamBrowRAngle');
     this._idParamBrowLForm = idManager.getId('ParamBrowLForm');
     this._idParamBrowRForm = idManager.getId('ParamBrowRForm');
+
+    // 笑眼與眉毛水平位移（三個模型均有笑眼；BrowLX/RX Hiyori/Haru 有，huohuo no-op）
+    this._idParamEyeLSmile = idManager.getId('ParamEyeLSmile');
+    this._idParamEyeRSmile = idManager.getId('ParamEyeRSmile');
+    this._idParamBrowLX = idManager.getId('ParamBrowLX');
+    this._idParamBrowRX = idManager.getId('ParamBrowRX');
 
     // LipSync 參數 ID（嘴巴張開程度）
     this._idParamMouthOpenY = idManager.getId(CubismDefaultParameterId.ParamMouthOpenY);
@@ -714,13 +736,13 @@ export class LAppModel extends CubismUserModel {
   }
 
   /**
-   * 設置 AI 行為參數 (頭部擺動、臉紅、左右眼、嘴形、眉毛)
+   * 設置 AI 行為參數 (頭部擺動、臉紅、左右眼、嘴形、眉毛、笑眼、眉毛水平)
    * @param headIntensity 頭部動作幅度 (0.0~1.0)
-   * @param blushLevel 臉紅程度 (0.0~1.0)
-   * @param eyeLOpen 左眼開合 (0.0~1.0)
-   * @param eyeROpen 右眼開合 (0.0~1.0)
+   * @param blushLevel 臉頰狀態 (-1.0=蒼白/緊張 Hiyori 專有, 0.0=自然, 1.0=臉紅)
+   * @param eyeLOpen 左眼開合 (0.0=閉眼, 1.0=正常張開預設, 2.0=瞪大眼睛)
+   * @param eyeROpen 右眼開合 (0.0=閉眼, 1.0=正常張開預設, 2.0=瞪大眼睛)
    * @param durationSec 持續時間(秒)
-   * @param mouthForm 嘴角形狀 (-1.0~1.0)
+   * @param mouthForm 嘴角形狀 (-2.0~1.0, Hiyori 支援 -2; 其他模型 -1; +1=大笑)
    * @param browLY 左眉毛高低 (-1.0~1.0)
    * @param browRY 右眉毛高低 (-1.0~1.0)
    * @param browLAngle 左眉毛角度 (-1.0~1.0)
@@ -728,6 +750,10 @@ export class LAppModel extends CubismUserModel {
    * @param browLForm 左眉毛凸彎 (-1.0~1.0)
    * @param browRForm 右眉毛凸彎 (-1.0~1.0)
    * @param eyeSync 是否同步左右眼與眉毛 (true=對稱)
+   * @param eyeLSmile 左眼笑眼程度 (0.0=無笑意, 1.0=瞇眼大笑)
+   * @param eyeRSmile 右眼笑眼程度 (0.0=無笑意, 1.0=瞇眼大笑)
+   * @param browLX 左眉毛水平位移 (-1.0=向外, +1.0=向內)，Hiyori/Haru 有效
+   * @param browRX 右眉毛水平位移 (-1.0=向外, +1.0=向內)，Hiyori/Haru 有效
    */
   public setAiBehavior(
     headIntensity: number, 
@@ -742,15 +768,19 @@ export class LAppModel extends CubismUserModel {
     browRAngle: number = 0.0,
     browLForm: number = 0.0,
     browRForm: number = 0.0,
-    eyeSync: boolean = true
+    eyeSync: boolean = true,
+    eyeLSmile: number = 0.0,
+    eyeRSmile: number = 0.0,
+    browLX: number = 0.0,
+    browRX: number = 0.0,
   ): void {
     this._aiHeadIntensity = Math.max(0, Math.min(1, headIntensity));
-    this._aiBlushLevel = Math.max(0, Math.min(1, blushLevel));
-    this._aiEyeLOpen = Math.max(0, Math.min(1, eyeLOpen));
-    this._aiEyeROpen = Math.max(0, Math.min(1, eyeROpen));
+    this._aiBlushLevel = Math.max(-1, Math.min(1, blushLevel));    // -1=蒼白(Hiyori), 0=自然, 1=臉紅
+    this._aiEyeLOpen = Math.max(0, Math.min(2, eyeLOpen));          // 1.0=預設, 2.0=瞪大
+    this._aiEyeROpen = Math.max(0, Math.min(2, eyeROpen));          // 1.0=預設, 2.0=瞪大
     this._aiEyeBaseLOpen = this._aiEyeLOpen;
     this._aiEyeBaseROpen = this._aiEyeROpen;
-    this._aiMouthForm = Math.max(-1, Math.min(1, mouthForm));
+    this._aiMouthForm = Math.max(-2, Math.min(1, mouthForm));        // -2=Hiyori極悲傷, -1=悲傷, 0=中性, 1=大笑
     this._aiBrowLY = Math.max(-1, Math.min(1, browLY));
     this._aiBrowRY = Math.max(-1, Math.min(1, browRY));
     this._aiBrowLAngle = Math.max(-1, Math.min(1, browLAngle));
@@ -758,6 +788,10 @@ export class LAppModel extends CubismUserModel {
     this._aiBrowLForm = Math.max(-1, Math.min(1, browLForm));
     this._aiBrowRForm = Math.max(-1, Math.min(1, browRForm));
     this._aiEyeSync = eyeSync;
+    this._aiEyeLSmile = Math.max(0, Math.min(1, eyeLSmile));
+    this._aiEyeRSmile = Math.max(0, Math.min(1, eyeRSmile));
+    this._aiBrowLX = Math.max(-1, Math.min(1, browLX));
+    this._aiBrowRX = Math.max(-1, Math.min(1, browRX));
     this._aiBehaviorTimer = durationSec;
   }
 
@@ -777,6 +811,10 @@ export class LAppModel extends CubismUserModel {
     browLForm: number;
     browRForm: number;
     eyeSync: boolean;
+    eyeLSmile: number;
+    eyeRSmile: number;
+    browLX: number;
+    browRX: number;
     timerRemaining: number;
   } {
     return {
@@ -794,6 +832,10 @@ export class LAppModel extends CubismUserModel {
       browLForm:      this._currentBrowLForm,
       browRForm:      this._currentBrowRForm,
       eyeSync:       this._aiEyeSync,
+      eyeLSmile:     this._currentEyeLSmile,
+      eyeRSmile:     this._currentEyeRSmile,
+      browLX:        this._currentBrowLX,
+      browRX:        this._currentBrowRX,
       timerRemaining: this._aiBehaviorTimer,
     };
   }
@@ -954,6 +996,10 @@ export class LAppModel extends CubismUserModel {
     let targetBrowRAngle: number;
     let targetBrowLForm: number;
     let targetBrowRForm: number;
+    let targetEyeLSmile: number;
+    let targetEyeRSmile: number;
+    let targetBrowLX: number;
+    let targetBrowRX: number;
 
     if (this._aiBehaviorTimer > 0) {
       this._aiBehaviorTimer -= deltaTimeSeconds;
@@ -977,8 +1023,9 @@ export class LAppModel extends CubismUserModel {
         this._model.addParameterValueById(this._idParamAngleY, Math.cos(time * freqY + Math.PI/4) * ampY);
         this._model.addParameterValueById(this._idParamBodyAngleX, Math.sin(time * freqZ) * (ampZ * 0.6));
       } else {
+        // headIntensity 為 0 時跳過頭部搖晃，但不重置計時器
+        // _aiBehaviorTimer 應自然倒計時，讓其他表情參數（mouthForm/blush/brow 等）繼續持續
         this._aiHeadIntensity = 0;
-        this._aiBehaviorTimer = 0;
       }
 
       targetBlush     = this._aiBlushLevel;
@@ -991,6 +1038,10 @@ export class LAppModel extends CubismUserModel {
       targetBrowRAngle = this._aiBrowRAngle;
       targetBrowLForm = this._aiBrowLForm;
       targetBrowRForm = this._aiBrowRForm;
+      targetEyeLSmile = this._aiEyeLSmile;
+      targetEyeRSmile = this._aiEyeRSmile;
+      targetBrowLX    = this._aiBrowLX;
+      targetBrowRX    = this._aiBrowRX;
     } else {
       this._aiHeadIntensity = 0;
       targetBlush     = 0.0;
@@ -1003,6 +1054,10 @@ export class LAppModel extends CubismUserModel {
       targetBrowRAngle = 0.0;
       targetBrowLForm = 0.0;
       targetBrowRForm = 0.0;
+      targetEyeLSmile = 0.0;
+      targetEyeRSmile = 0.0;
+      targetBrowLX    = 0.0;
+      targetBrowRX    = 0.0;
     }
 
     const lerpFactor = Math.min(1.0, 5.0 * deltaTimeSeconds);
@@ -1016,12 +1071,18 @@ export class LAppModel extends CubismUserModel {
     this._currentBrowRAngle += (targetBrowRAngle - this._currentBrowRAngle) * lerpFactor;
     this._currentBrowLForm += (targetBrowLForm - this._currentBrowLForm) * lerpFactor;
     this._currentBrowRForm += (targetBrowRForm - this._currentBrowRForm) * lerpFactor;
+    this._currentEyeLSmile += (targetEyeLSmile - this._currentEyeLSmile) * lerpFactor;
+    this._currentEyeRSmile += (targetEyeRSmile - this._currentEyeRSmile) * lerpFactor;
+    this._currentBrowLX += (targetBrowLX - this._currentBrowLX) * lerpFactor;
+    this._currentBrowRX += (targetBrowRX - this._currentBrowRX) * lerpFactor;
 
     if (this._aiEyeSync && (this._aiBehaviorTimer > 0 || targetEyeL < 0.99)) {
       this._currentBrowRY = this._currentBrowLY;
       this._currentBrowRAngle = -this._currentBrowLAngle;
       this._currentBrowRForm = this._currentBrowLForm;
       this._currentEyeROpen = this._currentEyeLOpen;
+      this._currentEyeRSmile = this._currentEyeLSmile;
+      this._currentBrowRX = -this._currentBrowLX;  // 鏡像：左眉向內時右眉對稱向內
     }
 
     // 更新 AI 眼睛基礎值（供眨眼疊加使用）
@@ -1075,10 +1136,17 @@ export class LAppModel extends CubismUserModel {
       || Math.abs(this._currentBrowLAngle) > 0.01
       || Math.abs(this._currentBrowRAngle) > 0.01
       || Math.abs(this._currentBrowLForm) > 0.01
-      || Math.abs(this._currentBrowRForm) > 0.01;
+      || Math.abs(this._currentBrowRForm) > 0.01
+      || this._currentEyeLSmile > 0.01
+      || this._currentEyeRSmile > 0.01
+      || Math.abs(this._currentBrowLX) > 0.01
+      || Math.abs(this._currentBrowRX) > 0.01;
 
     if (hasExpression) {
+      // 臉紅：同時寫入 ParamTere（Haru 等舊模型）和 ParamCheek（Hiyori/huohuo 新模型）
+      // Cubism SDK 對不存在的參數 ID 執行 set 為 no-op，因此雙寫安全。
       this._model.setParameterValueById(this._idParamTere, this._currentBlushLevel);
+      this._model.setParameterValueById(this._idParamCheek, this._currentBlushLevel);
       this._model.setParameterValueById(this._idParamMouthForm, this._currentMouthForm);
       this._model.setParameterValueById(this._idParamBrowLY, this._currentBrowLY);
       this._model.setParameterValueById(this._idParamBrowRY, this._currentBrowRY);
@@ -1086,6 +1154,12 @@ export class LAppModel extends CubismUserModel {
       this._model.setParameterValueById(this._idParamBrowRAngle, this._currentBrowRAngle);
       this._model.setParameterValueById(this._idParamBrowLForm, this._currentBrowLForm);
       this._model.setParameterValueById(this._idParamBrowRForm, this._currentBrowRForm);
+      // 笑眼（三個模型均有 ParamEyeLSmile/RSmile）
+      this._model.setParameterValueById(this._idParamEyeLSmile, this._currentEyeLSmile);
+      this._model.setParameterValueById(this._idParamEyeRSmile, this._currentEyeRSmile);
+      // 眉毛水平位移（Hiyori/Haru 有效；huohuo no-op）
+      this._model.setParameterValueById(this._idParamBrowLX, this._currentBrowLX);
+      this._model.setParameterValueById(this._idParamBrowRX, this._currentBrowRX);
     }
 
     // 呼吸（只在自動效果啟用時）

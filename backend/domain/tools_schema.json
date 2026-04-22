@@ -19,25 +19,25 @@
               },
               "blush_level": {
                 "type": "number",
-                "description": "臉紅程度 0.0（無）到 1.0（極度害羞）",
-                "minimum": 0.0,
+                "description": "臉頰狀態。-1.0=蒼白/緊張（Hiyori 專有，其他模型負值等同 0），0.0=自然，+1.0=極度臉紅/害羞。同時寫入 ParamCheek（Hiyori/huohuo）與 ParamTere（Haru），哪個存在就哪個生效。",
+                "minimum": -1.0,
                 "maximum": 1.0
               },
               "eye_sync": {
                 "type": "boolean",
-                "description": "是否同步雙眼（與眉毛）。False 可做出眨單眼、不對稱表情。"
+                "description": "是否同步左右眼與對應眉毛（鏡像對稱）。False 可做出眨單眼、不對稱表情。True 時右眉角度會自動鏡像左眉（brow_r_angle = -brow_l_angle），右眉其餘值與左眉相同。"
               },
               "eye_l_open": {
                 "type": "number",
-                "description": "左眼張開程度 0.0（閉眼）到 1.0（全開）",
+                "description": "左眼張開程度。0.0=閉眼，1.0=正常張開（預設），2.0=瞪大眼睛（驚訝/震驚）。注意：Hiyori 最大值為 1.2，Haru/huohuo 最大值為 2.0。",
                 "minimum": 0.0,
-                "maximum": 1.0
+                "maximum": 2.0
               },
               "eye_r_open": {
                 "type": "number",
-                "description": "右眼張開程度 0.0（閉眼）到 1.0（全開）",
+                "description": "右眼張開程度。0.0=閉眼，1.0=正常張開（預設），2.0=瞪大眼睛（驚訝/震驚）。注意：Hiyori 最大值為 1.2，Haru/huohuo 最大值為 2.0。",
                 "minimum": 0.0,
-                "maximum": 1.0
+                "maximum": 2.0
               },
               "duration_sec": {
                 "type": "number",
@@ -47,8 +47,8 @@
               },
               "mouth_form": {
                 "type": "number",
-                "description": "嘴角形狀。-1.0=悲傷委屈下垂，0.0=自然，+1.0=開心上揚大笑",
-                "minimum": -1.0,
+                "description": "嘴角形狀。-2.0=極度悲傷大哭（Hiyori 專有，其他模型 -2 等同 -1），-1.0=悲傷委屈下垂，0.0=中性，+1.0=開心上揚大笑。注意：Hiyori/Haru 原生預設在 1.0（天生微笑），因此 0.0 對這兩個模型略顯平淡，-0.5 才接近視覺上的「難過」。",
+                "minimum": -2.0,
                 "maximum": 1.0
               },
               "brow_l_y": {
@@ -65,13 +65,13 @@
               },
               "brow_l_angle": {
                 "type": "number",
-                "description": "左眉毛角度。-1.0=八字眉，0.0=水平，+1.0=倒八字眉",
+                "description": "左眉毛角度（ParamBrowLAngle）。+1.0=倒八字眉（憤怒/強勢），-1.0=八字眉（悲傷/困擾）。eye_sync=true 時右眉角度自動設為 -brow_l_angle，形成臉部對稱。",
                 "minimum": -1.0,
                 "maximum": 1.0
               },
               "brow_r_angle": {
                 "type": "number",
-                "description": "右眉毛角度。-1.0=八字眉，0.0=水平，+1.0=倒八字眉",
+                "description": "右眉毛角度（ParamBrowRAngle）。eye_sync=true 時此值被忽略（自動設為 -brow_l_angle）。eye_sync=false 時才獨立生效：+1.0=倒八字眉，-1.0=八字眉。",
                 "minimum": -1.0,
                 "maximum": 1.0
               },
@@ -84,6 +84,30 @@
               "brow_r_form": {
                 "type": "number",
                 "description": "右眉毛彎曲。-1.0=下彎，0.0=自然，+1.0=上凸",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "eye_l_smile": {
+                "type": "number",
+                "description": "左眼笑眼程度（ParamEyeLSmile）。0.0=無笑意，1.0=瞇眼大笑（眼皮柔和下降）。搭配 eye_l_open 使用效果最佳：open=0.7 + smile=0.8 = 典型笑眼。三個模型均支援。",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "eye_r_smile": {
+                "type": "number",
+                "description": "右眼笑眼程度（ParamEyeRSmile）。eye_sync=true 時自動與左眼同步。0.0=無笑意，1.0=瞇眼大笑。三個模型均支援。",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "brow_l_x": {
+                "type": "number",
+                "description": "左眉毛水平位移（ParamBrowLX）。-1.0=向外展開，+1.0=向內靠攏（皺眉方向）。Hiyori/Haru 有此參數；huohuo 無（SDK 靜默 no-op）。",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "brow_r_x": {
+                "type": "number",
+                "description": "右眉毛水平位移（ParamBrowRX）。eye_sync=true 時自動鏡像（brow_r_x = -brow_l_x）。Hiyori/Haru 有此參數；huohuo 無（SDK 靜默 no-op）。",
                 "minimum": -1.0,
                 "maximum": 1.0
               },
@@ -100,6 +124,8 @@
               "eye_sync",
               "eye_l_open",
               "eye_r_open",
+              "eye_l_smile",
+              "eye_r_smile",
               "duration_sec",
               "mouth_form",
               "brow_l_y",
@@ -107,7 +133,9 @@
               "brow_l_angle",
               "brow_r_angle",
               "brow_l_form",
-              "brow_r_form"
+              "brow_r_form",
+              "brow_l_x",
+              "brow_r_x"
             ]
           }
         }
@@ -220,10 +248,11 @@
         {
           "backend_key": "blush_level",
           "frontend_key": "blushLevel",
-          "label": "臉紅程度",
+          "label": "臉頰狀態",
           "emoji": "🌸",
           "color": "#f9a8d4",
-          "min": 0,
+          "note": "同時寫入 ParamCheek（新模型）和 ParamTere（Haru）。-1=蒼白（Hiyori 專有），0=自然，1=臉紅",
+          "min": -1,
           "max": 1,
           "step": 0.01,
           "default": 0
@@ -235,7 +264,7 @@
           "emoji": "👁",
           "color": "#7dd3fc",
           "min": 0,
-          "max": 1,
+          "max": 2,
           "step": 0.01,
           "default": 1
         },
@@ -246,7 +275,7 @@
           "emoji": "👁",
           "color": "#7dd3fc",
           "min": 0,
-          "max": 1,
+          "max": 2,
           "step": 0.01,
           "default": 1
         },
@@ -267,7 +296,7 @@
           "label": "嘴角形狀",
           "emoji": "😊",
           "color": "#86efac",
-          "min": -1,
+          "min": -2,
           "max": 1,
           "step": 0.01,
           "default": 0
@@ -337,6 +366,52 @@
           "max": 1,
           "step": 0.01,
           "default": 0
+        },
+        {
+          "backend_key": "eye_l_smile",
+          "frontend_key": "eyeLSmile",
+          "label": "左眼笑眼",
+          "emoji": "😊",
+          "color": "#bae6fd",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "eye_r_smile",
+          "frontend_key": "eyeRSmile",
+          "label": "右眼笑眼",
+          "emoji": "😊",
+          "color": "#bae6fd",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_l_x",
+          "frontend_key": "browLX",
+          "label": "左眉水平",
+          "emoji": "↔",
+          "color": "#fef08a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0,
+          "note": "Hiyori/Haru 有此參數；huohuo 無（no-op）"
+        },
+        {
+          "backend_key": "brow_r_x",
+          "frontend_key": "browRX",
+          "label": "右眉水平",
+          "emoji": "↔",
+          "color": "#fef08a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0,
+          "note": "Hiyori/Haru 有此參數；huohuo 無（no-op）"
         }
       ],
       "missing_params": [
@@ -360,30 +435,31 @@
       "tool_description": "驅動 Live2D 模型的即時表情與動作，以及語音的語速。用小數點創造細膩表情（如 0.83、0.47），避免死板的整數。",
       "persona_hints": {
         "tsundere": {
-          "label": "傲嬌",
-          "description": "嘴角微微上揚但裝不在乎 mouth_form 0.1~0.3、偶爾臉紅 blush_level 0.2~0.5、眉毛微皺 brow_angle 輕微正值"
-        },
-        "happy": {
-          "label": "開朗",
-          "description": "大笑 mouth_form 0.6~1.0、瞇眼 eye_open 0.5~0.7、眉毛上揚 brow_y 正值、head_intensity 高 0.6~0.9"
-        },
-        "angry": {
-          "label": "生氣",
-          "description": "嘴角下垂 mouth_form -0.3~-0.8、倒八字眉 brow_angle 正值 0.3~0.8、皺眉 brow_form 負值、head_intensity 中高"
-        },
-        "seductive": {
-          "label": "魅惑",
-          "description": "微笑 mouth_form 0.2~0.5、半瞇眼 eye_open 0.4~0.7、blush_level 0.1~0.3、head_intensity 低 0.1~0.3"
-        }
+            "label": "傲嬌",
+            "description": "嘴角微微上揚但裝不在乎 mouth_form 0.1~0.3、偶爾臉紅 blush_level 0.2~0.5、眉毛微皺 brow_angle 輕微正值"
+          },
+          "happy": {
+            "label": "開朗",
+            "description": "大笑 mouth_form 0.6~1.0、瞇眼 eye_open 0.5~0.8、眉毛上揚 brow_y 正值、head_intensity 高 0.6~0.9"
+          },
+          "angry": {
+            "label": "生氣",
+            "description": "嘴角下垂 mouth_form -0.3~-0.8、倒八字眉 brow_angle 正值 0.3~0.8、皺眉 brow_form 負值、head_intensity 中高"
+          },
+          "seductive": {
+            "label": "魅惑",
+            "description": "微笑 mouth_form 0.2~0.5、半瞇眼 eye_open 0.4~0.7、blush_level 0.1~0.3、head_intensity 低 0.1~0.3"
+          }
       },
       "general_emotion_hints": [
-        { "name": "開心大笑", "description": "mouth_form 大正值、eye_*_open 略小（瞇眼）、brow_*_y 上揚、head_intensity 高" },
-        { "name": "傷心難過", "description": "mouth_form 大負值、brow_*_angle 負值（八字眉）、brow_*_y 下壓" },
+        { "name": "開心大笑", "description": "mouth_form 大正值、eye_*_open 略小（瞇眼 0.6~0.8）、eye_*_smile 大（0.7~1.0）、brow_*_y 上揚、head_intensity 高" },
+        { "name": "傷心難過", "description": "mouth_form 大負值（-0.5~-1.0，Hiyori 可到 -2）、brow_*_angle 負值（八字眉）、brow_*_y 下壓" },
         { "name": "生氣皺眉", "description": "brow_*_angle 正值（倒八字眉）、brow_*_form 負值（皺眉）、mouth_form 小負值" },
-        { "name": "驚訝張嘴", "description": "eye_*_open 大（放大眼睛）、brow_*_y 大正值、mouth_form 小正值" },
-        { "name": "害羞臉紅", "description": "blush_level 高、mouth_form 小正值、eye_*_open 略小" },
-        { "name": "平靜思考", "description": "所有參數接近 0，head_intensity 低" },
-        { "name": "不對稱表情", "description": "eye_sync=false 時可做不對稱表情（如眨單眼）" }
+        { "name": "驚訝張嘴", "description": "eye_*_open 大（1.3~2.0 瞪大眼睛）、brow_*_y 大正值、mouth_form 小正值" },
+        { "name": "害羞臉紅", "description": "blush_level 0.4~1.0、mouth_form 小正值、eye_*_open 略小、eye_*_smile 0.2~0.5（含羞笑意）" },
+        { "name": "蒼白緊張", "description": "blush_level -0.5~-1.0（Hiyori 專有）、eye_*_open 略大 1.1~1.3" },
+        { "name": "平靜思考", "description": "所有參數接近 0（eye_open 維持 1.0 預設），head_intensity 低" },
+        { "name": "不對稱表情", "description": "eye_sync=false 時可做不對稱表情（如眨單眼、單邊笑眼 eye_l_smile vs eye_r_smile 不同值）" }
       ],
       "speaking_rate_hints": [
         { "mood": "開心興奮", "range": "1.1～1.4", "note": "說話較快" },

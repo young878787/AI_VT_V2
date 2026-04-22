@@ -305,6 +305,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         brow_l_form = float(args.get("brow_l_form", 0.0))
                         brow_r_form = float(args.get("brow_r_form", 0.0))
                         speaking_rate = float(args.get("speaking_rate", 1.0))
+                        eye_l_smile = float(args.get("eye_l_smile", 0.0))
+                        eye_r_smile = float(args.get("eye_r_smile", 0.0))
+                        brow_l_x = float(args.get("brow_l_x", 0.0))
+                        brow_r_x = float(args.get("brow_r_x", 0.0))
 
                     elif fn_name == "blink_control":
                         blink_action = args.get("action", "")
@@ -366,6 +370,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     eye_l_open, eye_r_open, duration_sec,
                     mouth_form, brow_l_y, brow_r_y,
                     brow_l_angle, brow_r_angle, brow_l_form, brow_r_form,
+                    eye_l_smile, eye_r_smile, brow_l_x, brow_r_x,
                 )
                 await websocket.send_json(behavior_payload)
                 await broadcast_to_displays(behavior_payload)
@@ -442,6 +447,10 @@ def _build_behavior_payload(
     brow_r_angle: float,
     brow_l_form: float,
     brow_r_form: float,
+    eye_l_smile: float = 0.0,
+    eye_r_smile: float = 0.0,
+    brow_l_x: float = 0.0,
+    brow_r_x: float = 0.0,
 ) -> dict:
     """組裝行為數據 payload（發送給前端 & Display 端點）。"""
     return {
@@ -459,4 +468,8 @@ def _build_behavior_payload(
         "browRAngle": brow_r_angle,
         "browLForm": brow_l_form,
         "browRForm": brow_r_form,
+        "eyeLSmile": eye_l_smile,
+        "eyeRSmile": eye_r_smile,
+        "browLX": brow_l_x,
+        "browRX": brow_r_x,
     }

@@ -65,6 +65,10 @@ class DisplaySyncService {
             data.browLForm      ?? 0.0,
             data.browRForm      ?? 0.0,
             data.eyeSync        ?? true,
+            data.eyeLSmile      ?? 0.0,
+            data.eyeRSmile      ?? 0.0,
+            data.browLX         ?? 0.0,
+            data.browRX         ?? 0.0,
           );
         }
         // 忽略 ping 等其他訊息類型

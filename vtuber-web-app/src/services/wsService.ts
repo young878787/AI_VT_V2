@@ -84,7 +84,11 @@ class WSService {
                         data.browRAngle ?? 0.0,
                         data.browLForm ?? 0.0,
                         data.browRForm ?? 0.0,
-                        data.eyeSync ?? true
+                        data.eyeSync ?? true,
+                        data.eyeLSmile ?? 0.0,
+                        data.eyeRSmile ?? 0.0,
+                        data.browLX ?? 0.0,
+                        data.browRX ?? 0.0,
                     );
                 } else if (data.type === 'blink_control') {
                     console.log(`Received blink control: action=${data.action}, duration=${data.durationSec}`);

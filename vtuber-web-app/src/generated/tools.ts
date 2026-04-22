@@ -31,8 +31,8 @@ export const PARAM_DEFS: ParamDef[] = [
   {
     key: 'blushLevel',
     backendKey: 'blush_level',
-    label: '臉紅程度',
-    min: 0,
+    label: '臉頰狀態',
+    min: -1,
     max: 1,
     step: 0.01,
     emoji: '🌸',
@@ -44,7 +44,7 @@ export const PARAM_DEFS: ParamDef[] = [
     backendKey: 'eye_l_open',
     label: '左眼張開',
     min: 0,
-    max: 1,
+    max: 2,
     step: 0.01,
     emoji: '👁',
     color: '#7dd3fc',
@@ -55,7 +55,7 @@ export const PARAM_DEFS: ParamDef[] = [
     backendKey: 'eye_r_open',
     label: '右眼張開',
     min: 0,
-    max: 1,
+    max: 2,
     step: 0.01,
     emoji: '👁',
     color: '#7dd3fc',
@@ -76,7 +76,7 @@ export const PARAM_DEFS: ParamDef[] = [
     key: 'mouthForm',
     backendKey: 'mouth_form',
     label: '嘴角形狀',
-    min: -1,
+    min: -2,
     max: 1,
     step: 0.01,
     emoji: '😊',
@@ -148,6 +148,50 @@ export const PARAM_DEFS: ParamDef[] = [
     emoji: '〜',
     color: '#fde68a',
     default: 0,
+  },
+  {
+    key: 'eyeLSmile',
+    backendKey: 'eye_l_smile',
+    label: '左眼笑眼',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    emoji: '😊',
+    color: '#bae6fd',
+    default: 0,
+  },
+  {
+    key: 'eyeRSmile',
+    backendKey: 'eye_r_smile',
+    label: '右眼笑眼',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    emoji: '😊',
+    color: '#bae6fd',
+    default: 0,
+  },
+  {
+    key: 'browLX',
+    backendKey: 'brow_l_x',
+    label: '左眉水平',
+    min: -1,
+    max: 1,
+    step: 0.01,
+    emoji: '↔',
+    color: '#fef08a',
+    default: 0,
+  },
+  {
+    key: 'browRX',
+    backendKey: 'brow_r_x',
+    label: '右眉水平',
+    min: -1,
+    max: 1,
+    step: 0.01,
+    emoji: '↔',
+    color: '#fef08a',
+    default: 0,
   }
 ];
 
@@ -177,12 +221,16 @@ export const DEFAULT_PARAMS: Record<string, number> = {
   browLAngle: 0,
   browRAngle: 0,
   browLForm: 0,
-  browRForm: 0
+  browRForm: 0,
+  eyeLSmile: 0,
+  eyeRSmile: 0,
+  browLX: 0,
+  browRX: 0
 };
 
 export const EYE_SYNC_DEFAULT = true;
 
-export const COVERAGE_INFO = { connected: 13, total: 14 };
+export const COVERAGE_INFO = { connected: 17, total: 18 };
 
 export const LIVE2D_TOOL_NAME = 'set_ai_behavior';
 

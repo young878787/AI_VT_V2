@@ -44,6 +44,10 @@ export const ModelParamPanel: React.FC = () => {
               browRAngle:     raw.browRAngle,
               browLForm:      raw.browLForm,
               browRForm:      raw.browRForm,
+              eyeLSmile:     raw.eyeLSmile,
+              eyeRSmile:     raw.eyeRSmile,
+              browLX:        raw.browLX,
+              browRX:        raw.browRX,
             }));
             setEyeSync(raw.eyeSync);
             setTimerLeft(Math.max(0, Math.round(raw.timerRemaining)));
@@ -66,6 +70,10 @@ export const ModelParamPanel: React.FC = () => {
     if (eyeSync && key === 'browRForm') next.browLForm = value;
     if (eyeSync && key === 'browLAngle') next.browRAngle = -value;
     if (eyeSync && key === 'browRAngle') next.browLAngle = -value;
+    if (eyeSync && key === 'eyeLSmile') next.eyeRSmile = value;
+    if (eyeSync && key === 'eyeRSmile') next.eyeLSmile = value;
+    if (eyeSync && key === 'browLX') next.browRX = -value;
+    if (eyeSync && key === 'browRX') next.browLX = -value;
     setParams(next);
 
     const model = LAppLive2DManager.getInstance().getActiveModel();
@@ -80,7 +88,9 @@ export const ModelParamPanel: React.FC = () => {
         next.browLY, next.browRY,
         next.browLAngle, next.browRAngle,
         next.browLForm, next.browRForm,
-        eyeSync
+        eyeSync,
+        next.eyeLSmile, next.eyeRSmile,
+        next.browLX, next.browRX,
       );
     }
   }, [params, eyeSync]);
@@ -140,9 +150,19 @@ export const ModelParamPanel: React.FC = () => {
       <div className="param-panel__body">
         {PARAM_DEFS.map(def => {
           const val = params[def.key] ?? 0;
-          const pct = def.min < 0
-            ? ((val - def.min) / (def.max - def.min)) * 100
-            : (val / def.max) * 100;
+          const range = def.max - def.min;
+          const pct = ((val - def.min) / range) * 100;
+
+          // 在軌道上標記 default 位置（default 不在邊緣時才顯示）
+          const defaultPct = (def.default > def.min && def.default < def.max)
+            ? ((def.default - def.min) / range) * 100
+            : null;
+
+          // 數值顯示：有負範圍時加 +/- 前綴
+          const showSign = def.min < 0;
+          const valueStr = showSign
+            ? (val > 0 ? '+' : '') + val.toFixed(2)
+            : val.toFixed(2);
 
           return (
             <div key={def.key} className="param-row" title={`後端欄位: ${def.backendKey}`}>
@@ -150,11 +170,13 @@ export const ModelParamPanel: React.FC = () => {
                 <span className="param-row__emoji">{def.emoji}</span>
                 <span className="param-row__label">{def.label}</span>
                 <span className="param-row__value" style={{ color: def.color }}>
-                  {val >= 0 && def.min >= 0 ? '' : (val >= 0 ? '+' : '')}{val.toFixed(2)}
+                  {valueStr}
                 </span>
               </div>
               <div className="param-row__track">
-                {def.min < 0 && <div className="param-row__center" />}
+                {defaultPct !== null && (
+                  <div className="param-row__center" style={{ left: `${defaultPct}%` }} />
+                )}
                 <input
                   type="range"
                   min={def.min}
