@@ -17,8 +17,8 @@ from core.config import (
 from core.utils import strip_thinking, normalize_session_id
 from domain.jpaf import JPAFSession, extract_jpaf_state, strip_jpaf_tags
 from domain.agent_a_prompts import build_agent_a_prompt
-from domain.agent_b_prompts import build_agent_b_prompt
-from domain.tools import tools
+from domain.agent_b_prompts import build_live2d_prompt, build_memory_prompt
+from domain.tools import live2d_tools, memory_tools
 from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY
 from infrastructure.memory_store import (
     load_user_profile,
@@ -32,7 +32,8 @@ from infrastructure.memory_store import (
 from services.chat_service import (
     stream_agent_a,
     collect_agent_a,
-    call_agent_b,
+    call_live2d_agent,
+    call_memory_agent,
     compress_context,
     estimate_token_count,
     synthesize_and_send_voice,
@@ -40,6 +41,7 @@ from services.chat_service import (
 )
 from services.memory_service import execute_profile_update
 from api.display_manager import broadcast_to_displays
+from core.prompt_logger import log_turn, reset_log
 
 router = APIRouter()
 
@@ -109,6 +111,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 jpaf_session = (
                     JPAFSession.from_dict(jpaf_data) if jpaf_data else JPAFSession()
                 )
+                # 3b. 清空 Prompt Log
+                reset_log()
                 # 4. 通知前端最新 JPAF 狀態（turn_count = 0）
                 await websocket.send_json({
                     "type": "jpaf_update",
@@ -194,22 +198,32 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
                 # ============================================================
-                # 步驟 3：Agent B 工具決策呼叫
+                # 步驟 3：Agent B-1 (Live2D) + B-2 (Memory) 並行呼叫
                 # ============================================================
-                print(f"[{AI_PROVIDER.upper()}] Agent B: deciding tools...")
+                print(f"[{AI_PROVIDER.upper()}] Agent B: parallel live2d + memory...")
 
-                agent_b_system = build_agent_b_prompt(
-                    agent_a_text, jpaf_state, user_message
-                )
-                agent_b_messages = [
-                    {"role": "system", "content": agent_b_system},
-                    {"role": "user", "content": f"請根據上述上下文決定工具呼叫。"},
+                # B-1 Live2D prompt
+                live2d_system = build_live2d_prompt(agent_a_text, jpaf_state)
+                live2d_messages = [
+                    {"role": "system", "content": live2d_system},
+                    {"role": "user", "content": "請根據上述上下文呼叫 set_ai_behavior。"},
                 ]
 
-                response = await call_agent_b(agent_b_messages)
+                # B-2 Memory prompt
+                memory_system = build_memory_prompt(user_message, agent_a_text)
+                memory_messages = [
+                    {"role": "system", "content": memory_system},
+                    {"role": "user", "content": "請分析用戶訊息，判斷是否需要記憶操作。"},
+                ]
+
+                # 並行呼叫
+                live2d_response, memory_response = await asyncio.gather(
+                    call_live2d_agent(live2d_messages),
+                    call_memory_agent(memory_messages),
+                )
 
                 # ============================================================
-                # 步驟 4：處理 Agent B 的 Tool Calls
+                # 步驟 4：處理 Tool Calls
                 # ============================================================
                 head_intensity = 0.3
                 blush_level = 0.0
@@ -226,61 +240,104 @@ async def websocket_endpoint(websocket: WebSocket):
                 eye_sync = True
                 speaking_rate = 1.0
 
-                if response.choices and len(response.choices) > 0:
-                    response_message = response.choices[0].message
+                all_calls: list[dict] = []
 
-                    # 解析 XML tool calls（針對不支援原生 FC 的模型）
-                    content_text = strip_thinking(response_message.content or "")
-                    xml_tool_calls, _ = parse_xml_tool_calls(content_text)
+                # --- 解析 Live2D response ---
+                if live2d_response.choices and len(live2d_response.choices) > 0:
+                    l2d_msg = live2d_response.choices[0].message
+                    print(f"[Live2D Agent] content: {(l2d_msg.content or 'None')[:100]}")
 
-                    # 合併原生 + XML tool calls
-                    all_calls: list[dict] = []
-                    if response_message.tool_calls:
-                        for tc in response_message.tool_calls:
+                    l2d_content = strip_thinking(l2d_msg.content or "")
+                    l2d_xml_calls, _ = parse_xml_tool_calls(l2d_content)
+
+                    if l2d_msg.tool_calls:
+                        for tc in l2d_msg.tool_calls:
                             try:
                                 args = json.loads(tc.function.arguments)
-                                all_calls.append(
-                                    {"name": tc.function.name, "arguments": args}
-                                )
+                                all_calls.append({"name": tc.function.name, "arguments": args})
                             except json.JSONDecodeError as e:
-                                print(f"Tool call 參數解析失敗 ({tc.function.name}): {e}")
+                                print(f"Live2D tool call 解析失敗: {e}")
+                    if l2d_xml_calls:
+                        all_calls.extend(l2d_xml_calls)
 
-                    if xml_tool_calls:
-                        print(f"偵測到 XML Tool Calls: {len(xml_tool_calls)} 個")
-                        all_calls.extend(xml_tool_calls)
+                # --- 解析 Memory response ---
+                if memory_response.choices and len(memory_response.choices) > 0:
+                    mem_msg = memory_response.choices[0].message
+                    print(f"[Memory Agent] content: {(mem_msg.content or 'None')[:100]}")
+                    print(f"[Memory Agent] tool_calls count: {len(mem_msg.tool_calls) if mem_msg.tool_calls else 0}")
 
-                    for call in all_calls:
-                        fn_name = call["name"]
-                        args = call["arguments"]
+                    mem_content = strip_thinking(mem_msg.content or "")
+                    mem_xml_calls, _ = parse_xml_tool_calls(mem_content)
 
-                        if fn_name == "set_ai_behavior":
-                            head_intensity = float(args.get("head_intensity", 0.3))
-                            blush_level = float(args.get("blush_level", 0.0))
-                            eye_sync = args.get("eye_sync", True)
-                            eye_l_open = float(args.get("eye_l_open", 1.0))
-                            eye_r_open = float(args.get("eye_r_open", 1.0))
-                            duration_sec = float(args.get("duration_sec", 5.0))
-                            mouth_form = float(args.get("mouth_form", 0.0))
-                            brow_l_y = float(args.get("brow_l_y", 0.0))
-                            brow_r_y = float(args.get("brow_r_y", 0.0))
-                            brow_l_angle = float(args.get("brow_l_angle", 0.0))
-                            brow_r_angle = float(args.get("brow_r_angle", 0.0))
-                            brow_l_form = float(args.get("brow_l_form", 0.0))
-                            brow_r_form = float(args.get("brow_r_form", 0.0))
-                            speaking_rate = float(args.get("speaking_rate", 1.0))
+                    if mem_msg.tool_calls:
+                        for tc in mem_msg.tool_calls:
+                            try:
+                                args = json.loads(tc.function.arguments)
+                                all_calls.append({"name": tc.function.name, "arguments": args})
+                                print(f"[Memory Agent] tool: {tc.function.name} => {tc.function.arguments[:100]}")
+                            except json.JSONDecodeError as e:
+                                print(f"Memory tool call 解析失敗: {e}")
+                    if mem_xml_calls:
+                        print(f"[Memory Agent] XML tool calls: {len(mem_xml_calls)}")
+                        all_calls.extend(mem_xml_calls)
+                else:
+                    print("[Memory Agent] No choices returned!")
 
-                        elif fn_name == "update_user_profile":
-                            action = args.get("action", "add")
-                            field = args.get("field", "custom_notes")
-                            value = args.get("value", "")
-                            execute_profile_update(action, field, value)
-                            print(f"User profile 已更新 [{action}] {field}: {value}")
+                print(f"[Agent B] all_calls 總數: {len(all_calls)}, names: {[c['name'] for c in all_calls]}")
 
-                        elif fn_name == "save_memory_note":
-                            note_content = args.get("content", "")
-                            if note_content:
-                                append_memory_note(note_content)
-                                print(f"Memory note 已記錄: {note_content}")
+                # --- 執行 tool calls ---
+                for call in all_calls:
+                    fn_name = call["name"]
+                    args = call["arguments"]
+
+                    if fn_name == "set_ai_behavior":
+                        head_intensity = float(args.get("head_intensity", 0.3))
+                        blush_level = float(args.get("blush_level", 0.0))
+                        eye_sync = args.get("eye_sync", True)
+                        eye_l_open = float(args.get("eye_l_open", 1.0))
+                        eye_r_open = float(args.get("eye_r_open", 1.0))
+                        duration_sec = float(args.get("duration_sec", 5.0))
+                        mouth_form = float(args.get("mouth_form", 0.0))
+                        brow_l_y = float(args.get("brow_l_y", 0.0))
+                        brow_r_y = float(args.get("brow_r_y", 0.0))
+                        brow_l_angle = float(args.get("brow_l_angle", 0.0))
+                        brow_r_angle = float(args.get("brow_r_angle", 0.0))
+                        brow_l_form = float(args.get("brow_l_form", 0.0))
+                        brow_r_form = float(args.get("brow_r_form", 0.0))
+                        speaking_rate = float(args.get("speaking_rate", 1.0))
+
+                    elif fn_name == "update_user_profile":
+                        action = args.get("action", "add")
+                        field = args.get("field", "custom_notes")
+                        value = args.get("value", "")
+                        execute_profile_update(action, field, value)
+                        print(f"User profile 已更新 [{action}] {field}: {value}")
+
+                    elif fn_name == "save_memory_note":
+                        note_content = args.get("content", "")
+                        if note_content:
+                            append_memory_note(note_content)
+                            print(f"Memory note 已記錄: {note_content}")
+
+                # ---- Prompt Log ----
+                _a_tokens = estimate_token_count(
+                    [{"role": "assistant", "content": agent_a_text}]
+                )
+                _b_tokens = 0
+                for resp in (live2d_response, memory_response):
+                    try:
+                        if hasattr(resp, "usage") and resp.usage:
+                            _b_tokens += getattr(resp.usage, "completion_tokens", 0) or 0
+                    except Exception:
+                        pass
+                log_turn(
+                    turn_count=jpaf_session.turn_count,
+                    system_prompt=agent_a_system,
+                    user_message=user_message,
+                    agent_a_output=agent_a_text,
+                    tool_names=[c["name"] for c in all_calls],
+                    output_tokens=_a_tokens + _b_tokens,
+                )
 
                 # ---- 送出 behavior payload (FIRST) ----
                 behavior_payload = _build_behavior_payload(

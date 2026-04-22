@@ -118,6 +118,9 @@ export const NativeParamPanel: React.FC = () => {
   const autoDetectedIdsRef   = useRef<Set<string>>(new Set());
   const prevValuesRef        = useRef<Record<string, number>>({});
   const eyeTrackingEnabledRef = useRef(true);
+  // 使用者手動觸碰紀錄：paramId → 最後觸碰時間 (Date.now ms)
+  // 保護窗口 = OVERRIDE_DURATION_MS + 500ms 緩衝，期間完全跳過自動偵測
+  const userTouchedRef       = useRef<Map<string, number>>(new Map());
 
   // 讀取 eyeTrackingEnabled（Zustand），同步到 Ref 讓 RAF callback 可直接存取
   const eyeTrackingEnabled = useAppStore(state => state.eyeTrackingEnabled);
@@ -166,14 +169,23 @@ export const NativeParamPanel: React.FC = () => {
 
           // ── 自動偵測：滑鼠追蹤啟用時，比較前後幀數值 ──────────────
           const prev = prevValuesRef.current;
+          const nowDetect = Date.now();
           let hasNewDetected = false;
           for (const p of fresh) {
             // 只在 tracking 開啟且尚未偵測過時才檢查
             if (eyeTrackingEnabledRef.current && !autoDetectedIdsRef.current.has(p.id)) {
-              const prevVal = prev[p.id];
-              if (prevVal !== undefined && Math.abs(p.current - prevVal) > DETECT_THRESHOLD) {
-                autoDetectedIdsRef.current.add(p.id);
-                hasNewDetected = true;
+              // 保護窗口：使用者近期手動調整過此參數 → 跳過偵測
+              // 保護時長 = OVERRIDE_DURATION_MS + 500ms 緩衝，涵蓋覆蓋期與覆蓋消退後的數值回彈
+              const lastTouched = userTouchedRef.current.get(p.id);
+              const isUserProtected =
+                lastTouched !== undefined &&
+                (nowDetect - lastTouched) < OVERRIDE_DURATION_MS + 500;
+              if (!isUserProtected) {
+                const prevVal = prev[p.id];
+                if (prevVal !== undefined && Math.abs(p.current - prevVal) > DETECT_THRESHOLD) {
+                  autoDetectedIdsRef.current.add(p.id);
+                  hasNewDetected = true;
+                }
               }
             }
             prev[p.id] = p.current; // 無論 tracking 是否開啟都更新基準值
@@ -218,6 +230,12 @@ export const NativeParamPanel: React.FC = () => {
       ...prev,
       [paramId]: { value, expiresAt: Date.now() + OVERRIDE_DURATION_MS },
     }));
+    // 記錄使用者觸碰時間（保護窗口）：防止 RAF tick 誤把使用者操作引發的
+    // 數值變化（含初次套用覆蓋的幀延遲、以及覆蓋消退後的數值回彈）
+    // 誤判為「物理/追蹤驅動」而將參數移至下方區塊
+    const now = Date.now();
+    userTouchedRef.current.set(paramId, now);
+    prevValuesRef.current[paramId] = value; // 輔助同步基準值（多重防護）
   }, []);
 
   // ── 全部重置 ─────────────────────────────────────────────────────────

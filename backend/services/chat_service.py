@@ -261,13 +261,52 @@ async def collect_agent_a(messages: list) -> tuple[str, dict | None]:
 
 
 # ============================================================
-# Agent B：工具決策呼叫
+# Agent B-1：Live2D 表情控制
 # ============================================================
+async def call_live2d_agent(messages: list) -> object:
+    """
+    Live2D Agent 非串流呼叫：決定表情參數。
+    回傳原始 API response。
+    """
+    from domain.tools import live2d_tools
+
+    response = await chat_create_with_fallback(
+        model=MODEL_NAME,
+        messages=messages,
+        tools=live2d_tools,
+        tool_choice="auto",
+        temperature=0.5,
+        extra_body=EXTRA_BODY,
+        max_tokens=350,
+    )
+    return response
+
+
+# ============================================================
+# Agent B-2：記憶管理
+# ============================================================
+async def call_memory_agent(messages: list) -> object:
+    """
+    Memory Agent 非串流呼叫：判斷是否需要記憶操作。
+    回傳原始 API response。
+    """
+    from domain.tools import memory_tools
+
+    response = await chat_create_with_fallback(
+        model=MODEL_NAME,
+        messages=messages,
+        tools=memory_tools,
+        tool_choice="auto",
+        temperature=0.3,
+        extra_body=EXTRA_BODY,
+        max_tokens=256,
+    )
+    return response
+
+
+# 向後相容別名
 async def call_agent_b(messages: list) -> object:
-    """
-    Agent B 非串流呼叫：決定 Live2D 表情 + 記憶操作。
-    回傳原始 API response（由 chat_ws.py 解析 tool calls）。
-    """
+    """已棄用，保留向後相容。請改用 call_live2d_agent / call_memory_agent。"""
     from domain.tools import tools
 
     response = await chat_create_with_fallback(
@@ -277,7 +316,7 @@ async def call_agent_b(messages: list) -> object:
         tool_choice="auto",
         temperature=0.5,
         extra_body=EXTRA_BODY,
-        max_tokens=256,
+        max_tokens=512,
     )
     return response
 

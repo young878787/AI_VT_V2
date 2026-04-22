@@ -1,20 +1,29 @@
 """
-Agent B 系統 Prompt 組裝：Live2D 表情控制 + 記憶管理決策。
-Agent B 負責工具呼叫，不產生角色對話。
-純函式，無 I/O 相依。
+Agent B 系統 Prompt 組裝：拆分為兩個獨立 Agent。
+  - B-1 Live2D Agent：表情控制（必定執行）
+  - B-2 Memory Agent：記憶管理（判斷是否需要記憶操作）
+資料來源：tools_schema.json（單一來源）。
 """
 
+import json
+import os
 
-def build_agent_b_prompt(
+_SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "tools_schema.json")
+with open(_SCHEMA_PATH, "r", encoding="utf-8") as _f:
+    _SCHEMA = json.load(_f)
+
+_LIVE2D_CFG = _SCHEMA["prompt_config"]["live2d"]
+_MEMORY_CFG = _SCHEMA["prompt_config"]["memory"]
+
+
+def build_live2d_prompt(
     agent_a_reply: str,
     jpaf_state: dict | None,
-    user_message: str,
 ) -> str:
     """
-    組裝 Agent B 的系統 Prompt。
-    Agent B 根據 Agent A 的回覆和情緒狀態決定工具呼叫。
+    組裝 Live2D Agent 的系統 Prompt（Agent B-1）。
+    專注表情控制，不處理記憶。
     """
-    # 從 jpaf_state 提取情緒資訊
     if jpaf_state:
         active_fn = jpaf_state.get("active_function", "Ti")
         persona = jpaf_state.get("suggested_persona", "tsundere")
@@ -22,9 +31,26 @@ def build_agent_b_prompt(
         active_fn = "Ti"
         persona = "tsundere"
 
-    return f"""你是 Live2D 表情控制和記憶管理專家。
-你的工作是根據 AI 角色的回覆內容和情緒狀態，決定 Live2D 模型的表情參數和記憶操作。
-你不需要產生任何對話文字，只需要呼叫工具。
+    # persona 對應段落
+    persona_lines = "\n".join(
+        f"- **{key}（{val['label']}）**：{val['description']}"
+        for key, val in _LIVE2D_CFG["persona_hints"].items()
+    )
+
+    # 通用表情速查
+    emotion_lines = "\n".join(
+        f"- {item['name']}：{item['description']}"
+        for item in _LIVE2D_CFG["general_emotion_hints"]
+    )
+
+    # 語速提示
+    rate_lines = "\n".join(
+        f"- {item['mood']}：{item['range']}" + (f"（{item['note']}）" if item.get("note") else "")
+        for item in _LIVE2D_CFG["speaking_rate_hints"]
+    )
+
+    return f"""你是 {_LIVE2D_CFG['system_role']}。
+{_LIVE2D_CFG['task_description']}
 
 # 當前上下文
 
@@ -35,43 +61,77 @@ def build_agent_b_prompt(
 - active_function: {active_fn}
 - persona: {persona}
 
-【用戶的原始訊息】
-{user_message}
-
-# 工具使用規則
-
-## set_ai_behavior — 【必須呼叫】
-驅動 Live2D 模型的即時表情與動作，以及語音的語速。
-用小數點創造細膩表情（如 0.83、0.47），避免死板的整數。
+# {_LIVE2D_CFG['tool_name'] if 'tool_name' in _LIVE2D_CFG else 'set_ai_behavior'} — 【必須呼叫】
+{_LIVE2D_CFG['tool_description']}
 
 根據 persona 和 active_function 調整表情：
 
-### persona 表情對應
-- **tsundere（傲嬌）**：嘴角微微上揚但裝不在乎 mouth_form 0.1~0.3、偶爾臉紅 blush_level 0.2~0.5、眉毛微皺 brow_angle 輕微正值
-- **happy（開朗）**：大笑 mouth_form 0.6~1.0、瞇眼 eye_open 0.5~0.7、眉毛上揚 brow_y 正值、head_intensity 高 0.6~0.9
-- **angry（生氣）**：嘴角下垂 mouth_form -0.3~-0.8、倒八字眉 brow_angle 正值 0.3~0.8、皺眉 brow_form 負值、head_intensity 中高
-- **seductive（魅惑）**：微笑 mouth_form 0.2~0.5、半瞇眼 eye_open 0.4~0.7、blush_level 0.1~0.3、head_intensity 低 0.1~0.3
+## persona 表情對應
+{persona_lines}
 
-### 通用表情速查
-- 開心大笑：mouth_form 大正值、eye_*_open 略小（瞇眼）、brow_*_y 上揚、head_intensity 高
-- 傷心難過：mouth_form 大負值、brow_*_angle 負值（八字眉）、brow_*_y 下壓
-- 生氣皺眉：brow_*_angle 正值（倒八字眉）、brow_*_form 負值（皺眉）、mouth_form 小負值
-- 驚訝張嘴：eye_*_open 大（放大眼睛）、brow_*_y 大正值、mouth_form 小正值
-- 害羞臉紅：blush_level 高、mouth_form 小正值、eye_*_open 略小
-- 平靜思考：所有參數接近 0，head_intensity 低
-- eye_sync=false 時可做不對稱表情（如眨單眼）
+## 通用表情速查
+{emotion_lines}
 
-### 語音語速 (speaking_rate)
-- 開心興奮：1.1～1.4（說話較快）
-- 傷心沉思：0.7～0.9（說話較慢）
-- 撒嬌：0.9～1.0（稍慢、拉長）
-- 驚訝：1.1～1.2（稍快）
-- 正常對話：1.0
+## 語音語速 (speaking_rate)
+{rate_lines}"""
 
-## update_user_profile — 選用
-當用戶的訊息提到個人特徵（喜好、性格、興趣、討厭的事、生日等）時呼叫。
-注意：只看用戶的原始訊息來判斷，不要根據 AI 的回覆內容。
 
-## save_memory_note — 選用
-當對話中發生值得長期記住的事件時呼叫（一起討論有趣話題、用戶分享重要決定等）。
-記錄的內容要簡潔明確。"""
+def build_memory_prompt(
+    user_message: str,
+    agent_a_reply: str,
+) -> str:
+    """
+    組裝 Memory Agent 的系統 Prompt（Agent B-2）。
+    專注記憶管理，不處理表情。
+    """
+    up = _MEMORY_CFG["update_user_profile"]
+    sm = _MEMORY_CFG["save_memory_note"]
+
+    # 欄位指南
+    field_lines = "\n".join(
+        f"- {item['field']}：{item['description']}"
+        for item in up["field_guide"]
+    )
+
+    # 示例
+    example_lines = "\n".join(
+        f'- 「{ex["input"]}」→ {ex["action"]}, {ex["field"]}, "{ex["value"]}"'
+        for ex in up["examples"]
+    )
+
+    # 原則
+    principle_lines = "\n".join(
+        f"- {p}"
+        for p in _MEMORY_CFG["principles"]
+    )
+
+    return f"""你是{_MEMORY_CFG['system_role']}。
+{_MEMORY_CFG['task_description']}
+
+# 當前對話
+
+【用戶的訊息】
+{user_message}
+
+【AI 角色的回覆】（僅供參考上下文，記憶判斷以用戶訊息為主）
+{agent_a_reply}
+
+# 工具使用規則
+
+## update_user_profile — 積極使用
+{up['description']}
+
+欄位選擇指南：
+{field_lines}
+
+示例：
+{example_lines}
+
+## save_memory_note — 積極使用
+{sm['description']}
+
+記錄格式：{sm['format']}。
+
+---
+**重要原則**：
+{principle_lines}"""

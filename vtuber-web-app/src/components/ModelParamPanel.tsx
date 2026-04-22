@@ -1,58 +1,39 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
+import {
+  PARAM_DEFS,
+  MISSING_PARAMS,
+  DEFAULT_PARAMS,
+  EYE_SYNC_DEFAULT,
+  COVERAGE_INFO,
+} from '../generated/tools';
 import './ModelParamPanel.css';
-
-interface ParamDef {
-  key: string;
-  label: string;
-  min: number;
-  max: number;
-  step: number;
-  emoji: string;
-  color: string;
-}
-
-const PARAM_DEFS: ParamDef[] = [
-  { key: 'eyeLOpen',      label: '左眼開合', min: 0,  max: 1,  step: 0.01, emoji: '👁',  color: '#7dd3fc' },
-  { key: 'eyeROpen',      label: '右眼開合', min: 0,  max: 1,  step: 0.01, emoji: '👁',  color: '#7dd3fc' },
-  { key: 'browLY',        label: '左眉高低', min: -1, max: 1,  step: 0.01, emoji: '⬆',  color: '#fde68a' },
-  { key: 'browRY',        label: '右眉高低', min: -1, max: 1,  step: 0.01, emoji: '⬆',  color: '#fde68a' },
-  { key: 'browLAngle',    label: '左眉角度', min: -1, max: 1,  step: 0.01, emoji: '↗',  color: '#fde68a' },
-  { key: 'browRAngle',    label: '右眉角度', min: -1, max: 1,  step: 0.01, emoji: '↗',  color: '#fde68a' },
-  { key: 'browLForm',     label: '左眉形狀', min: -1, max: 1,  step: 0.01, emoji: '〜', color: '#fde68a' },
-  { key: 'browRForm',     label: '右眉形狀', min: -1, max: 1,  step: 0.01, emoji: '〜', color: '#fde68a' },
-  { key: 'mouthForm',     label: '嘴巴形狀', min: -1, max: 1,  step: 0.01, emoji: '😊', color: '#86efac' },
-  { key: 'blushLevel',    label: '臉頰泛紅', min: 0,  max: 1,  step: 0.01, emoji: '🌸', color: '#f9a8d4' },
-  { key: 'headIntensity', label: '頭部動作', min: 0,  max: 1,  step: 0.01, emoji: '🎭', color: '#c4b5fd' },
-];
 
 type ParamValues = Record<string, number>;
 
-const DEFAULT_PARAMS: ParamValues = {
-  blushLevel: 0, eyeLOpen: 1, eyeROpen: 1, mouthForm: 0,
-  browLY: 0, browRY: 0, browLAngle: 0, browRAngle: 0, browLForm: 0, browRForm: 0, headIntensity: 0,
-};
-
 export const ModelParamPanel: React.FC = () => {
-  // Grid 佈局: 不需要 showControls guard，面板始終存在
   const [params, setParams] = useState<ParamValues>(DEFAULT_PARAMS);
-  const [eyeSync, setEyeSync] = useState(true);
+  const [eyeSync, setEyeSync] = useState(EYE_SYNC_DEFAULT);
   const [isManual, setIsManual] = useState(false);
   const [timerLeft, setTimerLeft] = useState(0);
-  
+
   // Throttle 更新：每 100ms 拉一次資料就好，避免 60fps 佔用主執行緒導致滑桿卡死
   useEffect(() => {
     let lastTime = 0;
     let rafId: number;
-    
+
     const tick = (time: number) => {
       if (time - lastTime > 100) { // 10fps
         lastTime = time;
         if (!isManual) {
           const model = LAppLive2DManager.getInstance().getActiveModel();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           if (model && typeof (model as any).getAiParams === 'function') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const raw = (model as any).getAiParams();
-            setParams({
+            setParams(prev => ({
+              ...prev,
+              headIntensity: raw.headIntensity,
               blushLevel:    raw.blushLevel,
               eyeLOpen:      raw.eyeLOpen,
               eyeROpen:      raw.eyeROpen,
@@ -63,8 +44,7 @@ export const ModelParamPanel: React.FC = () => {
               browRAngle:     raw.browRAngle,
               browLForm:      raw.browLForm,
               browRForm:      raw.browRForm,
-              headIntensity: raw.headIntensity,
-            });
+            }));
             setEyeSync(raw.eyeSync);
             setTimerLeft(Math.max(0, Math.round(raw.timerRemaining)));
           }
@@ -84,22 +64,21 @@ export const ModelParamPanel: React.FC = () => {
     if (eyeSync && key === 'browRY') next.browLY = value;
     if (eyeSync && key === 'browLForm') next.browRForm = value;
     if (eyeSync && key === 'browRForm') next.browLForm = value;
-    // Angle needs mirroring for some models, but we handle it linearly in the setAiBehavior explicitly for now
     if (eyeSync && key === 'browLAngle') next.browRAngle = -value;
     if (eyeSync && key === 'browRAngle') next.browLAngle = -value;
     setParams(next);
 
     const model = LAppLive2DManager.getInstance().getActiveModel();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (model && typeof (model as any).setAiBehavior === 'function') {
-      // 在手動模式下，強制 AI 接管長達 8 秒，這樣即使使用者鬆手，表情也還在
-      // 直到時間被模型跑完後才會 Lerp 退回去。
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (model as any).setAiBehavior(
         next.headIntensity, next.blushLevel,
         next.eyeLOpen, next.eyeROpen,
-        8.0,
-        next.mouthForm, 
-        next.browLY, next.browRY, 
-        next.browLAngle, next.browRAngle, 
+        next.durationSec,
+        next.mouthForm,
+        next.browLY, next.browRY,
+        next.browLAngle, next.browRAngle,
         next.browLForm, next.browRForm,
         eyeSync
       );
@@ -115,7 +94,6 @@ export const ModelParamPanel: React.FC = () => {
 
   const endManual = useCallback(() => {
     if (manualTimerRef.current) clearTimeout(manualTimerRef.current);
-    // 延遲 3 秒後回到自動輪詢，避免拉完立刻跳動
     manualTimerRef.current = setTimeout(() => setIsManual(false), 3000);
   }, []);
 
@@ -123,22 +101,29 @@ export const ModelParamPanel: React.FC = () => {
     setParams(DEFAULT_PARAMS);
     setIsManual(false);
     const model = LAppLive2DManager.getInstance().getActiveModel();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (model && typeof (model as any).setAiBehavior === 'function') {
-      (model as any).setAiBehavior(0, 0, 1, 1, 0.5, 0, 0, 0, 0, 0, 0, 0, true);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (model as any).setAiBehavior(0, 0, 1, 1, DEFAULT_PARAMS.durationSec, 0, 0, 0, 0, 0, 0, 0, true);
     }
   }, []);
-
 
   return (
     <div className="param-panel">
       {/* 標題列 */}
       <div className="param-panel__header">
         <div className="param-panel__header-left">
-          <span className="param-panel__title">🎛️ 即時表情參數</span>
+          <span className="param-panel__title">🎛️ 目前Agent B能啟用的動作工具</span>
           {timerLeft > 0 && <span className="param-panel__timer">⏱ {timerLeft}s</span>}
           {isManual && <span className="param-panel__manual-badge">手動鎖定</span>}
         </div>
         <div className="param-panel__header-right">
+          <span className="param-panel__coverage" title="與後端 set_ai_behavior 工具參數對照">
+            {COVERAGE_INFO.connected}/{COVERAGE_INFO.total} 已接入
+          </span>
+          <button className="param-panel__reset-btn" onClick={handleReset}>
+            ↺ 預設復原
+          </button>
           <label className="param-panel__sync-label">
             <input
               type="checkbox"
@@ -151,7 +136,7 @@ export const ModelParamPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* 直向滑桿列表 */}
+      {/* 參數滑桿列表 */}
       <div className="param-panel__body">
         {PARAM_DEFS.map(def => {
           const val = params[def.key] ?? 0;
@@ -160,7 +145,7 @@ export const ModelParamPanel: React.FC = () => {
             : (val / def.max) * 100;
 
           return (
-            <div key={def.key} className="param-row">
+            <div key={def.key} className="param-row" title={`後端欄位: ${def.backendKey}`}>
               <div className="param-row__left">
                 <span className="param-row__emoji">{def.emoji}</span>
                 <span className="param-row__label">{def.label}</span>
@@ -190,13 +175,22 @@ export const ModelParamPanel: React.FC = () => {
           );
         })}
       </div>
-      
-      {/* 底部功能列 */}
-      <div className="param-panel__footer">
-        <button className="param-panel__reset-btn" onClick={handleReset}>
-          ↺ 預設復原
-        </button>
-      </div>
+
+      {/* 缺失參數提示區 */}
+      {MISSING_PARAMS.length > 0 && (
+        <div className="param-panel__missing">
+          <div className="param-panel__missing-title">⚠️ 後端有定義但前端尚未接入</div>
+          <div className="param-panel__missing-list">
+            {MISSING_PARAMS.map(p => (
+              <div key={p.backendKey} className="param-panel__missing-item" title={p.reason}>
+                <span className="param-panel__missing-emoji">{p.emoji}</span>
+                <span className="param-panel__missing-label">{p.label}</span>
+                <code className="param-panel__missing-key">{p.backendKey}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
