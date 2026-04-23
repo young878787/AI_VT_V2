@@ -39,6 +39,7 @@ from services.chat_service import (
     synthesize_and_send_voice,
     parse_xml_tool_calls,
 )
+from services.tool_arg_parser import parse_tool_call_arguments
 from services.memory_service import execute_profile_update
 from api.display_manager import broadcast_to_displays
 from core.prompt_logger import log_turn, reset_log
@@ -129,6 +130,8 @@ async def websocket_endpoint(websocket: WebSocket):
             if not user_message:
                 continue
 
+            model_name: str = data.get("model_name", "Hiyori")
+
             # ================================================================
             # 步驟 1：組裝 Agent A 系統 Prompt（VTuber + JPAF）
             # ================================================================
@@ -156,7 +159,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # ============================================================
                 # 步驟 2：Agent A 串流呼叫（JPAF Chat，無 tools）
                 # ============================================================
-                agent_a_text, jpaf_state = await collect_agent_a(
+                agent_a_text, jpaf_state, emotion_state = await collect_agent_a(
                     messages
                 )
 
@@ -203,10 +206,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(f"[{AI_PROVIDER.upper()}] Agent B: parallel live2d + memory...")
 
                 # B-1 Live2D prompt
-                live2d_system = build_live2d_prompt(agent_a_text, jpaf_state)
+                live2d_system = build_live2d_prompt(
+                    agent_a_text,
+                    jpaf_state,
+                    emotion_state,
+                    model_name,
+                )
                 live2d_messages = [
                     {"role": "system", "content": live2d_system},
-                    {"role": "user", "content": "請根據上述上下文呼叫 set_ai_behavior。"},
+                    {"role": "user", "content": "請根據上述上下文產生主表情，並視需要額外呼叫 blink_control，讓表情更有層次。"},
                 ]
 
                 # B-2 Memory prompt
@@ -218,7 +226,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # 並行呼叫
                 live2d_response, memory_response = await asyncio.gather(
-                    call_live2d_agent(live2d_messages),
+                    call_live2d_agent(live2d_messages, model_name),
                     call_memory_agent(memory_messages),
                 )
 
@@ -246,6 +254,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if live2d_response.choices and len(live2d_response.choices) > 0:
                     l2d_msg = live2d_response.choices[0].message
                     print(f"[Live2D Agent] content: {(l2d_msg.content or 'None')[:100]}")
+                    print(f"[Live2D Agent] tool_calls count: {len(l2d_msg.tool_calls) if l2d_msg.tool_calls else 0}")
 
                     l2d_content = strip_thinking(l2d_msg.content or "")
                     l2d_xml_calls, _ = parse_xml_tool_calls(l2d_content)
@@ -253,11 +262,26 @@ async def websocket_endpoint(websocket: WebSocket):
                     if l2d_msg.tool_calls:
                         for tc in l2d_msg.tool_calls:
                             try:
-                                args = json.loads(tc.function.arguments)
+                                args, was_normalized = parse_tool_call_arguments(tc.function.arguments or "")
                                 all_calls.append({"name": tc.function.name, "arguments": args})
+                                if was_normalized:
+                                    print(f"[Live2D Agent][NORMALIZED_TOOL_ARGS] name={tc.function.name}")
+                                print(f"[Live2D Agent] tool: {tc.function.name} => {tc.function.arguments[:200]}")
                             except json.JSONDecodeError as e:
-                                print(f"Live2D tool call 解析失敗: {e}")
+                                raw_args = tc.function.arguments or ""
+                                around_start = max(0, e.pos - 80)
+                                around_end = min(len(raw_args), e.pos + 80)
+                                print(
+                                    f"[Live2D Agent][MALFORMED_TOOL_ARGS] "
+                                    f"name={tc.function.name}, pos={e.pos}, len={len(raw_args)}, error={e}"
+                                )
+                                print(f"[Live2D Agent][MALFORMED_TOOL_ARGS][RAW] {raw_args}")
+                                print(
+                                    "[Live2D Agent][MALFORMED_TOOL_ARGS][AROUND] "
+                                    f"{raw_args[around_start:around_end]}"
+                                )
                     if l2d_xml_calls:
+                        print(f"[Live2D Agent] XML tool calls: {len(l2d_xml_calls)}")
                         all_calls.extend(l2d_xml_calls)
 
                 # --- 解析 Memory response ---
@@ -272,8 +296,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     if mem_msg.tool_calls:
                         for tc in mem_msg.tool_calls:
                             try:
-                                args = json.loads(tc.function.arguments)
+                                args, was_normalized = parse_tool_call_arguments(tc.function.arguments or "")
                                 all_calls.append({"name": tc.function.name, "arguments": args})
+                                if was_normalized:
+                                    print(f"[Memory Agent][NORMALIZED_TOOL_ARGS] name={tc.function.name}")
                                 print(f"[Memory Agent] tool: {tc.function.name} => {tc.function.arguments[:100]}")
                             except json.JSONDecodeError as e:
                                 print(f"Memory tool call 解析失敗: {e}")
@@ -284,6 +310,28 @@ async def websocket_endpoint(websocket: WebSocket):
                     print("[Memory Agent] No choices returned!")
 
                 print(f"[Agent B] all_calls 總數: {len(all_calls)}, names: {[c['name'] for c in all_calls]}")
+                if not any(call["name"] == "set_ai_behavior" for call in all_calls):
+                    print("[Agent B][WARN] 缺少 set_ai_behavior；本輪將退回預設 behavior payload，可能導致表情變化很小。")
+
+                # --- 行為變數預設值（當 set_ai_behavior 未被呼叫時保持安全） ---
+                head_intensity = 0.3
+                blush_level = 0.0
+                eye_sync = True
+                eye_l_open = 1.0
+                eye_r_open = 1.0
+                duration_sec = 5.0
+                mouth_form = 0.0
+                brow_l_y = 0.0
+                brow_r_y = 0.0
+                brow_l_angle = 0.0
+                brow_r_angle = 0.0
+                brow_l_form = 0.0
+                brow_r_form = 0.0
+                speaking_rate = 1.0
+                eye_l_smile = 0.0
+                eye_r_smile = 0.0
+                brow_l_x = 0.0
+                brow_r_x = 0.0
 
                 # --- 執行 tool calls ---
                 for call in all_calls:

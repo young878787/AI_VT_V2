@@ -1,0 +1,506 @@
+{
+  "version": "1.0.0",
+  "description": "Hiyori 模型的 AI Tool 定義：供 LLM function calling、前端 UI、Prompt 組裝共同使用。",
+  "openai_tools": {
+    "live2d": [
+      {
+        "type": "function",
+        "function": {
+          "name": "set_ai_behavior",
+          "description": "設定 Live2D 模型的即時表情與動作參數。每次回覆都必須呼叫，用來搭配當下的心情。參數請善用小數點，像調色盤一樣自由創作表情。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "head_intensity": {
+                "type": "number",
+                "description": "身體活動幅度 0.0（靜止）到 1.0（非常激動）",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "blush_level": {
+                "type": "number",
+                "description": "臉頰狀態。-1.0=蒼白/緊張/無言，不害羞，0.0=自然，+1.0=極度臉紅/害羞。同時寫入 ParamCheek與 ParamTere，哪個存在就哪個生效。",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "eye_sync": {
+                "type": "boolean",
+                "description": "是否同步左右眼與對應眉毛（鏡像對稱）。False 可做出眨單眼、不對稱表情。True 時右眉角度會自動鏡像左眉（brow_r_angle = -brow_l_angle），右眉其餘值與左眉相同。"
+              },
+              "eye_l_open": {
+                "type": "number",
+                "description": "左眼張開程度。0.0=閉眼，1.0=正常張開（預設），1.2=最大（Hiyori 上限）。",
+                "minimum": 0.0,
+                "maximum": 1.2
+              },
+              "eye_r_open": {
+                "type": "number",
+                "description": "右眼張開程度。0.0=閉眼，1.0=正常張開（預設），1.2=最大（Hiyori 上限）。",
+                "minimum": 0.0,
+                "maximum": 1.2
+              },
+              "duration_sec": {
+                "type": "number",
+                "description": "動作持續時間（秒），通常 3.0 到 15.0",
+                "minimum": 2.0,
+                "maximum": 20.0
+              },
+              "mouth_form": {
+                "type": "number",
+                "description": "嘴角形狀。-2.0=極度悲傷大哭，-1.0=悲傷委屈下垂，0.0=無言以對或普通，+0.5=普通微笑，+1.0=開心上揚大笑。Hiyori 原生預設在 1.0（天生微笑），因此 -0.5 才接近視覺上的「難過」。",
+                "minimum": -2.0,
+                "maximum": 1.0
+              },
+              "brow_l_y": {
+                "type": "number",
+                "description": "左眉毛高低位置。-1.0=眉頭下壓，+1.0=左眉上揚",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "brow_r_y": {
+                "type": "number",
+                "description": "右眉毛高低位置。-1.0=眉頭下壓，+1.0=右眉上揚",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "brow_l_angle": {
+                "type": "number",
+                "description": "左眉毛角度（ParamBrowLAngle）。+1.0=倒八字眉（憤怒/強勢），-1.0=八字眉（悲傷/困擾）。eye_sync=true 時右眉角度自動設為 -brow_l_angle，形成臉部對稱。",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "brow_r_angle": {
+                "type": "number",
+                "description": "右眉毛角度（ParamBrowRAngle）。eye_sync=true 時此值被忽略（自動設為 -brow_l_angle）。eye_sync=false 時才獨立生效：+1.0=倒八字眉，-1.0=八字眉。",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "brow_l_form": {
+                "type": "number",
+                "description": "左眉毛彎曲。-1.0=下彎，0.0=自然，+1.0=上凸",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "brow_r_form": {
+                "type": "number",
+                "description": "右眉毛彎曲。-1.0=下彎，0.0=自然，+1.0=上凸",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "eye_l_smile": {
+                "type": "number",
+                "description": "左眼笑眼程度（ParamEyeLSmile）。0.0=無笑意，1.0=瞇眼大笑（眼皮柔和下降）。搭配 eye_l_open 使用效果最佳：open=0.7 + smile=0.8 = 典型笑眼。",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "eye_r_smile": {
+                "type": "number",
+                "description": "右眼笑眼程度（ParamEyeRSmile）。eye_sync=true 時自動與左眼同步。0.0=無笑意，1.0=瞇眼大笑。",
+                "minimum": 0.0,
+                "maximum": 1.0
+              },
+              "brow_l_x": {
+                "type": "number",
+                "description": "左眉毛水平位移（ParamBrowLX）。-1.0=向外展開，+1.0=向內靠攏（皺眉方向）。",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "brow_r_x": {
+                "type": "number",
+                "description": "右眉毛水平位移（ParamBrowRX）。eye_sync=true 時自動鏡像（brow_r_x = -brow_l_x）。",
+                "minimum": -1.0,
+                "maximum": 1.0
+              },
+              "speaking_rate": {
+                "type": "number",
+                "description": "語音語速。1.0=正常。開心興奮時加快(1.1-1.4)，傷心沉思時放慢(0.7-0.9)，撒嬌時稍慢(0.95)。",
+                "minimum": 0.5,
+                "maximum": 1.8
+              }
+            },
+            "required": [
+              "head_intensity",
+              "blush_level",
+              "eye_sync",
+              "eye_l_open",
+              "eye_r_open",
+              "eye_l_smile",
+              "eye_r_smile",
+              "duration_sec",
+              "mouth_form",
+              "brow_l_y",
+              "brow_r_y",
+              "brow_l_angle",
+              "brow_r_angle",
+              "brow_l_form",
+              "brow_r_form",
+              "brow_l_x",
+              "brow_r_x"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "blink_control",
+          "description": "控制 Live2D 模型的眨眼行為。用於強制眨眼、暫停/恢復自動眨眼、調整眨眼頻率。AI 可以主動使用來模擬更自然的互動。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": ["force_blink", "pause", "resume", "set_interval"],
+                "description": "眨眼控制動作：force_blink=立即眨眼一次、pause=暫停自動眨眼、resume=恢復自動眨眼、set_interval=設置眨眼間隔範圍"
+              },
+              "duration_sec": {
+                "type": "number",
+                "description": "持續時間（秒）。force_blink 時=眨眼後暫停自動眨眼的時間；pause 時=暫停多久。0=無期限（需手動 resume）。範圍 0-30",
+                "minimum": 0,
+                "maximum": 30
+              },
+              "interval_min": {
+                "type": "number",
+                "description": "設置眨眼最小間隔（秒），僅 action=set_interval 時使用。範圍 0.5-10",
+                "minimum": 0.5,
+                "maximum": 10
+              },
+              "interval_max": {
+                "type": "number",
+                "description": "設置眨眼最大間隔（秒），僅 action=set_interval 時使用。範圍 0.5-15",
+                "minimum": 0.5,
+                "maximum": 15
+              }
+            },
+            "required": ["action"]
+          }
+        }
+      }
+    ],
+    "memory": [
+      {
+        "type": "function",
+        "function": {
+          "name": "update_user_profile",
+          "description": "更新主人的畫像。當偵測到主人提到新的喜好、性格、興趣、生日、重要決定等個人特徵時呼叫。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": ["add", "remove", "update"],
+                "description": "操作類型：add（新增）、remove（移除）、update（更新）"
+              },
+              "field": {
+                "type": "string",
+                "enum": [
+                  "core_traits",
+                  "dislikes",
+                  "recent_interests",
+                  "communication_style",
+                  "custom_notes"
+                ],
+                "description": "要更新的欄位"
+              },
+              "value": {
+                "type": "string",
+                "description": "要新增/移除/更新的內容"
+              }
+            },
+            "required": ["action", "field", "value"]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "save_memory_note",
+          "description": "記錄重要事件。當對話中發生值得長期記住的事件時呼叫（例如一起討論了有趣話題、主人分享了經歷）。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "content": {
+                "type": "string",
+                "description": "要記錄的事件內容"
+              }
+            },
+            "required": ["content"]
+          }
+        }
+      }
+    ]
+  },
+  "ui_config": {
+    "live2d": {
+      "tool_name": "set_ai_behavior",
+      "params": [
+        {
+          "backend_key": "head_intensity",
+          "frontend_key": "headIntensity",
+          "label": "身體活動幅度",
+          "emoji": "🎭",
+          "color": "#c4b5fd",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "blush_level",
+          "frontend_key": "blushLevel",
+          "label": "臉頰狀態",
+          "emoji": "🌸",
+          "color": "#f9a8d4",
+          "note": "同時寫入 ParamCheek（新模型）和 ParamTere（Haru）。-1=蒼白（Hiyori 專有），0=自然，1=臉紅",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "eye_l_open",
+          "frontend_key": "eyeLOpen",
+          "label": "左眼張開",
+          "emoji": "👁",
+          "color": "#7dd3fc",
+          "min": 0,
+          "max": 1.2,
+          "step": 0.01,
+          "default": 1
+        },
+        {
+          "backend_key": "eye_r_open",
+          "frontend_key": "eyeROpen",
+          "label": "右眼張開",
+          "emoji": "👁",
+          "color": "#7dd3fc",
+          "min": 0,
+          "max": 1.2,
+          "step": 0.01,
+          "default": 1
+        },
+        {
+          "backend_key": "duration_sec",
+          "frontend_key": "durationSec",
+          "label": "動作持續秒數",
+          "emoji": "⏱",
+          "color": "#94a3b8",
+          "min": 2,
+          "max": 20,
+          "step": 0.5,
+          "default": 5
+        },
+        {
+          "backend_key": "mouth_form",
+          "frontend_key": "mouthForm",
+          "label": "嘴角形狀",
+          "emoji": "😊",
+          "color": "#86efac",
+          "min": -2,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_l_y",
+          "frontend_key": "browLY",
+          "label": "左眉高低",
+          "emoji": "⬆",
+          "color": "#fde68a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_r_y",
+          "frontend_key": "browRY",
+          "label": "右眉高低",
+          "emoji": "⬆",
+          "color": "#fde68a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_l_angle",
+          "frontend_key": "browLAngle",
+          "label": "左眉角度",
+          "emoji": "↗",
+          "color": "#fde68a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_r_angle",
+          "frontend_key": "browRAngle",
+          "label": "右眉角度",
+          "emoji": "↗",
+          "color": "#fde68a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_l_form",
+          "frontend_key": "browLForm",
+          "label": "左眉彎曲",
+          "emoji": "〜",
+          "color": "#fde68a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_r_form",
+          "frontend_key": "browRForm",
+          "label": "右眉彎曲",
+          "emoji": "〜",
+          "color": "#fde68a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "eye_l_smile",
+          "frontend_key": "eyeLSmile",
+          "label": "左眼笑眼",
+          "emoji": "😊",
+          "color": "#bae6fd",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "eye_r_smile",
+          "frontend_key": "eyeRSmile",
+          "label": "右眼笑眼",
+          "emoji": "😊",
+          "color": "#bae6fd",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_l_x",
+          "frontend_key": "browLX",
+          "label": "左眉水平",
+          "emoji": "↔",
+          "color": "#fef08a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        },
+        {
+          "backend_key": "brow_r_x",
+          "frontend_key": "browRX",
+          "label": "右眉水平",
+          "emoji": "↔",
+          "color": "#fef08a",
+          "min": -1,
+          "max": 1,
+          "step": 0.01,
+          "default": 0
+        }
+      ],
+      "missing_params": [
+        {
+          "backend_key": "speaking_rate",
+          "label": "語音語速",
+          "emoji": "🗣",
+          "reason": "後端已透過 TTS 處理，前端 WebSocket → appStore → TTS 鏈路尚未接入此參數"
+        }
+      ],
+      "ui_extras": {
+        "eye_sync_label": "左右同步",
+        "eye_sync_default": true
+      }
+    }
+  },
+  "prompt_config": {
+    "live2d": {
+      "system_role": "Live2D 表情控制專家",
+      "task_description": "根據 AI 角色的回覆、JPAF 狀態與 emotion_state，呼叫 set_ai_behavior 設定主表情；情緒有轉折、停頓或戲劇點時，應積極考慮額外呼叫 blink_control。不要產生任何對話文字，只需要呼叫工具。",
+      "tool_description": "驅動 Live2D 模型的即時表情與動作，以及語音的語速。用小數點創造細膩表情（如 0.83、0.47），避免死板的整數；情緒明確時請大膽拉開參數，不要只落在安全中間值。",
+      "persona_hints": {
+        "tsundere": {
+          "label": "傲嬌",
+          "description": "嘴角微微上揚但裝不在乎 mouth_form 0.1~0.3、偶爾臉紅 blush_level 0.2~0.5、眉毛微皺 brow_angle 輕微正值"
+        },
+        "happy": {
+          "label": "開朗",
+          "description": "大笑 mouth_form 0.6~1.0、瞇眼 eye_open 0.5~0.8、眉毛上揚 brow_y 正值、head_intensity 高 0.6~0.9"
+        },
+        "angry": {
+          "label": "生氣",
+          "description": "嘴角下垂 mouth_form -0.3~-0.8、倒八字眉 brow_angle 正值 0.3~0.8、皺眉 brow_form 負值、head_intensity 中高"
+        },
+        "seductive": {
+          "label": "魅惑",
+          "description": "微笑 mouth_form 0.2~0.5、半瞇眼 eye_open 0.4~0.7、blush_level 0.1~0.3、head_intensity 低 0.1~0.3"
+        }
+      },
+      "general_emotion_hints": [
+        { "name": "開心大笑", "description": "mouth_form 大正值、eye_*_open 略小（瞇眼 0.6~0.8）、eye_*_smile 大（0.7~1.0）、brow_*_y 上揚、head_intensity 高" },
+        { "name": "傷心難過", "description": "mouth_form 大負值（-0.5~-1.0，Hiyori 可到 -2）、brow_*_angle 負值（八字眉）、brow_*_y 下壓" },
+        { "name": "生氣皺眉", "description": "brow_*_angle 正值（倒八字眉）、brow_*_form 負值（皺眉）、mouth_form 小負值" },
+        { "name": "驚訝張嘴", "description": "eye_*_open 大（1.0~1.2 Hiyori 上限瞪大眼睛）、brow_*_y 大正值、mouth_form 小正值" },
+        { "name": "害羞臉紅", "description": "blush_level 0.4~1.0、mouth_form 小正值、eye_*_open 略小、eye_*_smile 0.2~0.5（含羞笑意）" },
+        { "name": "蒼白緊張", "description": "blush_level -0.5~-1.0（Hiyori 專有）、eye_*_open 略大 1.0~1.2" },
+        { "name": "平靜思考", "description": "所有參數接近 0（eye_open 維持 1.0 預設），head_intensity 低" },
+        { "name": "不對稱表情", "description": "eye_sync=false 時可做不對稱表情（如眨單眼、單邊笑眼 eye_l_smile vs eye_r_smile 不同值）" }
+      ],
+      "speaking_rate_hints": [
+        { "mood": "開心興奮", "range": "1.1～1.4", "note": "說話較快" },
+        { "mood": "傷心沉思", "range": "0.7～0.9", "note": "說話較慢" },
+        { "mood": "撒嬌", "range": "0.9～1.0", "note": "稍慢、拉長" },
+        { "mood": "驚訝", "range": "1.1～1.2", "note": "稍快" },
+        { "mood": "正常對話", "range": "1.0", "note": "" }
+      ],
+      "blink_control_hints": [
+        { "action": "force_blink", "description": "立即眨眼一次。用於強調語氣、撒嬌、害羞收尾、或長時間對話後自然眨眼；看到 emotion_state 建議時應積極使用", "duration_hint": "1.0~2.0秒" },
+        { "action": "pause", "description": "暫停自動眨眼。用於凝視、專注看著對方、驚訝停頓、或戲劇性時刻；適合搭配後續 force_blink / resume", "duration_hint": "2.0~5.0秒" },
+        { "action": "resume", "description": "恢復自動眨眼。暫停後使用，讓角色恢復自然狀態，避免 pause 狀態持續過久" },
+        { "action": "set_interval", "description": "調整眨眼頻率。興奮時加快(0.8-1.5s)、放鬆時放慢(2-4s)、撒嬌時加快(1-2s)；連續活潑台詞時可主動使用", "interval_hint": "min: 0.5-5s, max: 1-10s" }
+      ]
+    },
+    "memory": {
+      "system_role": "記憶管理專家",
+      "task_description": "分析用戶的訊息，判斷是否需要記錄用戶的個人特徵或重要事件。不需要產生任何對話文字，只需要決定是否呼叫工具。",
+      "update_user_profile": {
+        "description": "當用戶訊息符合以下任一條件時，必須呼叫：提到喜歡/討厭/偏好、興趣愛好、個人背景、性格或習慣、分享重要決定或計畫。",
+        "field_guide": [
+          { "field": "core_traits", "description": "個人特質、喜好（「喜歡吃拉麵」「是個夜貓子」）" },
+          { "field": "dislikes", "description": "討厭的事物（「討厭下雨天」「不喜歡吃青椒」）" },
+          { "field": "recent_interests", "description": "近期興趣（「在學日文」「最近在看動畫」）" },
+          { "field": "communication_style", "description": "說話風格（「喜歡用表情符號」）" },
+          { "field": "custom_notes", "description": "其他個人資訊（「生日5月20日」「住在台北」）" }
+        ],
+        "examples": [
+          { "input": "我超討厭下雨天", "action": "add", "field": "dislikes", "value": "下雨天" },
+          { "input": "我最近在學日文", "action": "add", "field": "recent_interests", "value": "學習日文" },
+          { "input": "我喜歡吃拉麵", "action": "add", "field": "core_traits", "value": "喜歡吃拉麵" },
+          { "input": "我叫小明", "action": "add", "field": "custom_notes", "value": "名字：小明" }
+        ]
+      },
+      "save_memory_note": {
+        "description": "當對話中發生以下情況時，應該呼叫：用戶分享重要經歷或事件、討論了有趣或有意義的話題、用戶透露重要的個人近況、對話中達成了某種共識或約定。",
+        "format": "簡潔描述事件（10-30字）"
+      },
+      "principles": [
+        "寧可多記也不要漏記——記錄了不重要的東西只是浪費一點空間，但漏掉重要資訊會讓用戶覺得你不記得他",
+        "如果用戶的訊息是純閒聊（如「嗨」「你好」「哈哈」）且沒有包含個人資訊，則不需要呼叫任何工具",
+        "一次可以同時呼叫 update_user_profile 和 save_memory_note"
+      ]
+    }
+  }
+}

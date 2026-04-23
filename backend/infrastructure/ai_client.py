@@ -33,8 +33,22 @@ def _build_extra_body() -> dict:
     return {}
 
 
+def _build_no_thinking_extra_body() -> dict:
+    """
+    明確關閉 thinking 的 extra_body（供 Agent B 使用）。
+    Qwen3/Nvidia 系列 thinking 模型需要明確傳 False 才會關閉，
+    不傳（即 {}）不等於關閉，模型會預設維持 thinking 開啟。
+    """
+    if AI_PROVIDER == "nvidia":
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    if AI_PROVIDER == "qwen":
+        return {"enable_thinking": False}
+    return {}
+
+
 # 預先計算（啟動時固定，不需每次呼叫重建）
 EXTRA_BODY: dict = _build_extra_body()
+NO_THINKING_EXTRA_BODY: dict = _build_no_thinking_extra_body()
 
 
 async def chat_create_with_fallback(**kwargs) -> object:

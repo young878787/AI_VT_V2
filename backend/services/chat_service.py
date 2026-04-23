@@ -6,11 +6,11 @@ import json
 
 from fastapi import WebSocket
 
-from core.config import MODEL_NAME, COMPRESS_KEEP_RECENT
+from core.config import AI_PROVIDER, MODEL_NAME, COMPRESS_KEEP_RECENT
 from core.utils import strip_thinking, get_msg_field
-from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY
+from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY, NO_THINKING_EXTRA_BODY
 from infrastructure.memory_store import append_memory_note
-from domain.jpaf import extract_jpaf_state, strip_jpaf_tags
+from domain.jpaf import extract_emotion_state, extract_jpaf_state, strip_jpaf_tags
 
 import tiktoken
 
@@ -129,11 +129,11 @@ async def stream_final_text(messages: list, websocket: WebSocket) -> str:
 # ============================================================
 # Agent A：JPAF 人格對話串流
 # ============================================================
-async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dict | None]:
+async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dict | None, dict | None]:
     """
     Agent A 串流呼叫：產生角色對話 + JPAF 狀態。
-    回傳 (cleaned_text, jpaf_state_dict_or_None)。
-    串流時即時過濾 <thinking> 和 <jpaf_state> 標籤，只送對話文字到前端。
+    回傳 (cleaned_text, jpaf_state_dict_or_None, emotion_state_dict_or_None)。
+    串流時即時過濾 <thinking>、<jpaf_state>、<emotion_state> 標籤，只送對話文字到前端。
     """
     stream = await chat_create_with_fallback(
         model=MODEL_NAME,
@@ -148,12 +148,13 @@ async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dic
     inside_hidden_tag: bool = False   # 是否在隱藏標籤內
     hidden_tag_name: str = ""         # 當前隱藏標籤名稱
 
-    _HIDDEN_OPEN_TAGS = {"<thinking>", "<think>", "<thought>", "<jpaf_state>"}
+    _HIDDEN_OPEN_TAGS = {"<thinking>", "<think>", "<thought>", "<jpaf_state>", "<emotion_state>"}
     _HIDDEN_CLOSE_MAP = {
         "thinking": "</thinking>",
         "think": "</think>",
         "thought": "</thought>",
         "jpaf_state": "</jpaf_state>",
+        "emotion_state": "</emotion_state>",
     }
 
     async for chunk in stream:
@@ -222,19 +223,20 @@ async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dic
     # 從完整原始文字提取 jpaf_state 和乾淨對話
     raw_text = "".join(all_chunks).strip()
     jpaf_state = extract_jpaf_state(raw_text)
+    emotion_state = extract_emotion_state(raw_text)
     clean_text = strip_jpaf_tags(strip_thinking(raw_text))
 
-    return clean_text, jpaf_state
+    return clean_text, jpaf_state, emotion_state
 
 
 # ============================================================
 # Agent A：JPAF Buffer 模式（不即時串流文字到前端）
 # ============================================================
-async def collect_agent_a(messages: list) -> tuple[str, dict | None]:
+async def collect_agent_a(messages: list) -> tuple[str, dict | None, dict | None]:
     """
     Agent A buffer 模式：收集完整回覆後解析 JPAF 狀態，不即時送出文字到前端。
     用於等 A+B 都完成後再一起送的同步模式。
-    回傳 (cleaned_text, jpaf_state_dict_or_None)。
+    回傳 (cleaned_text, jpaf_state_dict_or_None, emotion_state_dict_or_None)。
     """
     stream = await chat_create_with_fallback(
         model=MODEL_NAME,
@@ -255,29 +257,37 @@ async def collect_agent_a(messages: list) -> tuple[str, dict | None]:
 
     raw_text = "".join(chunks).strip()
     jpaf_state = extract_jpaf_state(raw_text)
+    emotion_state = extract_emotion_state(raw_text)
     clean_text = strip_jpaf_tags(strip_thinking(raw_text))
 
-    return clean_text, jpaf_state
+    return clean_text, jpaf_state, emotion_state
 
 
 # ============================================================
 # Agent B-1：Live2D 表情控制
 # ============================================================
-async def call_live2d_agent(messages: list) -> object:
+async def call_live2d_agent(messages: list, model_name: str = "Hiyori") -> object:
     """
     Live2D Agent 非串流呼叫：決定表情參數。
+    依 model_name 載入對應的 Live2D 工具清單。
     回傳原始 API response。
     """
-    from domain.tools import live2d_tools
+    from domain.tools import get_live2d_tools
+
+    request_kwargs = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "tools": get_live2d_tools(model_name),
+        "tool_choice": "required",
+        "temperature": 0.7,
+        "extra_body": NO_THINKING_EXTRA_BODY,
+        "max_tokens": 2000,
+    }
+    if AI_PROVIDER == "qwen":
+        request_kwargs["parallel_tool_calls"] = True
 
     response = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        tools=live2d_tools,
-        tool_choice="auto",
-        temperature=0.5,
-        extra_body=EXTRA_BODY,
-        max_tokens=350,
+        **request_kwargs,
     )
     return response
 
@@ -298,8 +308,8 @@ async def call_memory_agent(messages: list) -> object:
         tools=memory_tools,
         tool_choice="auto",
         temperature=0.3,
-        extra_body=EXTRA_BODY,
-        max_tokens=256,
+        extra_body=NO_THINKING_EXTRA_BODY,
+        max_tokens=400,
     )
     return response
 

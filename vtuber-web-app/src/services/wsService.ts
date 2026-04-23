@@ -166,7 +166,10 @@ class WSService {
             this.currentAssistantMessageId = null;
             // 送出訊息前停止當前 TTS 播放
             this.ttsPlayer.stop();
-            const payload: Record<string, string> = { content };
+            const payload: Record<string, string> = {
+                content,
+                model_name: store.currentModelName,
+            };
             if (this.chatPersistenceEnabled && this.sessionId) {
                 payload.session_id = this.sessionId;
             }

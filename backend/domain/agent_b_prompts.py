@@ -2,28 +2,47 @@
 Agent B 系統 Prompt 組裝：拆分為兩個獨立 Agent。
   - B-1 Live2D Agent：表情控制（必定執行）
   - B-2 Memory Agent：記憶管理（判斷是否需要記憶操作）
-資料來源：tools_schema.json（單一來源）。
+資料來源：tools/{model_name}.json（每個模型獨立設定）。
 """
 
-import json
-import os
+from domain.tools.schema_loader import load_schema, DEFAULT_MODEL
 
-_SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "tools_schema.json")
-with open(_SCHEMA_PATH, "r", encoding="utf-8") as _f:
-    _SCHEMA = json.load(_f)
+_MEMORY_CFG = load_schema(DEFAULT_MODEL)["prompt_config"]["memory"]
 
-_LIVE2D_CFG = _SCHEMA["prompt_config"]["live2d"]
-_MEMORY_CFG = _SCHEMA["prompt_config"]["memory"]
+
+def _format_emotion_state(emotion_state: dict | None) -> str:
+    if not emotion_state:
+        return "- 無額外 emotion_state，請僅根據台詞語氣與 JPAF 狀態判斷。"
+
+    ordered_keys = [
+        "primary_emotion",
+        "secondary_emotion",
+        "energy",
+        "intensity",
+        "pace",
+        "blink_suggestion",
+        "asymmetry_bias",
+        "expression_arc",
+    ]
+    lines: list[str] = []
+    for key in ordered_keys:
+        if key in emotion_state and emotion_state[key] not in (None, ""):
+            lines.append(f"- {key}: {emotion_state[key]}")
+    return "\n".join(lines) if lines else "- emotion_state 為空，請根據台詞語氣判斷。"
 
 
 def build_live2d_prompt(
     agent_a_reply: str,
     jpaf_state: dict | None,
+    emotion_state: dict | None,
+    model_name: str = DEFAULT_MODEL,
 ) -> str:
     """
     組裝 Live2D Agent 的系統 Prompt（Agent B-1）。
     專注表情控制，不處理記憶。
+    依 model_name 載入對應的 prompt_config。
     """
+    _LIVE2D_CFG = load_schema(model_name)["prompt_config"]["live2d"]
     if jpaf_state:
         active_fn = jpaf_state.get("active_function", "Ti")
         persona = jpaf_state.get("suggested_persona", "tsundere")
@@ -38,7 +57,7 @@ def build_live2d_prompt(
     )
 
     # 通用表情速查
-    emotion_lines = "\n".join(
+    general_emotion_lines = "\n".join(
         f"- {item['name']}：{item['description']}"
         for item in _LIVE2D_CFG["general_emotion_hints"]
     )
@@ -55,6 +74,8 @@ def build_live2d_prompt(
         for item in _LIVE2D_CFG.get("blink_control_hints", [])
     )
 
+    emotion_state_lines = _format_emotion_state(emotion_state)
+
     return f"""你是 {_LIVE2D_CFG['system_role']}。
 {_LIVE2D_CFG['task_description']}
 
@@ -67,6 +88,9 @@ def build_live2d_prompt(
 - active_function: {active_fn}
 - persona: {persona}
 
+【emotion_state】
+{emotion_state_lines}
+
 # {_LIVE2D_CFG['tool_name'] if 'tool_name' in _LIVE2D_CFG else 'set_ai_behavior'} — 【必須呼叫】
 {_LIVE2D_CFG['tool_description']}
 
@@ -76,7 +100,7 @@ def build_live2d_prompt(
 {persona_lines}
 
 ## 通用表情速查
-{emotion_lines}
+{general_emotion_lines}
 
 ## 語音語速 (speaking_rate)
 {rate_lines}
@@ -85,11 +109,25 @@ def build_live2d_prompt(
 你可以使用 blink_control 工具來控制眨眼，讓角色更自然：
 {blink_lines}
 
+## 風格強化規則
+- 每次都先決定一個「主表情」，不要只給中庸安全值；情緒明確時，請把幅度拉開。
+- 優先利用 mouth_form、eye_*_open、eye_*_smile、brow_*_angle、brow_*_form、brow_*_x 組出有辨識度的臉。
+- 若 emotion_state 顯示 high energy / high intensity，head_intensity、mouth_form、brow_* 的變化應明顯，不要全部停留在 0.1~0.3。
+- 若 emotion_state 顯示 shy / playful / teasing / conflicted，優先考慮 eye_sync=false，做輕微不對稱表情，例如單邊笑眼、單邊眉毛上挑、左右眼張開程度不同。
+- 若 emotion_state 顯示 expression_arc，請用單一組參數表現「這句台詞的最終停留表情」，不要平均攤平成無特色中間值。
+- 避免所有參數都接近 0；只有 truly calm / neutral / thinking 時才可接近預設值。
+
 **使用時機建議**：
 - 長時間對話後：呼叫 force_blink 模擬自然眨眼
 - 凝視/專注時：呼叫 pause 暫停眨眼 2-3 秒
 - 撒嬌/害羞時：可以加快眨眼頻率 (set_interval min=0.8, max=1.5)
-- 驚訝/震驚時：可以先 pause 暫停眨眼，再 force_blink"""
+- 驚訝/震驚時：可以先 pause 暫停眨眼，再 force_blink
+
+## blink_control 積極使用規則
+- 若 emotion_state 的 blink_suggestion 有值，優先依該建議呼叫 blink_control。
+- 若台詞包含驚訝、凝視、撒嬌、害羞、挑逗、長停頓、強烈語氣轉折，應優先考慮額外呼叫一次 blink_control。
+- 若使用 pause 造成戲劇性停頓，適合搭配 1 次 force_blink 或後續 resume，避免狀態卡住。
+- 若整句台詞偏活潑連續、興奮或碎念，可考慮 set_interval 讓眨眼節奏更快。"""
 
 
 def build_memory_prompt(

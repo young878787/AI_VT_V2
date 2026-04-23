@@ -458,8 +458,19 @@ def extract_jpaf_state(text: str) -> Optional[dict]:
     return None
 
 
+def extract_emotion_state(text: str) -> Optional[dict]:
+    """從 LLM 輸出中解析 <emotion_state>...</emotion_state> JSON。"""
+    match = re.search(r"<emotion_state>\s*(.*?)\s*</emotion_state>", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def strip_jpaf_tags(text: str) -> str:
-    """移除 <thinking>/<thought>/<jpaf_state> 標籤內容，回傳乾淨的角色對話。"""
+    """移除 <thinking>/<thought>/<jpaf_state>/<emotion_state> 標籤內容，回傳乾淨的角色對話。"""
     if not text:
         return text
     # 移除巢狀 thought
@@ -473,4 +484,6 @@ def strip_jpaf_tags(text: str) -> str:
         text = re.sub(rf"</?{tag}>", "", text, flags=re.IGNORECASE)
     # 移除 jpaf_state
     text = re.sub(r"<jpaf_state>.*?</jpaf_state>", "", text, flags=re.DOTALL)
+    # 移除 emotion_state
+    text = re.sub(r"<emotion_state>.*?</emotion_state>", "", text, flags=re.DOTALL | re.IGNORECASE)
     return text.strip()
