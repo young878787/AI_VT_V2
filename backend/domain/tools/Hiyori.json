@@ -118,25 +118,7 @@
                 "maximum": 1.8
               }
             },
-            "required": [
-              "head_intensity",
-              "blush_level",
-              "eye_sync",
-              "eye_l_open",
-              "eye_r_open",
-              "eye_l_smile",
-              "eye_r_smile",
-              "duration_sec",
-              "mouth_form",
-              "brow_l_y",
-              "brow_r_y",
-              "brow_l_angle",
-              "brow_r_angle",
-              "brow_l_form",
-              "brow_r_form",
-              "brow_l_x",
-              "brow_r_x"
-            ]
+            "required": []
           }
         }
       },
@@ -429,8 +411,8 @@
   "prompt_config": {
     "live2d": {
       "system_role": "Live2D 表情控制專家",
-      "task_description": "根據 AI 角色的回覆、JPAF 狀態與 emotion_state，呼叫 set_ai_behavior 設定主表情；情緒有轉折、停頓或戲劇點時，應積極考慮額外呼叫 blink_control。不要產生任何對話文字，只需要呼叫工具。",
-      "tool_description": "驅動 Live2D 模型的即時表情與動作，以及語音的語速。用小數點創造細膩表情（如 0.83、0.47），避免死板的整數；情緒明確時請大膽拉開參數，不要只落在安全中間值。",
+      "task_description": "根據 AI 角色的回覆、JPAF 狀態與 emotion_state，呼叫 set_ai_behavior 設定主表情；情緒有轉折、停頓或戲劇點時，應積極考慮額外呼叫 blink_control。不要產生任何對話文字，只需要呼叫工具。日常聊天時表情可以自然，但做鬼臉、生氣、驚訝、強烈吐槽時，眼睛、眉毛、嘴角要更明顯拉開，不要只做出差一點點的變化。",
+      "tool_description": "驅動 Live2D 模型的即時表情與動作，以及語音的語速。set_ai_behavior 現在允許 partial fields：只填這一輪真正重要的欄位即可，其餘欄位會由系統延續或補預設。用小數點創造細膩表情（如 0.83、0.47），但情緒明確時請大膽拉開參數，不要只落在安全中間值。若 Live2D 視覺差異偏小，優先把 eye_*_open、eye_*_smile、brow_*、mouth_form 的差距拉大。",
       "persona_hints": {
         "tsundere": {
           "label": "傲嬌",
@@ -450,14 +432,15 @@
         }
       },
       "general_emotion_hints": [
-        { "name": "開心大笑", "description": "mouth_form 大正值、eye_*_open 略小（瞇眼 0.6~0.8）、eye_*_smile 大（0.7~1.0）、brow_*_y 上揚、head_intensity 高" },
+        { "name": "開心大笑", "description": "mouth_form 大正值、eye_*_open 明顯縮小（瞇眼 0.45~0.75）、eye_*_smile 大（0.75~1.0）、brow_*_y 上揚、head_intensity 高" },
         { "name": "傷心難過", "description": "mouth_form 大負值（-0.5~-1.0，Hiyori 可到 -2）、brow_*_angle 負值（八字眉）、brow_*_y 下壓" },
-        { "name": "生氣皺眉", "description": "brow_*_angle 正值（倒八字眉）、brow_*_form 負值（皺眉）、mouth_form 小負值" },
-        { "name": "驚訝張嘴", "description": "eye_*_open 大（1.0~1.2 Hiyori 上限瞪大眼睛）、brow_*_y 大正值、mouth_form 小正值" },
+        { "name": "生氣皺眉", "description": "brow_*_angle 正值（倒八字眉，建議 0.45~0.9）、brow_*_form 負值（皺眉）、brow_*_x 往內靠、mouth_form 小負值；不要只做 0.1~0.2 的輕微變化" },
+        { "name": "驚訝張嘴", "description": "eye_*_open 大（1.05~1.2 Hiyori 上限瞪大眼睛）、brow_*_y 大正值、mouth_form 小正值" },
         { "name": "害羞臉紅", "description": "blush_level 0.4~1.0、mouth_form 小正值、eye_*_open 略小、eye_*_smile 0.2~0.5（含羞笑意）" },
         { "name": "蒼白緊張", "description": "blush_level -0.5~-1.0（Hiyori 專有）、eye_*_open 略大 1.0~1.2" },
         { "name": "平靜思考", "description": "所有參數接近 0（eye_open 維持 1.0 預設），head_intensity 低" },
-        { "name": "不對稱表情", "description": "eye_sync=false 時可做不對稱表情（如眨單眼、單邊笑眼 eye_l_smile vs eye_r_smile 不同值）" }
+        { "name": "不對稱表情", "description": "eye_sync=false 時可做不對稱表情（如眨單眼、單邊笑眼 eye_l_smile vs eye_r_smile 不同值）" },
+        { "name": "鬼臉/吐舌感", "description": "不要回到中庸值。優先 eye_sync=false、左右眼開合差 0.12 以上、單邊笑眼差 0.35 以上、眉毛高低或角度差 0.2 以上、mouth_form 0.25~0.6，讓臉真的歪出來" }
       ],
       "speaking_rate_hints": [
         { "mood": "開心興奮", "range": "1.1～1.4", "note": "說話較快" },

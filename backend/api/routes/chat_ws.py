@@ -207,6 +207,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # B-1 Live2D prompt
                 live2d_system = build_live2d_prompt(
+                    user_message,
                     agent_a_text,
                     jpaf_state,
                     emotion_state,
@@ -262,7 +263,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     if l2d_msg.tool_calls:
                         for tc in l2d_msg.tool_calls:
                             try:
-                                args, was_normalized = parse_tool_call_arguments(tc.function.arguments or "")
+                                args, was_normalized = parse_tool_call_arguments(
+                                    tc.function.arguments or "",
+                                    tool_name=tc.function.name,
+                                    model_name=model_name,
+                                )
                                 all_calls.append({"name": tc.function.name, "arguments": args})
                                 if was_normalized:
                                     print(f"[Live2D Agent][NORMALIZED_TOOL_ARGS] name={tc.function.name}")
@@ -296,7 +301,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     if mem_msg.tool_calls:
                         for tc in mem_msg.tool_calls:
                             try:
-                                args, was_normalized = parse_tool_call_arguments(tc.function.arguments or "")
+                                args, was_normalized = parse_tool_call_arguments(
+                                    tc.function.arguments or "",
+                                    tool_name=tc.function.name,
+                                    model_name=model_name,
+                                )
                                 all_calls.append({"name": tc.function.name, "arguments": args})
                                 if was_normalized:
                                     print(f"[Memory Agent][NORMALIZED_TOOL_ARGS] name={tc.function.name}")

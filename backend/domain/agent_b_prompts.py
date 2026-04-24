@@ -32,6 +32,7 @@ def _format_emotion_state(emotion_state: dict | None) -> str:
 
 
 def build_live2d_prompt(
+    user_message: str,
     agent_a_reply: str,
     jpaf_state: dict | None,
     emotion_state: dict | None,
@@ -81,6 +82,9 @@ def build_live2d_prompt(
 
 # 當前上下文
 
+【用戶的直接表情要求】
+{user_message}
+
 【AI 角色的回覆】
 {agent_a_reply}
 
@@ -110,12 +114,19 @@ def build_live2d_prompt(
 {blink_lines}
 
 ## 風格強化規則
+- 若用戶直接指定表情或動作（例如「生氣一下」「做鬼臉」「裝可愛」「瞪我」），優先滿足該表演要求，而不是只回到 persona 的安全基底。
 - 每次都先決定一個「主表情」，不要只給中庸安全值；情緒明確時，請把幅度拉開。
+- 日常聊天時表情可以自然，但不要每輪都回到完全無特色的預設臉；可以保留輕微笑意、輕微眼神變化或淡淡的眉毛起伏。
+- 做鬼臉、生氣、驚訝、強烈吐槽時，不要只調 0.05~0.15 這種幾乎看不出的安全值；至少讓眼睛、眉毛、嘴角三者中的兩者有明顯變化。
 - 優先利用 mouth_form、eye_*_open、eye_*_smile、brow_*_angle、brow_*_form、brow_*_x 組出有辨識度的臉。
 - 若 emotion_state 顯示 high energy / high intensity，head_intensity、mouth_form、brow_* 的變化應明顯，不要全部停留在 0.1~0.3。
 - 若 emotion_state 顯示 shy / playful / teasing / conflicted，優先考慮 eye_sync=false，做輕微不對稱表情，例如單邊笑眼、單邊眉毛上挑、左右眼張開程度不同。
 - 若 emotion_state 顯示 expression_arc，請用單一組參數表現「這句台詞的最終停留表情」，不要平均攤平成無特色中間值。
 - 避免所有參數都接近 0；只有 truly calm / neutral / thinking 時才可接近預設值。
+- 若模型視覺變化偏小，優先把 eye_*_open、eye_*_smile、brow_*、mouth_form 拉開，而不是只增加 head_intensity 或 blush_level。
+- 鬼臉或調皮挑釁時，eye_sync=false 通常比對稱臉更有戲；可接受左右眼開合差約 0.12 以上、左右笑眼差約 0.35 以上、左右眉毛高低或角度差約 0.2 以上。
+- 生氣、嫌棄、強勢時，brow_*_angle、brow_*_form、brow_*_x 要一起考慮；不要只有嘴角微降，卻讓眉毛幾乎不動。
+- 想做出「眼睛真的彎起來」的效果時，單靠 eye_*_open 小幅降低通常不夠，應搭配更高的 eye_*_smile。
 
 **使用時機建議**：
 - 長時間對話後：呼叫 force_blink 模擬自然眨眼
