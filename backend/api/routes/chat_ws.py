@@ -54,6 +54,7 @@ async def websocket_endpoint(websocket: WebSocket):
     messages: list = []
     current_session_id: str | None = None
     tts_tasks: set[asyncio.Task] = set()
+    last_behavior_payload: dict | None = None
 
     # 載入或初始化 JPAF session
     jpaf_data = load_jpaf_state()
@@ -104,6 +105,7 @@ async def websocket_endpoint(websocket: WebSocket):
             if data.get("type") == "reset":
                 # 1. 清空短期記憶（in-memory 對話歷史）
                 messages = []
+                last_behavior_payload = None
                 # 2. 清空 session 持久化檔案（避免下次連線重新載入舊歷史）
                 if CHAT_PERSISTENCE_ENABLED and current_session_id:
                     save_session_messages(current_session_id, [])
@@ -205,10 +207,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 # ============================================================
                 print(f"[{AI_PROVIDER.upper()}] Agent B: parallel live2d + memory...")
 
+                previous_expression_state = _summarize_previous_expression_state(
+                    last_behavior_payload
+                )
+
                 # B-1 Live2D prompt
                 live2d_system = build_live2d_prompt(
                     user_message,
                     agent_a_text,
+                    previous_expression_state,
                     jpaf_state,
                     emotion_state,
                     model_name,
@@ -429,6 +436,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     brow_l_angle, brow_r_angle, brow_l_form, brow_r_form,
                     eye_l_smile, eye_r_smile, brow_l_x, brow_r_x,
                 )
+                last_behavior_payload = behavior_payload
                 await websocket.send_json(behavior_payload)
                 await broadcast_to_displays(behavior_payload)
 
@@ -508,7 +516,7 @@ def _build_behavior_payload(
     eye_r_smile: float = 0.0,
     brow_l_x: float = 0.0,
     brow_r_x: float = 0.0,
-) -> dict:
+    ) -> dict:
     """組裝行為數據 payload（發送給前端 & Display 端點）。"""
     return {
         "type": "behavior",
@@ -529,4 +537,59 @@ def _build_behavior_payload(
         "eyeRSmile": eye_r_smile,
         "browLX": brow_l_x,
         "browRX": brow_r_x,
+    }
+
+
+def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict | None:
+    if not behavior_payload:
+        return None
+
+    mouth_form = float(behavior_payload.get("mouthForm", 0.0))
+    eye_l_open = float(behavior_payload.get("eyeLOpen", 1.0))
+    eye_r_open = float(behavior_payload.get("eyeROpen", 1.0))
+    eye_l_smile = float(behavior_payload.get("eyeLSmile", 0.0))
+    eye_r_smile = float(behavior_payload.get("eyeRSmile", 0.0))
+    eye_sync = bool(behavior_payload.get("eyeSync", True))
+    brow_l_y = float(behavior_payload.get("browLY", 0.0))
+    brow_r_y = float(behavior_payload.get("browRY", 0.0))
+    brow_l_angle = float(behavior_payload.get("browLAngle", 0.0))
+    brow_r_angle = float(behavior_payload.get("browRAngle", 0.0))
+
+    summary_parts: list[str] = []
+    if mouth_form > 0.18:
+        summary_parts.append("嘴角偏上揚")
+    elif mouth_form < -0.18:
+        summary_parts.append("嘴角明顯下壓")
+    else:
+        summary_parts.append("嘴角接近中性")
+
+    if eye_l_smile > 0.35 or eye_r_smile > 0.35:
+        summary_parts.append("眼睛帶笑")
+    elif eye_l_open > 1.05 or eye_r_open > 1.05:
+        summary_parts.append("眼睛偏張大")
+    elif eye_l_open < 0.85 or eye_r_open < 0.85:
+        summary_parts.append("眼睛偏瞇")
+    else:
+        summary_parts.append("雙眼自然")
+
+    if abs(brow_l_angle) > 0.25 or abs(brow_r_angle) > 0.25 or abs(brow_l_y) > 0.2 or abs(brow_r_y) > 0.2:
+        summary_parts.append("眉毛有明顯表情")
+    else:
+        summary_parts.append("眉毛變化不大")
+
+    if not eye_sync:
+        summary_parts.append("左右表情不對稱")
+
+    return {
+        "summary": "、".join(summary_parts),
+        "mouth_form": mouth_form,
+        "eye_sync": eye_sync,
+        "eye_l_open": eye_l_open,
+        "eye_r_open": eye_r_open,
+        "eye_l_smile": eye_l_smile,
+        "eye_r_smile": eye_r_smile,
+        "brow_l_y": brow_l_y,
+        "brow_r_y": brow_r_y,
+        "brow_l_angle": brow_l_angle,
+        "brow_r_angle": brow_r_angle,
     }

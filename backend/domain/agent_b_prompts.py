@@ -31,9 +31,38 @@ def _format_emotion_state(emotion_state: dict | None) -> str:
     return "\n".join(lines) if lines else "- emotion_state 為空，請根據台詞語氣判斷。"
 
 
+def _format_previous_expression_state(previous_expression_state: dict | None) -> str:
+    if not previous_expression_state:
+        return "- 無上一輪表情資料，請僅根據用戶要求、台詞與 emotion_state 判斷。"
+
+    lines: list[str] = []
+    summary = previous_expression_state.get("summary")
+    if summary:
+        lines.append(f"- summary: {summary}")
+
+    ordered_keys = [
+        "mouth_form",
+        "eye_sync",
+        "eye_l_open",
+        "eye_r_open",
+        "eye_l_smile",
+        "eye_r_smile",
+        "brow_l_y",
+        "brow_r_y",
+        "brow_l_angle",
+        "brow_r_angle",
+    ]
+    for key in ordered_keys:
+        if key in previous_expression_state and previous_expression_state[key] not in (None, ""):
+            lines.append(f"- {key}: {previous_expression_state[key]}")
+
+    return "\n".join(lines) if lines else "- 上一輪表情資料為空。"
+
+
 def build_live2d_prompt(
     user_message: str,
     agent_a_reply: str,
+    previous_expression_state: dict | None,
     jpaf_state: dict | None,
     emotion_state: dict | None,
     model_name: str = DEFAULT_MODEL,
@@ -50,12 +79,6 @@ def build_live2d_prompt(
     else:
         active_fn = "Ti"
         persona = "tsundere"
-
-    # persona 對應段落
-    persona_lines = "\n".join(
-        f"- **{key}（{val['label']}）**：{val['description']}"
-        for key, val in _LIVE2D_CFG["persona_hints"].items()
-    )
 
     # 通用表情速查
     general_emotion_lines = "\n".join(
@@ -76,6 +99,7 @@ def build_live2d_prompt(
     )
 
     emotion_state_lines = _format_emotion_state(emotion_state)
+    previous_expression_lines = _format_previous_expression_state(previous_expression_state)
 
     return f"""你是 {_LIVE2D_CFG['system_role']}。
 {_LIVE2D_CFG['task_description']}
@@ -95,13 +119,13 @@ def build_live2d_prompt(
 【emotion_state】
 {emotion_state_lines}
 
+【上一個表情摘要】
+{previous_expression_lines}
+
 # {_LIVE2D_CFG['tool_name'] if 'tool_name' in _LIVE2D_CFG else 'set_ai_behavior'} — 【必須呼叫】
 {_LIVE2D_CFG['tool_description']}
 
-根據 persona 和 active_function 調整表情：
-
-## persona 表情對應
-{persona_lines}
+請優先根據用戶的直接表情要求、emotion_state 與上一個表情摘要決定本輪表情；persona 只作為語氣風格背景，不作為安全參數模板。
 
 ## 通用表情速查
 {general_emotion_lines}
@@ -115,6 +139,7 @@ def build_live2d_prompt(
 
 ## 風格強化規則
 - 若用戶直接指定表情或動作（例如「生氣一下」「做鬼臉」「裝可愛」「瞪我」），優先滿足該表演要求，而不是只回到 persona 的安全基底。
+- 優先參考上一個表情摘要來維持連續性，但若用戶要求明確變臉，應果斷切換，不要被上一輪的安全表情綁住。
 - 每次都先決定一個「主表情」，不要只給中庸安全值；情緒明確時，請把幅度拉開。
 - 日常聊天時表情可以自然，但不要每輪都回到完全無特色的預設臉；可以保留輕微笑意、輕微眼神變化或淡淡的眉毛起伏。
 - 做鬼臉、生氣、驚訝、強烈吐槽時，不要只調 0.05~0.15 這種幾乎看不出的安全值；至少讓眼睛、眉毛、嘴角三者中的兩者有明顯變化。
