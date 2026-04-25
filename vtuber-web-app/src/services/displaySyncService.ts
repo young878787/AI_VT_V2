@@ -12,6 +12,7 @@
  */
 
 import { useAppStore } from '../store/appStore';
+import { isBlinkAction, isExpressionPlanPayload } from '../types/expressionPlan';
 
 class DisplaySyncService {
   private ws: WebSocket | null = null;
@@ -50,8 +51,10 @@ class DisplaySyncService {
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string);
+        const store = useAppStore.getState();
+
         if (data.type === 'behavior') {
-          useAppStore.getState().setAiBehavior(
+          store.setAiBehavior(
             data.headIntensity  ?? 0.3,
             data.blushLevel     ?? 0.0,
             data.eyeLOpen       ?? 1.0,
@@ -70,6 +73,48 @@ class DisplaySyncService {
             data.browLX         ?? 0.0,
             data.browRX         ?? 0.0,
           );
+        } else if (data.type === 'expression_plan') {
+          if (!isExpressionPlanPayload(data)) {
+            console.warn('[DisplaySync] 收到無效的 expression_plan payload:', data);
+            return;
+          }
+
+          const plan = data;
+
+          store.setExpressionPlan(plan);
+          store.clearExpressionEvents();
+          store.enqueueExpressionEvents(plan.microEvents ?? []);
+          // `sequence` runtime handling stays in Task 7; Task 5 only stores the plan and bridges basePose.
+          store.setAiBehavior(
+            plan.basePose.params.headIntensity,
+            plan.basePose.params.blushLevel,
+            plan.basePose.params.eyeLOpen,
+            plan.basePose.params.eyeROpen,
+            plan.basePose.durationSec,
+            plan.basePose.params.mouthForm,
+            plan.basePose.params.browLY,
+            plan.basePose.params.browRY,
+            plan.basePose.params.browLAngle,
+            plan.basePose.params.browRAngle,
+            plan.basePose.params.browLForm,
+            plan.basePose.params.browRForm,
+            plan.basePose.params.eyeSync,
+            plan.basePose.params.eyeLSmile,
+            plan.basePose.params.eyeRSmile,
+            plan.basePose.params.browLX,
+            plan.basePose.params.browRX,
+          );
+
+          for (const command of plan.blinkPlan?.commands ?? []) {
+            if (isBlinkAction(command.action)) {
+              store.setBlinkControl(
+                command.action,
+                command.durationSec ?? 0,
+                command.intervalMin,
+                command.intervalMax,
+              );
+            }
+          }
         }
         // 忽略 ping 等其他訊息類型
       } catch (e) {
