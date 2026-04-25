@@ -1,9 +1,9 @@
 /**
- * Build script：將 backend/domain/tools_schema.json 轉換為前端 TypeScript 常量。
+ * Build script：將 backend/domain/tools/Hiyori.json 轉換為前端 TypeScript 常量。
  * 用法：node scripts/generate-tools-ts.js
  * 輸出：src/generated/tools.ts
  *
- * 此檔案為單一來源的橋樑；每次修改 JSON 後重新執行即可同步前端。
+ * 此檔案為單一角色 schema 的橋樑；每次修改 JSON 後重新執行即可同步前端。
  */
 
 import fs from 'fs';
@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const SCHEMA_PATH = path.resolve(__dirname, '../../backend/domain/tools_schema.json');
+const SCHEMA_PATH = path.resolve(__dirname, '../../backend/domain/tools/Hiyori.json');
 const OUT_DIR = path.resolve(__dirname, '../src/generated');
 const OUT_FILE = path.join(OUT_DIR, 'tools.ts');
 
@@ -106,7 +106,7 @@ function main() {
   // --- 組裝完整檔案 ---
   const output = `// ============================================
 // 自動生成檔案 — 請勿手動修改
-// 來源：backend/domain/tools_schema.json
+// 來源：backend/domain/tools/Hiyori.json
 // 命令：node scripts/generate-tools-ts.js
 // ============================================
 

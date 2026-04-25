@@ -28,6 +28,8 @@ interface AiBehaviorBridgeModel {
   pauseAutoBlink?: (durationSec?: number) => void;
   resumeAutoBlink?: () => void;
   setBlinkInterval?: (intervalMin: number, intervalMax: number) => void;
+  applyBasePose?: (basePose: ExpressionPlanPayload['basePose']) => void;
+  enqueueMicroEvent?: (event: ExpressionMicroEvent) => void;
 }
 
 interface AppState {
@@ -391,7 +393,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  setExpressionPlan: (plan) => set({ expressionPlan: plan }),
+  setExpressionPlan: (plan) => {
+    set({ expressionPlan: plan, expressionEvents: plan.microEvents ?? [] });
+
+    const manager = LAppLive2DManager.getInstance();
+    const model = manager.getActiveModel();
+    if (!model) return;
+
+    const bridgeModel = model as unknown as AiBehaviorBridgeModel;
+    bridgeModel.applyBasePose?.(plan.basePose);
+    for (const event of plan.microEvents ?? []) {
+      bridgeModel.enqueueMicroEvent?.(event);
+    }
+  },
 
   enqueueExpressionEvents: (events) =>
     set((state) => ({ expressionEvents: [...state.expressionEvents, ...events] })),

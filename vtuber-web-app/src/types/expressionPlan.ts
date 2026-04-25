@@ -21,10 +21,27 @@ export interface ExpressionBasePose {
   durationSec: number
 }
 
+export interface ExpressionMicroEventPatch {
+  blushLevel?: number
+  eyeLOpen?: number
+  eyeROpen?: number
+  mouthForm?: number
+  browLY?: number
+  browRY?: number
+  browLAngle?: number
+  browRAngle?: number
+  browLForm?: number
+  browRForm?: number
+  eyeLSmile?: number
+  eyeRSmile?: number
+  browLX?: number
+  browRX?: number
+}
+
 export interface ExpressionMicroEvent {
   kind: string
   durationMs: number
-  patch: Partial<ExpressionBasePose['params']>
+  patch: ExpressionMicroEventPatch
   returnToBase: boolean
 }
 
@@ -49,6 +66,23 @@ export interface ExpressionPlanPayload {
   speakingRate: number
   debug?: Record<string, string>
 }
+
+const EXPRESSION_MICRO_EVENT_PATCH_KEYS = [
+  'blushLevel',
+  'eyeLOpen',
+  'eyeROpen',
+  'mouthForm',
+  'browLY',
+  'browRY',
+  'browLAngle',
+  'browRAngle',
+  'browLForm',
+  'browRForm',
+  'eyeLSmile',
+  'eyeRSmile',
+  'browLX',
+  'browRX',
+] as const satisfies ReadonlyArray<keyof ExpressionMicroEventPatch>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -101,6 +135,27 @@ function isBlinkCommand(value: unknown): value is BlinkCommand {
   return true
 }
 
+function isExpressionMicroEventPatch(value: unknown): value is ExpressionMicroEventPatch {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  return Object.entries(value).every(([key, patchValue]) => (
+    EXPRESSION_MICRO_EVENT_PATCH_KEYS.includes(key as keyof ExpressionMicroEventPatch) &&
+    isNumber(patchValue)
+  ))
+}
+
+function isExpressionMicroEvent(value: unknown): value is ExpressionMicroEvent {
+  return (
+    isRecord(value) &&
+    typeof value.kind === 'string' &&
+    isExpressionMicroEventPatch(value.patch) &&
+    isNumber(value.durationMs) &&
+    typeof value.returnToBase === 'boolean'
+  )
+}
+
 export function isBlinkAction(value: unknown): value is BlinkAction {
   return value === 'force_blink' || value === 'pause' || value === 'resume' || value === 'set_interval'
 }
@@ -119,7 +174,15 @@ export function isExpressionPlanPayload(value: unknown): value is ExpressionPlan
     return false
   }
 
+  if (!value.microEvents.every(isExpressionMicroEvent)) {
+    return false
+  }
+
   if (value.sequence !== undefined && !Array.isArray(value.sequence)) {
+    return false
+  }
+
+  if (value.sequence !== undefined && !value.sequence.every(isExpressionMicroEvent)) {
     return false
   }
 

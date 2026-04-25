@@ -110,28 +110,7 @@ class WSService {
                     const plan = data;
 
                     store.setExpressionPlan(plan);
-                    store.clearExpressionEvents();
-                    store.enqueueExpressionEvents(plan.microEvents ?? []);
                     // `sequence` is intentionally ignored here until Task 7 adds runtime queue support.
-                    store.setAiBehavior(
-                        plan.basePose.params.headIntensity,
-                        plan.basePose.params.blushLevel,
-                        plan.basePose.params.eyeLOpen,
-                        plan.basePose.params.eyeROpen,
-                        plan.basePose.durationSec,
-                        plan.basePose.params.mouthForm,
-                        plan.basePose.params.browLY,
-                        plan.basePose.params.browRY,
-                        plan.basePose.params.browLAngle,
-                        plan.basePose.params.browRAngle,
-                        plan.basePose.params.browLForm,
-                        plan.basePose.params.browRForm,
-                        plan.basePose.params.eyeSync,
-                        plan.basePose.params.eyeLSmile,
-                        plan.basePose.params.eyeRSmile,
-                        plan.basePose.params.browLX,
-                        plan.basePose.params.browRX,
-                    );
 
                     for (const command of plan.blinkPlan?.commands ?? []) {
                         if (isBlinkAction(command.action)) {

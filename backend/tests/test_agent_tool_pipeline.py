@@ -16,13 +16,12 @@ from services.agent_tool_pipeline import (
     MEMORY_AGENT_ALLOWED_TOOL_NAMES,
     extract_agent_tool_calls,
     filter_tool_calls_for_pool,
-    has_required_expression_behavior,
     summarize_tool_names,
 )
 from api.routes.chat_ws import (
     EXPRESSION_AGENT_ALLOWED_TOOL_NAMES as CHAT_WS_EXPRESSION_AGENT_ALLOWED_TOOL_NAMES,
     MEMORY_AGENT_ALLOWED_TOOL_NAMES as CHAT_WS_MEMORY_AGENT_ALLOWED_TOOL_NAMES,
-    _execute_chat_orchestrator_tool_calls,
+    _execute_memory_tool_calls,
     websocket_endpoint,
 )
 
@@ -323,8 +322,7 @@ class AgentToolPipelineTests(unittest.TestCase):
         profile_updates: list[tuple[str, str, str]] = []
         with patch("services.agent_tool_pipeline.load_schema", return_value=custom_schema):
             result = asyncio.run(
-                _execute_chat_orchestrator_tool_calls(
-                    expression_calls=[],
+                _execute_memory_tool_calls(
                     memory_calls=calls,
                     websocket=self._FakeWebSocket(),
                     broadcast_func=lambda payload: None,
@@ -654,30 +652,9 @@ class AgentToolPipelineTests(unittest.TestCase):
             ["set_ai_behavior", "update_user_profile", "save_memory_note"],
         )
 
-    def test_has_required_expression_behavior_checks_only_expression_pool(self):
-        self.assertTrue(
-            has_required_expression_behavior(
-                [
-                    {"name": "blink_control", "arguments": {}},
-                    {"name": "set_ai_behavior", "arguments": {}},
-                ]
-            )
-        )
-        self.assertFalse(
-            has_required_expression_behavior(
-                [{"name": "blink_control", "arguments": {}}]
-            )
-        )
-
-    def test_expression_agent_pool_contract_matches_task4_tool_set(self):
-        self.assertEqual(
-            EXPRESSION_AGENT_ALLOWED_TOOL_NAMES,
-            {"set_ai_behavior", "blink_control"},
-        )
-        self.assertEqual(
-            CHAT_WS_EXPRESSION_AGENT_ALLOWED_TOOL_NAMES,
-            {"set_ai_behavior", "blink_control"},
-        )
+    def test_expression_tool_pipeline_is_no_longer_required_by_chat_route(self):
+        self.assertIsInstance(EXPRESSION_AGENT_ALLOWED_TOOL_NAMES, set)
+        self.assertIn("set_ai_behavior", CHAT_WS_EXPRESSION_AGENT_ALLOWED_TOOL_NAMES)
 
     def test_memory_agent_pool_contract_matches_task4_tool_set(self):
         self.assertEqual(
@@ -731,37 +708,14 @@ class AgentToolPipelineTests(unittest.TestCase):
         mock_print.assert_any_call("[Memory Agent][WARN] unexpected tool: set_ai_behavior")
         mock_print.assert_any_call("[Memory Agent][WARN] unexpected tool: blink_control")
 
-    def test_chat_orchestrator_executes_only_task4_pools_and_keeps_behavior_output_path(self):
+    def test_execute_memory_tool_calls_executes_only_memory_pool(self):
         websocket = self._FakeWebSocket()
         broadcast_payloads: list[dict] = []
         profile_updates: list[tuple[str, str, str]] = []
         saved_notes: list[str] = []
 
         result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[
-                    {
-                        "name": "set_ai_behavior",
-                        "arguments": {
-                            "duration_sec": 2.5,
-                            "mouth_form": 0.4,
-                            "brow_l_y": 0.15,
-                            "eye_l_smile": 0.35,
-                        },
-                    },
-                    {
-                        "name": "blink_control",
-                        "arguments": {"action": "force_blink", "duration_sec": 1.5},
-                    },
-                    {
-                        "name": "update_user_profile",
-                        "arguments": {"action": "replace", "field": "nickname", "value": "wrong-pool"},
-                    },
-                    {
-                        "name": "save_memory_note",
-                        "arguments": {"content": "wrong-pool-note"},
-                    },
-                ],
+            _execute_memory_tool_calls(
                 memory_calls=[
                     {
                         "name": "update_user_profile",
@@ -792,24 +746,6 @@ class AgentToolPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            result["expression_calls"],
-            [
-                {
-                    "name": "set_ai_behavior",
-                    "arguments": {
-                        "duration_sec": 2.5,
-                        "mouth_form": 0.4,
-                        "brow_l_y": 0.15,
-                        "eye_l_smile": 0.35,
-                    },
-                },
-                {
-                    "name": "blink_control",
-                    "arguments": {"action": "force_blink", "duration_sec": 1.5},
-                },
-            ],
-        )
-        self.assertEqual(
             result["memory_calls"],
             [
                 {
@@ -826,243 +762,10 @@ class AgentToolPipelineTests(unittest.TestCase):
                 },
             ],
         )
-        self.assertEqual(
-            result["behavior_payload"],
-            {
-                "type": "behavior",
-                "headIntensity": 0.3,
-                "blushLevel": 0.0,
-                "eyeSync": True,
-                "eyeLOpen": 1.0,
-                "eyeROpen": 1.0,
-                "durationSec": 2.5,
-                "mouthForm": 0.4,
-                "browLY": 0.15,
-                "browRY": 0.0,
-                "browLAngle": 0.0,
-                "browRAngle": 0.0,
-                "browLForm": 0.0,
-                "browRForm": 0.0,
-                "eyeLSmile": 0.35,
-                "eyeRSmile": 0.0,
-                "browLX": 0.0,
-                "browRX": 0.0,
-            },
-        )
-        self.assertEqual(
-            websocket.payloads,
-            [{"type": "blink_control", "action": "force_blink", "durationSec": 1.5}],
-        )
-        self.assertEqual(
-            broadcast_payloads,
-            [{"type": "blink_control", "action": "force_blink", "durationSec": 1.5}],
-        )
+        self.assertEqual(websocket.payloads, [])
+        self.assertEqual(broadcast_payloads, [])
         self.assertEqual(profile_updates, [("add", "custom_notes", "暱稱：Hiyori")])
         self.assertEqual(saved_notes, ["remember this"])
-
-    def test_chat_orchestrator_drops_invalid_blink_numeric_args_without_crashing(self):
-        websocket = self._FakeWebSocket()
-        broadcast_payloads: list[dict] = []
-
-        result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[
-                    {
-                        "name": "blink_control",
-                        "arguments": {
-                            "action": "set_interval",
-                            "duration_sec": "oops",
-                            "interval_min": "soon",
-                            "interval_max": 4.5,
-                        },
-                    }
-                ],
-                memory_calls=[],
-                websocket=websocket,
-                broadcast_func=broadcast_payloads.append,
-                execute_profile_update_fn=lambda action, field, value, model_name="Hiyori": None,
-                append_memory_note_fn=lambda note: None,
-            )
-        )
-
-        self.assertEqual(result["expression_calls"], [])
-        self.assertEqual(websocket.payloads, [])
-        self.assertEqual(broadcast_payloads, [])
-
-    def test_chat_orchestrator_drops_incomplete_set_interval_blink_control_after_sanitization(self):
-        websocket = self._FakeWebSocket()
-        broadcast_payloads: list[dict] = []
-
-        result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[
-                    {
-                        "name": "blink_control",
-                        "arguments": {
-                            "action": "set_interval",
-                            "interval_min": "soon",
-                            "interval_max": 4.5,
-                        },
-                    }
-                ],
-                memory_calls=[],
-                websocket=websocket,
-                broadcast_func=broadcast_payloads.append,
-                execute_profile_update_fn=lambda action, field, value, model_name="Hiyori": None,
-                append_memory_note_fn=lambda note: None,
-            )
-        )
-
-        self.assertEqual(result["expression_calls"], [])
-        self.assertEqual(websocket.payloads, [])
-        self.assertEqual(broadcast_payloads, [])
-
-    def test_chat_orchestrator_rejects_set_interval_when_min_exceeds_max(self):
-        websocket = self._FakeWebSocket()
-        broadcast_payloads: list[dict] = []
-
-        result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[
-                    {
-                        "name": "blink_control",
-                        "arguments": {
-                            "action": "set_interval",
-                            "interval_min": 5.0,
-                            "interval_max": 4.0,
-                        },
-                    }
-                ],
-                memory_calls=[],
-                websocket=websocket,
-                broadcast_func=broadcast_payloads.append,
-                execute_profile_update_fn=lambda action, field, value, model_name="Hiyori": None,
-                append_memory_note_fn=lambda note: None,
-            )
-        )
-
-        self.assertEqual(result["expression_calls"], [])
-        self.assertEqual(websocket.payloads, [])
-        self.assertEqual(broadcast_payloads, [])
-
-    def test_chat_orchestrator_returns_speaking_rate_for_route_level_tts_handoff(self):
-        result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[
-                    {
-                        "name": "set_ai_behavior",
-                        "arguments": {
-                            "duration_sec": 2.5,
-                            "speaking_rate": 1.35,
-                        },
-                    }
-                ],
-                memory_calls=[],
-                websocket=self._FakeWebSocket(),
-                broadcast_func=lambda payload: None,
-                execute_profile_update_fn=lambda action, field, value, model_name="Hiyori": None,
-                append_memory_note_fn=lambda note: None,
-            )
-        )
-
-        self.assertEqual(result["speaking_rate"], 1.35)
-
-    def test_chat_orchestrator_carries_forward_prior_behavior_fields_for_partial_set_ai_behavior(self):
-        result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[
-                    {
-                        "name": "set_ai_behavior",
-                        "arguments": {
-                            "duration_sec": 2.5,
-                            "mouth_form": -0.2,
-                        },
-                    }
-                ],
-                memory_calls=[],
-                websocket=self._FakeWebSocket(),
-                broadcast_func=lambda payload: None,
-                execute_profile_update_fn=lambda action, field, value, model_name="Hiyori": None,
-                append_memory_note_fn=lambda note: None,
-                last_behavior_payload={
-                    "type": "behavior",
-                    "headIntensity": 0.85,
-                    "blushLevel": 0.35,
-                    "eyeSync": False,
-                    "eyeLOpen": 0.55,
-                    "eyeROpen": 0.75,
-                    "durationSec": 4.0,
-                    "mouthForm": 0.45,
-                    "browLY": 0.12,
-                    "browRY": -0.18,
-                    "browLAngle": 0.22,
-                    "browRAngle": -0.24,
-                    "browLForm": 0.16,
-                    "browRForm": -0.14,
-                    "eyeLSmile": 0.4,
-                    "eyeRSmile": 0.3,
-                    "browLX": 0.08,
-                    "browRX": -0.09,
-                    "speakingRate": 1.25,
-                },
-            )
-        )
-
-        self.assertEqual(
-            result["behavior_payload"],
-            {
-                "type": "behavior",
-                "headIntensity": 0.85,
-                "blushLevel": 0.35,
-                "eyeSync": False,
-                "eyeLOpen": 0.55,
-                "eyeROpen": 0.75,
-                "durationSec": 2.5,
-                "mouthForm": -0.2,
-                "browLY": 0.12,
-                "browRY": -0.18,
-                "browLAngle": 0.22,
-                "browRAngle": -0.24,
-                "browLForm": 0.16,
-                "browRForm": -0.14,
-                "eyeLSmile": 0.4,
-                "eyeRSmile": 0.3,
-                "browLX": 0.08,
-                "browRX": -0.09,
-            },
-        )
-        self.assertEqual(result["speaking_rate"], 1.25)
-
-    def test_chat_orchestrator_drops_wrong_typed_set_ai_behavior_values(self):
-        result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[
-                    {
-                        "name": "set_ai_behavior",
-                        "arguments": {
-                            "duration_sec": "fast",
-                            "mouth_form": 0.3,
-                            "eye_sync": "false",
-                        },
-                    }
-                ],
-                memory_calls=[],
-                websocket=self._FakeWebSocket(),
-                broadcast_func=lambda payload: None,
-                execute_profile_update_fn=lambda action, field, value: None,
-                append_memory_note_fn=lambda note: None,
-                last_behavior_payload={
-                    "type": "behavior",
-                    "durationSec": 4.0,
-                    "mouthForm": 0.1,
-                    "eyeSync": True,
-                },
-            )
-        )
-
-        self.assertEqual(result["behavior_payload"]["durationSec"], 4.0)
-        self.assertEqual(result["behavior_payload"]["mouthForm"], 0.3)
-        self.assertTrue(result["behavior_payload"]["eyeSync"])
 
     def test_websocket_endpoint_passes_expression_intent_speaking_rate_to_tts(self):
         websocket = self._FakeWebSocket()
@@ -1197,13 +900,12 @@ class AgentToolPipelineTests(unittest.TestCase):
             [("tts text for first", 1.4), ("tts text for second", 1.0)],
         )
 
-    def test_chat_orchestrator_skips_incomplete_memory_tool_calls(self):
+    def test_execute_memory_tool_calls_skips_incomplete_memory_tool_calls(self):
         profile_updates: list[tuple[str, str, str]] = []
         saved_notes: list[str] = []
 
         result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[],
+            _execute_memory_tool_calls(
                 memory_calls=[
                     {
                         "name": "update_user_profile",
@@ -1229,15 +931,9 @@ class AgentToolPipelineTests(unittest.TestCase):
         self.assertEqual(saved_notes, [])
         self.assertEqual(result["memory_calls"], [])
 
-    def test_chat_orchestrator_keeps_default_behavior_when_set_ai_behavior_is_only_in_memory_pool(self):
+    def test_execute_memory_tool_calls_ignores_expression_tools_in_memory_pool(self):
         result = asyncio.run(
-            _execute_chat_orchestrator_tool_calls(
-                expression_calls=[
-                    {
-                        "name": "save_memory_note",
-                        "arguments": {"content": "wrong expression pool"},
-                    }
-                ],
+            _execute_memory_tool_calls(
                 memory_calls=[
                     {
                         "name": "set_ai_behavior",
@@ -1255,11 +951,7 @@ class AgentToolPipelineTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result["expression_calls"], [])
         self.assertEqual(result["memory_calls"], [])
-        self.assertEqual(result["behavior_payload"]["headIntensity"], 0.3)
-        self.assertEqual(result["behavior_payload"]["durationSec"], 5.0)
-        self.assertEqual(result["behavior_payload"]["mouthForm"], 0.0)
 
 
 if __name__ == "__main__":

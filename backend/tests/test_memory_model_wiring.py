@@ -17,7 +17,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from domain.agent_b_prompts import build_memory_prompt
 from domain.tools import get_memory_tools
 from services.chat_service import call_memory_agent
-from api.routes.chat_ws import _execute_chat_orchestrator_tool_calls, websocket_endpoint
+from api.routes.chat_ws import _execute_memory_tool_calls, websocket_endpoint
 from services.memory_service import execute_profile_update
 from domain.tools.schema_loader import DEFAULT_MODEL, _TOOLS_DIR, invalidate_cache, load_schema
 from domain.agent_a_prompts import build_agent_a_prompt
@@ -127,15 +127,8 @@ class MemoryModelWiringTests(unittest.TestCase):
 
         live2d_response = _FakeResponse(
             SimpleNamespace(
-                content="",
-                tool_calls=[
-                    SimpleNamespace(
-                        function=SimpleNamespace(
-                            name="set_ai_behavior",
-                            arguments='{"duration_sec": 2.0}',
-                        )
-                    )
-                ],
+                content='{"primary_emotion":"calm","intensity":0.35,"energy":0.35,"arc":"steady","hold_ms":2000}',
+                tool_calls=[],
             )
         )
         memory_response = _FakeResponse(SimpleNamespace(content="", tool_calls=[]))
@@ -190,15 +183,8 @@ class MemoryModelWiringTests(unittest.TestCase):
 
         live2d_response = _FakeResponse(
             SimpleNamespace(
-                content="",
-                tool_calls=[
-                    SimpleNamespace(
-                        function=SimpleNamespace(
-                            name="set_ai_behavior",
-                            arguments='{"duration_sec": 2.0}',
-                        )
-                    )
-                ],
+                content='{"primary_emotion":"calm","intensity":0.35,"energy":0.35,"arc":"steady","hold_ms":2000}',
+                tool_calls=[],
             )
         )
         memory_response = _FakeResponse(SimpleNamespace(content="", tool_calls=[]))
@@ -253,15 +239,8 @@ class MemoryModelWiringTests(unittest.TestCase):
 
         live2d_response = _FakeResponse(
             SimpleNamespace(
-                content="",
-                tool_calls=[
-                    SimpleNamespace(
-                        function=SimpleNamespace(
-                            name="set_ai_behavior",
-                            arguments='{"duration_sec": 2.0}',
-                        )
-                    )
-                ],
+                content='{"primary_emotion":"calm","intensity":0.35,"energy":0.35,"arc":"steady","hold_ms":2000}',
+                tool_calls=[],
             )
         )
         memory_response = _FakeResponse(SimpleNamespace(content="", tool_calls=[]))
@@ -446,6 +425,136 @@ class MemoryModelWiringTests(unittest.TestCase):
         )
         self.assertEqual(text_payload, {"type": "text_stream", "content": "欸，不要這樣看我啦。"})
 
+    def test_websocket_endpoint_sends_expression_plan_before_legacy_behavior(self):
+        websocket = self._FakeWebSocket()
+        websocket.queue_received_text('{"content": "做鬼臉", "model_name": "Hiyori"}')
+
+        class _FakeResponse:
+            def __init__(self, message):
+                self.choices = [SimpleNamespace(message=message)]
+
+        expression_response = _FakeResponse(
+            SimpleNamespace(
+                content='{"primary_emotion":"playful","intensity":0.8,"energy":0.75,"arc":"pop_then_settle","hold_ms":1600,"blink_style":"teasing_pause","must_include":["smirk_left"]}',
+                tool_calls=[],
+            )
+        )
+        memory_response = _FakeResponse(SimpleNamespace(content="", tool_calls=[]))
+
+        async def _fake_collect_agent_a(messages):
+            return "欸嘿，才不給你猜到我在想什麼。", None, {"primary_emotion": "playful", "intensity": 0.7, "energy": 0.7}
+
+        async def _fake_call_expression_agent(messages, model_name):
+            return expression_response
+
+        async def _fake_call_memory_agent(messages, model_name):
+            return memory_response
+
+        async def _run_route():
+            with patch("api.routes.chat_ws.collect_agent_a", side_effect=_fake_collect_agent_a), \
+                patch("api.routes.chat_ws.call_expression_agent", side_effect=_fake_call_expression_agent), \
+                patch("api.routes.chat_ws.call_memory_agent", side_effect=_fake_call_memory_agent), \
+                patch("api.routes.chat_ws.broadcast_to_displays") as mock_broadcast, \
+                patch("api.routes.chat_ws.load_jpaf_state", return_value=None), \
+                patch("api.routes.chat_ws.save_jpaf_state"), \
+                patch("api.routes.chat_ws.load_user_profile", return_value={}), \
+                patch("api.routes.chat_ws.load_memory_notes", return_value=[]), \
+                patch("api.routes.chat_ws.build_agent_a_prompt", return_value="agent-a-system"), \
+                patch("api.routes.chat_ws.build_live2d_prompt", return_value="expression-system"), \
+                patch("api.routes.chat_ws.build_memory_prompt", return_value="memory-system"), \
+                patch("api.routes.chat_ws.execute_profile_update"), \
+                patch("api.routes.chat_ws.append_memory_note"), \
+                patch("api.routes.chat_ws.log_turn"), \
+                patch("api.routes.chat_ws.save_session_messages"), \
+                patch("api.routes.chat_ws.synthesize_and_send_voice"), \
+                patch("api.routes.chat_ws.estimate_token_count", return_value=0), \
+                patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", False), \
+                patch("api.routes.chat_ws.COMPRESS_TOKEN_THRESHOLD", 999999):
+                await websocket_endpoint(websocket)
+
+            return mock_broadcast
+
+        mock_broadcast = asyncio.run(_run_route())
+
+        payload_types = [payload.get("type") for payload in websocket.payloads]
+        self.assertIn("expression_plan", payload_types)
+        self.assertIn("blink_control", payload_types)
+        self.assertIn("behavior", payload_types)
+        self.assertLess(payload_types.index("expression_plan"), payload_types.index("blink_control"))
+        self.assertLess(payload_types.index("expression_plan"), payload_types.index("behavior"))
+
+        broadcast_types = [call.args[0].get("type") for call in mock_broadcast.await_args_list]
+        self.assertIn("expression_plan", broadcast_types)
+        self.assertIn("blink_control", broadcast_types)
+        self.assertIn("behavior", broadcast_types)
+        self.assertLess(broadcast_types.index("expression_plan"), broadcast_types.index("blink_control"))
+        self.assertLess(broadcast_types.index("expression_plan"), broadcast_types.index("behavior"))
+
+    def test_websocket_endpoint_fails_fast_on_legacy_expression_tool_call_shape_without_json_content(self):
+        websocket = self._FakeWebSocket()
+        websocket.queue_received_text('{"content": "hello", "model_name": "Hiyori"}')
+
+        class _FakeResponse:
+            def __init__(self, message):
+                self.choices = [SimpleNamespace(message=message)]
+
+        expression_response = _FakeResponse(
+            SimpleNamespace(
+                content="",
+                tool_calls=[
+                    SimpleNamespace(
+                        function=SimpleNamespace(
+                            name="set_ai_behavior",
+                            arguments='{"duration_sec": 2.0}',
+                        )
+                    )
+                ],
+            )
+        )
+        memory_response = _FakeResponse(SimpleNamespace(content="", tool_calls=[]))
+
+        async def _fake_collect_agent_a(messages):
+            return "memory model wiring", None, {"primary_emotion": "calm", "intensity": 0.35, "energy": 0.35}
+
+        async def _fake_call_expression_agent(messages, model_name):
+            return expression_response
+
+        async def _fake_call_memory_agent(messages, model_name):
+            return memory_response
+
+        async def _run_route():
+            with patch("api.routes.chat_ws.load_jpaf_state", return_value=None), \
+                patch("api.routes.chat_ws.save_jpaf_state"), \
+                patch("api.routes.chat_ws.load_user_profile", return_value={}), \
+                patch("api.routes.chat_ws.load_memory_notes", return_value=[]), \
+                patch("api.routes.chat_ws.build_agent_a_prompt", return_value="agent-a-system"), \
+                patch("api.routes.chat_ws.collect_agent_a", side_effect=_fake_collect_agent_a), \
+                patch("api.routes.chat_ws.build_live2d_prompt", return_value="live2d-system"), \
+                patch("api.routes.chat_ws.build_memory_prompt", return_value="memory-system"), \
+                patch("api.routes.chat_ws.call_expression_agent", side_effect=_fake_call_expression_agent), \
+                patch("api.routes.chat_ws.call_memory_agent", side_effect=_fake_call_memory_agent), \
+                patch("api.routes.chat_ws.broadcast_to_displays"), \
+                patch("api.routes.chat_ws.execute_profile_update"), \
+                patch("api.routes.chat_ws.append_memory_note"), \
+                patch("api.routes.chat_ws.log_turn"), \
+                patch("api.routes.chat_ws.save_session_messages"), \
+                patch("api.routes.chat_ws.synthesize_and_send_voice"), \
+                patch("api.routes.chat_ws.estimate_token_count", return_value=0), \
+                patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", False), \
+                patch("api.routes.chat_ws.COMPRESS_TOKEN_THRESHOLD", 999999):
+                await websocket_endpoint(websocket)
+
+        with self.assertRaisesRegex(ValueError, "Expression Agent returned legacy tool-call output without JSON intent content"):
+            asyncio.run(_run_route())
+
+        self.assertIn(
+            {
+                "type": "error",
+                "content": "API 錯誤: Expression Agent returned legacy tool-call output without JSON intent content",
+            },
+            websocket.payloads,
+        )
+
     def test_websocket_endpoint_reraises_turn_processing_errors_after_sending_error_payload(self):
         websocket = self._FakeWebSocket()
         websocket.queue_received_text('{"content": "hello", "model_name": "Hiyori"}')
@@ -517,8 +626,7 @@ class MemoryModelWiringTests(unittest.TestCase):
             patch("services.memory_service.load_user_profile", return_value=starting_profile.copy()), \
             patch("services.memory_service.save_user_profile", side_effect=lambda profile: saved_profiles.append(profile.copy())):
             asyncio.run(
-                _execute_chat_orchestrator_tool_calls(
-                    expression_calls=[],
+                _execute_memory_tool_calls(
                     memory_calls=[
                         {
                             "name": "update_user_profile",

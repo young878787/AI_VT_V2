@@ -183,10 +183,6 @@ def summarize_tool_names(*tool_groups: list[dict]) -> list[str]:
     return names
 
 
-def has_required_expression_behavior(expression_calls: list[dict]) -> bool:
-    return any(call["name"] == "set_ai_behavior" for call in expression_calls)
-
-
 def filter_tool_calls_for_pool(
     calls: list[dict],
     allowed_tool_names: set[str],

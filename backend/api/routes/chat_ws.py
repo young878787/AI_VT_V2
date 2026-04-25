@@ -132,21 +132,14 @@ async def _maybe_await(result):
         await result
 
 
-async def _execute_chat_orchestrator_tool_calls(
-    expression_calls: list[dict],
+async def _execute_memory_tool_calls(
     memory_calls: list[dict],
     websocket: WebSocket,
     broadcast_func,
     execute_profile_update_fn,
     append_memory_note_fn,
-    last_behavior_payload: dict | None = None,
     model_name: str = "Hiyori",
 ) -> dict:
-    expression_calls = filter_tool_calls_for_pool(
-        expression_calls,
-        allowed_tool_names=EXPRESSION_AGENT_ALLOWED_TOOL_NAMES,
-        label="Expression Agent",
-    )
     memory_calls = filter_tool_calls_for_pool(
         memory_calls,
         allowed_tool_names=MEMORY_AGENT_ALLOWED_TOOL_NAMES,
@@ -155,102 +148,8 @@ async def _execute_chat_orchestrator_tool_calls(
 
     print(
         "[Chat Orchestrator] "
-        f"expression_calls={len(expression_calls)}, memory_calls={len(memory_calls)}, "
-        f"names={summarize_tool_names(expression_calls, memory_calls)}"
+        f"memory_calls={len(memory_calls)}, names={summarize_tool_names(memory_calls)}"
     )
-
-    head_intensity = float((last_behavior_payload or {}).get("headIntensity", 0.3))
-    blush_level = float((last_behavior_payload or {}).get("blushLevel", 0.0))
-    eye_sync = bool((last_behavior_payload or {}).get("eyeSync", True))
-    eye_l_open = float((last_behavior_payload or {}).get("eyeLOpen", 1.0))
-    eye_r_open = float((last_behavior_payload or {}).get("eyeROpen", 1.0))
-    duration_sec = float((last_behavior_payload or {}).get("durationSec", 5.0))
-    mouth_form = float((last_behavior_payload or {}).get("mouthForm", 0.0))
-    brow_l_y = float((last_behavior_payload or {}).get("browLY", 0.0))
-    brow_r_y = float((last_behavior_payload or {}).get("browRY", 0.0))
-    brow_l_angle = float((last_behavior_payload or {}).get("browLAngle", 0.0))
-    brow_r_angle = float((last_behavior_payload or {}).get("browRAngle", 0.0))
-    brow_l_form = float((last_behavior_payload or {}).get("browLForm", 0.0))
-    brow_r_form = float((last_behavior_payload or {}).get("browRForm", 0.0))
-    speaking_rate = float((last_behavior_payload or {}).get("speakingRate", 1.0))
-    eye_l_smile = float((last_behavior_payload or {}).get("eyeLSmile", 0.0))
-    eye_r_smile = float((last_behavior_payload or {}).get("eyeRSmile", 0.0))
-    brow_l_x = float((last_behavior_payload or {}).get("browLX", 0.0))
-    brow_r_x = float((last_behavior_payload or {}).get("browRX", 0.0))
-
-    filtered_expression_calls: list[dict] = []
-    for call in expression_calls:
-        fn_name = call["name"]
-        args = call["arguments"]
-
-        if fn_name == "set_ai_behavior":
-            args = _sanitize_set_ai_behavior_arguments(args)
-            call["arguments"] = args
-            filtered_expression_calls.append(call)
-            if "head_intensity" in args:
-                head_intensity = args["head_intensity"]
-            if "blush_level" in args:
-                blush_level = args["blush_level"]
-            if "eye_sync" in args:
-                eye_sync = args["eye_sync"]
-            if "eye_l_open" in args:
-                eye_l_open = args["eye_l_open"]
-            if "eye_r_open" in args:
-                eye_r_open = args["eye_r_open"]
-            if "duration_sec" in args:
-                duration_sec = args["duration_sec"]
-            if "mouth_form" in args:
-                mouth_form = args["mouth_form"]
-            if "brow_l_y" in args:
-                brow_l_y = args["brow_l_y"]
-            if "brow_r_y" in args:
-                brow_r_y = args["brow_r_y"]
-            if "brow_l_angle" in args:
-                brow_l_angle = args["brow_l_angle"]
-            if "brow_r_angle" in args:
-                brow_r_angle = args["brow_r_angle"]
-            if "brow_l_form" in args:
-                brow_l_form = args["brow_l_form"]
-            if "brow_r_form" in args:
-                brow_r_form = args["brow_r_form"]
-            if "speaking_rate" in args:
-                speaking_rate = args["speaking_rate"]
-            if "eye_l_smile" in args:
-                eye_l_smile = args["eye_l_smile"]
-            if "eye_r_smile" in args:
-                eye_r_smile = args["eye_r_smile"]
-            if "brow_l_x" in args:
-                brow_l_x = args["brow_l_x"]
-            if "brow_r_x" in args:
-                brow_r_x = args["brow_r_x"]
-
-        elif fn_name == "blink_control":
-            args = _sanitize_blink_control_arguments(args)
-            if not _has_complete_blink_interval_args(args):
-                continue
-            call["arguments"] = args
-            filtered_expression_calls.append(call)
-            blink_action = args.get("action", "")
-            blink_duration = args.get("duration_sec", 0.0)
-            blink_interval_min = args.get("interval_min")
-            blink_interval_max = args.get("interval_max")
-
-            blink_payload = {
-                "type": "blink_control",
-                "action": blink_action,
-            }
-            if blink_duration > 0:
-                blink_payload["durationSec"] = blink_duration
-            if blink_interval_min is not None:
-                blink_payload["intervalMin"] = blink_interval_min
-            if blink_interval_max is not None:
-                blink_payload["intervalMax"] = blink_interval_max
-
-            await websocket.send_json(blink_payload)
-            await _maybe_await(broadcast_func(blink_payload))
-            print(f"[BlinkControl] action={blink_action}, duration={blink_duration}")
-
-    expression_calls = filtered_expression_calls
 
     filtered_memory_calls: list[dict] = []
     for call in memory_calls:
@@ -281,35 +180,8 @@ async def _execute_chat_orchestrator_tool_calls(
 
     memory_calls = filtered_memory_calls
 
-    behavior_payload = _build_behavior_payload(
-        head_intensity,
-        blush_level,
-        eye_sync,
-        eye_l_open,
-        eye_r_open,
-        duration_sec,
-        mouth_form,
-        brow_l_y,
-        brow_r_y,
-        brow_l_angle,
-        brow_r_angle,
-        brow_l_form,
-        brow_r_form,
-        eye_l_smile,
-        eye_r_smile,
-        brow_l_x,
-        brow_r_x,
-    )
-    last_behavior_payload = {
-        **behavior_payload,
-        "speakingRate": speaking_rate,
-    }
     return {
-        "expression_calls": expression_calls,
         "memory_calls": memory_calls,
-        "behavior_payload": behavior_payload,
-        "last_behavior_payload": last_behavior_payload,
-        "speaking_rate": speaking_rate,
     }
 
 
@@ -532,7 +404,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 if live2d_response.choices and len(live2d_response.choices) > 0:
                     expression_msg = live2d_response.choices[0].message
                     expression_raw = expression_msg.content or ""
+                    expression_tool_calls = getattr(expression_msg, "tool_calls", []) or []
                     print(f"[Expression Agent] content: {expression_raw[:200]}")
+                    if not expression_raw.strip():
+                        if expression_tool_calls:
+                            raise ValueError(
+                                "Expression Agent returned legacy tool-call output without JSON intent content"
+                            )
+                        raise ValueError(
+                            "Expression Agent returned empty content without JSON intent"
+                        )
                     expression_intent = parse_expression_intent(
                         expression_raw,
                         emotion_state=emotion_state,
@@ -544,53 +425,38 @@ async def websocket_endpoint(websocket: WebSocket):
                         previous_state=previous_expression_state,
                     )
                 else:
-                    expression_plan = compile_expression_plan(
-                        parse_expression_intent(
-                            "",
-                            emotion_state=emotion_state,
-                            previous_state=previous_expression_state,
-                        ),
-                        model_name=model_name,
-                        previous_state=previous_expression_state,
-                    )
+                    raise ValueError("Expression Agent returned no choices")
 
                 legacy_render = render_legacy_behavior_payload(expression_plan)
                 behavior_payload = legacy_render["behavior_payload"]
                 speaking_rate = legacy_render["speaking_rate"]
 
-                for blink_payload in legacy_render["blink_payloads"]:
-                    await websocket.send_json(blink_payload)
-                    await broadcast_to_displays(blink_payload)
-
                 # --- 解析 Memory Agent response ---
                 if memory_response.choices and len(memory_response.choices) > 0:
                     mem_msg = memory_response.choices[0].message
+                    mem_tool_calls = getattr(mem_msg, "tool_calls", []) or []
                     print(f"[Memory Agent] content: {(mem_msg.content or 'None')[:100]}")
-                    print(f"[Memory Agent] tool_calls count: {len(mem_msg.tool_calls) if mem_msg.tool_calls else 0}")
+                    print(f"[Memory Agent] tool_calls count: {len(mem_tool_calls)}")
                     memory_calls = extract_agent_tool_calls(
                         memory_response,
                         model_name=model_name,
                         label="Memory Agent",
                     )
-                    for tc in getattr(mem_msg, "tool_calls", []) or []:
+                    for tc in mem_tool_calls:
                         print(f"[Memory Agent] tool: {tc.function.name} => {(tc.function.arguments or '')[:100]}")
                 else:
                     print("[Memory Agent] No choices returned!")
 
-                execution_result = await _execute_chat_orchestrator_tool_calls(
-                    expression_calls=[],
+                execution_result = await _execute_memory_tool_calls(
                     memory_calls=memory_calls,
                     websocket=websocket,
                     broadcast_func=broadcast_to_displays,
                     execute_profile_update_fn=execute_profile_update,
                     append_memory_note_fn=append_memory_note,
-                    last_behavior_payload={**behavior_payload, "speakingRate": speaking_rate},
                     model_name=model_name,
                 )
                 memory_calls = execution_result["memory_calls"]
-                behavior_payload = execution_result["behavior_payload"]
-                last_behavior_payload = execution_result["last_behavior_payload"]
-                speaking_rate = execution_result["speaking_rate"]
+                last_behavior_payload = {**behavior_payload, "speakingRate": speaking_rate}
 
                 # ---- Prompt Log ----
                 _a_tokens = estimate_token_count(
@@ -616,7 +482,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     output_tokens=_a_tokens + _b_tokens,
                 )
 
-                # ---- 送出 behavior payload (FIRST) ----
+                # ---- 先送出 expression plan，再保留 legacy payload fallback ----
+                await websocket.send_json(expression_plan)
+                await broadcast_to_displays(expression_plan)
+
+                for blink_payload in legacy_render["blink_payloads"]:
+                    await websocket.send_json(blink_payload)
+                    await broadcast_to_displays(blink_payload)
+
+                # ---- 送出 behavior payload ----
                 await websocket.send_json(behavior_payload)
                 await broadcast_to_displays(behavior_payload)
 

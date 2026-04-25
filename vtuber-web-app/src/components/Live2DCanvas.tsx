@@ -178,7 +178,7 @@ export const Live2DCanvas = () => {
   }, []);
 
   // 處理點擊事件（雙擊等其他互動）
-  const handleCanvasClick = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleCanvasClick = useCallback((_event: React.MouseEvent<HTMLCanvasElement>) => {
     // 預留給其他互動使用
   }, []);
 
