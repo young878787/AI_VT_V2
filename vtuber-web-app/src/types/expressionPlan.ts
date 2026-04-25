@@ -58,12 +58,14 @@ export interface ExpressionPlanPayload {
   type: 'expression_plan'
   basePose: ExpressionBasePose
   microEvents: ExpressionMicroEvent[]
-  sequence?: ExpressionMicroEvent[]
+  sequence: ExpressionMicroEvent[]
   blinkPlan: {
     style: string
     commands: BlinkCommand[]
   }
   speakingRate: number
+  timingHints?: Record<string, number>
+  modelHints?: Record<string, string | number | boolean>
   debug?: Record<string, string>
 }
 
@@ -182,8 +184,41 @@ export function isExpressionPlanPayload(value: unknown): value is ExpressionPlan
     return false
   }
 
-  if (value.sequence !== undefined && !value.sequence.every(isExpressionMicroEvent)) {
+  if (!Array.isArray(value.sequence)) {
     return false
+  }
+
+  if (!value.sequence.every(isExpressionMicroEvent)) {
+    return false
+  }
+
+  if (value.timingHints !== undefined) {
+    if (!isRecord(value.timingHints)) {
+      return false
+    }
+    if (!Object.values(value.timingHints).every(isNumber)) {
+      return false
+    }
+  }
+
+  if (value.modelHints !== undefined) {
+    if (!isRecord(value.modelHints)) {
+      return false
+    }
+    if (!Object.values(value.modelHints).every((hintValue) => (
+      typeof hintValue === 'string' || typeof hintValue === 'number' || typeof hintValue === 'boolean'
+    ))) {
+      return false
+    }
+  }
+
+  if (value.debug !== undefined) {
+    if (!isRecord(value.debug)) {
+      return false
+    }
+    if (!Object.values(value.debug).every((debugValue) => typeof debugValue === 'string')) {
+      return false
+    }
   }
 
   const blinkPlan = value.blinkPlan

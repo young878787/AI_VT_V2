@@ -30,6 +30,7 @@ interface AiBehaviorBridgeModel {
   setBlinkInterval?: (intervalMin: number, intervalMax: number) => void;
   applyBasePose?: (basePose: ExpressionPlanPayload['basePose']) => void;
   enqueueMicroEvent?: (event: ExpressionMicroEvent) => void;
+  enqueueSequence?: (sequence: ExpressionMicroEvent[]) => void;
 }
 
 interface AppState {
@@ -404,6 +405,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     bridgeModel.applyBasePose?.(plan.basePose);
     for (const event of plan.microEvents ?? []) {
       bridgeModel.enqueueMicroEvent?.(event);
+    }
+    if ((plan.sequence ?? []).length > 0) {
+      bridgeModel.enqueueSequence?.(plan.sequence);
     }
   },
 

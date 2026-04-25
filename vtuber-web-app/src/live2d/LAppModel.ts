@@ -867,6 +867,21 @@ export class LAppModel extends CubismUserModel {
     });
   }
 
+  public enqueueSequence(sequence: Array<{
+    kind: string;
+    patch: ExpressionParamPatch;
+    durationMs: number;
+    returnToBase: boolean;
+  }>): void {
+    for (const step of sequence) {
+      this.enqueueMicroEvent(step);
+    }
+  }
+
+  public applyDeterministicVariation(_context: { preset?: string; energy?: number }): void {
+    // Phase 3 再擴充；先保留接口，避免未來重改 update loop 命名
+  }
+
   /**
    * 取得目前 AI 控制的表情參數值（供 UI 面板即時讀取）
    */

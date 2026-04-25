@@ -110,7 +110,6 @@ class WSService {
                     const plan = data;
 
                     store.setExpressionPlan(plan);
-                    // `sequence` is intentionally ignored here until Task 7 adds runtime queue support.
 
                     for (const command of plan.blinkPlan?.commands ?? []) {
                         if (isBlinkAction(command.action)) {

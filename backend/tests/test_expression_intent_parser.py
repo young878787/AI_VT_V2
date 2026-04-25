@@ -110,6 +110,17 @@ class ExpressionIntentParserTests(unittest.TestCase):
         self.assertEqual(second["must_include"], [])
         self.assertEqual(second["avoid"], [])
 
+    def test_parse_expression_intent_maps_common_emotion_and_arc_aliases(self):
+        intent = parse_expression_intent(
+            '{"primary_emotion":"happy","secondary_emotion":"joyful","arc":"neutral_to_smile"}',
+            emotion_state=None,
+            previous_state=None,
+        )
+
+        self.assertEqual(intent["primary_emotion"], "playful")
+        self.assertEqual(intent["secondary_emotion"], "playful")
+        self.assertEqual(intent["arc"], "pause_then_smirk")
+
 
 if __name__ == "__main__":
     unittest.main()

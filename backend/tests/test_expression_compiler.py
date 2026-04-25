@@ -6,7 +6,11 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.expression_compiler import compile_expression_plan
+from services.expression_compiler import (
+    build_blink_plan,
+    build_expression_sequence,
+    compile_expression_plan,
+)
 from services.expression_legacy_renderer import render_legacy_behavior_payload
 
 
@@ -127,6 +131,23 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertEqual(plan["blinkPlan"]["style"], "normal")
         self.assertEqual(plan["blinkPlan"]["commands"], [])
 
+    def test_build_expression_sequence_returns_empty_extension_point_by_default(self):
+        sequence = build_expression_sequence(
+            {"primary_emotion": "calm", "arc": "steady"},
+            {"preset": "calm_soft"},
+            model_name="Hiyori",
+        )
+
+        self.assertEqual(sequence, [])
+
+    def test_build_blink_plan_returns_default_style_for_unknown_value(self):
+        blink_plan = build_blink_plan(
+            {"blink_style": "laser"},
+            model_name="Hiyori",
+        )
+
+        self.assertEqual(blink_plan, {"style": "normal", "commands": []})
+
     def test_render_legacy_behavior_payload_keeps_existing_field_names(self):
         plan = compile_expression_plan(
             {
@@ -147,6 +168,45 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertIn("eyeLOpen", behavior)
         self.assertIn("mouthForm", behavior)
         self.assertIn("browLY", behavior)
+
+    def test_compile_expression_plan_amplifies_playful_high_energy_expression(self):
+        plan = compile_expression_plan(
+            {
+                "primary_emotion": "playful",
+                "intensity": 0.85,
+                "energy": 0.9,
+                "playfulness": 0.95,
+                "warmth": 0.7,
+                "dominance": 0.45,
+                "asymmetry_bias": "strong",
+                "arc": "pause_then_smirk",
+                "hold_ms": 1400,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        params = plan["basePose"]["params"]
+        self.assertGreater(params["mouthForm"], 0.3)
+        self.assertGreater(params["eyeLSmile"], 0.5)
+        self.assertLess(params["eyeROpen"], params["eyeLOpen"])
+        self.assertGreaterEqual(len(plan["sequence"]), 1)
+
+    def test_compile_expression_plan_turns_smile_arc_into_sequence(self):
+        plan = compile_expression_plan(
+            {
+                "primary_emotion": "playful",
+                "intensity": 0.7,
+                "energy": 0.75,
+                "playfulness": 0.9,
+                "warmth": 0.8,
+                "arc": "pause_then_smirk",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        self.assertEqual(plan["sequence"][0]["kind"], "smirk_left")
 
 
 if __name__ == "__main__":

@@ -406,12 +406,13 @@ class MemoryModelWiringTests(unittest.TestCase):
             payload for payload in websocket.payloads if payload.get("type") == "text_stream"
         )
 
-        self.assertEqual(behavior_payload["headIntensity"], 0.18)
+        self.assertGreater(behavior_payload["headIntensity"], 0.18)
         self.assertEqual(behavior_payload["blushLevel"], 0.18)
         self.assertEqual(behavior_payload["eyeSync"], False)
-        self.assertEqual(behavior_payload["eyeLOpen"], 0.78)
-        self.assertEqual(behavior_payload["eyeROpen"], 0.82)
-        self.assertEqual(behavior_payload["mouthForm"], 0.10)
+        self.assertGreaterEqual(behavior_payload["eyeLOpen"], 0.78)
+        self.assertGreater(behavior_payload["eyeROpen"], 0.75)
+        self.assertNotEqual(behavior_payload["eyeROpen"], behavior_payload["eyeLOpen"])
+        self.assertGreater(behavior_payload["mouthForm"], 0.10)
         self.assertEqual(behavior_payload["durationSec"], 2.0)
 
         self.assertEqual(

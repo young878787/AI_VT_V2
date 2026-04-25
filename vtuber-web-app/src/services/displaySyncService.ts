@@ -84,7 +84,6 @@ class DisplaySyncService {
           store.setExpressionPlan(plan);
           store.clearExpressionEvents();
           store.enqueueExpressionEvents(plan.microEvents ?? []);
-          // `sequence` runtime handling stays in Task 7; Task 5 only stores the plan and bridges basePose.
           store.setAiBehavior(
             plan.basePose.params.headIntensity,
             plan.basePose.params.blushLevel,

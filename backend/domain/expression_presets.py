@@ -1,3 +1,11 @@
+PRESET_VARIATION_RULES = {
+    "calm_soft": {},
+    "playful_smirk": {},
+    "shy_tucked": {},
+    "surprised_open": {},
+}
+
+
 BASE_POSE_PRESETS = {
     "calm_soft": {
         "mouthForm": 0.05,
