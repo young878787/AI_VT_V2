@@ -23,6 +23,6 @@ def get_live2d_tools(model_name: str) -> list[dict]:
     return load_schema(model_name)["openai_tools"]["live2d"]
 
 
-def get_memory_tools() -> list[dict]:
-    """Memory tools 與模型無關，永遠使用預設模型。"""
-    return memory_tools
+def get_memory_tools(model_name: str = DEFAULT_MODEL) -> list[dict]:
+    """取得指定模型的 Memory function calling 工具清單。"""
+    return load_schema(model_name)["openai_tools"]["memory"]

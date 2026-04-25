@@ -3,6 +3,7 @@ Agent A 系統 Prompt 組裝：VTuber 角色基底 + JPAF 人格框架。
 Agent A 負責角色扮演對話，不處理工具呼叫。
 純函式，無 I/O 相依。
 """
+from domain.tools.schema_loader import DEFAULT_MODEL, load_schema
 from domain.jpaf import (
     JPAFSession,
     PERSONA_PROFILES,
@@ -20,12 +21,13 @@ def build_agent_a_prompt(
     user_profile: dict,
     memory_notes: str,
     session: JPAFSession,
+    model_name: str = DEFAULT_MODEL,
 ) -> str:
     """
     每輪呼叫，動態組裝 Agent A 的完整系統 Prompt。
     第 1 輪使用完整 JPAF init prompt，後續使用精簡 compact prompt。
     """
-    profile_section = _build_profile_section(user_profile)
+    profile_section = _build_profile_section(user_profile, model_name=model_name)
     memory_section = _build_memory_section(memory_notes)
     persona_key = session.current_persona
     effective_meta = get_effective_meta(persona_key)
@@ -325,7 +327,47 @@ dominant={target_dom}, auxiliary={target_aux}
 """
 
 
-def _build_profile_section(profile: dict) -> str:
+def _build_custom_profile_lines(profile: dict, model_name: str) -> list[str]:
+    built_in_fields = {
+        "core_traits",
+        "communication_style",
+        "dislikes",
+        "recent_interests",
+        "custom_notes",
+    }
+    lines: list[str] = []
+    schema = load_schema(model_name)
+    field_guide = (
+        schema.get("prompt_config", {})
+        .get("memory", {})
+        .get("update_user_profile", {})
+        .get("field_guide", [])
+    )
+
+    for item in field_guide:
+        if not isinstance(item, dict):
+            continue
+        field_name = item.get("field")
+        if not isinstance(field_name, str) or field_name in built_in_fields:
+            continue
+
+        value = profile.get(field_name)
+        if not value:
+            continue
+
+        label = item.get("description") if isinstance(item.get("description"), str) else field_name
+        if isinstance(value, list):
+            rendered_value = ", ".join(str(entry) for entry in value if entry)
+        else:
+            rendered_value = str(value).strip()
+
+        if rendered_value:
+            lines.append(f"- {label}：{rendered_value}")
+
+    return lines
+
+
+def _build_profile_section(profile: dict, model_name: str = DEFAULT_MODEL) -> str:
     """組裝使用者畫像段落（與原 prompts.py 一致）。"""
     parts = []
     if profile.get("core_traits"):
@@ -339,6 +381,7 @@ def _build_profile_section(profile: dict) -> str:
     if profile.get("custom_notes"):
         for note in profile["custom_notes"]:
             parts.append(f"- {note}")
+    parts.extend(_build_custom_profile_lines(profile, model_name))
     if not parts:
         return "還不太了解主人呢，要多聊聊才行！"
     return "\n".join(parts)

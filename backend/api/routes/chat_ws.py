@@ -1,8 +1,9 @@
 """
 Chat WebSocket 端點（/ws/chat）：主對話迴圈。
-雙 Agent 架構：Agent A (JPAF Chat) → Agent B (Tools)。
+Chat Orchestrator 負責協調 Dialogue Agent、Expression Agent、Memory Agent。
 """
 import asyncio
+import inspect
 import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -14,12 +15,10 @@ from core.config import (
     COMPRESS_TOKEN_THRESHOLD,
     COMPRESS_KEEP_RECENT,
 )
-from core.utils import strip_thinking, normalize_session_id
-from domain.jpaf import JPAFSession, extract_jpaf_state, strip_jpaf_tags
+from core.utils import normalize_session_id
+from domain.jpaf import JPAFSession
 from domain.agent_a_prompts import build_agent_a_prompt
 from domain.agent_b_prompts import build_live2d_prompt, build_memory_prompt
-from domain.tools import live2d_tools, memory_tools
-from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY
 from infrastructure.memory_store import (
     load_user_profile,
     load_memory_notes,
@@ -30,21 +29,288 @@ from infrastructure.memory_store import (
     append_memory_note,
 )
 from services.chat_service import (
-    stream_agent_a,
     collect_agent_a,
     call_live2d_agent,
     call_memory_agent,
     compress_context,
     estimate_token_count,
     synthesize_and_send_voice,
-    parse_xml_tool_calls,
 )
-from services.tool_arg_parser import parse_tool_call_arguments
+from services.agent_tool_pipeline import (
+    EXPRESSION_AGENT_ALLOWED_TOOL_NAMES,
+    MEMORY_AGENT_ALLOWED_TOOL_NAMES,
+    extract_agent_tool_calls,
+    filter_tool_calls_for_pool,
+    get_meaningful_memory_tool_arguments,
+    has_required_expression_behavior,
+    summarize_tool_names,
+)
 from services.memory_service import execute_profile_update
 from api.display_manager import broadcast_to_displays
 from core.prompt_logger import log_turn, reset_log
+from domain.tools.schema_loader import normalize_model_name
 
 router = APIRouter()
+
+
+def _sanitize_behavior_number(args: dict, key: str) -> float | None:
+    value = args.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _sanitize_optional_behavior_number(args: dict, key: str) -> float | None:
+    if key not in args:
+        return None
+    return _sanitize_behavior_number(args, key)
+
+
+def _sanitize_blink_control_arguments(args: dict) -> dict:
+    sanitized = {"action": args.get("action", "")}
+
+    for key in ("duration_sec", "interval_min", "interval_max"):
+        sanitized_value = _sanitize_optional_behavior_number(args, key)
+        if sanitized_value is not None:
+            sanitized[key] = sanitized_value
+
+    return sanitized
+
+
+def _has_complete_blink_interval_args(args: dict) -> bool:
+    if args.get("action") != "set_interval":
+        return True
+    if "interval_min" not in args or "interval_max" not in args:
+        return False
+    return args["interval_min"] <= args["interval_max"]
+
+
+def _sanitize_behavior_boolean(args: dict, key: str) -> bool | None:
+    value = args.get(key)
+    if not isinstance(value, bool):
+        return None
+    return value
+
+
+def _sanitize_set_ai_behavior_arguments(args: dict) -> dict:
+    sanitized: dict = {}
+
+    for key in (
+        "head_intensity",
+        "blush_level",
+        "eye_l_open",
+        "eye_r_open",
+        "duration_sec",
+        "mouth_form",
+        "brow_l_y",
+        "brow_r_y",
+        "brow_l_angle",
+        "brow_r_angle",
+        "brow_l_form",
+        "brow_r_form",
+        "speaking_rate",
+        "eye_l_smile",
+        "eye_r_smile",
+        "brow_l_x",
+        "brow_r_x",
+    ):
+        sanitized_value = _sanitize_behavior_number(args, key)
+        if sanitized_value is not None:
+            sanitized[key] = sanitized_value
+
+    eye_sync = _sanitize_behavior_boolean(args, "eye_sync")
+    if eye_sync is not None:
+        sanitized["eye_sync"] = eye_sync
+
+    return sanitized
+
+
+async def _maybe_await(result):
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _execute_chat_orchestrator_tool_calls(
+    expression_calls: list[dict],
+    memory_calls: list[dict],
+    websocket: WebSocket,
+    broadcast_func,
+    execute_profile_update_fn,
+    append_memory_note_fn,
+    last_behavior_payload: dict | None = None,
+    model_name: str = "Hiyori",
+) -> dict:
+    expression_calls = filter_tool_calls_for_pool(
+        expression_calls,
+        allowed_tool_names=EXPRESSION_AGENT_ALLOWED_TOOL_NAMES,
+        label="Expression Agent",
+    )
+    memory_calls = filter_tool_calls_for_pool(
+        memory_calls,
+        allowed_tool_names=MEMORY_AGENT_ALLOWED_TOOL_NAMES,
+        label="Memory Agent",
+    )
+
+    print(
+        "[Chat Orchestrator] "
+        f"expression_calls={len(expression_calls)}, memory_calls={len(memory_calls)}, "
+        f"names={summarize_tool_names(expression_calls, memory_calls)}"
+    )
+    if not has_required_expression_behavior(expression_calls):
+        print("[Chat Orchestrator][WARN] 缺少 set_ai_behavior；本輪將退回預設 behavior payload，可能導致表情變化很小。")
+
+    head_intensity = float((last_behavior_payload or {}).get("headIntensity", 0.3))
+    blush_level = float((last_behavior_payload or {}).get("blushLevel", 0.0))
+    eye_sync = bool((last_behavior_payload or {}).get("eyeSync", True))
+    eye_l_open = float((last_behavior_payload or {}).get("eyeLOpen", 1.0))
+    eye_r_open = float((last_behavior_payload or {}).get("eyeROpen", 1.0))
+    duration_sec = float((last_behavior_payload or {}).get("durationSec", 5.0))
+    mouth_form = float((last_behavior_payload or {}).get("mouthForm", 0.0))
+    brow_l_y = float((last_behavior_payload or {}).get("browLY", 0.0))
+    brow_r_y = float((last_behavior_payload or {}).get("browRY", 0.0))
+    brow_l_angle = float((last_behavior_payload or {}).get("browLAngle", 0.0))
+    brow_r_angle = float((last_behavior_payload or {}).get("browRAngle", 0.0))
+    brow_l_form = float((last_behavior_payload or {}).get("browLForm", 0.0))
+    brow_r_form = float((last_behavior_payload or {}).get("browRForm", 0.0))
+    speaking_rate = float((last_behavior_payload or {}).get("speakingRate", 1.0))
+    eye_l_smile = float((last_behavior_payload or {}).get("eyeLSmile", 0.0))
+    eye_r_smile = float((last_behavior_payload or {}).get("eyeRSmile", 0.0))
+    brow_l_x = float((last_behavior_payload or {}).get("browLX", 0.0))
+    brow_r_x = float((last_behavior_payload or {}).get("browRX", 0.0))
+
+    filtered_expression_calls: list[dict] = []
+    for call in expression_calls:
+        fn_name = call["name"]
+        args = call["arguments"]
+
+        if fn_name == "set_ai_behavior":
+            args = _sanitize_set_ai_behavior_arguments(args)
+            call["arguments"] = args
+            filtered_expression_calls.append(call)
+            if "head_intensity" in args:
+                head_intensity = args["head_intensity"]
+            if "blush_level" in args:
+                blush_level = args["blush_level"]
+            if "eye_sync" in args:
+                eye_sync = args["eye_sync"]
+            if "eye_l_open" in args:
+                eye_l_open = args["eye_l_open"]
+            if "eye_r_open" in args:
+                eye_r_open = args["eye_r_open"]
+            if "duration_sec" in args:
+                duration_sec = args["duration_sec"]
+            if "mouth_form" in args:
+                mouth_form = args["mouth_form"]
+            if "brow_l_y" in args:
+                brow_l_y = args["brow_l_y"]
+            if "brow_r_y" in args:
+                brow_r_y = args["brow_r_y"]
+            if "brow_l_angle" in args:
+                brow_l_angle = args["brow_l_angle"]
+            if "brow_r_angle" in args:
+                brow_r_angle = args["brow_r_angle"]
+            if "brow_l_form" in args:
+                brow_l_form = args["brow_l_form"]
+            if "brow_r_form" in args:
+                brow_r_form = args["brow_r_form"]
+            if "speaking_rate" in args:
+                speaking_rate = args["speaking_rate"]
+            if "eye_l_smile" in args:
+                eye_l_smile = args["eye_l_smile"]
+            if "eye_r_smile" in args:
+                eye_r_smile = args["eye_r_smile"]
+            if "brow_l_x" in args:
+                brow_l_x = args["brow_l_x"]
+            if "brow_r_x" in args:
+                brow_r_x = args["brow_r_x"]
+
+        elif fn_name == "blink_control":
+            args = _sanitize_blink_control_arguments(args)
+            if not _has_complete_blink_interval_args(args):
+                continue
+            call["arguments"] = args
+            filtered_expression_calls.append(call)
+            blink_action = args.get("action", "")
+            blink_duration = args.get("duration_sec", 0.0)
+            blink_interval_min = args.get("interval_min")
+            blink_interval_max = args.get("interval_max")
+
+            blink_payload = {
+                "type": "blink_control",
+                "action": blink_action,
+            }
+            if blink_duration > 0:
+                blink_payload["durationSec"] = blink_duration
+            if blink_interval_min is not None:
+                blink_payload["intervalMin"] = blink_interval_min
+            if blink_interval_max is not None:
+                blink_payload["intervalMax"] = blink_interval_max
+
+            await websocket.send_json(blink_payload)
+            await _maybe_await(broadcast_func(blink_payload))
+            print(f"[BlinkControl] action={blink_action}, duration={blink_duration}")
+
+    expression_calls = filtered_expression_calls
+
+    filtered_memory_calls: list[dict] = []
+    for call in memory_calls:
+        fn_name = call["name"]
+        args = call["arguments"]
+
+        if fn_name == "update_user_profile":
+            meaningful_args = get_meaningful_memory_tool_arguments(fn_name, args, model_name=model_name)
+            if meaningful_args is None:
+                continue
+            action = meaningful_args["action"]
+            field = meaningful_args["field"]
+            value = meaningful_args["value"]
+            execute_profile_update_fn(action, field, value, model_name=model_name)
+            call["arguments"] = meaningful_args
+            filtered_memory_calls.append(call)
+            print(f"User profile 已更新 [{action}] {field}: {value}")
+
+        elif fn_name == "save_memory_note":
+            meaningful_args = get_meaningful_memory_tool_arguments(fn_name, args, model_name=model_name)
+            if meaningful_args is None:
+                continue
+            note_content = meaningful_args["content"]
+            append_memory_note_fn(note_content)
+            call["arguments"] = meaningful_args
+            filtered_memory_calls.append(call)
+            print(f"Memory note 已記錄: {note_content}")
+
+    memory_calls = filtered_memory_calls
+
+    behavior_payload = _build_behavior_payload(
+        head_intensity,
+        blush_level,
+        eye_sync,
+        eye_l_open,
+        eye_r_open,
+        duration_sec,
+        mouth_form,
+        brow_l_y,
+        brow_r_y,
+        brow_l_angle,
+        brow_r_angle,
+        brow_l_form,
+        brow_r_form,
+        eye_l_smile,
+        eye_r_smile,
+        brow_l_x,
+        brow_r_x,
+    )
+    last_behavior_payload = {
+        **behavior_payload,
+        "speakingRate": speaking_rate,
+    }
+    return {
+        "expression_calls": expression_calls,
+        "memory_calls": memory_calls,
+        "behavior_payload": behavior_payload,
+        "last_behavior_payload": last_behavior_payload,
+        "speaking_rate": speaking_rate,
+    }
 
 
 @router.websocket("/ws/chat")
@@ -78,8 +344,23 @@ async def websocket_endpoint(websocket: WebSocket):
             data = json.loads(data_str)
 
             # ---- Session 切換 ----
-            incoming_session_id = normalize_session_id(data.get("session_id"))
-            if CHAT_PERSISTENCE_ENABLED and incoming_session_id != current_session_id:
+            incoming_session_id = _effective_incoming_session_id(
+                data,
+                current_session_id=current_session_id,
+            )
+            session_changed = incoming_session_id != current_session_id
+            last_behavior_payload = _reset_behavior_payload_for_session(
+                current_session_id=current_session_id,
+                incoming_session_id=incoming_session_id,
+                last_behavior_payload=last_behavior_payload,
+            )
+            messages = _reset_messages_for_session(
+                current_session_id=current_session_id,
+                incoming_session_id=incoming_session_id,
+                messages=messages,
+                persistence_enabled=CHAT_PERSISTENCE_ENABLED,
+            )
+            if CHAT_PERSISTENCE_ENABLED and session_changed:
                 if current_session_id and messages:
                     save_session_messages(current_session_id, messages)
                 current_session_id = incoming_session_id
@@ -88,6 +369,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     if current_session_id
                     else []
                 )
+            elif session_changed:
+                current_session_id = incoming_session_id
 
             # ---- 手動壓縮指令 ----
             if data.get("type") == "compress":
@@ -132,15 +415,18 @@ async def websocket_endpoint(websocket: WebSocket):
             if not user_message:
                 continue
 
-            model_name: str = data.get("model_name", "Hiyori")
+            model_name = normalize_model_name(data.get("model_name", "Hiyori"))
 
             # ================================================================
-            # 步驟 1：組裝 Agent A 系統 Prompt（VTuber + JPAF）
+            # 步驟 1：組裝 Dialogue Agent 系統 Prompt（VTuber + JPAF）
             # ================================================================
             user_profile = load_user_profile()
             memory_notes = load_memory_notes()
             agent_a_system = build_agent_a_prompt(
-                user_profile, memory_notes, jpaf_session
+                user_profile,
+                memory_notes,
+                jpaf_session,
+                model_name=model_name,
             )
 
             # 更新或插入 system prompt
@@ -156,10 +442,10 @@ async def websocket_endpoint(websocket: WebSocket):
             messages.append({"role": "user", "content": user_message})
 
             try:
-                print(f"[{AI_PROVIDER.upper()}] Agent A: {user_message[:60]}...")
+                print(f"[{AI_PROVIDER.upper()}] Dialogue Agent: {user_message[:60]}...")
 
                 # ============================================================
-                # 步驟 2：Agent A 串流呼叫（JPAF Chat，無 tools）
+                # 步驟 2：Dialogue Agent 串流呼叫（JPAF Chat，無 tools）
                 # ============================================================
                 agent_a_text, jpaf_state, emotion_state = await collect_agent_a(
                     messages
@@ -188,7 +474,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 jpaf_session.increment_turn()
                 save_jpaf_state(jpaf_session.to_dict())
 
-                # 將 Agent A 乾淨回覆加入共用 history
+                # 將 Dialogue Agent 乾淨回覆加入共用 history
                 messages.append({"role": "assistant", "content": agent_a_text})
 
                 # 注入 JPAF weights snapshot 到短期記憶（模型可看到 weights 演化軌跡）
@@ -203,20 +489,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
                 # ============================================================
-                # 步驟 3：Agent B-1 (Live2D) + B-2 (Memory) 並行呼叫
+                # 步驟 3：Expression Agent + Memory Agent 並行呼叫
                 # ============================================================
-                print(f"[{AI_PROVIDER.upper()}] Agent B: parallel live2d + memory...")
+                print(
+                    f"[{AI_PROVIDER.upper()}] Chat Orchestrator: parallel Expression Agent + Memory Agent..."
+                )
 
                 previous_expression_state = _summarize_previous_expression_state(
                     last_behavior_payload
                 )
 
-                # B-1 Live2D prompt
+                # Expression Agent prompt
                 live2d_system = build_live2d_prompt(
                     user_message,
                     agent_a_text,
                     previous_expression_state,
-                    jpaf_state,
                     emotion_state,
                     model_name,
                 )
@@ -225,8 +512,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     {"role": "user", "content": "請根據上述上下文產生主表情，並視需要額外呼叫 blink_control，讓表情更有層次。"},
                 ]
 
-                # B-2 Memory prompt
-                memory_system = build_memory_prompt(user_message, agent_a_text)
+                # Memory Agent prompt
+                memory_system = build_memory_prompt(user_message, agent_a_text, model_name)
                 memory_messages = [
                     {"role": "system", "content": memory_system},
                     {"role": "user", "content": "請分析用戶訊息，判斷是否需要記憶操作。"},
@@ -235,178 +522,58 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 並行呼叫
                 live2d_response, memory_response = await asyncio.gather(
                     call_live2d_agent(live2d_messages, model_name),
-                    call_memory_agent(memory_messages),
+                    call_memory_agent(memory_messages, model_name),
                 )
 
                 # ============================================================
-                # 步驟 4：處理 Tool Calls
+                # 步驟 4：處理 Chat Orchestrator tool calls
                 # ============================================================
-                head_intensity = 0.3
-                blush_level = 0.0
-                eye_l_open = 1.0
-                eye_r_open = 1.0
-                duration_sec = 5.0
-                mouth_form = 0.0
-                brow_l_y = 0.0
-                brow_r_y = 0.0
-                brow_l_angle = 0.0
-                brow_r_angle = 0.0
-                brow_l_form = 0.0
-                brow_r_form = 0.0
-                eye_sync = True
-                speaking_rate = 1.0
+                expression_calls: list[dict] = []
+                memory_calls: list[dict] = []
 
-                all_calls: list[dict] = []
-
-                # --- 解析 Live2D response ---
+                # --- 解析 Expression Agent response ---
                 if live2d_response.choices and len(live2d_response.choices) > 0:
                     l2d_msg = live2d_response.choices[0].message
-                    print(f"[Live2D Agent] content: {(l2d_msg.content or 'None')[:100]}")
-                    print(f"[Live2D Agent] tool_calls count: {len(l2d_msg.tool_calls) if l2d_msg.tool_calls else 0}")
+                    print(f"[Expression Agent] content: {(l2d_msg.content or 'None')[:100]}")
+                    print(f"[Expression Agent] tool_calls count: {len(l2d_msg.tool_calls) if l2d_msg.tool_calls else 0}")
+                    expression_calls = extract_agent_tool_calls(
+                        live2d_response,
+                        model_name=model_name,
+                        label="Expression Agent",
+                    )
+                    for tc in getattr(l2d_msg, "tool_calls", []) or []:
+                        print(f"[Expression Agent] tool: {tc.function.name} => {(tc.function.arguments or '')[:200]}")
 
-                    l2d_content = strip_thinking(l2d_msg.content or "")
-                    l2d_xml_calls, _ = parse_xml_tool_calls(l2d_content)
-
-                    if l2d_msg.tool_calls:
-                        for tc in l2d_msg.tool_calls:
-                            try:
-                                args, was_normalized = parse_tool_call_arguments(
-                                    tc.function.arguments or "",
-                                    tool_name=tc.function.name,
-                                    model_name=model_name,
-                                )
-                                all_calls.append({"name": tc.function.name, "arguments": args})
-                                if was_normalized:
-                                    print(f"[Live2D Agent][NORMALIZED_TOOL_ARGS] name={tc.function.name}")
-                                print(f"[Live2D Agent] tool: {tc.function.name} => {tc.function.arguments[:200]}")
-                            except json.JSONDecodeError as e:
-                                raw_args = tc.function.arguments or ""
-                                around_start = max(0, e.pos - 80)
-                                around_end = min(len(raw_args), e.pos + 80)
-                                print(
-                                    f"[Live2D Agent][MALFORMED_TOOL_ARGS] "
-                                    f"name={tc.function.name}, pos={e.pos}, len={len(raw_args)}, error={e}"
-                                )
-                                print(f"[Live2D Agent][MALFORMED_TOOL_ARGS][RAW] {raw_args}")
-                                print(
-                                    "[Live2D Agent][MALFORMED_TOOL_ARGS][AROUND] "
-                                    f"{raw_args[around_start:around_end]}"
-                                )
-                    if l2d_xml_calls:
-                        print(f"[Live2D Agent] XML tool calls: {len(l2d_xml_calls)}")
-                        all_calls.extend(l2d_xml_calls)
-
-                # --- 解析 Memory response ---
+                # --- 解析 Memory Agent response ---
                 if memory_response.choices and len(memory_response.choices) > 0:
                     mem_msg = memory_response.choices[0].message
                     print(f"[Memory Agent] content: {(mem_msg.content or 'None')[:100]}")
                     print(f"[Memory Agent] tool_calls count: {len(mem_msg.tool_calls) if mem_msg.tool_calls else 0}")
-
-                    mem_content = strip_thinking(mem_msg.content or "")
-                    mem_xml_calls, _ = parse_xml_tool_calls(mem_content)
-
-                    if mem_msg.tool_calls:
-                        for tc in mem_msg.tool_calls:
-                            try:
-                                args, was_normalized = parse_tool_call_arguments(
-                                    tc.function.arguments or "",
-                                    tool_name=tc.function.name,
-                                    model_name=model_name,
-                                )
-                                all_calls.append({"name": tc.function.name, "arguments": args})
-                                if was_normalized:
-                                    print(f"[Memory Agent][NORMALIZED_TOOL_ARGS] name={tc.function.name}")
-                                print(f"[Memory Agent] tool: {tc.function.name} => {tc.function.arguments[:100]}")
-                            except json.JSONDecodeError as e:
-                                print(f"Memory tool call 解析失敗: {e}")
-                    if mem_xml_calls:
-                        print(f"[Memory Agent] XML tool calls: {len(mem_xml_calls)}")
-                        all_calls.extend(mem_xml_calls)
+                    memory_calls = extract_agent_tool_calls(
+                        memory_response,
+                        model_name=model_name,
+                        label="Memory Agent",
+                    )
+                    for tc in getattr(mem_msg, "tool_calls", []) or []:
+                        print(f"[Memory Agent] tool: {tc.function.name} => {(tc.function.arguments or '')[:100]}")
                 else:
                     print("[Memory Agent] No choices returned!")
 
-                print(f"[Agent B] all_calls 總數: {len(all_calls)}, names: {[c['name'] for c in all_calls]}")
-                if not any(call["name"] == "set_ai_behavior" for call in all_calls):
-                    print("[Agent B][WARN] 缺少 set_ai_behavior；本輪將退回預設 behavior payload，可能導致表情變化很小。")
-
-                # --- 行為變數預設值（當 set_ai_behavior 未被呼叫時保持安全） ---
-                head_intensity = 0.3
-                blush_level = 0.0
-                eye_sync = True
-                eye_l_open = 1.0
-                eye_r_open = 1.0
-                duration_sec = 5.0
-                mouth_form = 0.0
-                brow_l_y = 0.0
-                brow_r_y = 0.0
-                brow_l_angle = 0.0
-                brow_r_angle = 0.0
-                brow_l_form = 0.0
-                brow_r_form = 0.0
-                speaking_rate = 1.0
-                eye_l_smile = 0.0
-                eye_r_smile = 0.0
-                brow_l_x = 0.0
-                brow_r_x = 0.0
-
-                # --- 執行 tool calls ---
-                for call in all_calls:
-                    fn_name = call["name"]
-                    args = call["arguments"]
-
-                    if fn_name == "set_ai_behavior":
-                        head_intensity = float(args.get("head_intensity", 0.3))
-                        blush_level = float(args.get("blush_level", 0.0))
-                        eye_sync = args.get("eye_sync", True)
-                        eye_l_open = float(args.get("eye_l_open", 1.0))
-                        eye_r_open = float(args.get("eye_r_open", 1.0))
-                        duration_sec = float(args.get("duration_sec", 5.0))
-                        mouth_form = float(args.get("mouth_form", 0.0))
-                        brow_l_y = float(args.get("brow_l_y", 0.0))
-                        brow_r_y = float(args.get("brow_r_y", 0.0))
-                        brow_l_angle = float(args.get("brow_l_angle", 0.0))
-                        brow_r_angle = float(args.get("brow_r_angle", 0.0))
-                        brow_l_form = float(args.get("brow_l_form", 0.0))
-                        brow_r_form = float(args.get("brow_r_form", 0.0))
-                        speaking_rate = float(args.get("speaking_rate", 1.0))
-                        eye_l_smile = float(args.get("eye_l_smile", 0.0))
-                        eye_r_smile = float(args.get("eye_r_smile", 0.0))
-                        brow_l_x = float(args.get("brow_l_x", 0.0))
-                        brow_r_x = float(args.get("brow_r_x", 0.0))
-
-                    elif fn_name == "blink_control":
-                        blink_action = args.get("action", "")
-                        blink_duration = float(args.get("duration_sec", 0))
-                        blink_interval_min = args.get("interval_min")
-                        blink_interval_max = args.get("interval_max")
-
-                        blink_payload = {
-                            "type": "blink_control",
-                            "action": blink_action,
-                        }
-                        if blink_duration > 0:
-                            blink_payload["durationSec"] = blink_duration
-                        if blink_interval_min is not None:
-                            blink_payload["intervalMin"] = float(blink_interval_min)
-                        if blink_interval_max is not None:
-                            blink_payload["intervalMax"] = float(blink_interval_max)
-
-                        await websocket.send_json(blink_payload)
-                        await broadcast_to_displays(blink_payload)
-                        print(f"[BlinkControl] action={blink_action}, duration={blink_duration}")
-
-                    elif fn_name == "update_user_profile":
-                        action = args.get("action", "add")
-                        field = args.get("field", "custom_notes")
-                        value = args.get("value", "")
-                        execute_profile_update(action, field, value)
-                        print(f"User profile 已更新 [{action}] {field}: {value}")
-
-                    elif fn_name == "save_memory_note":
-                        note_content = args.get("content", "")
-                        if note_content:
-                            append_memory_note(note_content)
-                            print(f"Memory note 已記錄: {note_content}")
+                execution_result = await _execute_chat_orchestrator_tool_calls(
+                    expression_calls=expression_calls,
+                    memory_calls=memory_calls,
+                    websocket=websocket,
+                    broadcast_func=broadcast_to_displays,
+                    execute_profile_update_fn=execute_profile_update,
+                    append_memory_note_fn=append_memory_note,
+                    last_behavior_payload=last_behavior_payload,
+                    model_name=model_name,
+                )
+                expression_calls = execution_result["expression_calls"]
+                memory_calls = execution_result["memory_calls"]
+                behavior_payload = execution_result["behavior_payload"]
+                last_behavior_payload = execution_result["last_behavior_payload"]
+                speaking_rate = execution_result["speaking_rate"]
 
                 # ---- Prompt Log ----
                 _a_tokens = estimate_token_count(
@@ -423,20 +590,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     turn_count=jpaf_session.turn_count,
                     system_prompt=agent_a_system,
                     user_message=user_message,
-                    agent_a_output=agent_a_text,
-                    tool_names=[c["name"] for c in all_calls],
+                    dialogue_agent_output=agent_a_text,
+                    tool_names=summarize_tool_names(expression_calls, memory_calls),
                     output_tokens=_a_tokens + _b_tokens,
                 )
 
                 # ---- 送出 behavior payload (FIRST) ----
-                behavior_payload = _build_behavior_payload(
-                    head_intensity, blush_level, eye_sync,
-                    eye_l_open, eye_r_open, duration_sec,
-                    mouth_form, brow_l_y, brow_r_y,
-                    brow_l_angle, brow_r_angle, brow_l_form, brow_r_form,
-                    eye_l_smile, eye_r_smile, brow_l_x, brow_r_x,
-                )
-                last_behavior_payload = behavior_payload
                 await websocket.send_json(behavior_payload)
                 await broadcast_to_displays(behavior_payload)
 
@@ -540,6 +699,37 @@ def _build_behavior_payload(
     }
 
 
+def _reset_behavior_payload_for_session(
+    current_session_id: str | None,
+    incoming_session_id: str | None,
+    last_behavior_payload: dict | None,
+) -> dict | None:
+    if incoming_session_id != current_session_id:
+        return None
+    return last_behavior_payload
+
+
+def _effective_incoming_session_id(
+    data: dict,
+    current_session_id: str | None,
+) -> str | None:
+    incoming_session_id = normalize_session_id(data.get("session_id"))
+    if incoming_session_id is not None:
+        return incoming_session_id
+    return current_session_id
+
+
+def _reset_messages_for_session(
+    current_session_id: str | None,
+    incoming_session_id: str | None,
+    messages: list,
+    persistence_enabled: bool,
+) -> list:
+    if not persistence_enabled and incoming_session_id != current_session_id:
+        return []
+    return messages
+
+
 def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict | None:
     if not behavior_payload:
         return None
@@ -554,6 +744,10 @@ def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict 
     brow_r_y = float(behavior_payload.get("browRY", 0.0))
     brow_l_angle = float(behavior_payload.get("browLAngle", 0.0))
     brow_r_angle = float(behavior_payload.get("browRAngle", 0.0))
+    brow_l_form = float(behavior_payload.get("browLForm", 0.0))
+    brow_r_form = float(behavior_payload.get("browRForm", 0.0))
+    brow_l_x = float(behavior_payload.get("browLX", 0.0))
+    brow_r_x = float(behavior_payload.get("browRX", 0.0))
 
     summary_parts: list[str] = []
     if mouth_form > 0.18:
@@ -572,7 +766,16 @@ def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict 
     else:
         summary_parts.append("雙眼自然")
 
-    if abs(brow_l_angle) > 0.25 or abs(brow_r_angle) > 0.25 or abs(brow_l_y) > 0.2 or abs(brow_r_y) > 0.2:
+    if (
+        abs(brow_l_angle) > 0.25
+        or abs(brow_r_angle) > 0.25
+        or abs(brow_l_y) > 0.2
+        or abs(brow_r_y) > 0.2
+        or abs(brow_l_form) > 0.2
+        or abs(brow_r_form) > 0.2
+        or abs(brow_l_x) > 0.12
+        or abs(brow_r_x) > 0.12
+    ):
         summary_parts.append("眉毛有明顯表情")
     else:
         summary_parts.append("眉毛變化不大")
@@ -592,4 +795,8 @@ def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict 
         "brow_r_y": brow_r_y,
         "brow_l_angle": brow_l_angle,
         "brow_r_angle": brow_r_angle,
+        "brow_l_form": brow_l_form,
+        "brow_r_form": brow_r_form,
+        "brow_l_x": brow_l_x,
+        "brow_r_x": brow_r_x,
     }

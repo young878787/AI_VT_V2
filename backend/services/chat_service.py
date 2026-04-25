@@ -295,17 +295,17 @@ async def call_live2d_agent(messages: list, model_name: str = "Hiyori") -> objec
 # ============================================================
 # Agent B-2：記憶管理
 # ============================================================
-async def call_memory_agent(messages: list) -> object:
+async def call_memory_agent(messages: list, model_name: str = "Hiyori") -> object:
     """
     Memory Agent 非串流呼叫：判斷是否需要記憶操作。
     回傳原始 API response。
     """
-    from domain.tools import memory_tools
+    from domain.tools import get_memory_tools
 
     response = await chat_create_with_fallback(
         model=MODEL_NAME,
         messages=messages,
-        tools=memory_tools,
+        tools=get_memory_tools(model_name),
         tool_choice="auto",
         temperature=0.3,
         extra_body=NO_THINKING_EXTRA_BODY,

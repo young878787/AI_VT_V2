@@ -411,7 +411,7 @@
   "prompt_config": {
     "live2d": {
       "system_role": "Live2D 表情控制專家",
-      "task_description": "根據 AI 角色的回覆、JPAF 狀態與 emotion_state，呼叫 set_ai_behavior 設定主表情；情緒有轉折、停頓或戲劇點時，應積極考慮額外呼叫 blink_control。不要產生任何對話文字，只需要呼叫工具。日常聊天時表情可以自然，但做鬼臉、生氣、驚訝、強烈吐槽時，眼睛、眉毛、嘴角要更明顯拉開，不要只做出差一點點的變化。",
+      "task_description": "根據 AI 角色的回覆、上一輪表情摘要與 emotion_state，呼叫 set_ai_behavior 設定主表情；情緒有轉折、停頓或戲劇點時，應積極考慮額外呼叫 blink_control。不要產生任何對話文字，只需要呼叫工具。日常聊天時表情可以自然，但做鬼臉、生氣、驚訝、強烈吐槽時，眼睛、眉毛、嘴角要更明顯拉開，不要只做出差一點點的變化。",
       "tool_description": "驅動 Live2D 模型的即時表情與動作，以及語音的語速。set_ai_behavior 現在允許 partial fields：只填這一輪真正重要的欄位即可，其餘欄位會由系統延續或補預設。用小數點創造細膩表情（如 0.83、0.47），但情緒明確時請大膽拉開參數，不要只落在安全中間值。若 Live2D 視覺差異偏小，優先把 eye_*_open、eye_*_smile、brow_*、mouth_form 的差距拉大。",
       "persona_hints": {
         "tsundere": {

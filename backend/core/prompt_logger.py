@@ -19,7 +19,7 @@ def log_turn(
     turn_count: int,
     system_prompt: str,
     user_message: str,
-    agent_a_output: str,
+    dialogue_agent_output: str,
     tool_names: list[str],
     output_tokens: int,
 ) -> None:
@@ -27,11 +27,11 @@ def log_turn(
 
     Args:
         turn_count:      本輪的 JPAF turn 編號。
-        system_prompt:   送給 Agent A 的完整系統提示詞。
+        system_prompt:   送給 Dialogue Agent 的完整系統提示詞。
         user_message:    使用者輸入。
-        agent_a_output:  Agent A 清理後的輸出。
-        tool_names:      Agent B 本輪呼叫的工具名稱清單。
-        output_tokens:   Agent A + Agent B 輸出 token 數估算。
+        dialogue_agent_output: Dialogue Agent 清理後的輸出。
+        tool_names:      Expression Agent 與 Memory Agent 本輪呼叫的工具名稱清單。
+        output_tokens:   Dialogue Agent + Expression Agent + Memory Agent 輸出 token 數估算。
     """
     _ensure_dir()
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -45,9 +45,9 @@ def log_turn(
         f"{system_prompt}\n"
         f"\n[USER]\n"
         f"{user_message}\n"
-        f"\n[AGENT A OUTPUT]\n"
-        f"{agent_a_output}\n"
-        f"\n[TOOL CALLS]  {tool_str}\n"
+        f"\n[DIALOGUE AGENT OUTPUT]\n"
+        f"{dialogue_agent_output}\n"
+        f"\n[EXPRESSION AGENT / MEMORY AGENT TOOL CALLS]  {tool_str}\n"
         f"[OUTPUT TOKENS (est.)]  {output_tokens}\n"
         f"{_SEP}\n"
     )

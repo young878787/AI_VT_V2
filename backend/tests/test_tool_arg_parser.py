@@ -56,6 +56,18 @@ class ToolArgParserTests(unittest.TestCase):
         self.assertEqual(parsed["eye_l_smile"], 0.35)
         self.assertNotIn("eye_sync", parsed)
 
+    def test_parse_tool_call_arguments_keeps_tool_name_signature_stable(self):
+        raw_args = '{"duration_sec": 2.0}'
+
+        parsed, was_normalized = parse_tool_call_arguments(
+            raw_args,
+            tool_name="blink_control",
+            model_name="Hiyori",
+        )
+
+        self.assertFalse(was_normalized)
+        self.assertEqual(parsed["duration_sec"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()
