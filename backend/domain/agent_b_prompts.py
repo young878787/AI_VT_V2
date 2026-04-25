@@ -114,8 +114,29 @@ def build_live2d_prompt(
 【上一個表情摘要】
 {previous_expression_lines}
 
-# {_LIVE2D_CFG['tool_name'] if 'tool_name' in _LIVE2D_CFG else 'set_ai_behavior'} — 【必須呼叫】
-{_LIVE2D_CFG['tool_description']}
+# 輸出格式要求
+請只輸出一個 JSON object，不要輸出 Markdown、說明文字或 tool calls。
+
+必要欄位：
+- primary_emotion
+- intensity
+- energy
+- arc
+- hold_ms
+
+可選欄位：
+- secondary_emotion
+- dominance
+- playfulness
+- warmth
+- asymmetry_bias
+- blink_style
+- tempo
+- must_include
+- avoid
+- speaking_rate
+
+若不確定，請輸出保守但完整的 intent，不要省略 JSON 結構。
 
 請優先根據用戶的直接表情要求、AI 角色回覆的語氣、emotion_state 與上一個表情摘要決定本輪表情，不要依賴任何上游內部人格狀態欄位。
 
@@ -125,8 +146,8 @@ def build_live2d_prompt(
 ## 語音語速 (speaking_rate)
 {rate_lines}
 
-## 眨眼控制 (blink_control) — 選用
-你可以使用 blink_control 工具來控制眨眼，讓角色更自然：
+## blink_style 參考
+請用 `blink_style` 欄位表達眨眼策略，不要呼叫任何工具：
 {blink_lines}
 
 ## 風格強化規則
@@ -146,16 +167,15 @@ def build_live2d_prompt(
 - 想做出「眼睛真的彎起來」的效果時，單靠 eye_*_open 小幅降低通常不夠，應搭配更高的 eye_*_smile。
 
 **使用時機建議**：
-- 長時間對話後：呼叫 force_blink 模擬自然眨眼
-- 凝視/專注時：呼叫 pause 暫停眨眼 2-3 秒
-- 撒嬌/害羞時：可以加快眨眼頻率 (set_interval min=0.8, max=1.5)
-- 驚訝/震驚時：可以先 pause 暫停眨眼，再 force_blink
+- 長時間對話後：傾向 `normal`
+- 凝視/專注時：傾向 `focused_pause`
+- 撒嬌/害羞時：傾向 `shy_fast`
+- 驚訝/震驚時：傾向 `surprised_hold`
 
-## blink_control 積極使用規則
-- 若 emotion_state 的 blink_suggestion 有值，優先依該建議呼叫 blink_control。
-- 若台詞包含驚訝、凝視、撒嬌、害羞、挑逗、長停頓、強烈語氣轉折，應優先考慮額外呼叫一次 blink_control。
-- 若使用 pause 造成戲劇性停頓，適合搭配 1 次 force_blink 或後續 resume，避免狀態卡住。
-- 若整句台詞偏活潑連續、興奮或碎念，可考慮 set_interval 讓眨眼節奏更快。"""
+## blink_style 使用規則
+- 若 emotion_state 的 blink_suggestion 有值，可優先映射到最接近的 `blink_style`。
+- 若台詞包含驚訝、凝視、撒嬌、害羞、挑逗、長停頓、強烈語氣轉折，應優先決定一個明確的 `blink_style`。
+- 若不確定，使用 `normal`。"""
 
 
 def build_memory_prompt(

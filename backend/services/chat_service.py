@@ -264,32 +264,27 @@ async def collect_agent_a(messages: list) -> tuple[str, dict | None, dict | None
 
 
 # ============================================================
-# Agent B-1：Live2D 表情控制
+# Agent B-1：Expression Intent
 # ============================================================
-async def call_live2d_agent(messages: list, model_name: str = "Hiyori") -> object:
+async def call_expression_agent(messages: list, model_name: str = "Hiyori") -> object:
     """
-    Live2D Agent 非串流呼叫：決定表情參數。
-    依 model_name 載入對應的 Live2D 工具清單。
-    回傳原始 API response。
+    Expression Agent 非串流呼叫：輸出 JSON intent。
+    第一版保留 model_name 介面，但暫時不做 model-specific tool 綁定。
     """
-    from domain.tools import get_live2d_tools
-
-    request_kwargs = {
-        "model": MODEL_NAME,
-        "messages": messages,
-        "tools": get_live2d_tools(model_name),
-        "tool_choice": "required",
-        "temperature": 0.7,
-        "extra_body": NO_THINKING_EXTRA_BODY,
-        "max_tokens": 2000,
-    }
-    if AI_PROVIDER == "qwen":
-        request_kwargs["parallel_tool_calls"] = True
-
+    del model_name
     response = await chat_create_with_fallback(
-        **request_kwargs,
+        model=MODEL_NAME,
+        messages=messages,
+        temperature=0.4,
+        extra_body=NO_THINKING_EXTRA_BODY,
+        max_tokens=600,
     )
     return response
+
+
+async def call_live2d_agent(messages: list, model_name: str = "Hiyori") -> object:
+    """已棄用，保留向後相容。請改用 call_expression_agent。"""
+    return await call_expression_agent(messages, model_name=model_name)
 
 
 # ============================================================

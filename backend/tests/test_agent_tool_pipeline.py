@@ -5,6 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi import WebSocketDisconnect
+
 BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -42,7 +44,7 @@ class AgentToolPipelineTests(unittest.TestCase):
             if self._received:
                 return self._received.pop(0)
             await asyncio.sleep(0)
-            raise RuntimeError("stop test websocket loop")
+            raise WebSocketDisconnect()
 
         async def send_json(self, payload: dict):
             self.payloads.append(payload)
@@ -1062,7 +1064,7 @@ class AgentToolPipelineTests(unittest.TestCase):
         self.assertEqual(result["behavior_payload"]["mouthForm"], 0.3)
         self.assertTrue(result["behavior_payload"]["eyeSync"])
 
-    def test_websocket_endpoint_passes_returned_speaking_rate_to_tts(self):
+    def test_websocket_endpoint_passes_expression_intent_speaking_rate_to_tts(self):
         websocket = self._FakeWebSocket()
         websocket.queue_received_text('{"content": "hello", "model_name": "Hiyori"}')
 
@@ -1072,15 +1074,8 @@ class AgentToolPipelineTests(unittest.TestCase):
 
         live2d_response = _FakeResponse(
             SimpleNamespace(
-                content="",
-                tool_calls=[
-                    SimpleNamespace(
-                        function=SimpleNamespace(
-                            name="set_ai_behavior",
-                            arguments='{"speaking_rate": 1.4, "duration_sec": 2.0}',
-                        )
-                    )
-                ],
+                content='{"primary_emotion":"calm","intensity":0.3,"energy":0.3,"arc":"steady","hold_ms":2000,"speaking_rate":1.4}',
+                tool_calls=[],
             )
         )
         memory_response = _FakeResponse(
@@ -1092,7 +1087,7 @@ class AgentToolPipelineTests(unittest.TestCase):
         async def _fake_collect_agent_a(messages):
             return "route level tts text", None, None
 
-        async def _fake_call_live2d_agent(messages, model_name):
+        async def _fake_call_expression_agent(messages, model_name):
             return live2d_response
 
         async def _fake_call_memory_agent(messages, model_name):
@@ -1110,7 +1105,7 @@ class AgentToolPipelineTests(unittest.TestCase):
                 patch("api.routes.chat_ws.collect_agent_a", side_effect=_fake_collect_agent_a), \
                 patch("api.routes.chat_ws.build_live2d_prompt", return_value="live2d-system"), \
                 patch("api.routes.chat_ws.build_memory_prompt", return_value="memory-system"), \
-                patch("api.routes.chat_ws.call_live2d_agent", side_effect=_fake_call_live2d_agent), \
+                patch("api.routes.chat_ws.call_expression_agent", side_effect=_fake_call_expression_agent), \
                 patch("api.routes.chat_ws.call_memory_agent", side_effect=_fake_call_memory_agent), \
                 patch("api.routes.chat_ws.broadcast_to_displays"), \
                 patch("api.routes.chat_ws.execute_profile_update"), \
@@ -1131,7 +1126,7 @@ class AgentToolPipelineTests(unittest.TestCase):
         self.assertEqual(tts_calls[0][1], "route level tts text")
         self.assertEqual(tts_calls[0][2], 1.4)
 
-    def test_websocket_endpoint_carries_forward_speaking_rate_for_partial_behavior_updates(self):
+    def test_websocket_endpoint_defaults_speaking_rate_when_missing_from_expression_intent(self):
         websocket = self._FakeWebSocket()
         websocket.queue_received_text('{"content": "first", "model_name": "Hiyori"}')
         websocket.queue_received_text('{"content": "second", "model_name": "Hiyori"}')
@@ -1143,28 +1138,14 @@ class AgentToolPipelineTests(unittest.TestCase):
         live2d_responses = [
             _FakeResponse(
                 SimpleNamespace(
-                    content="",
-                    tool_calls=[
-                        SimpleNamespace(
-                            function=SimpleNamespace(
-                                name="set_ai_behavior",
-                                arguments='{"speaking_rate": 1.4, "duration_sec": 2.0, "head_intensity": 0.8}',
-                            )
-                        )
-                    ],
+                    content='{"primary_emotion":"playful","intensity":0.7,"energy":0.7,"arc":"steady","hold_ms":2000,"speaking_rate":1.4}',
+                    tool_calls=[],
                 )
             ),
             _FakeResponse(
                 SimpleNamespace(
-                    content="",
-                    tool_calls=[
-                        SimpleNamespace(
-                            function=SimpleNamespace(
-                                name="set_ai_behavior",
-                                arguments='{"duration_sec": 1.5}',
-                            )
-                        )
-                    ],
+                    content='{"primary_emotion":"playful","intensity":0.7,"energy":0.7,"arc":"steady","hold_ms":1500}',
+                    tool_calls=[],
                 )
             ),
         ]
@@ -1178,7 +1159,7 @@ class AgentToolPipelineTests(unittest.TestCase):
             user_content = messages[-1]["content"]
             return f"tts text for {user_content}", None, None
 
-        async def _fake_call_live2d_agent(messages, model_name):
+        async def _fake_call_expression_agent(messages, model_name):
             return live2d_responses.pop(0)
 
         async def _fake_call_memory_agent(messages, model_name):
@@ -1196,7 +1177,7 @@ class AgentToolPipelineTests(unittest.TestCase):
                 patch("api.routes.chat_ws.collect_agent_a", side_effect=_fake_collect_agent_a), \
                 patch("api.routes.chat_ws.build_live2d_prompt", return_value="live2d-system"), \
                 patch("api.routes.chat_ws.build_memory_prompt", return_value="memory-system"), \
-                patch("api.routes.chat_ws.call_live2d_agent", side_effect=_fake_call_live2d_agent), \
+                patch("api.routes.chat_ws.call_expression_agent", side_effect=_fake_call_expression_agent), \
                 patch("api.routes.chat_ws.call_memory_agent", side_effect=_fake_call_memory_agent), \
                 patch("api.routes.chat_ws.broadcast_to_displays"), \
                 patch("api.routes.chat_ws.execute_profile_update"), \
@@ -1213,7 +1194,7 @@ class AgentToolPipelineTests(unittest.TestCase):
 
         self.assertEqual(
             [(text, rate) for _, text, rate in tts_calls],
-            [("tts text for first", 1.4), ("tts text for second", 1.4)],
+            [("tts text for first", 1.4), ("tts text for second", 1.0)],
         )
 
     def test_chat_orchestrator_skips_incomplete_memory_tool_calls(self):

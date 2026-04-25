@@ -30,7 +30,7 @@ from infrastructure.memory_store import (
 )
 from services.chat_service import (
     collect_agent_a,
-    call_live2d_agent,
+    call_expression_agent,
     call_memory_agent,
     compress_context,
     estimate_token_count,
@@ -42,9 +42,11 @@ from services.agent_tool_pipeline import (
     extract_agent_tool_calls,
     filter_tool_calls_for_pool,
     get_meaningful_memory_tool_arguments,
-    has_required_expression_behavior,
     summarize_tool_names,
 )
+from services.expression_compiler import compile_expression_plan
+from services.expression_intent_parser import parse_expression_intent
+from services.expression_legacy_renderer import render_legacy_behavior_payload
 from services.memory_service import execute_profile_update
 from api.display_manager import broadcast_to_displays
 from core.prompt_logger import log_turn, reset_log
@@ -156,8 +158,6 @@ async def _execute_chat_orchestrator_tool_calls(
         f"expression_calls={len(expression_calls)}, memory_calls={len(memory_calls)}, "
         f"names={summarize_tool_names(expression_calls, memory_calls)}"
     )
-    if not has_required_expression_behavior(expression_calls):
-        print("[Chat Orchestrator][WARN] 缺少 set_ai_behavior；本輪將退回預設 behavior payload，可能導致表情變化很小。")
 
     head_intensity = float((last_behavior_payload or {}).get("headIntensity", 0.3))
     blush_level = float((last_behavior_payload or {}).get("blushLevel", 0.0))
@@ -509,7 +509,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 live2d_messages = [
                     {"role": "system", "content": live2d_system},
-                    {"role": "user", "content": "請根據上述上下文產生主表情，並視需要額外呼叫 blink_control，讓表情更有層次。"},
+                    {"role": "user", "content": "請根據上述上下文輸出單一 JSON expression intent，僅回傳 JSON object，不要輸出說明文字或任何 tool calls。"},
                 ]
 
                 # Memory Agent prompt
@@ -521,28 +521,46 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # 並行呼叫
                 live2d_response, memory_response = await asyncio.gather(
-                    call_live2d_agent(live2d_messages, model_name),
+                    call_expression_agent(live2d_messages, model_name),
                     call_memory_agent(memory_messages, model_name),
                 )
 
                 # ============================================================
                 # 步驟 4：處理 Chat Orchestrator tool calls
                 # ============================================================
-                expression_calls: list[dict] = []
                 memory_calls: list[dict] = []
-
-                # --- 解析 Expression Agent response ---
                 if live2d_response.choices and len(live2d_response.choices) > 0:
-                    l2d_msg = live2d_response.choices[0].message
-                    print(f"[Expression Agent] content: {(l2d_msg.content or 'None')[:100]}")
-                    print(f"[Expression Agent] tool_calls count: {len(l2d_msg.tool_calls) if l2d_msg.tool_calls else 0}")
-                    expression_calls = extract_agent_tool_calls(
-                        live2d_response,
-                        model_name=model_name,
-                        label="Expression Agent",
+                    expression_msg = live2d_response.choices[0].message
+                    expression_raw = expression_msg.content or ""
+                    print(f"[Expression Agent] content: {expression_raw[:200]}")
+                    expression_intent = parse_expression_intent(
+                        expression_raw,
+                        emotion_state=emotion_state,
+                        previous_state=previous_expression_state,
                     )
-                    for tc in getattr(l2d_msg, "tool_calls", []) or []:
-                        print(f"[Expression Agent] tool: {tc.function.name} => {(tc.function.arguments or '')[:200]}")
+                    expression_plan = compile_expression_plan(
+                        expression_intent,
+                        model_name=model_name,
+                        previous_state=previous_expression_state,
+                    )
+                else:
+                    expression_plan = compile_expression_plan(
+                        parse_expression_intent(
+                            "",
+                            emotion_state=emotion_state,
+                            previous_state=previous_expression_state,
+                        ),
+                        model_name=model_name,
+                        previous_state=previous_expression_state,
+                    )
+
+                legacy_render = render_legacy_behavior_payload(expression_plan)
+                behavior_payload = legacy_render["behavior_payload"]
+                speaking_rate = legacy_render["speaking_rate"]
+
+                for blink_payload in legacy_render["blink_payloads"]:
+                    await websocket.send_json(blink_payload)
+                    await broadcast_to_displays(blink_payload)
 
                 # --- 解析 Memory Agent response ---
                 if memory_response.choices and len(memory_response.choices) > 0:
@@ -560,16 +578,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     print("[Memory Agent] No choices returned!")
 
                 execution_result = await _execute_chat_orchestrator_tool_calls(
-                    expression_calls=expression_calls,
+                    expression_calls=[],
                     memory_calls=memory_calls,
                     websocket=websocket,
                     broadcast_func=broadcast_to_displays,
                     execute_profile_update_fn=execute_profile_update,
                     append_memory_note_fn=append_memory_note,
-                    last_behavior_payload=last_behavior_payload,
+                    last_behavior_payload={**behavior_payload, "speakingRate": speaking_rate},
                     model_name=model_name,
                 )
-                expression_calls = execution_result["expression_calls"]
                 memory_calls = execution_result["memory_calls"]
                 behavior_payload = execution_result["behavior_payload"]
                 last_behavior_payload = execution_result["last_behavior_payload"]
@@ -581,17 +598,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 _b_tokens = 0
                 for resp in (live2d_response, memory_response):
-                    try:
-                        if hasattr(resp, "usage") and resp.usage:
-                            _b_tokens += getattr(resp.usage, "completion_tokens", 0) or 0
-                    except Exception:
-                        pass
+                    usage = getattr(resp, "usage", None)
+                    if usage is None:
+                        continue
+
+                    completion_tokens = getattr(usage, "completion_tokens", 0)
+                    if isinstance(completion_tokens, bool):
+                        continue
+                    if isinstance(completion_tokens, int):
+                        _b_tokens += completion_tokens
                 log_turn(
                     turn_count=jpaf_session.turn_count,
                     system_prompt=agent_a_system,
                     user_message=user_message,
                     dialogue_agent_output=agent_a_text,
-                    tool_names=summarize_tool_names(expression_calls, memory_calls),
+                    tool_names=summarize_tool_names(memory_calls) + ["expression_plan"],
                     output_tokens=_a_tokens + _b_tokens,
                 )
 
@@ -643,9 +664,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(
                     f"[AI API error][{AI_PROVIDER.upper()}] Model={MODEL_NAME} | {e}"
                 )
-                await websocket.send_json(
-                    {"type": "error", "content": f"API 錯誤: {str(e)}"}
-                )
+                try:
+                    await websocket.send_json(
+                        {"type": "error", "content": f"API 錯誤: {str(e)}"}
+                    )
+                except WebSocketDisconnect:
+                    pass
+                raise
 
     except WebSocketDisconnect:
         for task in list(tts_tasks):
@@ -655,6 +680,7 @@ async def websocket_endpoint(websocket: WebSocket):
         for task in list(tts_tasks):
             task.cancel()
         print(f"WebSocket error: {e}")
+        raise
 
 
 def _build_behavior_payload(

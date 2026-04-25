@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 from domain.expression_blink_strategies import BLINK_STRATEGIES
+from domain.expression_intent_schema import DEFAULT_INTENT
 from domain.expression_presets import BASE_POSE_PRESETS
 from domain.expression_sequence_library import MICRO_EVENT_LIBRARY
 
@@ -39,7 +40,9 @@ def _coerce_float(value: object, default: float) -> float:
 def compile_expression_plan(intent: dict, model_name: str, previous_state: dict | None) -> dict:
     del model_name, previous_state
     preset_name = select_base_pose(intent)
-    blink_style = intent.get("blink_style", "normal")
+    blink_style = intent.get("blink_style", DEFAULT_INTENT["blink_style"])
+    if blink_style not in BLINK_STRATEGIES:
+        blink_style = DEFAULT_INTENT["blink_style"]
     hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
     speaking_rate = _coerce_float(intent.get("speaking_rate", 1.0), 1.0)
     return {

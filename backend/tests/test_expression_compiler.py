@@ -114,6 +114,19 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertEqual(plan["basePose"]["durationSec"], 1.6)
         self.assertEqual(plan["speakingRate"], 1.0)
 
+    def test_compile_expression_plan_replaces_unknown_blink_style_with_default(self):
+        plan = compile_expression_plan(
+            {
+                "primary_emotion": "playful",
+                "blink_style": "laser",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        self.assertEqual(plan["blinkPlan"]["style"], "normal")
+        self.assertEqual(plan["blinkPlan"]["commands"], [])
+
     def test_render_legacy_behavior_payload_keeps_existing_field_names(self):
         plan = compile_expression_plan(
             {
