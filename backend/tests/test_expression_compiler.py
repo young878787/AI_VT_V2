@@ -175,10 +175,15 @@ class ExpressionCompilerTests(unittest.TestCase):
             previous_state=None,
         )
 
-        self.assertNotEqual(meltdown["basePose"]["preset"], angry_deadpan["basePose"]["preset"])
+        self.assertEqual(meltdown["basePose"]["preset"], "angry_meltdown")
+        self.assertEqual(angry_deadpan["basePose"]["preset"], "angry_meltdown")
         self.assertGreater(
             meltdown["basePose"]["params"]["headIntensity"],
             angry_deadpan["basePose"]["params"]["headIntensity"],
+        )
+        self.assertLess(
+            meltdown["basePose"]["params"]["mouthForm"],
+            angry_deadpan["basePose"]["params"]["mouthForm"],
         )
 
     def test_render_legacy_behavior_payload_returns_behavior_and_blink_payloads(self):
@@ -399,6 +404,20 @@ class ExpressionCompilerTests(unittest.TestCase):
 
         self.assertEqual(plan["basePose"]["preset"], "calm_soft")
 
+    def test_angry_deadpan_still_uses_angry_preset(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "angry",
+                "performance_mode": "deadpan",
+                "intensity": 0.6,
+                "energy": 0.5,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        self.assertEqual(plan["basePose"]["preset"], "angry_meltdown")
+
     def test_blush_level_increases_for_shy_emotion(self):
         plan = compile_expression_plan(
             {
@@ -415,6 +434,7 @@ class ExpressionCompilerTests(unittest.TestCase):
         )
 
         self.assertGreater(plan["basePose"]["params"]["blushLevel"], 0.15)
+        self.assertLess(plan["basePose"]["params"]["blushLevel"], 0.35)
 
     def test_blush_level_decreases_for_angry_cold(self):
         plan = compile_expression_plan(
@@ -431,7 +451,41 @@ class ExpressionCompilerTests(unittest.TestCase):
             previous_state=None,
         )
 
-        self.assertLess(plan["basePose"]["params"]["blushLevel"], 0)
+        self.assertLessEqual(plan["basePose"]["params"]["blushLevel"], -0.5)
+        self.assertGreaterEqual(plan["basePose"]["params"]["blushLevel"], -1.0)
+
+    def test_happy_blush_is_subtle_not_saturated(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "smile",
+                "intensity": 0.8,
+                "energy": 0.7,
+                "warmth": 0.8,
+                "playfulness": 0.4,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        self.assertGreater(plan["basePose"]["params"]["blushLevel"], 0.0)
+        self.assertLess(plan["basePose"]["params"]["blushLevel"], 0.12)
+
+    def test_sad_blush_stays_in_hiyori_negative_band(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "sad",
+                "performance_mode": "tense_hold",
+                "intensity": 0.65,
+                "energy": 0.45,
+                "warmth": 0.2,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        self.assertLessEqual(plan["basePose"]["params"]["blushLevel"], -0.2)
+        self.assertGreaterEqual(plan["basePose"]["params"]["blushLevel"], -1.0)
 
     def test_mouthform_goes_negative_for_sad_high_intensity(self):
         plan = compile_expression_plan(

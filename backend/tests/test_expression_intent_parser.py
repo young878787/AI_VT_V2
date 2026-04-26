@@ -173,6 +173,17 @@ class ExpressionIntentParserTests(unittest.TestCase):
 
         self.assertEqual(intent["topic_guard"]["source_theme"], "daily_talk")
 
+    def test_parse_expression_intent_prioritizes_direct_anger_request_over_llm_drift(self):
+        intent = parse_expression_intent(
+            '{"emotion":"playful","performance_mode":"goofy_face","intensity":0.85}',
+            emotion_state={"primary_emotion": "neutral"},
+            previous_state=None,
+            user_message="生氣一下",
+        )
+
+        self.assertEqual(intent["emotion"], "angry")
+        self.assertEqual(intent["performance_mode"], "deadpan")
+
 
 if __name__ == "__main__":
     unittest.main()

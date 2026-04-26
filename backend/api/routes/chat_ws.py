@@ -418,6 +418,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         expression_raw,
                         emotion_state=emotion_state,
                         previous_state=previous_expression_state,
+                        user_message=user_message,
                     )
                     expression_plan = compile_expression_plan(
                         expression_intent,

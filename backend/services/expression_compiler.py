@@ -190,7 +190,7 @@ def resolve_visual_signature(emotion: str, performance_mode: str, intent: dict) 
         signature["event_bias"] = list(event_bias)
 
     if emotion == "angry":
-        signature["signature_name"] = "angry_meltdown" if performance_mode == "meltdown" else signature["signature_name"]
+        signature["signature_name"] = "angry_meltdown"
         signature["blush_policy"] = "drop"
         signature["eye_shape"] = "hard_squint"
         signature["brow_pattern"] = "frown"
@@ -435,10 +435,25 @@ def apply_model_adapter(
         params["mouthForm"] += 0.06 + intensity * 0.08
 
     blush_policy = signature.get("blush_policy", "neutralize")
+    raw_blush = params["blushLevel"]
     if blush_policy == "drop":
-        params["blushLevel"] = min(params["blushLevel"], 0.0)
-    elif blush_policy in {"keep", "boost"}:
-        params["blushLevel"] = max(params["blushLevel"], 0.03 if blush_policy == "keep" else 0.08)
+        if signature_name == "angry_meltdown":
+            target_blush = -0.20 - (intensity * 0.80)
+        elif signature_name == "sad_tense":
+            target_blush = -0.20 - (intensity * 0.75)
+        elif signature_name == "gloomy_deadpan":
+            target_blush = -0.20 - (intensity * 0.70)
+        else:
+            target_blush = -0.20 - (intensity * 0.60)
+        params["blushLevel"] = _clamp(target_blush, -1.0, -0.2)
+    elif blush_policy == "keep":
+        positive_blush = max(raw_blush, 0.0) * 0.24
+        params["blushLevel"] = _clamp(positive_blush, 0.0, 0.10)
+    elif blush_policy == "boost":
+        positive_blush = max(raw_blush, 0.0) * 0.30
+        params["blushLevel"] = _clamp(positive_blush, 0.04, 0.16)
+    else:
+        params["blushLevel"] = _clamp(raw_blush * 0.20, -0.08, 0.06)
 
     return _clamp_expression_params(params)
 

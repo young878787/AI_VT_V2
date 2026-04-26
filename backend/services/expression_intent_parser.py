@@ -45,6 +45,7 @@ ARC_ALIASES = {
     "smile_then_brighten": "pop_then_settle",
     "widen_then_smile": "widen_then_tease",
     "tense_then_flat": "glare_then_flatten",
+    "neutral_to_teasing": "widen_then_tease",
 }
 
 
@@ -93,11 +94,63 @@ def _apply_expression_aliases(raw_intent: dict) -> dict:
     return aliased
 
 
+def _infer_direct_expression_override(user_message: str | None) -> dict:
+    text = (user_message or "").strip().lower()
+    if not text:
+        return {}
+
+    angry_cues = (
+        "生氣",
+        "憤怒",
+        "不爽",
+        "火大",
+        "爆氣",
+        "怒",
+        "兇",
+        "瞪",
+        "惱火",
+    )
+    goofy_cues = ("鬼臉", "搞怪", "做鬼臉", "扮鬼臉")
+    sad_cues = ("難過", "哭", "委屈", "傷心", "沮喪")
+
+    if any(cue in text for cue in angry_cues):
+        performance_mode = "meltdown" if any(cue in text for cue in ("爆氣", "暴怒", "超生氣")) else "deadpan"
+        return {
+            "emotion": "angry",
+            "performance_mode": performance_mode,
+        }
+
+    if any(cue in text for cue in goofy_cues):
+        return {
+            "emotion": "playful",
+            "performance_mode": "goofy_face",
+        }
+
+    if any(cue in text for cue in sad_cues):
+        return {
+            "emotion": "sad",
+            "performance_mode": "tense_hold",
+        }
+
+    return {}
+
+
 def normalize_expression_intent(raw_intent: dict, emotion_state: dict | None, previous_state: dict | None) -> dict:
     del previous_state
     return normalize_expression_intent_schema(raw_intent, emotion_state=emotion_state)
 
 
-def parse_expression_intent(raw_text: str, emotion_state: dict | None, previous_state: dict | None) -> dict:
+def parse_expression_intent(
+    raw_text: str,
+    emotion_state: dict | None,
+    previous_state: dict | None,
+    user_message: str | None = None,
+) -> dict:
     raw_intent = _apply_expression_aliases(_extract_first_json_object(raw_text))
+    direct_override = _infer_direct_expression_override(user_message)
+    if direct_override:
+        raw_intent = {
+            **raw_intent,
+            **direct_override,
+        }
     return normalize_expression_intent(raw_intent, emotion_state, previous_state)
