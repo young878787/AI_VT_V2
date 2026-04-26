@@ -186,6 +186,43 @@ class ExpressionCompilerTests(unittest.TestCase):
             angry_deadpan["basePose"]["params"]["mouthForm"],
         )
 
+    def test_angry_high_intensity_prefers_sync_stare_over_asymmetric_squint(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "angry",
+                "performance_mode": "meltdown",
+                "intensity": 0.92,
+                "energy": 0.82,
+                "arc": "steady",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        params = plan["basePose"]["params"]
+        self.assertTrue(params["eyeSync"])
+        self.assertGreater(params["eyeLOpen"], 0.95)
+        self.assertGreater(params["eyeROpen"], 0.95)
+        self.assertLess(abs(params["eyeLOpen"] - params["eyeROpen"]), 0.08)
+
+    def test_angry_mid_intensity_keeps_asymmetric_contempt_shape(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "angry",
+                "performance_mode": "meltdown",
+                "intensity": 0.62,
+                "energy": 0.70,
+                "arc": "steady",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        params = plan["basePose"]["params"]
+        self.assertFalse(params["eyeSync"])
+        self.assertGreater(params["eyeROpen"], params["eyeLOpen"])
+        self.assertGreater(abs(params["eyeLOpen"] - params["eyeROpen"]), 0.08)
+
     def test_render_legacy_behavior_payload_returns_behavior_and_blink_payloads(self):
         plan = compile_expression_plan(
             {

@@ -154,6 +154,7 @@ def resolve_visual_signature(emotion: str, performance_mode: str, intent: dict) 
         "signature_name": "calm_soft",
         "blush_policy": "neutralize",
         "eye_shape": "open",
+        "eye_alignment": "inherit",
         "brow_pattern": "calm",
         "mouth_pattern": "flat",
         "asymmetry_strength": 0.0,
@@ -190,12 +191,22 @@ def resolve_visual_signature(emotion: str, performance_mode: str, intent: dict) 
         signature["event_bias"] = list(event_bias)
 
     if emotion == "angry":
+        angry_intensity = _coerce_float(intent.get("intensity", 0.35), 0.35)
         signature["signature_name"] = "angry_meltdown"
         signature["blush_policy"] = "drop"
-        signature["eye_shape"] = "hard_squint"
         signature["brow_pattern"] = "frown"
         signature["mouth_pattern"] = "downturned" if performance_mode != "deadpan" else "flat"
-        signature["asymmetry_strength"] = max(signature["asymmetry_strength"], 0.55 if performance_mode == "meltdown" else 0.35)
+        if angry_intensity >= 0.78:
+            # High-intensity anger should read as a direct "stare down" instead of contempt squint.
+            signature["eye_shape"] = "fierce_wide"
+            signature["eye_alignment"] = "sync_stare"
+            signature["asymmetry_strength"] = min(signature["asymmetry_strength"], 0.2)
+        else:
+            signature["eye_shape"] = "hard_squint"
+            signature["asymmetry_strength"] = max(
+                signature["asymmetry_strength"],
+                0.55 if performance_mode == "meltdown" else 0.35,
+            )
         _append_unique(signature["event_bias"], "tense_squeeze")
     elif emotion == "sad":
         signature["signature_name"] = "sad_tense" if performance_mode in {"tense_hold", "sad"} else signature["signature_name"]
@@ -312,6 +323,14 @@ def apply_visual_signature(
 ) -> dict:
     eye_sync = bool(params.get("eyeSync", True))
     asymmetry_strength = _clamp(float(signature.get("asymmetry_strength", 0.0)), 0.0, 1.0)
+    eye_alignment = signature.get("eye_alignment", "inherit")
+
+    if eye_alignment == "sync_stare":
+        neutral_eye = (params["eyeLOpen"] + params["eyeROpen"]) * 0.5
+        params["eyeSync"] = True
+        params["eyeLOpen"] = neutral_eye
+        params["eyeROpen"] = neutral_eye
+        eye_sync = True
 
     _apply_blush_policy(params, signature.get("blush_policy", "neutralize"), intensity, warmth)
 
@@ -328,6 +347,10 @@ def apply_visual_signature(
         delta = 0.10 + energy * 0.18
         params["eyeLOpen"] += delta
         params["eyeROpen"] += delta * 0.95
+    elif eye_shape == "fierce_wide":
+        delta = 0.16 + intensity * 0.18 + energy * 0.16
+        params["eyeLOpen"] += delta
+        params["eyeROpen"] += delta * (0.98 if eye_sync else 0.95)
 
     brow_pattern = signature.get("brow_pattern", "calm")
     if brow_pattern == "frown":
@@ -377,14 +400,14 @@ def apply_visual_signature(
     else:
         params["mouthForm"] *= 0.55
 
-    if asymmetry_strength >= 0.6:
+    if eye_alignment != "sync_stare" and asymmetry_strength >= 0.6:
         params["eyeSync"] = False
         eye_delta = 0.05 + asymmetry_strength * 0.08
         params["eyeLOpen"] += eye_delta
         params["eyeROpen"] -= eye_delta
         params["eyeLSmile"] += 0.04 + asymmetry_strength * 0.08
         params["eyeRSmile"] -= 0.03 + asymmetry_strength * 0.05
-    elif asymmetry_strength >= 0.3 and not bool(params.get("eyeSync", True)):
+    elif eye_alignment != "sync_stare" and asymmetry_strength >= 0.3 and not bool(params.get("eyeSync", True)):
         eye_delta = 0.02 + asymmetry_strength * 0.04
         params["eyeLOpen"] += eye_delta
         params["eyeROpen"] -= eye_delta * 0.8
