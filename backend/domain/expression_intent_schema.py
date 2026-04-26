@@ -1,15 +1,37 @@
-ALLOWED_PRIMARY_EMOTIONS = {
+ALLOWED_EMOTIONS = {
     "neutral",
-    "calm",
-    "gentle",
+    "happy",
     "playful",
     "teasing",
-    "shy",
-    "embarrassed",
-    "annoyed",
     "angry",
+    "sad",
+    "gloomy",
+    "shy",
     "surprised",
     "conflicted",
+}
+
+ALLOWED_PERFORMANCE_MODES = {
+    "smile",
+    "bright_talk",
+    "goofy_face",
+    "cheeky_wink",
+    "smug",
+    "deadpan",
+    "gloomy",
+    "volatile",
+    "meltdown",
+    "awkward",
+    "tense_hold",
+    "shock_recoil",
+}
+
+ALLOWED_SOURCE_THEMES = {
+    "daily_talk",
+    "crying",
+    "gloomy",
+    "serious_argument",
+    "chaotic_reaction",
 }
 
 ALLOWED_ARCS = {
@@ -34,9 +56,15 @@ ALLOWED_ASYMMETRY_BIAS = {"auto", "none", "subtle", "strong"}
 
 ALLOWED_TEMPOS = {"slow", "medium", "fast"}
 
+DEFAULT_TOPIC_GUARD = {
+    "must_preserve_theme": True,
+    "source_theme": "daily_talk",
+    "allow_style_override": False,
+}
+
 DEFAULT_INTENT = {
-    "primary_emotion": "calm",
-    "secondary_emotion": "",
+    "emotion": "neutral",
+    "performance_mode": "smile",
     "intensity": 0.35,
     "energy": 0.35,
     "dominance": 0.5,
@@ -50,6 +78,7 @@ DEFAULT_INTENT = {
     "must_include": [],
     "avoid": [],
     "speaking_rate": 1.0,
+    "topic_guard": dict(DEFAULT_TOPIC_GUARD),
 }
 
 
@@ -59,24 +88,62 @@ def clamp_number(value: object, default: float, minimum: float, maximum: float) 
     return max(minimum, min(maximum, float(value)))
 
 
+def _resolve_emotion(raw_intent: dict, emotion_state: dict | None) -> str:
+    emotion = raw_intent.get("emotion")
+    if emotion in ALLOWED_EMOTIONS:
+        return emotion
+
+    primary = raw_intent.get("primary_emotion")
+    if primary in ALLOWED_EMOTIONS:
+        return primary
+
+    fallback = (emotion_state or {}).get("primary_emotion") or (emotion_state or {}).get("emotion")
+    if fallback in ALLOWED_EMOTIONS:
+        return fallback
+
+    return DEFAULT_INTENT["emotion"]
+
+
+def _resolve_performance_mode(raw_intent: dict) -> str:
+    mode = raw_intent.get("performance_mode")
+    if mode in ALLOWED_PERFORMANCE_MODES:
+        return mode
+    return DEFAULT_INTENT["performance_mode"]
+
+
+def _resolve_topic_guard(raw_intent: dict) -> dict:
+    guard = raw_intent.get("topic_guard")
+    if not isinstance(guard, dict):
+        return dict(DEFAULT_TOPIC_GUARD)
+
+    result = dict(DEFAULT_TOPIC_GUARD)
+    result["must_preserve_theme"] = bool(guard.get("must_preserve_theme", True))
+    result["allow_style_override"] = bool(guard.get("allow_style_override", False))
+
+    source_theme = guard.get("source_theme")
+    result["source_theme"] = source_theme if source_theme in ALLOWED_SOURCE_THEMES else DEFAULT_TOPIC_GUARD["source_theme"]
+
+    return result
+
+
 def normalize_expression_intent(raw_intent: dict, emotion_state: dict | None = None) -> dict:
     emotion_state = emotion_state or {}
     normalized = dict(DEFAULT_INTENT)
-    normalized.update({key: value for key, value in raw_intent.items() if key in DEFAULT_INTENT})
-    normalized["must_include"] = []
-    normalized["avoid"] = []
+    normalized["topic_guard"] = dict(DEFAULT_TOPIC_GUARD)
 
-    primary = raw_intent.get("primary_emotion")
-    fallback_primary = emotion_state.get("primary_emotion")
-    if primary in ALLOWED_PRIMARY_EMOTIONS:
-        normalized["primary_emotion"] = primary
-    elif fallback_primary in ALLOWED_PRIMARY_EMOTIONS:
-        normalized["primary_emotion"] = fallback_primary
-    else:
-        normalized["primary_emotion"] = DEFAULT_INTENT["primary_emotion"]
+    known_keys = set(DEFAULT_INTENT.keys()) | {"primary_emotion", "secondary_emotion"}
+    for key, value in raw_intent.items():
+        if key in known_keys:
+            if key in ("must_include", "avoid", "topic_guard"):
+                continue
+            normalized[key] = value
 
-    secondary = raw_intent.get("secondary_emotion", DEFAULT_INTENT["secondary_emotion"])
-    normalized["secondary_emotion"] = secondary if secondary in ALLOWED_PRIMARY_EMOTIONS else ""
+    normalized["emotion"] = _resolve_emotion(raw_intent, emotion_state)
+    normalized["performance_mode"] = _resolve_performance_mode(raw_intent)
+    normalized["topic_guard"] = _resolve_topic_guard(raw_intent)
+
+    secondary = raw_intent.get("secondary_emotion", DEFAULT_INTENT.get("secondary_emotion", ""))
+    normalized["secondary_emotion"] = secondary if secondary in ALLOWED_EMOTIONS else ""
 
     normalized["intensity"] = clamp_number(
         raw_intent.get("intensity", emotion_state.get("intensity")),
@@ -113,4 +180,6 @@ def normalize_expression_intent(raw_intent: dict, emotion_state: dict | None = N
     )
     normalized["must_include"] = list(raw_intent.get("must_include", [])) if isinstance(raw_intent.get("must_include"), list) else []
     normalized["avoid"] = list(raw_intent.get("avoid", [])) if isinstance(raw_intent.get("avoid"), list) else []
+
+    normalized["primary_emotion"] = normalized["emotion"]
     return normalized

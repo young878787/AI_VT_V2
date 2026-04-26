@@ -17,7 +17,7 @@ class Task2NamingTests(unittest.TestCase):
         )
 
         self.assertIn("【AI 角色的回覆】", source)
-        self.assertIn("AI 角色回覆的語氣", source)
+        self.assertIn("emotion（主題情緒主軸）", source)
         self.assertNotIn("agent_a_reply", source)
         self.assertNotIn("agent_a_reply 的語氣", source)
 

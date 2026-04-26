@@ -223,7 +223,7 @@ def _build_jpaf_init(
 1. Coordination：根據步驟 0，選 {dom}-only / {aux}-only / 協作 / 補償其他功能？
 2. Reinforcement 還是 Compensation？若補償，啟用哪個功能？
  3. 額外產出 emotion_state：
-    - primary_emotion：這句台詞的主情緒（如 happy / shy / playful / angry / surprised / calm / teasing / sad / conflicted）
+    - primary_emotion：這句台詞的主情緒（如 happy / shy / playful / angry / surprised / neutral / teasing / sad / gloomy / conflicted）
     - secondary_emotion：次情緒，可與主情緒不同；若沒有可填 neutral
     - energy：0.0~1.0，描述整句能量感
     - intensity：0.0~1.0，描述情緒強度
@@ -246,7 +246,7 @@ def _build_jpaf_init(
 最後，額外輸出以下 emotion_state JSON（機器讀取用）。
 【重要】必須輸出合法 JSON，欄位名稱固定，不要增加額外說明文字。
 <emotion_state>
-{{"primary_emotion": "<happy|shy|playful|angry|surprised|calm|teasing|sad|conflicted|neutral>", "secondary_emotion": "<neutral or another emotion>", "energy": <0.0-1.0>, "intensity": <0.0-1.0>, "pace": "<slow|medium|medium_fast|fast>", "blink_suggestion": "<none|force_blink|pause|resume|set_interval>", "asymmetry_bias": "<none|slight|strong>", "expression_arc": "<short_snake_case_arc>"}}
+{{"primary_emotion": "<happy|shy|playful|angry|surprised|neutral|teasing|sad|gloomy|conflicted>", "secondary_emotion": "<neutral or another emotion>", "energy": <0.0-1.0>, "intensity": <0.0-1.0>, "pace": "<slow|medium|medium_fast|fast>", "blink_suggestion": "<none|force_blink|pause|resume|set_interval>", "asymmetry_bias": "<none|slight|strong>", "expression_arc": "<short_snake_case_arc>"}}
 </emotion_state>
 """
 
@@ -306,7 +306,7 @@ dominant={dom}({w[dom]:.2f}), auxiliary={aux}({w[aux]:.2f})
 {{"active_function": "<Ti|Ne|Fi|Si|Fe|Te|Se|Ni>", "suggested_persona": "<tsundere|happy|angry|seductive>"}}
 </jpaf_state>
 <emotion_state>
-{{"primary_emotion": "<happy|shy|playful|angry|surprised|calm|teasing|sad|conflicted|neutral>", "secondary_emotion": "<neutral or another emotion>", "energy": <0.0-1.0>, "intensity": <0.0-1.0>, "pace": "<slow|medium|medium_fast|fast>", "blink_suggestion": "<none|force_blink|pause|resume|set_interval>", "asymmetry_bias": "<none|slight|strong>", "expression_arc": "<short_snake_case_arc>"}}
+{{"primary_emotion": "<happy|shy|playful|angry|surprised|neutral|teasing|sad|gloomy|conflicted>", "secondary_emotion": "<neutral or another emotion>", "energy": <0.0-1.0>, "intensity": <0.0-1.0>, "pace": "<slow|medium|medium_fast|fast>", "blink_suggestion": "<none|force_blink|pause|resume|set_interval>", "asymmetry_bias": "<none|slight|strong>", "expression_arc": "<short_snake_case_arc>"}}
 </emotion_state>"""
 
 

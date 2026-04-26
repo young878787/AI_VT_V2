@@ -147,8 +147,9 @@ class Live2DPromptConfigTests(unittest.TestCase):
         self.assertIn("energy / intensity 數值偏高（例如接近 0.7 以上）", prompt)
         self.assertNotIn("high energy / high intensity", prompt)
         self.assertIn("做鬼臉、生氣、驚訝、強烈吐槽時", prompt)
-        self.assertIn("至少讓眼睛、眉毛、嘴角三者中的兩者有明顯變化", prompt)
-        self.assertIn("優先把 eye_*_open、eye_*_smile、brow_*、mouth_form 拉開", prompt)
+        self.assertIn("做鬼臉時用 goofy_face", prompt)
+        self.assertIn("左右不對稱", prompt)
+        self.assertIn("performance_mode（表演模式）", prompt)
 
     def test_live2d_prompt_prioritizes_direct_user_expression_request(self):
         prompt = build_live2d_prompt(
@@ -174,10 +175,9 @@ class Live2DPromptConfigTests(unittest.TestCase):
 
         self.assertIn("【用戶的直接表情要求】", prompt)
         self.assertIn("生氣一下", prompt)
-        self.assertIn("請優先根據用戶的直接表情要求", prompt)
-        self.assertIn("不要依賴任何上游內部人格狀態欄位", prompt)
         self.assertIn("若用戶直接指定表情或動作", prompt)
         self.assertIn("優先滿足該表演要求", prompt)
+        self.assertIn("## 風格強化規則", prompt)
 
     def test_live2d_prompt_uses_previous_expression_and_drops_dialogue_internal_state(self):
         prompt = build_live2d_prompt(

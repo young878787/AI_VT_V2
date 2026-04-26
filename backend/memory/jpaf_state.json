@@ -12,8 +12,6 @@
     "Ni": 0.06
   },
   "current_persona": "tsundere",
-  "turn_count": 1,
-  "active_history": [
-    "Ti"
-  ]
+  "turn_count": 0,
+  "active_history": []
 }

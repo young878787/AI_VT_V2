@@ -1,20 +1,43 @@
 import json
 
 from domain.expression_intent_schema import normalize_expression_intent as normalize_expression_intent_schema
+from domain.expression_intent_schema import ALLOWED_EMOTIONS, ALLOWED_PERFORMANCE_MODES
 
 
 PRIMARY_EMOTION_ALIASES = {
-    "happy": "playful",
-    "joyful": "playful",
-    "cheerful": "playful",
-    "smiling": "gentle",
-    "soft_happy": "gentle",
+    "joyful": "happy",
+    "cheerful": "happy",
+    "smiling": "happy",
+    "soft_happy": "happy",
+    "calm": "neutral",
+    "gentle": "neutral",
+    "embarrassed": "shy",
+    "annoyed": "angry",
 }
 
 SECONDARY_EMOTION_ALIASES = {
-    "happy": "playful",
-    "joyful": "playful",
-    "cheerful": "playful",
+    "joyful": "happy",
+    "cheerful": "happy",
+    "calm": "neutral",
+    "gentle": "neutral",
+    "embarrassed": "shy",
+    "annoyed": "angry",
+}
+
+PERFORMANCE_MODE_ALIASES = {
+    "daily_talk": "bright_talk",
+    "talk": "bright_talk",
+    "natural": "smile",
+    "funny_face": "goofy_face",
+    "goofy": "goofy_face",
+    "wink": "cheeky_wink",
+    "flat": "deadpan",
+    "dark": "gloomy",
+    "unstable": "volatile",
+    "breakdown": "meltdown",
+    "cringe": "awkward",
+    "tense": "tense_hold",
+    "shock": "shock_recoil",
 }
 
 ARC_ALIASES = {
@@ -51,9 +74,17 @@ def _apply_expression_aliases(raw_intent: dict) -> dict:
     if isinstance(primary_emotion, str):
         aliased["primary_emotion"] = PRIMARY_EMOTION_ALIASES.get(primary_emotion, primary_emotion)
 
+    emotion = aliased.get("emotion")
+    if isinstance(emotion, str):
+        aliased["emotion"] = PRIMARY_EMOTION_ALIASES.get(emotion, emotion)
+
     secondary_emotion = aliased.get("secondary_emotion")
     if isinstance(secondary_emotion, str):
         aliased["secondary_emotion"] = SECONDARY_EMOTION_ALIASES.get(secondary_emotion, secondary_emotion)
+
+    performance_mode = aliased.get("performance_mode")
+    if isinstance(performance_mode, str):
+        aliased["performance_mode"] = PERFORMANCE_MODE_ALIASES.get(performance_mode, performance_mode)
 
     arc = aliased.get("arc")
     if isinstance(arc, str):

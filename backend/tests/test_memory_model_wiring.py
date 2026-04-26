@@ -407,7 +407,7 @@ class MemoryModelWiringTests(unittest.TestCase):
         )
 
         self.assertGreater(behavior_payload["headIntensity"], 0.18)
-        self.assertEqual(behavior_payload["blushLevel"], 0.18)
+        self.assertGreater(behavior_payload["blushLevel"], 0.3)
         self.assertEqual(behavior_payload["eyeSync"], False)
         self.assertGreaterEqual(behavior_payload["eyeLOpen"], 0.78)
         self.assertGreater(behavior_payload["eyeROpen"], 0.75)
