@@ -45,6 +45,20 @@ export interface ExpressionMicroEvent {
   returnToBase: boolean
 }
 
+export interface ExpressionIdlePlan {
+  name: 'happy_idle' | 'crying_idle' | 'angry_glare_idle' | 'shy_idle' | 'gloomy_idle'
+  mode: 'loop'
+  enterAfterMs: number
+  loopIntervalMs: number
+  interruptible: boolean
+  source?: {
+    actionEnterAfterMs?: number
+    speakingEnterAfterMs?: number
+  }
+  settlePose: ExpressionBasePose
+  loopEvents: ExpressionMicroEvent[]
+}
+
 export interface BlinkCommand {
   action: 'force_blink' | 'pause' | 'resume' | 'set_interval'
   durationSec?: number
@@ -59,6 +73,7 @@ export interface ExpressionPlanPayload {
   basePose: ExpressionBasePose
   microEvents: ExpressionMicroEvent[]
   sequence: ExpressionMicroEvent[]
+  idlePlan?: ExpressionIdlePlan
   blinkPlan: {
     style: string
     commands: BlinkCommand[]
@@ -66,7 +81,7 @@ export interface ExpressionPlanPayload {
   speakingRate: number
   timingHints?: Record<string, number>
   modelHints?: Record<string, string | number | boolean>
-  debug?: Record<string, string>
+  debug?: Record<string, string | number | boolean>
 }
 
 const EXPRESSION_MICRO_EVENT_PATCH_KEYS = [
@@ -158,6 +173,44 @@ function isExpressionMicroEvent(value: unknown): value is ExpressionMicroEvent {
   )
 }
 
+function isExpressionBasePose(value: unknown): value is ExpressionBasePose {
+  return isRecord(value) && typeof value.preset === 'string' && isNumber(value.durationSec) && hasExpressionBasePoseParams(value.params)
+}
+
+function isExpressionIdlePlan(value: unknown): value is ExpressionIdlePlan {
+  if (!isRecord(value)) {
+    return false
+  }
+
+  if (
+    value.name !== 'happy_idle' &&
+    value.name !== 'crying_idle' &&
+    value.name !== 'angry_glare_idle' &&
+    value.name !== 'shy_idle' &&
+    value.name !== 'gloomy_idle'
+  ) {
+    return false
+  }
+
+  return (
+    value.mode === 'loop' &&
+    isNumber(value.enterAfterMs) &&
+    isNumber(value.loopIntervalMs) &&
+    typeof value.interruptible === 'boolean' &&
+    (
+      value.source === undefined ||
+      (
+        isRecord(value.source) &&
+        (value.source.actionEnterAfterMs === undefined || isNumber(value.source.actionEnterAfterMs)) &&
+        (value.source.speakingEnterAfterMs === undefined || isNumber(value.source.speakingEnterAfterMs))
+      )
+    ) &&
+    isExpressionBasePose(value.settlePose) &&
+    Array.isArray(value.loopEvents) &&
+    value.loopEvents.every(isExpressionMicroEvent)
+  )
+}
+
 export function isBlinkAction(value: unknown): value is BlinkAction {
   return value === 'force_blink' || value === 'pause' || value === 'resume' || value === 'set_interval'
 }
@@ -168,7 +221,7 @@ export function isExpressionPlanPayload(value: unknown): value is ExpressionPlan
   }
 
   const basePose = value.basePose
-  if (!isRecord(basePose) || !isNumber(basePose.durationSec) || !hasExpressionBasePoseParams(basePose.params)) {
+  if (!isExpressionBasePose(basePose)) {
     return false
   }
 
@@ -189,6 +242,10 @@ export function isExpressionPlanPayload(value: unknown): value is ExpressionPlan
   }
 
   if (!value.sequence.every(isExpressionMicroEvent)) {
+    return false
+  }
+
+  if (value.idlePlan !== undefined && !isExpressionIdlePlan(value.idlePlan)) {
     return false
   }
 
@@ -216,7 +273,9 @@ export function isExpressionPlanPayload(value: unknown): value is ExpressionPlan
     if (!isRecord(value.debug)) {
       return false
     }
-    if (!Object.values(value.debug).every((debugValue) => typeof debugValue === 'string')) {
+    if (!Object.values(value.debug).every((debugValue) => (
+      typeof debugValue === 'string' || typeof debugValue === 'number' || typeof debugValue === 'boolean'
+    ))) {
       return false
     }
   }

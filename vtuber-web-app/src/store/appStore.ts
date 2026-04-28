@@ -5,7 +5,7 @@ import { create } from 'zustand';
 import { AvailableModels, type ModelConfig } from '../live2d/LAppDefine';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { fetchAvailableModels, type RemoteModelConfig } from '../services/modelService';
-import type { BlinkAction, ExpressionMicroEvent, ExpressionPlanPayload } from '../types/expressionPlan';
+import type { BlinkAction, ExpressionIdlePlan, ExpressionMicroEvent, ExpressionPlanPayload } from '../types/expressionPlan';
 
 export interface ChatMessage {
   id: string;
@@ -29,6 +29,7 @@ interface AiBehaviorBridgeModel {
   resumeAutoBlink?: () => void;
   setBlinkInterval?: (intervalMin: number, intervalMax: number) => void;
   applyBasePose?: (basePose: ExpressionPlanPayload['basePose']) => void;
+  applyIdlePlan?: (idlePlan: ExpressionIdlePlan) => void;
   enqueueMicroEvent?: (event: ExpressionMicroEvent) => void;
   enqueueSequence?: (sequence: ExpressionMicroEvent[]) => void;
 }
@@ -408,6 +409,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     if ((plan.sequence ?? []).length > 0) {
       bridgeModel.enqueueSequence?.(plan.sequence);
+    }
+    if (plan.idlePlan) {
+      bridgeModel.applyIdlePlan?.(plan.idlePlan);
     }
   },
 

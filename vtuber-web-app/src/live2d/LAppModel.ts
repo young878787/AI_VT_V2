@@ -22,7 +22,7 @@ import type { ModelConfig } from './LAppDefine';
 import { ResourcePath, Priority } from './LAppDefine';
 import { LAppTextureManager, TextureInfo } from './LAppTextureManager';
 import { LAppDelegate } from './LAppDelegate';
-import type { ExpressionBasePose, ExpressionMicroEventPatch } from '../types/expressionPlan';
+import type { ExpressionBasePose, ExpressionIdlePlan, ExpressionMicroEventPatch } from '../types/expressionPlan';
 
 type ExpressionParamPatch = ExpressionMicroEventPatch;
 type BasePoseParams = ExpressionBasePose['params'];
@@ -170,6 +170,9 @@ export class LAppModel extends CubismUserModel {
   // key = paramId (string), value = { value, lastSetAt (performance.now ms) }
   private _nativeParamOverrides: Map<string, { value: number; lastSetAt: number }> = new Map();
   private _activeExpressionEvents: ActiveExpressionEvent[] = [];
+  private _activeIdlePlan: ExpressionIdlePlan | null = null;
+  private _idlePlanActivateAtMs: number = 0;
+  private _idleLoopNextAtMs: number = 0;
 
   /**
    * 建構函式
@@ -834,6 +837,9 @@ export class LAppModel extends CubismUserModel {
 
   public applyBasePose(basePose: { params: BasePoseParams; durationSec: number }): void {
     this._activeExpressionEvents = [];
+    this._activeIdlePlan = null;
+    this._idlePlanActivateAtMs = 0;
+    this._idleLoopNextAtMs = 0;
     this.setAiBehavior(
       basePose.params.headIntensity ?? 0,
       basePose.params.blushLevel ?? 0,
@@ -853,6 +859,13 @@ export class LAppModel extends CubismUserModel {
       basePose.params.browLX ?? 0,
       basePose.params.browRX ?? 0,
     );
+  }
+
+  public applyIdlePlan(idlePlan: ExpressionIdlePlan): void {
+    const activateAtMs = performance.now() + Math.max(0, idlePlan.enterAfterMs);
+    this._activeIdlePlan = idlePlan;
+    this._idlePlanActivateAtMs = activateAtMs;
+    this._idleLoopNextAtMs = activateAtMs;
   }
 
   public enqueueMicroEvent(event: {
@@ -1087,6 +1100,7 @@ export class LAppModel extends CubismUserModel {
     let targetEyeRSmile: number;
     let targetBrowLX: number;
     let targetBrowRX: number;
+    const nowMs = performance.now();
 
     if (this._aiBehaviorTimer > 0) {
       this._aiBehaviorTimer -= deltaTimeSeconds;
@@ -1129,6 +1143,47 @@ export class LAppModel extends CubismUserModel {
       targetEyeRSmile = this._aiEyeRSmile;
       targetBrowLX    = this._aiBrowLX;
       targetBrowRX    = this._aiBrowRX;
+    } else if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
+      this._aiHeadIntensity = 0;
+      const idleParams = this._activeIdlePlan.settlePose.params;
+      targetBlush     = idleParams.blushLevel;
+      targetEyeL      = idleParams.eyeLOpen;
+      targetEyeR      = idleParams.eyeROpen;
+      targetMouthForm = idleParams.mouthForm;
+      targetBrowLY    = idleParams.browLY;
+      targetBrowRY    = idleParams.browRY;
+      targetBrowLAngle = idleParams.browLAngle;
+      targetBrowRAngle = idleParams.browRAngle;
+      targetBrowLForm = idleParams.browLForm;
+      targetBrowRForm = idleParams.browRForm;
+      targetEyeLSmile = idleParams.eyeLSmile;
+      targetEyeRSmile = idleParams.eyeRSmile;
+      targetBrowLX    = idleParams.browLX;
+      targetBrowRX    = idleParams.browRX;
+      this._aiEyeSync = idleParams.eyeSync;
+
+      if (nowMs >= this._idleLoopNextAtMs) {
+        for (const event of this._activeIdlePlan.loopEvents) {
+          this.enqueueMicroEvent(event);
+        }
+        this._idleLoopNextAtMs = nowMs + Math.max(500, this._activeIdlePlan.loopIntervalMs);
+      }
+    } else if (this._activeIdlePlan) {
+      this._aiHeadIntensity = 0;
+      targetBlush     = this._aiBlushLevel;
+      targetEyeL      = this._aiEyeLOpen;
+      targetEyeR      = this._aiEyeROpen;
+      targetMouthForm = this._aiMouthForm;
+      targetBrowLY    = this._aiBrowLY;
+      targetBrowRY    = this._aiBrowRY;
+      targetBrowLAngle = this._aiBrowLAngle;
+      targetBrowRAngle = this._aiBrowRAngle;
+      targetBrowLForm = this._aiBrowLForm;
+      targetBrowRForm = this._aiBrowRForm;
+      targetEyeLSmile = this._aiEyeLSmile;
+      targetEyeRSmile = this._aiEyeRSmile;
+      targetBrowLX    = this._aiBrowLX;
+      targetBrowRX    = this._aiBrowRX;
     } else {
       this._aiHeadIntensity = 0;
       targetBlush     = 0.0;
@@ -1147,7 +1202,6 @@ export class LAppModel extends CubismUserModel {
       targetBrowRX    = 0.0;
     }
 
-    const nowMs = performance.now();
     this._activeExpressionEvents = this._activeExpressionEvents.filter((event) => nowMs - event.startedAtMs < event.durationMs);
 
     const applyOverlayValue = (key: keyof ExpressionParamPatch, target: number, patchValue: number | undefined, fade: number): number => {

@@ -108,6 +108,332 @@ def _append_unique(items: list[str], value: str) -> None:
         items.append(value)
 
 
+CONTINUITY_FAMILY_MAP = {
+    "happy": "warm",
+    "playful": "warm",
+    "teasing": "warm",
+    "angry": "tension",
+    "conflicted": "tension",
+    "sad": "low",
+    "gloomy": "low",
+    "shy": "shy",
+    "surprised": "reactive",
+    "neutral": "neutral",
+}
+
+CONTINUITY_PARAM_WEIGHTS = {
+    "headIntensity": 0.25,
+    "blushLevel": 0.65,
+    "eyeLOpen": 0.38,
+    "eyeROpen": 0.38,
+    "mouthForm": 0.55,
+    "browLY": 0.45,
+    "browRY": 0.45,
+    "browLAngle": 0.48,
+    "browRAngle": 0.48,
+    "browLForm": 0.52,
+    "browRForm": 0.52,
+    "eyeLSmile": 0.5,
+    "eyeRSmile": 0.5,
+    "browLX": 0.42,
+    "browRX": 0.42,
+}
+
+
+IDLE_PLAN_LOOP_EVENTS = {
+    "happy_idle": [
+        {
+            "kind": "happy_idle_soft_smile",
+            "durationMs": 760,
+            "patch": {"mouthForm": 0.26, "eyeLSmile": 0.42, "eyeRSmile": 0.42},
+            "returnToBase": True,
+        },
+    ],
+    "crying_idle": [
+        {
+            "kind": "crying_idle_sad_breath",
+            "durationMs": 920,
+            "patch": {"eyeLOpen": 0.60, "eyeROpen": 0.62, "mouthForm": -0.30, "browLY": -0.04, "browRY": -0.04},
+            "returnToBase": True,
+        },
+    ],
+    "angry_glare_idle": [
+        {
+            "kind": "angry_idle_glare_hold",
+            "durationMs": 820,
+            "patch": {"eyeLOpen": 1.08, "eyeROpen": 1.08, "browLAngle": 0.48, "browRAngle": -0.48, "mouthForm": -0.16},
+            "returnToBase": True,
+        },
+    ],
+    "shy_idle": [
+        {
+            "kind": "shy_idle_quick_peek",
+            "durationMs": 700,
+            "patch": {"eyeLOpen": 0.74, "eyeROpen": 0.86, "mouthForm": 0.12, "blushLevel": 0.22},
+            "returnToBase": True,
+        },
+    ],
+    "gloomy_idle": [
+        {
+            "kind": "gloomy_idle_downcast",
+            "durationMs": 1040,
+            "patch": {"eyeLOpen": 0.56, "eyeROpen": 0.58, "mouthForm": -0.16, "browLY": -0.16, "browRY": -0.16},
+            "returnToBase": True,
+        },
+    ],
+}
+
+
+IDLE_PLAN_SETTLE_PATCHES = {
+    "happy_idle": {
+        "headIntensity": 0.04,
+        "mouthForm": 0.22,
+        "eyeLOpen": 0.88,
+        "eyeROpen": 0.88,
+        "eyeSync": True,
+        "eyeLSmile": 0.34,
+        "eyeRSmile": 0.34,
+        "blushLevel": 0.04,
+    },
+    "crying_idle": {
+        "headIntensity": 0.02,
+        "mouthForm": -0.26,
+        "eyeLOpen": 0.66,
+        "eyeROpen": 0.68,
+        "eyeSync": True,
+        "browLY": -0.02,
+        "browRY": -0.02,
+        "browLAngle": -0.16,
+        "browRAngle": 0.16,
+        "browLForm": -0.12,
+        "browRForm": -0.12,
+        "blushLevel": -0.35,
+    },
+    "angry_glare_idle": {
+        "headIntensity": 0.06,
+        "mouthForm": -0.14,
+        "eyeLOpen": 1.02,
+        "eyeROpen": 1.02,
+        "eyeSync": True,
+        "browLY": -0.08,
+        "browRY": -0.08,
+        "browLAngle": 0.44,
+        "browRAngle": -0.44,
+        "browLForm": -0.22,
+        "browRForm": -0.22,
+        "blushLevel": -0.45,
+    },
+    "shy_idle": {
+        "headIntensity": 0.03,
+        "mouthForm": 0.10,
+        "eyeLOpen": 0.76,
+        "eyeROpen": 0.82,
+        "eyeSync": False,
+        "eyeLSmile": 0.18,
+        "eyeRSmile": 0.10,
+        "browLY": 0.06,
+        "browRY": 0.02,
+        "blushLevel": 0.20,
+    },
+    "gloomy_idle": {
+        "headIntensity": 0.02,
+        "mouthForm": -0.14,
+        "eyeLOpen": 0.66,
+        "eyeROpen": 0.68,
+        "eyeSync": True,
+        "browLY": -0.14,
+        "browRY": -0.14,
+        "browLAngle": -0.10,
+        "browRAngle": 0.10,
+        "browLForm": -0.08,
+        "browRForm": -0.08,
+        "blushLevel": -0.20,
+    },
+}
+
+
+def _read_previous_state_string(previous_state: dict | None, *keys: str) -> str | None:
+    if not isinstance(previous_state, dict):
+        return None
+
+    for key in keys:
+        value = previous_state.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return None
+
+
+def _read_previous_state_float(previous_state: dict | None, *keys: str, default: float = 0.0) -> float:
+    if not isinstance(previous_state, dict):
+        return default
+
+    for key in keys:
+        value = previous_state.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        return float(value)
+
+    return default
+
+
+def _read_previous_state_bool(previous_state: dict | None, *keys: str, default: bool = True) -> bool:
+    if not isinstance(previous_state, dict):
+        return default
+
+    for key in keys:
+        value = previous_state.get(key)
+        if isinstance(value, bool):
+            return value
+
+    return default
+
+
+def _emotion_family(emotion: str) -> str:
+    return CONTINUITY_FAMILY_MAP.get(emotion, "neutral")
+
+
+def _resolve_previous_state_residue(previous_state: dict | None) -> float:
+    residue = _read_previous_state_float(previous_state, "residue", "continuity", "carryResidue", default=0.0)
+    if residue > 0.0:
+        return _clamp(residue, 0.0, 1.0)
+
+    if not isinstance(previous_state, dict):
+        return 0.0
+
+    if _read_previous_state_string(previous_state, "summary"):
+        return 0.25
+
+    has_pose_data = any(
+        key in previous_state
+        for key in (
+            "mouthForm",
+            "eyeLOpen",
+            "eyeROpen",
+            "browLY",
+            "browRY",
+            "browLAngle",
+            "browRAngle",
+            "browLForm",
+            "browRForm",
+        )
+    )
+    return 0.22 if has_pose_data else 0.0
+
+
+def _resolve_continuity_blend(
+    previous_state: dict | None,
+    emotion: str,
+    performance_mode: str,
+    intensity: float,
+    signature_name: str,
+) -> float:
+    if not isinstance(previous_state, dict):
+        return 0.0
+
+    residue = _resolve_previous_state_residue(previous_state)
+    if residue <= 0.0:
+        return 0.0
+
+    previous_emotion = _read_previous_state_string(
+        previous_state,
+        "emotion",
+        "intentEmotion",
+        "intentPrimaryEmotion",
+        "primary_emotion",
+    )
+    previous_mode = _read_previous_state_string(
+        previous_state,
+        "performanceMode",
+        "intentPerformanceMode",
+        "performance_mode",
+    )
+    previous_signature = _read_previous_state_string(previous_state, "signature", "signature_name")
+
+    contextual_blend = 0.08
+    if previous_emotion == emotion:
+        contextual_blend = 0.32
+    elif previous_emotion and _emotion_family(previous_emotion) == _emotion_family(emotion):
+        contextual_blend = 0.18
+    elif previous_emotion:
+        contextual_blend = 0.10
+
+    if previous_mode == performance_mode:
+        contextual_blend += 0.08
+    if previous_signature == signature_name:
+        contextual_blend += 0.05
+
+    if emotion == "angry" and intensity >= 0.78:
+        contextual_blend = min(contextual_blend, 0.08)
+    elif performance_mode in {"goofy_face", "meltdown", "shock_recoil"}:
+        contextual_blend = min(contextual_blend, 0.12)
+
+    return _clamp(min(residue, contextual_blend), 0.0, 0.35)
+
+
+def _apply_previous_state_continuity(params: dict, previous_state: dict | None, blend: float) -> dict:
+    if blend <= 0.0 or not isinstance(previous_state, dict):
+        return params
+
+    for key, weight in CONTINUITY_PARAM_WEIGHTS.items():
+        previous_value = previous_state.get(key)
+        if isinstance(previous_value, bool) or not isinstance(previous_value, (int, float)):
+            continue
+        if key == "eyeLOpen" and not bool(params.get("eyeSync", True)):
+            effective_blend = blend * min(weight, 0.25)
+        elif key == "eyeROpen" and not bool(params.get("eyeSync", True)):
+            effective_blend = blend * min(weight, 0.25)
+        else:
+            effective_blend = blend * weight
+        params[key] = (params[key] * (1.0 - effective_blend)) + (float(previous_value) * effective_blend)
+
+    previous_eye_sync = _read_previous_state_bool(previous_state, "eyeSync", "eye_sync", default=True)
+    if previous_eye_sync is False and bool(params.get("eyeSync", True)) is False:
+        params["eyeSync"] = False
+
+    return params
+
+
+def _build_carry_state(
+    intent: dict,
+    signature: dict,
+    params: dict,
+    continuity_blend: float,
+) -> dict:
+    emotion = intent.get("emotion", intent.get("primary_emotion", "neutral"))
+    performance_mode = intent.get("performance_mode", "smile")
+    intensity = _coerce_float(intent.get("intensity", 0.35), 0.35)
+    energy = _coerce_float(intent.get("energy", 0.35), 0.35)
+    residue = _clamp(0.14 + (continuity_blend * 0.55) + (intensity * 0.10) + (energy * 0.06), 0.08, 0.45)
+    if emotion in {"sad", "gloomy", "angry"}:
+        residue = _clamp(residue + 0.05, 0.08, 0.5)
+    if performance_mode in {"meltdown", "goofy_face", "shock_recoil"}:
+        residue = _clamp(residue + 0.03, 0.08, 0.5)
+
+    return {
+        "emotion": emotion,
+        "performanceMode": performance_mode,
+        "signature": signature.get("signature_name", "calm_soft"),
+        "residue": residue,
+        "headIntensity": params["headIntensity"],
+        "blushLevel": params["blushLevel"],
+        "eyeSync": params["eyeSync"],
+        "eyeLOpen": params["eyeLOpen"],
+        "eyeROpen": params["eyeROpen"],
+        "mouthForm": params["mouthForm"],
+        "browLY": params["browLY"],
+        "browRY": params["browRY"],
+        "browLAngle": params["browLAngle"],
+        "browRAngle": params["browRAngle"],
+        "browLForm": params["browLForm"],
+        "browRForm": params["browRForm"],
+        "eyeLSmile": params["eyeLSmile"],
+        "eyeRSmile": params["eyeRSmile"],
+        "browLX": params["browLX"],
+        "browRX": params["browRX"],
+    }
+
+
 def _clamp_expression_params(params: dict) -> dict:
     params["blushLevel"] = _clamp(params["blushLevel"], -1.0, 1.0)
     params["eyeLOpen"] = _clamp(params["eyeLOpen"], 0.0, 1.25)
@@ -486,6 +812,8 @@ def apply_base_pose_modifiers(
     base_pose: dict,
     signature: dict | None = None,
     model_name: str = "Hiyori",
+    previous_state: dict | None = None,
+    continuity_blend: float = 0.0,
 ) -> dict:
     params = deepcopy(base_pose["params"])
 
@@ -590,6 +918,7 @@ def apply_base_pose_modifiers(
         params["browRX"] += 0.06
 
     params = _clamp_expression_params(params)
+    params = _apply_previous_state_continuity(params, previous_state, continuity_blend)
     params = apply_visual_signature(params, signature=signature, intensity=intensity, energy=energy, warmth=warmth)
     params = apply_model_adapter(params, signature=signature, intensity=intensity, energy=energy, model_name=model_name)
 
@@ -748,6 +1077,71 @@ def build_timing_hints(intent: dict, base_pose: dict, sequence: list[dict]) -> d
     }
 
 
+def estimate_dialogue_hold_ms(intent: dict) -> int:
+    spoken_text = str(intent.get("spoken_text") or intent.get("dialogue_text") or "").strip()
+    if not spoken_text:
+        return 0
+
+    speaking_rate = _clamp(_coerce_float(intent.get("speaking_rate", 1.0), 1.0), 0.65, 1.6)
+    visible_chars = [char for char in spoken_text if not char.isspace()]
+    punctuation_count = sum(1 for char in visible_chars if char in "，。！？!?、,.…")
+
+    estimated_ms = (len(visible_chars) * 95) + (punctuation_count * 180) + 650
+    return int(_clamp(estimated_ms / speaking_rate, 1800, 14000))
+
+
+def resolve_idle_plan_name(emotion: str, performance_mode: str, topic_guard: dict) -> str:
+    source_theme = topic_guard.get("source_theme", "daily_talk")
+    if source_theme == "crying" or emotion == "sad":
+        return "crying_idle"
+    if emotion == "angry" or performance_mode in {"meltdown", "volatile"}:
+        return "angry_glare_idle"
+    if emotion == "shy" or performance_mode == "awkward":
+        return "shy_idle"
+    if emotion == "gloomy" or performance_mode in {"gloomy", "deadpan"}:
+        return "gloomy_idle"
+    return "happy_idle"
+
+
+def build_idle_plan(
+    emotion: str,
+    performance_mode: str,
+    topic_guard: dict,
+    base_pose: dict,
+    sequence: list[dict],
+    micro_events: list[dict],
+    intent: dict,
+) -> dict:
+    idle_name = resolve_idle_plan_name(emotion, performance_mode, topic_guard)
+    settle_params = deepcopy(base_pose["params"])
+    settle_params.update(IDLE_PLAN_SETTLE_PATCHES[idle_name])
+    settle_params = _clamp_expression_params(settle_params)
+
+    action_enter_after_ms = int(base_pose["durationSec"] * 1000)
+    action_enter_after_ms += sum(int(step.get("durationMs", 0)) for step in sequence)
+    action_enter_after_ms += max((int(event.get("durationMs", 0)) for event in micro_events), default=0)
+    speaking_enter_after_ms = estimate_dialogue_hold_ms(intent)
+    enter_after_ms = max(400, action_enter_after_ms, speaking_enter_after_ms)
+
+    return {
+        "name": idle_name,
+        "mode": "loop",
+        "enterAfterMs": enter_after_ms,
+        "loopIntervalMs": 2600,
+        "interruptible": True,
+        "source": {
+            "actionEnterAfterMs": action_enter_after_ms,
+            "speakingEnterAfterMs": speaking_enter_after_ms,
+        },
+        "settlePose": {
+            "preset": idle_name,
+            "params": settle_params,
+            "durationSec": 12.0,
+        },
+        "loopEvents": deepcopy(IDLE_PLAN_LOOP_EVENTS[idle_name]),
+    }
+
+
 def build_model_hints(intent: dict, preset_name: str, model_name: str) -> dict:
     return {
         "modelName": model_name,
@@ -758,8 +1152,6 @@ def build_model_hints(intent: dict, preset_name: str, model_name: str) -> dict:
 
 
 def compile_expression_plan(intent: dict, model_name: str, previous_state: dict | None) -> dict:
-    del previous_state
-
     emotion = intent.get("emotion", intent.get("primary_emotion", DEFAULT_INTENT["emotion"]))
     if emotion not in {
         "neutral",
@@ -783,6 +1175,13 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
 
     performance_mode = resolve_effective_performance_mode(emotion, performance_mode, topic_guard)
     signature = resolve_visual_signature(emotion, performance_mode, intent)
+    continuity_blend = _resolve_continuity_blend(
+        previous_state,
+        emotion,
+        performance_mode,
+        _coerce_float(intent.get("intensity", 0.35), 0.35),
+        signature.get("signature_name", "calm_soft"),
+    )
     preset_name = select_base_pose(emotion, performance_mode, model_name=model_name, signature=signature)
 
     hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
@@ -795,7 +1194,14 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         "params": deepcopy(BASE_POSE_PRESETS[preset_name]),
         "durationSec": max(0.3, hold_ms / 1000.0),
     }
-    base_pose = apply_base_pose_modifiers(intent, base_pose, signature=signature, model_name=model_name)
+    base_pose = apply_base_pose_modifiers(
+        intent,
+        base_pose,
+        signature=signature,
+        model_name=model_name,
+        previous_state=previous_state,
+        continuity_blend=continuity_blend,
+    )
 
     micro_events = build_micro_events(
         emotion,
@@ -816,16 +1222,27 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         model_name=model_name,
     )
     blink_plan = build_blink_plan(intent, model_name=model_name)
+    idle_plan = build_idle_plan(
+        emotion,
+        performance_mode,
+        topic_guard,
+        base_pose=base_pose,
+        sequence=sequence,
+        micro_events=micro_events,
+        intent=intent,
+    )
 
     return {
         "type": "expression_plan",
         "basePose": base_pose,
         "microEvents": micro_events,
         "sequence": sequence,
+        "idlePlan": idle_plan,
         "blinkPlan": blink_plan,
         "speakingRate": speaking_rate,
         "timingHints": build_timing_hints(intent, base_pose=base_pose, sequence=sequence),
         "modelHints": build_model_hints(intent, preset_name=preset_name, model_name=model_name),
+        "carryState": _build_carry_state(intent, signature, base_pose["params"], continuity_blend),
         "debug": {
             "intentPrimaryEmotion": emotion,
             "intentEmotion": emotion,
@@ -838,5 +1255,6 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
             "arc": intent.get("arc", "steady"),
             "signature": signature.get("signature_name", "calm_soft"),
             "blushPolicy": signature.get("blush_policy", "neutralize"),
+            "idlePlan": idle_plan["name"],
         },
     }

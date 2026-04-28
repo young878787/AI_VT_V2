@@ -193,6 +193,7 @@ async def websocket_endpoint(websocket: WebSocket):
     current_session_id: str | None = None
     tts_tasks: set[asyncio.Task] = set()
     last_behavior_payload: dict | None = None
+    last_expression_carry_state: dict | None = None
 
     # 載入或初始化 JPAF session
     jpaf_data = load_jpaf_state()
@@ -225,6 +226,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 current_session_id=current_session_id,
                 incoming_session_id=incoming_session_id,
                 last_behavior_payload=last_behavior_payload,
+            )
+            last_expression_carry_state = _reset_expression_state_for_session(
+                current_session_id=current_session_id,
+                incoming_session_id=incoming_session_id,
+                last_expression_carry_state=last_expression_carry_state,
             )
             messages = _reset_messages_for_session(
                 current_session_id=current_session_id,
@@ -367,8 +373,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     f"[{AI_PROVIDER.upper()}] Chat Orchestrator: parallel Expression Agent + Memory Agent..."
                 )
 
+                previous_expression_source = last_expression_carry_state or last_behavior_payload
                 previous_expression_state = _summarize_previous_expression_state(
-                    last_behavior_payload
+                    previous_expression_source
                 )
 
                 # Expression Agent prompt
@@ -420,10 +427,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         previous_state=previous_expression_state,
                         user_message=user_message,
                     )
+                    expression_intent = {**expression_intent, "spoken_text": agent_a_text}
                     expression_plan = compile_expression_plan(
                         expression_intent,
                         model_name=model_name,
-                        previous_state=previous_expression_state,
+                        previous_state=previous_expression_source,
                     )
                 else:
                     raise ValueError("Expression Agent returned no choices")
@@ -431,6 +439,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 legacy_render = render_legacy_behavior_payload(expression_plan)
                 behavior_payload = legacy_render["behavior_payload"]
                 speaking_rate = legacy_render["speaking_rate"]
+                expression_plan_log = _summarize_expression_plan_for_log(expression_plan)
+                print(f"[Expression Plan] {expression_plan_log}")
 
                 # --- 解析 Memory Agent response ---
                 if memory_response.choices and len(memory_response.choices) > 0:
@@ -458,6 +468,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 memory_calls = execution_result["memory_calls"]
                 last_behavior_payload = {**behavior_payload, "speakingRate": speaking_rate}
+                last_expression_carry_state = expression_plan.get("carryState")
 
                 # ---- Prompt Log ----
                 _a_tokens = estimate_token_count(
@@ -479,7 +490,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     system_prompt=agent_a_system,
                     user_message=user_message,
                     dialogue_agent_output=agent_a_text,
-                    tool_names=summarize_tool_names(memory_calls) + ["expression_plan"],
+                    tool_names=summarize_tool_names(memory_calls) + [expression_plan_log],
                     output_tokens=_a_tokens + _b_tokens,
                 )
 
@@ -629,6 +640,41 @@ def _reset_messages_for_session(
     if not persistence_enabled and incoming_session_id != current_session_id:
         return []
     return messages
+
+
+def _reset_expression_state_for_session(
+    current_session_id: str | None,
+    incoming_session_id: str | None,
+    last_expression_carry_state: dict | None,
+) -> dict | None:
+    if incoming_session_id != current_session_id:
+        return None
+    return last_expression_carry_state
+
+
+def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
+    idle_plan = expression_plan.get("idlePlan") if isinstance(expression_plan, dict) else None
+    if not isinstance(idle_plan, dict):
+        return "expression_plan"
+
+    name = idle_plan.get("name", "unknown_idle")
+    enter_after_ms = idle_plan.get("enterAfterMs", "?")
+    source = idle_plan.get("source") if isinstance(idle_plan.get("source"), dict) else {}
+    action_ms = source.get("actionEnterAfterMs", "?")
+    speaking_ms = source.get("speakingEnterAfterMs", "?")
+    loop_events = idle_plan.get("loopEvents") if isinstance(idle_plan.get("loopEvents"), list) else []
+    loop_names = [
+        str(event.get("kind"))
+        for event in loop_events
+        if isinstance(event, dict) and event.get("kind")
+    ]
+    loop_summary = ",".join(loop_names) if loop_names else "none"
+    return (
+        f"expression_plan idlePlan {name} "
+        f"enterAfterMs {enter_after_ms} "
+        f"actionMs {action_ms} speakingMs {speaking_ms} "
+        f"loopEvents {loop_summary}"
+    )
 
 
 def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict | None:

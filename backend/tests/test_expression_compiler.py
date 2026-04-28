@@ -56,6 +56,7 @@ class ExpressionCompilerTests(unittest.TestCase):
         )
 
         self.assertEqual(plan["basePose"]["preset"], "happy_smile_soft")
+        self.assertEqual(plan["idlePlan"]["name"], "happy_idle")
 
     def test_compile_expression_plan_selects_different_presets_for_happy_vs_playful_goofy(self):
         happy_plan = compile_expression_plan(
@@ -697,6 +698,194 @@ class ExpressionCompilerTests(unittest.TestCase):
         )
 
         self.assertGreater(plan["basePose"]["params"]["browLAngle"], 0.42)
+
+    def test_compile_expression_plan_uses_previous_state_for_continuity(self):
+        previous_state = {
+            "emotion": "happy",
+            "performanceMode": "smile",
+            "signature": "happy_soft",
+            "residue": 0.42,
+            "eyeSync": True,
+            "headIntensity": 0.34,
+            "blushLevel": 0.22,
+            "eyeLOpen": 0.93,
+            "eyeROpen": 0.92,
+            "mouthForm": 0.55,
+            "browLY": 0.08,
+            "browRY": 0.07,
+            "browLAngle": 0.12,
+            "browRAngle": 0.11,
+            "browLForm": 0.16,
+            "browRForm": 0.15,
+            "eyeLSmile": 0.52,
+            "eyeRSmile": 0.49,
+            "browLX": 0.03,
+            "browRX": -0.02,
+        }
+        intent = {
+            "emotion": "happy",
+            "performance_mode": "smile",
+            "intensity": 0.25,
+            "energy": 0.25,
+            "warmth": 0.35,
+            "playfulness": 0.1,
+            "arc": "steady",
+            "hold_ms": 1600,
+        }
+
+        without_previous = compile_expression_plan(
+            intent,
+            model_name="Hiyori",
+            previous_state=None,
+        )
+        with_previous = compile_expression_plan(
+            intent,
+            model_name="Hiyori",
+            previous_state=previous_state,
+        )
+
+        self.assertGreater(
+            with_previous["basePose"]["params"]["mouthForm"],
+            without_previous["basePose"]["params"]["mouthForm"],
+        )
+        self.assertGreater(
+            with_previous["basePose"]["params"]["eyeLSmile"],
+            without_previous["basePose"]["params"]["eyeLSmile"],
+        )
+        self.assertIn("carryState", with_previous)
+        self.assertEqual(with_previous["carryState"]["emotion"], "happy")
+        self.assertEqual(with_previous["carryState"]["performanceMode"], "smile")
+        self.assertGreater(with_previous["carryState"]["residue"], 0.0)
+
+    def test_previous_playful_state_does_not_override_high_intensity_angry_switch(self):
+        previous_state = {
+            "emotion": "playful",
+            "performanceMode": "goofy_face",
+            "signature": "goofy_asym",
+            "residue": 0.45,
+            "eyeSync": False,
+            "eyeLOpen": 0.83,
+            "eyeROpen": 1.08,
+            "mouthForm": 0.46,
+            "browLY": 0.14,
+            "browRY": -0.08,
+            "browLAngle": 0.18,
+            "browRAngle": -0.10,
+            "browLForm": 0.12,
+            "browRForm": -0.08,
+            "eyeLSmile": 0.31,
+            "eyeRSmile": 0.08,
+            "browLX": -0.04,
+            "browRX": 0.05,
+        }
+
+        plan = compile_expression_plan(
+            {
+                "emotion": "angry",
+                "performance_mode": "meltdown",
+                "intensity": 0.92,
+                "energy": 0.82,
+                "arc": "steady",
+            },
+            model_name="Hiyori",
+            previous_state=previous_state,
+        )
+
+        self.assertEqual(plan["debug"]["intentEmotion"], "angry")
+        self.assertTrue(plan["basePose"]["params"]["eyeSync"])
+        self.assertEqual(plan["carryState"]["emotion"], "angry")
+        self.assertLess(plan["basePose"]["params"]["blushLevel"], 0.0)
+
+    def test_compile_expression_plan_adds_idle_plan_that_does_not_return_to_zero(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "smile",
+                "intensity": 0.45,
+                "energy": 0.45,
+                "hold_ms": 1200,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        idle_plan = plan["idlePlan"]
+        settle = idle_plan["settlePose"]["params"]
+        self.assertEqual(idle_plan["name"], "happy_idle")
+        self.assertEqual(idle_plan["mode"], "loop")
+        self.assertTrue(idle_plan["interruptible"])
+        self.assertGreaterEqual(idle_plan["enterAfterMs"], 1200)
+        self.assertGreaterEqual(len(idle_plan["loopEvents"]), 1)
+        self.assertGreater(settle["mouthForm"], 0.0)
+        self.assertGreater(settle["eyeLSmile"], 0.0)
+
+    def test_idle_plan_waits_for_estimated_spoken_line_before_settling(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "bright_talk",
+                "intensity": 0.6,
+                "energy": 0.7,
+                "hold_ms": 1200,
+                "spoken_text": "哇～這句話其實還滿長的喔！如果待機太早進來，看起來就會像表情被切掉一樣。",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        source = plan["idlePlan"]["source"]
+        self.assertGreater(source["speakingEnterAfterMs"], source["actionEnterAfterMs"])
+        self.assertEqual(plan["idlePlan"]["enterAfterMs"], source["speakingEnterAfterMs"])
+
+    def test_compile_expression_plan_maps_requested_idle_families(self):
+        cases = [
+            (
+                {
+                    "emotion": "sad",
+                    "performance_mode": "awkward",
+                    "topic_guard": {
+                        "must_preserve_theme": True,
+                        "source_theme": "crying",
+                        "allow_style_override": False,
+                    },
+                },
+                "crying_idle",
+            ),
+            ({"emotion": "angry", "performance_mode": "meltdown"}, "angry_glare_idle"),
+            ({"emotion": "shy", "performance_mode": "awkward"}, "shy_idle"),
+            ({"emotion": "gloomy", "performance_mode": "deadpan"}, "gloomy_idle"),
+        ]
+
+        for intent, expected_idle_name in cases:
+            with self.subTest(expected_idle_name=expected_idle_name):
+                plan = compile_expression_plan(
+                    intent,
+                    model_name="Hiyori",
+                    previous_state=None,
+                )
+
+                self.assertEqual(plan["idlePlan"]["name"], expected_idle_name)
+                self.assertEqual(plan["debug"]["idlePlan"], expected_idle_name)
+                self.assertGreaterEqual(len(plan["idlePlan"]["loopEvents"]), 1)
+
+    def test_angry_idle_settle_keeps_hiyori_negative_blush_and_glare(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "angry",
+                "performance_mode": "meltdown",
+                "intensity": 0.9,
+                "energy": 0.8,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        settle = plan["idlePlan"]["settlePose"]["params"]
+        self.assertEqual(plan["idlePlan"]["name"], "angry_glare_idle")
+        self.assertLess(settle["blushLevel"], 0.0)
+        self.assertTrue(settle["eyeSync"])
+        self.assertGreater(settle["eyeLOpen"], 1.0)
+        self.assertGreater(settle["browLAngle"], 0.35)
 
 
 if __name__ == "__main__":

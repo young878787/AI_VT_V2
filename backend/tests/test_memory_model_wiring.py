@@ -484,6 +484,12 @@ class MemoryModelWiringTests(unittest.TestCase):
         self.assertLess(payload_types.index("expression_plan"), payload_types.index("blink_control"))
         self.assertLess(payload_types.index("expression_plan"), payload_types.index("behavior"))
 
+        expression_plan_payload = next(
+            payload for payload in websocket.payloads if payload.get("type") == "expression_plan"
+        )
+        self.assertIn("carryState", expression_plan_payload)
+        self.assertEqual(expression_plan_payload["carryState"]["emotion"], "playful")
+
         broadcast_types = [call.args[0].get("type") for call in mock_broadcast.await_args_list]
         self.assertIn("expression_plan", broadcast_types)
         self.assertIn("blink_control", broadcast_types)
