@@ -148,6 +148,14 @@ function isBlinkCommand(value: unknown): value is BlinkCommand {
   if (value.intervalMax !== undefined && !isNumber(value.intervalMax)) {
     return false
   }
+  if (value.action === 'set_interval') {
+    if (value.intervalMin === undefined || value.intervalMax === undefined) {
+      return false
+    }
+    if (value.intervalMin > value.intervalMax) {
+      return false
+    }
+  }
 
   return true
 }

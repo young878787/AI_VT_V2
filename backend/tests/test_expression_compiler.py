@@ -255,6 +255,21 @@ class ExpressionCompilerTests(unittest.TestCase):
             ],
         )
 
+    def test_build_blink_plan_keeps_set_interval_commands_complete(self):
+        blink_plan = build_blink_plan(
+            {"blink_style": "sleepy_slow"},
+            model_name="Hiyori",
+        )
+
+        self.assertEqual(blink_plan["style"], "sleepy_slow")
+        self.assertEqual(len(blink_plan["commands"]), 1)
+
+        command = blink_plan["commands"][0]
+        self.assertEqual(command["action"], "set_interval")
+        self.assertIn("intervalMin", command)
+        self.assertIn("intervalMax", command)
+        self.assertLessEqual(command["intervalMin"], command["intervalMax"])
+
     def test_compile_expression_plan_coerces_invalid_hold_ms_and_speaking_rate_to_safe_defaults(self):
         plan = compile_expression_plan(
             {
