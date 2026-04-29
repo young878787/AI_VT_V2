@@ -1148,7 +1148,11 @@ export class LAppModel extends CubismUserModel {
     }
 
     const nowMs = performance.now();
-    this._activeExpressionEvents = this._activeExpressionEvents.filter((event) => nowMs - event.startedAtMs < event.durationMs);
+    for (let i = this._activeExpressionEvents.length - 1; i >= 0; i--) {
+      if (nowMs - this._activeExpressionEvents[i].startedAtMs >= this._activeExpressionEvents[i].durationMs) {
+        this._activeExpressionEvents.splice(i, 1);
+      }
+    }
 
     const applyOverlayValue = (key: keyof ExpressionParamPatch, target: number, patchValue: number | undefined, fade: number): number => {
       if (typeof patchValue !== 'number') {
