@@ -6,7 +6,7 @@ import { useAppStore } from '@store/appStore';
 import { useBackgroundStore, type BackgroundType, type BackgroundFit } from '../store/backgroundStore';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { MotionController } from '../live2d/MotionController';
-import { getModelConfig, Priority } from '../live2d/LAppDefine';
+import { Priority } from '../live2d/LAppDefine';
 import { LipSyncManager } from '../audio/LipSyncManager';
 import { ModelImportButton } from './ModelImportButton';
 import './ControlPanel.css';

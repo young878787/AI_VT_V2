@@ -22,6 +22,42 @@ import type { ModelConfig } from './LAppDefine';
 import { ResourcePath, Priority } from './LAppDefine';
 import { LAppTextureManager, TextureInfo } from './LAppTextureManager';
 import { LAppDelegate } from './LAppDelegate';
+import type { ExpressionBasePose, ExpressionIdlePlan, ExpressionMicroEventPatch } from '../types/expressionPlan';
+
+type ExpressionParamPatch = ExpressionMicroEventPatch;
+type BasePoseParams = ExpressionBasePose['params'];
+
+interface ActiveExpressionEvent {
+  kind: string;
+  patch: ExpressionParamPatch;
+  durationMs: number;
+  startedAtMs: number;
+  returnToBase: boolean;
+}
+
+function clampExpressionOverlayValue(key: keyof ExpressionParamPatch, value: number): number {
+  switch (key) {
+    case 'blushLevel':
+      return Math.max(-1, Math.min(1, value));
+    case 'eyeLOpen':
+    case 'eyeROpen':
+      return Math.max(0, Math.min(2, value));
+    case 'mouthForm':
+      return Math.max(-2, Math.min(1, value));
+    case 'browLY':
+    case 'browRY':
+    case 'browLAngle':
+    case 'browRAngle':
+    case 'browLForm':
+    case 'browRForm':
+    case 'browLX':
+    case 'browRX':
+      return Math.max(-1, Math.min(1, value));
+    case 'eyeLSmile':
+    case 'eyeRSmile':
+      return Math.max(0, Math.min(1, value));
+  }
+}
 
 /**
  * LAppModel 類
@@ -133,6 +169,10 @@ export class LAppModel extends CubismUserModel {
   // 原生參數手動覆蓋 (NativeParamPanel 使用者手動控制)
   // key = paramId (string), value = { value, lastSetAt (performance.now ms) }
   private _nativeParamOverrides: Map<string, { value: number; lastSetAt: number }> = new Map();
+  private _activeExpressionEvents: ActiveExpressionEvent[] = [];
+  private _activeIdlePlan: ExpressionIdlePlan | null = null;
+  private _idlePlanActivateAtMs: number = 0;
+  private _idleLoopNextAtMs: number = 0;
 
   /**
    * 建構函式
@@ -795,6 +835,66 @@ export class LAppModel extends CubismUserModel {
     this._aiBehaviorTimer = durationSec;
   }
 
+  public applyBasePose(basePose: { params: BasePoseParams; durationSec: number }): void {
+    this._activeExpressionEvents = [];
+    this._activeIdlePlan = null;
+    this._idlePlanActivateAtMs = 0;
+    this._idleLoopNextAtMs = 0;
+    this.setAiBehavior(
+      basePose.params.headIntensity ?? 0,
+      basePose.params.blushLevel ?? 0,
+      basePose.params.eyeLOpen ?? 1,
+      basePose.params.eyeROpen ?? 1,
+      basePose.durationSec,
+      basePose.params.mouthForm ?? 0,
+      basePose.params.browLY ?? 0,
+      basePose.params.browRY ?? 0,
+      basePose.params.browLAngle ?? 0,
+      basePose.params.browRAngle ?? 0,
+      basePose.params.browLForm ?? 0,
+      basePose.params.browRForm ?? 0,
+      basePose.params.eyeSync ?? true,
+      basePose.params.eyeLSmile ?? 0,
+      basePose.params.eyeRSmile ?? 0,
+      basePose.params.browLX ?? 0,
+      basePose.params.browRX ?? 0,
+    );
+  }
+
+  public applyIdlePlan(idlePlan: ExpressionIdlePlan): void {
+    const activateAtMs = performance.now() + Math.max(0, idlePlan.enterAfterMs);
+    this._activeIdlePlan = idlePlan;
+    this._idlePlanActivateAtMs = activateAtMs;
+    this._idleLoopNextAtMs = activateAtMs;
+  }
+
+  public enqueueMicroEvent(event: {
+    kind: string;
+    patch: ExpressionParamPatch;
+    durationMs: number;
+    returnToBase: boolean;
+  }): void {
+    this._activeExpressionEvents.push({
+      ...event,
+      startedAtMs: performance.now(),
+    });
+  }
+
+  public enqueueSequence(sequence: Array<{
+    kind: string;
+    patch: ExpressionParamPatch;
+    durationMs: number;
+    returnToBase: boolean;
+  }>): void {
+    for (const step of sequence) {
+      this.enqueueMicroEvent(step);
+    }
+  }
+
+  public applyDeterministicVariation(_context: { preset?: string; energy?: number }): void {
+    // Phase 3 再擴充；先保留接口，避免未來重改 update loop 命名
+  }
+
   /**
    * 取得目前 AI 控制的表情參數值（供 UI 面板即時讀取）
    */
@@ -1000,6 +1100,7 @@ export class LAppModel extends CubismUserModel {
     let targetEyeRSmile: number;
     let targetBrowLX: number;
     let targetBrowRX: number;
+    const nowMs = performance.now();
 
     if (this._aiBehaviorTimer > 0) {
       this._aiBehaviorTimer -= deltaTimeSeconds;
@@ -1042,6 +1143,47 @@ export class LAppModel extends CubismUserModel {
       targetEyeRSmile = this._aiEyeRSmile;
       targetBrowLX    = this._aiBrowLX;
       targetBrowRX    = this._aiBrowRX;
+    } else if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
+      this._aiHeadIntensity = 0;
+      const idleParams = this._activeIdlePlan.settlePose.params;
+      targetBlush     = idleParams.blushLevel;
+      targetEyeL      = idleParams.eyeLOpen;
+      targetEyeR      = idleParams.eyeROpen;
+      targetMouthForm = idleParams.mouthForm;
+      targetBrowLY    = idleParams.browLY;
+      targetBrowRY    = idleParams.browRY;
+      targetBrowLAngle = idleParams.browLAngle;
+      targetBrowRAngle = idleParams.browRAngle;
+      targetBrowLForm = idleParams.browLForm;
+      targetBrowRForm = idleParams.browRForm;
+      targetEyeLSmile = idleParams.eyeLSmile;
+      targetEyeRSmile = idleParams.eyeRSmile;
+      targetBrowLX    = idleParams.browLX;
+      targetBrowRX    = idleParams.browRX;
+      this._aiEyeSync = idleParams.eyeSync;
+
+      if (nowMs >= this._idleLoopNextAtMs) {
+        for (const event of this._activeIdlePlan.loopEvents) {
+          this.enqueueMicroEvent(event);
+        }
+        this._idleLoopNextAtMs = nowMs + Math.max(500, this._activeIdlePlan.loopIntervalMs);
+      }
+    } else if (this._activeIdlePlan) {
+      this._aiHeadIntensity = 0;
+      targetBlush     = this._aiBlushLevel;
+      targetEyeL      = this._aiEyeLOpen;
+      targetEyeR      = this._aiEyeROpen;
+      targetMouthForm = this._aiMouthForm;
+      targetBrowLY    = this._aiBrowLY;
+      targetBrowRY    = this._aiBrowRY;
+      targetBrowLAngle = this._aiBrowLAngle;
+      targetBrowRAngle = this._aiBrowRAngle;
+      targetBrowLForm = this._aiBrowLForm;
+      targetBrowRForm = this._aiBrowRForm;
+      targetEyeLSmile = this._aiEyeLSmile;
+      targetEyeRSmile = this._aiEyeRSmile;
+      targetBrowLX    = this._aiBrowLX;
+      targetBrowRX    = this._aiBrowRX;
     } else {
       this._aiHeadIntensity = 0;
       targetBlush     = 0.0;
@@ -1058,6 +1200,37 @@ export class LAppModel extends CubismUserModel {
       targetEyeRSmile = 0.0;
       targetBrowLX    = 0.0;
       targetBrowRX    = 0.0;
+    }
+
+    this._activeExpressionEvents = this._activeExpressionEvents.filter((event) => nowMs - event.startedAtMs < event.durationMs);
+
+    const applyOverlayValue = (key: keyof ExpressionParamPatch, target: number, patchValue: number | undefined, fade: number): number => {
+      if (typeof patchValue !== 'number') {
+        return target;
+      }
+      const clampedPatchValue = clampExpressionOverlayValue(key, patchValue);
+      return clampExpressionOverlayValue(key, target + (clampedPatchValue - target) * fade);
+    };
+
+    for (const event of this._activeExpressionEvents) {
+      const durationMs = Math.max(1, event.durationMs);
+      const progress = Math.min(1, (nowMs - event.startedAtMs) / durationMs);
+      const fade = event.returnToBase ? 1 - progress : 1;
+
+      targetBlush = applyOverlayValue('blushLevel', targetBlush, event.patch.blushLevel, fade);
+      targetEyeL = applyOverlayValue('eyeLOpen', targetEyeL, event.patch.eyeLOpen, fade);
+      targetEyeR = applyOverlayValue('eyeROpen', targetEyeR, event.patch.eyeROpen, fade);
+      targetMouthForm = applyOverlayValue('mouthForm', targetMouthForm, event.patch.mouthForm, fade);
+      targetBrowLY = applyOverlayValue('browLY', targetBrowLY, event.patch.browLY, fade);
+      targetBrowRY = applyOverlayValue('browRY', targetBrowRY, event.patch.browRY, fade);
+      targetBrowLAngle = applyOverlayValue('browLAngle', targetBrowLAngle, event.patch.browLAngle, fade);
+      targetBrowRAngle = applyOverlayValue('browRAngle', targetBrowRAngle, event.patch.browRAngle, fade);
+      targetBrowLForm = applyOverlayValue('browLForm', targetBrowLForm, event.patch.browLForm, fade);
+      targetBrowRForm = applyOverlayValue('browRForm', targetBrowRForm, event.patch.browRForm, fade);
+      targetEyeLSmile = applyOverlayValue('eyeLSmile', targetEyeLSmile, event.patch.eyeLSmile, fade);
+      targetEyeRSmile = applyOverlayValue('eyeRSmile', targetEyeRSmile, event.patch.eyeRSmile, fade);
+      targetBrowLX = applyOverlayValue('browLX', targetBrowLX, event.patch.browLX, fade);
+      targetBrowRX = applyOverlayValue('browRX', targetBrowRX, event.patch.browRX, fade);
     }
 
     const lerpFactor = Math.min(1.0, 5.0 * deltaTimeSeconds);

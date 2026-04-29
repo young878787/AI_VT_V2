@@ -5,6 +5,7 @@ import { create } from 'zustand';
 import { AvailableModels, type ModelConfig } from '../live2d/LAppDefine';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { fetchAvailableModels, type RemoteModelConfig } from '../services/modelService';
+import type { BlinkAction, ExpressionIdlePlan, ExpressionMicroEvent, ExpressionPlanPayload } from '../types/expressionPlan';
 
 export interface ChatMessage {
   id: string;
@@ -18,6 +19,19 @@ export interface JPAFState {
   auxiliary: string;
   baseWeights: Record<string, number>;
   turnCount: number;
+}
+
+interface AiBehaviorBridgeModel {
+  setAiBehavior?: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number) => void;
+  setAiHappiness?: (headIntensity: number, durationSec?: number) => void;
+  forceBlink?: (durationSec?: number) => void;
+  pauseAutoBlink?: (durationSec?: number) => void;
+  resumeAutoBlink?: () => void;
+  setBlinkInterval?: (intervalMin: number, intervalMax: number) => void;
+  applyBasePose?: (basePose: ExpressionPlanPayload['basePose']) => void;
+  applyIdlePlan?: (idlePlan: ExpressionIdlePlan) => void;
+  enqueueMicroEvent?: (event: ExpressionMicroEvent) => void;
+  enqueueSequence?: (sequence: ExpressionMicroEvent[]) => void;
 }
 
 interface AppState {
@@ -61,6 +75,8 @@ interface AppState {
     eyeLOpen: number;
     eyeROpen: number;
   };
+  expressionPlan: ExpressionPlanPayload | null;
+  expressionEvents: ExpressionMicroEvent[];
 
   // 動作
   toggleMicrophone: () => void;
@@ -78,7 +94,10 @@ interface AppState {
   setAiTyping: (isTyping: boolean) => void;
   setCompressing: (isCompressing: boolean) => void;
   setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number) => void;
-  setBlinkControl: (action: string, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
+  setBlinkControl: (action: BlinkAction, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
+  setExpressionPlan: (plan: ExpressionPlanPayload) => void;
+  enqueueExpressionEvents: (events: ExpressionMicroEvent[]) => void;
+  clearExpressionEvents: () => void;
 
   // 模型變換動作
   toggleModelDrag: () => void;
@@ -140,6 +159,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     eyeLOpen: 1,
     eyeROpen: 1
   },
+  expressionPlan: null,
+  expressionEvents: [],
 
   // JPAF 初始狀態
   jpafState: null,
@@ -330,16 +351,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     const manager = LAppLive2DManager.getInstance();
     const model = manager.getActiveModel();
     if (model) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (typeof (model as any).setAiBehavior === 'function') {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (model as any).setAiBehavior(headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec, mouthForm, browLY, browRY, browLAngle, browRAngle, browLForm, browRForm, eyeSync, eyeLSmile, eyeRSmile, browLX, browRX);
+      const bridgeModel = model as unknown as AiBehaviorBridgeModel;
+
+      if (typeof bridgeModel.setAiBehavior === 'function') {
+        bridgeModel.setAiBehavior(headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec, mouthForm, browLY, browRY, browLAngle, browRAngle, browLForm, browRForm, eyeSync, eyeLSmile, eyeRSmile, browLX, browRX);
       } else {
         // Fallback to older method if available
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        if (typeof (model as any).setAiHappiness === 'function') {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-           (model as any).setAiHappiness(headIntensity, durationSec);
+        if (typeof bridgeModel.setAiHappiness === 'function') {
+          bridgeModel.setAiHappiness(headIntensity, durationSec);
         }
       }
     }
@@ -350,30 +369,54 @@ export const useAppStore = create<AppState>((set, get) => ({
     const model = manager.getActiveModel();
     if (!model) return;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const m = model as any;
+    const bridgeModel = model as unknown as AiBehaviorBridgeModel;
 
     switch (action) {
       case 'force_blink':
-        if (typeof m.forceBlink === 'function') {
-          m.forceBlink(durationSec);
+        if (typeof bridgeModel.forceBlink === 'function') {
+          bridgeModel.forceBlink(durationSec);
         }
         break;
       case 'pause':
-        if (typeof m.pauseAutoBlink === 'function') {
-          m.pauseAutoBlink(durationSec);
+        if (typeof bridgeModel.pauseAutoBlink === 'function') {
+          bridgeModel.pauseAutoBlink(durationSec);
         }
         break;
       case 'resume':
-        if (typeof m.resumeAutoBlink === 'function') {
-          m.resumeAutoBlink();
+        if (typeof bridgeModel.resumeAutoBlink === 'function') {
+          bridgeModel.resumeAutoBlink();
         }
         break;
       case 'set_interval':
-        if (typeof m.setBlinkInterval === 'function' && intervalMin !== undefined && intervalMax !== undefined) {
-          m.setBlinkInterval(intervalMin, intervalMax);
+        if (typeof bridgeModel.setBlinkInterval === 'function' && intervalMin !== undefined && intervalMax !== undefined) {
+          bridgeModel.setBlinkInterval(intervalMin, intervalMax);
         }
         break;
     }
   },
+
+  setExpressionPlan: (plan) => {
+    set({ expressionPlan: plan, expressionEvents: plan.microEvents ?? [] });
+
+    const manager = LAppLive2DManager.getInstance();
+    const model = manager.getActiveModel();
+    if (!model) return;
+
+    const bridgeModel = model as unknown as AiBehaviorBridgeModel;
+    bridgeModel.applyBasePose?.(plan.basePose);
+    for (const event of plan.microEvents ?? []) {
+      bridgeModel.enqueueMicroEvent?.(event);
+    }
+    if ((plan.sequence ?? []).length > 0) {
+      bridgeModel.enqueueSequence?.(plan.sequence);
+    }
+    if (plan.idlePlan) {
+      bridgeModel.applyIdlePlan?.(plan.idlePlan);
+    }
+  },
+
+  enqueueExpressionEvents: (events) =>
+    set((state) => ({ expressionEvents: [...state.expressionEvents, ...events] })),
+
+  clearExpressionEvents: () => set({ expressionEvents: [] }),
 }));

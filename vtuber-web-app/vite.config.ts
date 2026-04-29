@@ -30,8 +30,11 @@ export default defineConfig(({ mode }) => {
       sourcemap: true,
       rollupOptions: {
         output: {
-          manualChunks: {
-            'live2d-core': ['./public/Core/live2dcubismcore.js'],
+          manualChunks(id) {
+            if (id.includes('live2dcubismcore')) {
+              return 'live2d-core'
+            }
+            return undefined
           },
         },
       },

@@ -73,7 +73,7 @@ export class TTSPlayer {
      * @param format 音訊格式（預設 mp3）
      * @returns Promise，播放完成時 resolve
      */
-    public async play(audioBase64: string, format: string = 'mp3'): Promise<void> {
+    public async play(audioBase64: string, _format: string = 'mp3'): Promise<void> {
         // 停止當前播放
         this.stop();
         

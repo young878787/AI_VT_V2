@@ -1,6 +1,6 @@
 // ============================================
 // 自動生成檔案 — 請勿手動修改
-// 來源：backend/domain/tools_schema.json
+// 來源：backend/domain/tools/Hiyori.json
 // 命令：node scripts/generate-tools-ts.js
 // ============================================
 
@@ -44,7 +44,7 @@ export const PARAM_DEFS: ParamDef[] = [
     backendKey: 'eye_l_open',
     label: '左眼張開',
     min: 0,
-    max: 2,
+    max: 1.2,
     step: 0.01,
     emoji: '👁',
     color: '#7dd3fc',
@@ -55,7 +55,7 @@ export const PARAM_DEFS: ParamDef[] = [
     backendKey: 'eye_r_open',
     label: '右眼張開',
     min: 0,
-    max: 2,
+    max: 1.2,
     step: 0.01,
     emoji: '👁',
     color: '#7dd3fc',

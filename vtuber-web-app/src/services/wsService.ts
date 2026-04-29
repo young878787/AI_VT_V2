@@ -1,5 +1,6 @@
 import { useAppStore } from '../store/appStore';
 import { TTSPlayer } from '../audio/TTSPlayer';
+import { isBlinkAction, isExpressionPlanPayload } from '../types/expressionPlan';
 
 class WSService {
     private ws: WebSocket | null = null;
@@ -92,12 +93,34 @@ class WSService {
                     );
                 } else if (data.type === 'blink_control') {
                     console.log(`Received blink control: action=${data.action}, duration=${data.durationSec}`);
-                    store.setBlinkControl(
-                        data.action,
-                        data.durationSec ?? 0,
-                        data.intervalMin,
-                        data.intervalMax
-                    );
+                    if (isBlinkAction(data.action)) {
+                        store.setBlinkControl(
+                            data.action,
+                            data.durationSec ?? 0,
+                            data.intervalMin,
+                            data.intervalMax
+                        );
+                    }
+                } else if (data.type === 'expression_plan') {
+                    if (!isExpressionPlanPayload(data)) {
+                        console.warn('Received invalid expression_plan payload:', data);
+                        return;
+                    }
+
+                    const plan = data;
+
+                    store.setExpressionPlan(plan);
+
+                    for (const command of plan.blinkPlan?.commands ?? []) {
+                        if (isBlinkAction(command.action)) {
+                            store.setBlinkControl(
+                                command.action,
+                                command.durationSec ?? 0,
+                                command.intervalMin,
+                                command.intervalMax,
+                            );
+                        }
+                    }
                 } else if (data.type === 'stream_end') {
                     this.currentAssistantMessageId = null;
                     store.setAiTyping(false);

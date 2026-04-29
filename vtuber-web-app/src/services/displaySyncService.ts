@@ -12,6 +12,7 @@
  */
 
 import { useAppStore } from '../store/appStore';
+import { isBlinkAction, isExpressionPlanPayload } from '../types/expressionPlan';
 
 class DisplaySyncService {
   private ws: WebSocket | null = null;
@@ -50,8 +51,10 @@ class DisplaySyncService {
     this.ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string);
+        const store = useAppStore.getState();
+
         if (data.type === 'behavior') {
-          useAppStore.getState().setAiBehavior(
+          store.setAiBehavior(
             data.headIntensity  ?? 0.3,
             data.blushLevel     ?? 0.0,
             data.eyeLOpen       ?? 1.0,
@@ -70,6 +73,26 @@ class DisplaySyncService {
             data.browLX         ?? 0.0,
             data.browRX         ?? 0.0,
           );
+        } else if (data.type === 'expression_plan') {
+          if (!isExpressionPlanPayload(data)) {
+            console.warn('[DisplaySync] 收到無效的 expression_plan payload:', data);
+            return;
+          }
+
+          const plan = data;
+
+          store.setExpressionPlan(plan);
+
+          for (const command of plan.blinkPlan?.commands ?? []) {
+            if (isBlinkAction(command.action)) {
+              store.setBlinkControl(
+                command.action,
+                command.durationSec ?? 0,
+                command.intervalMin,
+                command.intervalMax,
+              );
+            }
+          }
         }
         // 忽略 ping 等其他訊息類型
       } catch (e) {
