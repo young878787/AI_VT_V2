@@ -669,11 +669,24 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
         if isinstance(event, dict) and event.get("kind")
     ]
     loop_summary = ",".join(loop_names) if loop_names else "none"
+    ambient_enter_after_ms = idle_plan.get("ambientEnterAfterMs", "?")
+    ambient_switch_interval_ms = idle_plan.get("ambientSwitchIntervalMs", "?")
+    ambient_plan = idle_plan.get("ambientPlan") if isinstance(idle_plan.get("ambientPlan"), dict) else {}
+    ambient_states = ambient_plan.get("states") if isinstance(ambient_plan.get("states"), list) else []
+    ambient_names = [
+        str(state.get("kind"))
+        for state in ambient_states
+        if isinstance(state, dict) and state.get("kind")
+    ]
+    ambient_summary = ",".join(ambient_names) if ambient_names else "none"
     return (
         f"expression_plan idlePlan {name} "
         f"enterAfterMs {enter_after_ms} "
         f"actionMs {action_ms} speakingMs {speaking_ms} "
-        f"loopEvents {loop_summary}"
+        f"loopEvents {loop_summary} "
+        f"ambientEnterMs {ambient_enter_after_ms} "
+        f"ambientSwitchMs {ambient_switch_interval_ms} "
+        f"ambientStates {ambient_summary}"
     )
 
 

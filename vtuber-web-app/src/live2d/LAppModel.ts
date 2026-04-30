@@ -22,9 +22,10 @@ import type { ModelConfig } from './LAppDefine';
 import { ResourcePath, Priority } from './LAppDefine';
 import { LAppTextureManager, TextureInfo } from './LAppTextureManager';
 import { LAppDelegate } from './LAppDelegate';
-import type { ExpressionBasePose, ExpressionIdlePlan, ExpressionMicroEventPatch } from '../types/expressionPlan';
+import type { ExpressionBasePose, ExpressionIdleAmbientState, ExpressionIdlePlan, ExpressionMicroEventPatch } from '../types/expressionPlan';
 
 type ExpressionParamPatch = ExpressionMicroEventPatch;
+type ExpressionOverlayKey = keyof ExpressionParamPatch | 'headIntensity';
 type BasePoseParams = ExpressionBasePose['params'];
 
 interface ActiveExpressionEvent {
@@ -35,8 +36,10 @@ interface ActiveExpressionEvent {
   returnToBase: boolean;
 }
 
-function clampExpressionOverlayValue(key: keyof ExpressionParamPatch, value: number): number {
+function clampExpressionOverlayValue(key: ExpressionOverlayKey, value: number): number {
   switch (key) {
+    case 'headIntensity':
+      return Math.max(0, Math.min(0.95, value));
     case 'blushLevel':
       return Math.max(-1, Math.min(1, value));
     case 'eyeLOpen':
@@ -57,6 +60,19 @@ function clampExpressionOverlayValue(key: keyof ExpressionParamPatch, value: num
     case 'eyeRSmile':
       return Math.max(0, Math.min(1, value));
   }
+}
+
+function shuffleIndices(count: number): number[] {
+  const indices = Array.from({ length: count }, (_, index) => index);
+  for (let index = indices.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [indices[index], indices[swapIndex]] = [indices[swapIndex], indices[index]];
+  }
+  return indices;
+}
+
+function randomBetween(min: number, max: number): number {
+  return min + (Math.random() * (max - min));
 }
 
 /**
@@ -173,6 +189,12 @@ export class LAppModel extends CubismUserModel {
   private _activeIdlePlan: ExpressionIdlePlan | null = null;
   private _idlePlanActivateAtMs: number = 0;
   private _idleLoopNextAtMs: number = 0;
+  private _ambientIdleStartAtMs: number = 0;
+  private _ambientIdleNextSwitchAtMs: number = 0;
+  private _ambientIdleStateOrder: number[] = [];
+  private _ambientIdleStateOrderIndex: number = 0;
+  private _ambientIdleActiveState: ExpressionIdleAmbientState | null = null;
+  private _ambientIdleActivePose: BasePoseParams | null = null;
 
   /**
    * 建構函式
@@ -840,6 +862,12 @@ export class LAppModel extends CubismUserModel {
     this._activeIdlePlan = null;
     this._idlePlanActivateAtMs = 0;
     this._idleLoopNextAtMs = 0;
+    this._ambientIdleStartAtMs = 0;
+    this._ambientIdleNextSwitchAtMs = 0;
+    this._ambientIdleStateOrder = [];
+    this._ambientIdleStateOrderIndex = 0;
+    this._ambientIdleActiveState = null;
+    this._ambientIdleActivePose = null;
     this.setAiBehavior(
       basePose.params.headIntensity ?? 0,
       basePose.params.blushLevel ?? 0,
@@ -862,10 +890,123 @@ export class LAppModel extends CubismUserModel {
   }
 
   public applyIdlePlan(idlePlan: ExpressionIdlePlan): void {
-    const activateAtMs = performance.now() + Math.max(0, idlePlan.enterAfterMs);
+    const nowMs = performance.now();
+    const enterAfterMs = Math.max(0, idlePlan.enterAfterMs);
+    const activateAtMs = nowMs + enterAfterMs;
+    const ambientEnterAfterMs = idlePlan.ambientEnterAfterMs;
+    const ambientStartDelayMs =
+      typeof ambientEnterAfterMs === 'number' && Number.isFinite(ambientEnterAfterMs)
+        ? Math.max(0, ambientEnterAfterMs)
+        : Number.POSITIVE_INFINITY;
     this._activeIdlePlan = idlePlan;
     this._idlePlanActivateAtMs = activateAtMs;
     this._idleLoopNextAtMs = activateAtMs;
+    this._ambientIdleStartAtMs = Number.isFinite(ambientStartDelayMs)
+      ? nowMs + ambientStartDelayMs
+      : Number.POSITIVE_INFINITY;
+    this._ambientIdleNextSwitchAtMs = 0;
+    this._ambientIdleStateOrder = [];
+    this._ambientIdleStateOrderIndex = 0;
+    this._ambientIdleActiveState = null;
+    this._ambientIdleActivePose = null;
+
+    const ambientStates = idlePlan.ambientPlan?.states.map((state) => state.kind).join(',') ?? 'none';
+    const ambientStartSummary = Number.isFinite(ambientStartDelayMs) ? Math.round(ambientStartDelayMs) : 'disabled';
+    LAppPal.log(
+      `[ExpressionIdle] idlePlan=${idlePlan.name} enterAfterMs=${Math.round(enterAfterMs)} `
+      + `ambientEnterAfterMs=${ambientStartSummary} `
+      + `ambientSwitchIntervalMs=${idlePlan.ambientSwitchIntervalMs ?? 'default'} `
+      + `ambientStates=${ambientStates}`,
+    );
+  }
+
+  private buildAmbientStateParams(state: ExpressionIdleAmbientState): BasePoseParams {
+    const params: BasePoseParams = { ...state.params };
+    const mutableParams = params as Record<keyof BasePoseParams, number | boolean>;
+    const jitterMap: Partial<Record<keyof BasePoseParams, number>> = {
+      headIntensity: 0.015,
+      blushLevel: 0.05,
+      eyeLOpen: 0.05,
+      eyeROpen: 0.05,
+      mouthForm: 0.04,
+      browLY: 0.04,
+      browRY: 0.04,
+      browLAngle: 0.05,
+      browRAngle: 0.05,
+      browLForm: 0.04,
+      browRForm: 0.04,
+      eyeLSmile: 0.03,
+      eyeRSmile: 0.03,
+      browLX: 0.03,
+      browRX: 0.03,
+    };
+
+    for (const [key, spread] of Object.entries(jitterMap) as Array<[keyof BasePoseParams, number]>) {
+      const currentValue = params[key];
+      if (typeof currentValue !== 'number') {
+        continue;
+      }
+      const jitteredValue = currentValue + randomBetween(-spread, spread);
+      mutableParams[key] = clampExpressionOverlayValue(key as ExpressionOverlayKey, jitteredValue);
+    }
+
+    return params;
+  }
+
+  private activateAmbientState(nowMs: number): void {
+    const ambientPlan = this._activeIdlePlan?.ambientPlan;
+    if (!ambientPlan?.states?.length) {
+      this._ambientIdleActiveState = null;
+      this._ambientIdleActivePose = null;
+      this._ambientIdleNextSwitchAtMs = 0;
+      return;
+    }
+
+    if (this._ambientIdleStateOrder.length !== ambientPlan.states.length) {
+      this._ambientIdleStateOrder = shuffleIndices(ambientPlan.states.length);
+      this._ambientIdleStateOrderIndex = 0;
+    } else if (this._ambientIdleStateOrderIndex >= this._ambientIdleStateOrder.length) {
+      this._ambientIdleStateOrderIndex = 0;
+    }
+
+    const stateIndex = this._ambientIdleStateOrder[this._ambientIdleStateOrderIndex];
+    this._ambientIdleActiveState = ambientPlan.states[stateIndex];
+    this._ambientIdleActivePose = this.buildAmbientStateParams(this._ambientIdleActiveState);
+    const switchIntervalMs = Math.max(1000, this._activeIdlePlan?.ambientSwitchIntervalMs ?? 7000);
+    this._ambientIdleNextSwitchAtMs = nowMs + switchIntervalMs;
+    this._activeExpressionEvents = [];
+    LAppPal.log(
+      `[ExpressionIdle] ambient enter state=${this._ambientIdleActiveState.kind} `
+      + `nextSwitchMs=${Math.round(switchIntervalMs)}`,
+    );
+  }
+
+  private advanceAmbientState(nowMs: number): void {
+    const ambientPlan = this._activeIdlePlan?.ambientPlan;
+    if (!ambientPlan?.states?.length) {
+      this._ambientIdleActiveState = null;
+      this._ambientIdleActivePose = null;
+      this._ambientIdleNextSwitchAtMs = 0;
+      return;
+    }
+
+    if (this._ambientIdleStateOrder.length !== ambientPlan.states.length) {
+      this._ambientIdleStateOrder = shuffleIndices(ambientPlan.states.length);
+      this._ambientIdleStateOrderIndex = 0;
+    } else {
+      this._ambientIdleStateOrderIndex = (this._ambientIdleStateOrderIndex + 1) % this._ambientIdleStateOrder.length;
+    }
+
+    const stateIndex = this._ambientIdleStateOrder[this._ambientIdleStateOrderIndex];
+    this._ambientIdleActiveState = ambientPlan.states[stateIndex];
+    this._ambientIdleActivePose = this.buildAmbientStateParams(this._ambientIdleActiveState);
+    const switchIntervalMs = Math.max(1000, this._activeIdlePlan?.ambientSwitchIntervalMs ?? 7000);
+    this._ambientIdleNextSwitchAtMs = nowMs + switchIntervalMs;
+    this._activeExpressionEvents = [];
+    LAppPal.log(
+      `[ExpressionIdle] ambient switch state=${this._ambientIdleActiveState.kind} `
+      + `nextSwitchMs=${Math.round(switchIntervalMs)}`,
+    );
   }
 
   public enqueueMicroEvent(event: {
@@ -1144,29 +1285,57 @@ export class LAppModel extends CubismUserModel {
       targetBrowLX    = this._aiBrowLX;
       targetBrowRX    = this._aiBrowRX;
     } else if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
-      this._aiHeadIntensity = 0;
-      const idleParams = this._activeIdlePlan.settlePose.params;
-      targetBlush     = idleParams.blushLevel;
-      targetEyeL      = idleParams.eyeLOpen;
-      targetEyeR      = idleParams.eyeROpen;
-      targetMouthForm = idleParams.mouthForm;
-      targetBrowLY    = idleParams.browLY;
-      targetBrowRY    = idleParams.browRY;
-      targetBrowLAngle = idleParams.browLAngle;
-      targetBrowRAngle = idleParams.browRAngle;
-      targetBrowLForm = idleParams.browLForm;
-      targetBrowRForm = idleParams.browRForm;
-      targetEyeLSmile = idleParams.eyeLSmile;
-      targetEyeRSmile = idleParams.eyeRSmile;
-      targetBrowLX    = idleParams.browLX;
-      targetBrowRX    = idleParams.browRX;
-      this._aiEyeSync = idleParams.eyeSync;
+      const ambientPlan = this._activeIdlePlan.ambientPlan;
+      const ambientReady = !!ambientPlan?.states?.length && nowMs >= this._ambientIdleStartAtMs;
 
-      if (nowMs >= this._idleLoopNextAtMs) {
-        for (const event of this._activeIdlePlan.loopEvents) {
-          this.enqueueMicroEvent(event);
+      if (ambientReady) {
+        if (!this._ambientIdleActiveState) {
+          this.activateAmbientState(nowMs);
+        } else if (nowMs >= this._ambientIdleNextSwitchAtMs) {
+          this.advanceAmbientState(nowMs);
         }
-        this._idleLoopNextAtMs = nowMs + Math.max(500, this._activeIdlePlan.loopIntervalMs);
+
+        const ambientParams = this._ambientIdleActivePose ?? this._activeIdlePlan.settlePose.params;
+        targetBlush     = ambientParams.blushLevel;
+        targetEyeL      = ambientParams.eyeLOpen;
+        targetEyeR      = ambientParams.eyeROpen;
+        targetMouthForm = ambientParams.mouthForm;
+        targetBrowLY    = ambientParams.browLY;
+        targetBrowRY    = ambientParams.browRY;
+        targetBrowLAngle = ambientParams.browLAngle;
+        targetBrowRAngle = ambientParams.browRAngle;
+        targetBrowLForm = ambientParams.browLForm;
+        targetBrowRForm = ambientParams.browRForm;
+        targetEyeLSmile = ambientParams.eyeLSmile;
+        targetEyeRSmile = ambientParams.eyeRSmile;
+        targetBrowLX    = ambientParams.browLX;
+        targetBrowRX    = ambientParams.browRX;
+        this._aiEyeSync = ambientParams.eyeSync;
+      } else {
+        this._aiHeadIntensity = 0;
+        const idleParams = this._activeIdlePlan.settlePose.params;
+        targetBlush     = idleParams.blushLevel;
+        targetEyeL      = idleParams.eyeLOpen;
+        targetEyeR      = idleParams.eyeROpen;
+        targetMouthForm = idleParams.mouthForm;
+        targetBrowLY    = idleParams.browLY;
+        targetBrowRY    = idleParams.browRY;
+        targetBrowLAngle = idleParams.browLAngle;
+        targetBrowRAngle = idleParams.browRAngle;
+        targetBrowLForm = idleParams.browLForm;
+        targetBrowRForm = idleParams.browRForm;
+        targetEyeLSmile = idleParams.eyeLSmile;
+        targetEyeRSmile = idleParams.eyeRSmile;
+        targetBrowLX    = idleParams.browLX;
+        targetBrowRX    = idleParams.browRX;
+        this._aiEyeSync = idleParams.eyeSync;
+
+        if (nowMs >= this._idleLoopNextAtMs) {
+          for (const event of this._activeIdlePlan.loopEvents) {
+            this.enqueueMicroEvent(event);
+          }
+          this._idleLoopNextAtMs = nowMs + Math.max(500, this._activeIdlePlan.loopIntervalMs);
+        }
       }
     } else if (this._activeIdlePlan) {
       this._aiHeadIntensity = 0;

@@ -45,11 +45,22 @@ export interface ExpressionMicroEvent {
   returnToBase: boolean
 }
 
+export interface ExpressionIdleAmbientState {
+  kind: 'ambient_idle_breath' | 'ambient_idle_look_around' | 'ambient_idle_active_shift'
+  params: ExpressionBasePose['params']
+}
+
+export interface ExpressionIdleAmbientPlan {
+  states: ExpressionIdleAmbientState[]
+}
+
 export interface ExpressionIdlePlan {
   name: 'happy_idle' | 'crying_idle' | 'angry_glare_idle' | 'shy_idle' | 'gloomy_idle'
   mode: 'loop'
   enterAfterMs: number
   loopIntervalMs: number
+  ambientEnterAfterMs?: number
+  ambientSwitchIntervalMs?: number
   interruptible: boolean
   source?: {
     actionEnterAfterMs?: number
@@ -57,6 +68,7 @@ export interface ExpressionIdlePlan {
   }
   settlePose: ExpressionBasePose
   loopEvents: ExpressionMicroEvent[]
+  ambientPlan?: ExpressionIdleAmbientPlan
 }
 
 export interface BlinkCommand {
@@ -181,6 +193,27 @@ function isExpressionMicroEvent(value: unknown): value is ExpressionMicroEvent {
   )
 }
 
+function isExpressionIdleAmbientState(value: unknown): value is ExpressionIdleAmbientState {
+  return (
+    isRecord(value) &&
+    (
+      value.kind === 'ambient_idle_breath' ||
+      value.kind === 'ambient_idle_look_around' ||
+      value.kind === 'ambient_idle_active_shift'
+    ) &&
+    hasExpressionBasePoseParams(value.params)
+  )
+}
+
+function isExpressionIdleAmbientPlan(value: unknown): value is ExpressionIdleAmbientPlan {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.states) &&
+    value.states.length === 3 &&
+    value.states.every(isExpressionIdleAmbientState)
+  )
+}
+
 function isExpressionBasePose(value: unknown): value is ExpressionBasePose {
   return isRecord(value) && typeof value.preset === 'string' && isNumber(value.durationSec) && hasExpressionBasePoseParams(value.params)
 }
@@ -204,6 +237,14 @@ function isExpressionIdlePlan(value: unknown): value is ExpressionIdlePlan {
     value.mode === 'loop' &&
     isNumber(value.enterAfterMs) &&
     isNumber(value.loopIntervalMs) &&
+    (
+      value.ambientEnterAfterMs === undefined ||
+      isNumber(value.ambientEnterAfterMs)
+    ) &&
+    (
+      value.ambientSwitchIntervalMs === undefined ||
+      isNumber(value.ambientSwitchIntervalMs)
+    ) &&
     typeof value.interruptible === 'boolean' &&
     (
       value.source === undefined ||
@@ -215,7 +256,15 @@ function isExpressionIdlePlan(value: unknown): value is ExpressionIdlePlan {
     ) &&
     isExpressionBasePose(value.settlePose) &&
     Array.isArray(value.loopEvents) &&
-    value.loopEvents.every(isExpressionMicroEvent)
+    value.loopEvents.every(isExpressionMicroEvent) &&
+    (
+      value.ambientPlan === undefined ||
+      (
+        isExpressionIdleAmbientPlan(value.ambientPlan) &&
+        isNumber(value.ambientEnterAfterMs) &&
+        isNumber(value.ambientSwitchIntervalMs)
+      )
+    )
   )
 }
 

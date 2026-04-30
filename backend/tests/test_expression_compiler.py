@@ -902,6 +902,96 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertGreater(settle["eyeLOpen"], 1.0)
         self.assertGreater(settle["browLAngle"], 0.35)
 
+    def test_idle_plan_families_have_distinct_contextual_motion(self):
+        cases = {
+            "happy_idle": {"emotion": "happy", "performance_mode": "smile"},
+            "crying_idle": {
+                "emotion": "sad",
+                "performance_mode": "awkward",
+                "topic_guard": {
+                    "must_preserve_theme": True,
+                    "source_theme": "crying",
+                    "allow_style_override": False,
+                },
+            },
+            "angry_glare_idle": {"emotion": "angry", "performance_mode": "meltdown"},
+            "shy_idle": {"emotion": "shy", "performance_mode": "awkward"},
+            "gloomy_idle": {"emotion": "gloomy", "performance_mode": "deadpan"},
+        }
+
+        plans = {
+            idle_name: compile_expression_plan(
+                intent,
+                model_name="Hiyori",
+                previous_state=None,
+            )["idlePlan"]
+            for idle_name, intent in cases.items()
+        }
+
+        event_kinds = {
+            idle_name: plan["loopEvents"][0]["kind"]
+            for idle_name, plan in plans.items()
+        }
+        self.assertEqual(len(set(event_kinds.values())), len(event_kinds))
+        self.assertEqual(
+            len({plan["loopIntervalMs"] for plan in plans.values()}),
+            len(plans),
+        )
+        ambient_state_kinds = {
+            tuple(state["kind"] for state in plan["ambientPlan"]["states"])
+            for plan in plans.values()
+        }
+        self.assertEqual(
+            ambient_state_kinds,
+            {
+                (
+                    "ambient_idle_breath",
+                    "ambient_idle_look_around",
+                    "ambient_idle_active_shift",
+                )
+            },
+        )
+        for plan in plans.values():
+            self.assertGreaterEqual(plan["ambientEnterAfterMs"], plan["enterAfterMs"] + 9000)
+            self.assertLessEqual(plan["ambientEnterAfterMs"], plan["enterAfterMs"] + 14000)
+            self.assertGreaterEqual(plan["ambientSwitchIntervalMs"], 5200)
+            self.assertLessEqual(plan["ambientSwitchIntervalMs"], 9200)
+            self.assertEqual(len(plan["ambientPlan"]["states"]), 3)
+
+        happy = plans["happy_idle"]["settlePose"]["params"]
+        self.assertGreater(happy["mouthForm"], 0.2)
+        self.assertGreater(happy["eyeLSmile"], 0.35)
+        self.assertGreater(happy["blushLevel"], 0.0)
+
+        crying = plans["crying_idle"]["settlePose"]["params"]
+        self.assertLess(crying["mouthForm"], -0.25)
+        self.assertLess(crying["eyeLOpen"], 0.65)
+        self.assertLess(crying["blushLevel"], -0.45)
+        self.assertLess(crying["browLAngle"], 0.0)
+
+        angry = plans["angry_glare_idle"]["settlePose"]["params"]
+        self.assertGreater(angry["eyeLOpen"], 1.1)
+        self.assertGreater(angry["browLAngle"], 0.55)
+        self.assertLess(angry["browRAngle"], -0.55)
+        self.assertLess(angry["blushLevel"], -0.5)
+
+        shy = plans["shy_idle"]["settlePose"]["params"]
+        self.assertFalse(shy["eyeSync"])
+        self.assertGreater(shy["eyeROpen"] - shy["eyeLOpen"], 0.15)
+        self.assertGreater(shy["blushLevel"], 0.3)
+
+        gloomy = plans["gloomy_idle"]["settlePose"]["params"]
+        self.assertLess(gloomy["eyeLOpen"], 0.6)
+        self.assertLess(gloomy["mouthForm"], -0.1)
+        self.assertLess(gloomy["browLY"], -0.2)
+
+        ambient_states = plans["happy_idle"]["ambientPlan"]["states"]
+        self.assertNotEqual(ambient_states[0]["params"]["eyeLOpen"], ambient_states[1]["params"]["eyeLOpen"])
+        self.assertNotEqual(ambient_states[1]["params"]["mouthForm"], ambient_states[2]["params"]["mouthForm"])
+        self.assertTrue(ambient_states[0]["params"]["eyeSync"])
+        self.assertFalse(ambient_states[1]["params"]["eyeSync"])
+        self.assertTrue(ambient_states[2]["params"]["eyeSync"])
+
 
 if __name__ == "__main__":
     unittest.main()

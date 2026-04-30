@@ -69,6 +69,41 @@ const makePayload = (commands) => ({
   speakingRate: 1,
 });
 
+const makeIdlePlan = () => ({
+  name: 'happy_idle',
+  mode: 'loop',
+  enterAfterMs: 1800,
+  loopIntervalMs: 2200,
+  ambientEnterAfterMs: 11200,
+  ambientSwitchIntervalMs: 6800,
+  interruptible: true,
+  settlePose: makeBasePose(),
+  loopEvents: [
+    {
+      kind: 'happy_idle_warm_lift',
+      durationMs: 680,
+      patch: { mouthForm: 0.34, eyeLSmile: 0.56 },
+      returnToBase: true,
+    },
+  ],
+  ambientPlan: {
+    states: [
+      {
+        kind: 'ambient_idle_breath',
+        params: makeBasePose().params,
+      },
+      {
+        kind: 'ambient_idle_look_around',
+        params: makeBasePose().params,
+      },
+      {
+        kind: 'ambient_idle_active_shift',
+        params: makeBasePose().params,
+      },
+    ],
+  },
+});
+
 const validSetInterval = makePayload([
   { action: 'set_interval', intervalMin: 0.8, intervalMax: 1.5 },
 ]);
@@ -84,6 +119,35 @@ const reversedInterval = makePayload([
 const forceBlinkWithoutDuration = makePayload([
   { action: 'force_blink' },
 ]);
+const validAmbientIdlePlan = {
+  ...makePayload([{ action: 'force_blink' }]),
+  idlePlan: makeIdlePlan(),
+};
+const reversedAmbientInterval = {
+  ...makePayload([{ action: 'force_blink' }]),
+  idlePlan: {
+    ...makeIdlePlan(),
+    ambientEnterAfterMs: 'nope',
+  },
+};
+const reversedAmbientPlan = {
+  ...makePayload([{ action: 'force_blink' }]),
+  idlePlan: {
+    ...makeIdlePlan(),
+    ambientPlan: {
+      states: [
+        {
+          kind: 'ambient_idle_breath',
+          params: makeBasePose().params,
+        },
+        {
+          kind: 'ambient_idle_look_around',
+          params: makeBasePose().params,
+        },
+      ],
+    },
+  },
+};
 
 if (!isExpressionPlanPayload(validSetInterval)) {
   throw new Error('Expected a complete set_interval command to be valid');
@@ -99,6 +163,15 @@ if (isExpressionPlanPayload(reversedInterval)) {
 }
 if (!isExpressionPlanPayload(forceBlinkWithoutDuration)) {
   throw new Error('Expected force_blink without durationSec to remain valid');
+}
+if (!isExpressionPlanPayload(validAmbientIdlePlan)) {
+  throw new Error('Expected ambient idle plan with ambientPlan states to be valid');
+}
+if (isExpressionPlanPayload(reversedAmbientInterval)) {
+  throw new Error('Expected invalid ambient enterAfterMs to be rejected');
+}
+if (isExpressionPlanPayload(reversedAmbientPlan)) {
+  throw new Error('Expected ambient plan with too few states to be rejected');
 }
 
 console.log('expressionPlan validator smoke test passed.');

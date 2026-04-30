@@ -1,4 +1,5 @@
 from copy import deepcopy
+import random
 
 from domain.expression_blink_strategies import BLINK_STRATEGIES
 from domain.expression_intent_schema import DEFAULT_INTENT
@@ -143,111 +144,321 @@ CONTINUITY_PARAM_WEIGHTS = {
 IDLE_PLAN_LOOP_EVENTS = {
     "happy_idle": [
         {
-            "kind": "happy_idle_soft_smile",
-            "durationMs": 760,
-            "patch": {"mouthForm": 0.26, "eyeLSmile": 0.42, "eyeRSmile": 0.42},
+            "kind": "happy_idle_warm_lift",
+            "durationMs": 680,
+            "patch": {
+                "mouthForm": 0.34,
+                "eyeLOpen": 0.82,
+                "eyeROpen": 0.84,
+                "eyeLSmile": 0.56,
+                "eyeRSmile": 0.52,
+                "browLY": 0.08,
+                "browRY": 0.06,
+                "blushLevel": 0.08,
+            },
             "returnToBase": True,
         },
     ],
     "crying_idle": [
         {
-            "kind": "crying_idle_sad_breath",
-            "durationMs": 920,
-            "patch": {"eyeLOpen": 0.60, "eyeROpen": 0.62, "mouthForm": -0.30, "browLY": -0.04, "browRY": -0.04},
+            "kind": "crying_idle_tremble_breath",
+            "durationMs": 1080,
+            "patch": {
+                "eyeLOpen": 0.48,
+                "eyeROpen": 0.50,
+                "mouthForm": -0.42,
+                "browLY": -0.22,
+                "browRY": -0.20,
+                "browLAngle": -0.34,
+                "browRAngle": 0.34,
+                "blushLevel": -0.65,
+            },
             "returnToBase": True,
         },
     ],
     "angry_glare_idle": [
         {
-            "kind": "angry_idle_glare_hold",
-            "durationMs": 820,
-            "patch": {"eyeLOpen": 1.08, "eyeROpen": 1.08, "browLAngle": 0.48, "browRAngle": -0.48, "mouthForm": -0.16},
+            "kind": "angry_idle_glare_lock",
+            "durationMs": 760,
+            "patch": {
+                "eyeLOpen": 1.20,
+                "eyeROpen": 1.20,
+                "mouthForm": -0.26,
+                "browLY": -0.24,
+                "browRY": -0.24,
+                "browLAngle": 0.78,
+                "browRAngle": -0.78,
+                "browLForm": -0.42,
+                "browRForm": -0.42,
+                "blushLevel": -0.70,
+            },
             "returnToBase": True,
         },
     ],
     "shy_idle": [
         {
-            "kind": "shy_idle_quick_peek",
-            "durationMs": 700,
-            "patch": {"eyeLOpen": 0.74, "eyeROpen": 0.86, "mouthForm": 0.12, "blushLevel": 0.22},
+            "kind": "shy_idle_side_peek",
+            "durationMs": 640,
+            "patch": {
+                "eyeLOpen": 0.58,
+                "eyeROpen": 0.88,
+                "mouthForm": 0.06,
+                "eyeLSmile": 0.08,
+                "eyeRSmile": 0.20,
+                "browLY": 0.02,
+                "browRY": 0.12,
+                "browLAngle": -0.10,
+                "browRAngle": 0.16,
+                "browLX": -0.10,
+                "browRX": 0.08,
+                "blushLevel": 0.42,
+            },
             "returnToBase": True,
         },
     ],
     "gloomy_idle": [
         {
-            "kind": "gloomy_idle_downcast",
-            "durationMs": 1040,
-            "patch": {"eyeLOpen": 0.56, "eyeROpen": 0.58, "mouthForm": -0.16, "browLY": -0.16, "browRY": -0.16},
+            "kind": "gloomy_idle_slow_sink",
+            "durationMs": 1180,
+            "patch": {
+                "eyeLOpen": 0.46,
+                "eyeROpen": 0.48,
+                "mouthForm": -0.22,
+                "browLY": -0.30,
+                "browRY": -0.30,
+                "browLAngle": -0.20,
+                "browRAngle": 0.20,
+                "browLForm": -0.18,
+                "browRForm": -0.18,
+                "blushLevel": -0.28,
+            },
             "returnToBase": True,
         },
     ],
 }
 
 
+IDLE_PLAN_LOOP_INTERVAL_MS = {
+    "happy_idle": 2200,
+    "crying_idle": 3600,
+    "angry_glare_idle": 3000,
+    "shy_idle": 2400,
+    "gloomy_idle": 4200,
+}
+
+
+AMBIENT_IDLE_STATE_ORDER = [
+    "ambient_idle_breath",
+    "ambient_idle_look_around",
+    "ambient_idle_active_shift",
+]
+
+AMBIENT_IDLE_ENTER_AFTER_MS = {
+    "min": 9000,
+    "max": 14000,
+}
+
+AMBIENT_IDLE_SWITCH_INTERVAL_MS = {
+    "min": 5200,
+    "max": 9200,
+}
+
+AMBIENT_IDLE_STATE_TEMPLATES = {
+    "ambient_idle_breath": {
+        "params": {
+            "headIntensity": 0.03,
+            "blushLevel": 0.02,
+            "eyeSync": True,
+            "eyeLOpen": 0.78,
+            "eyeROpen": 0.80,
+            "mouthForm": 0.02,
+            "browLY": -0.02,
+            "browRY": -0.02,
+            "browLAngle": 0.02,
+            "browRAngle": -0.02,
+            "browLForm": 0.01,
+            "browRForm": 0.01,
+            "eyeLSmile": 0.04,
+            "eyeRSmile": 0.04,
+            "browLX": 0.00,
+            "browRX": 0.00,
+        },
+        "jitter": {
+            "blushLevel": 0.05,
+            "eyeLOpen": 0.05,
+            "eyeROpen": 0.05,
+            "mouthForm": 0.04,
+            "browLY": 0.04,
+            "browRY": 0.04,
+            "browLAngle": 0.05,
+            "browRAngle": 0.05,
+            "browLForm": 0.04,
+            "browRForm": 0.04,
+            "eyeLSmile": 0.04,
+            "eyeRSmile": 0.04,
+            "browLX": 0.03,
+            "browRX": 0.03,
+        },
+    },
+    "ambient_idle_look_around": {
+        "params": {
+            "headIntensity": 0.04,
+            "blushLevel": 0.00,
+            "eyeSync": False,
+            "eyeLOpen": 0.88,
+            "eyeROpen": 0.74,
+            "mouthForm": 0.00,
+            "browLY": 0.05,
+            "browRY": -0.02,
+            "browLAngle": -0.10,
+            "browRAngle": 0.12,
+            "browLForm": 0.00,
+            "browRForm": 0.00,
+            "eyeLSmile": 0.02,
+            "eyeRSmile": 0.00,
+            "browLX": -0.10,
+            "browRX": 0.08,
+        },
+        "jitter": {
+            "headIntensity": 0.02,
+            "blushLevel": 0.04,
+            "eyeLOpen": 0.06,
+            "eyeROpen": 0.06,
+            "mouthForm": 0.03,
+            "browLY": 0.05,
+            "browRY": 0.05,
+            "browLAngle": 0.06,
+            "browRAngle": 0.06,
+            "eyeLSmile": 0.03,
+            "eyeRSmile": 0.03,
+            "browLX": 0.04,
+            "browRX": 0.04,
+        },
+    },
+    "ambient_idle_active_shift": {
+        "params": {
+            "headIntensity": 0.06,
+            "blushLevel": 0.03,
+            "eyeSync": True,
+            "eyeLOpen": 0.92,
+            "eyeROpen": 0.90,
+            "mouthForm": 0.08,
+            "browLY": 0.04,
+            "browRY": 0.02,
+            "browLAngle": 0.04,
+            "browRAngle": -0.04,
+            "browLForm": 0.02,
+            "browRForm": 0.02,
+            "eyeLSmile": 0.10,
+            "eyeRSmile": 0.08,
+            "browLX": 0.03,
+            "browRX": -0.03,
+        },
+        "jitter": {
+            "headIntensity": 0.02,
+            "blushLevel": 0.05,
+            "eyeLOpen": 0.05,
+            "eyeROpen": 0.05,
+            "mouthForm": 0.05,
+            "browLY": 0.05,
+            "browRY": 0.05,
+            "browLAngle": 0.05,
+            "browRAngle": 0.05,
+            "browLForm": 0.04,
+            "browRForm": 0.04,
+            "eyeLSmile": 0.04,
+            "eyeRSmile": 0.04,
+            "browLX": 0.04,
+            "browRX": 0.04,
+        },
+    },
+}
+
+
 IDLE_PLAN_SETTLE_PATCHES = {
     "happy_idle": {
-        "headIntensity": 0.04,
-        "mouthForm": 0.22,
-        "eyeLOpen": 0.88,
-        "eyeROpen": 0.88,
+        "headIntensity": 0.05,
+        "mouthForm": 0.26,
+        "eyeLOpen": 0.86,
+        "eyeROpen": 0.86,
         "eyeSync": True,
-        "eyeLSmile": 0.34,
-        "eyeRSmile": 0.34,
-        "blushLevel": 0.04,
+        "eyeLSmile": 0.44,
+        "eyeRSmile": 0.42,
+        "browLY": 0.04,
+        "browRY": 0.04,
+        "browLAngle": 0.04,
+        "browRAngle": -0.04,
+        "blushLevel": 0.06,
     },
     "crying_idle": {
-        "headIntensity": 0.02,
-        "mouthForm": -0.26,
-        "eyeLOpen": 0.66,
-        "eyeROpen": 0.68,
+        "headIntensity": 0.01,
+        "mouthForm": -0.34,
+        "eyeLOpen": 0.56,
+        "eyeROpen": 0.58,
         "eyeSync": True,
-        "browLY": -0.02,
-        "browRY": -0.02,
-        "browLAngle": -0.16,
-        "browRAngle": 0.16,
-        "browLForm": -0.12,
-        "browRForm": -0.12,
-        "blushLevel": -0.35,
-    },
-    "angry_glare_idle": {
-        "headIntensity": 0.06,
-        "mouthForm": -0.14,
-        "eyeLOpen": 1.02,
-        "eyeROpen": 1.02,
-        "eyeSync": True,
-        "browLY": -0.08,
-        "browRY": -0.08,
-        "browLAngle": 0.44,
-        "browRAngle": -0.44,
+        "eyeLSmile": 0.0,
+        "eyeRSmile": 0.0,
+        "browLY": -0.18,
+        "browRY": -0.18,
+        "browLAngle": -0.30,
+        "browRAngle": 0.30,
         "browLForm": -0.22,
         "browRForm": -0.22,
-        "blushLevel": -0.45,
+        "browLX": 0.08,
+        "browRX": -0.08,
+        "blushLevel": -0.55,
+    },
+    "angry_glare_idle": {
+        "headIntensity": 0.04,
+        "mouthForm": -0.22,
+        "eyeLOpen": 1.14,
+        "eyeROpen": 1.14,
+        "eyeSync": True,
+        "eyeLSmile": 0.0,
+        "eyeRSmile": 0.0,
+        "browLY": -0.20,
+        "browRY": -0.20,
+        "browLAngle": 0.62,
+        "browRAngle": -0.62,
+        "browLForm": -0.36,
+        "browRForm": -0.36,
+        "browLX": 0.12,
+        "browRX": -0.12,
+        "blushLevel": -0.60,
     },
     "shy_idle": {
         "headIntensity": 0.03,
-        "mouthForm": 0.10,
-        "eyeLOpen": 0.76,
-        "eyeROpen": 0.82,
+        "mouthForm": 0.08,
+        "eyeLOpen": 0.62,
+        "eyeROpen": 0.84,
         "eyeSync": False,
-        "eyeLSmile": 0.18,
-        "eyeRSmile": 0.10,
-        "browLY": 0.06,
-        "browRY": 0.02,
-        "blushLevel": 0.20,
+        "eyeLSmile": 0.10,
+        "eyeRSmile": 0.22,
+        "browLY": 0.02,
+        "browRY": 0.10,
+        "browLAngle": -0.08,
+        "browRAngle": 0.12,
+        "browLX": -0.08,
+        "browRX": 0.08,
+        "blushLevel": 0.34,
     },
     "gloomy_idle": {
-        "headIntensity": 0.02,
-        "mouthForm": -0.14,
-        "eyeLOpen": 0.66,
-        "eyeROpen": 0.68,
+        "headIntensity": 0.01,
+        "mouthForm": -0.18,
+        "eyeLOpen": 0.54,
+        "eyeROpen": 0.56,
         "eyeSync": True,
-        "browLY": -0.14,
-        "browRY": -0.14,
-        "browLAngle": -0.10,
-        "browRAngle": 0.10,
-        "browLForm": -0.08,
-        "browRForm": -0.08,
-        "blushLevel": -0.20,
+        "eyeLSmile": 0.0,
+        "eyeRSmile": 0.0,
+        "browLY": -0.26,
+        "browRY": -0.26,
+        "browLAngle": -0.18,
+        "browRAngle": 0.18,
+        "browLForm": -0.16,
+        "browRForm": -0.16,
+        "browLX": 0.04,
+        "browRX": -0.04,
+        "blushLevel": -0.28,
     },
 }
 
@@ -451,6 +662,28 @@ def _clamp_expression_params(params: dict) -> dict:
     params["browRX"] = _clamp(params["browRX"], -1.0, 1.0)
     params["headIntensity"] = _clamp(params["headIntensity"], 0.0, 0.95)
     return params
+
+
+def _random_int(minimum: int, maximum: int) -> int:
+    return random.randint(minimum, maximum)
+
+
+def _build_ambient_state(base_params: dict, state_name: str) -> dict:
+    template = AMBIENT_IDLE_STATE_TEMPLATES[state_name]
+    params = deepcopy(base_params)
+    params.update(template["params"])
+
+    for key, jitter in template.get("jitter", {}).items():
+        current_value = params.get(key)
+        if isinstance(current_value, bool) or not isinstance(current_value, (int, float)):
+            continue
+        params[key] = current_value + random.uniform(-float(jitter), float(jitter))
+
+    params = _clamp_expression_params(params)
+    return {
+        "kind": state_name,
+        "params": params,
+    }
 
 
 def resolve_topic_guard(emotion: str, performance_mode: str, topic_guard: dict) -> str:
@@ -1122,12 +1355,22 @@ def build_idle_plan(
     action_enter_after_ms += max((int(event.get("durationMs", 0)) for event in micro_events), default=0)
     speaking_enter_after_ms = estimate_dialogue_hold_ms(intent)
     enter_after_ms = max(400, action_enter_after_ms, speaking_enter_after_ms)
+    ambient_enter_after_ms = enter_after_ms + _random_int(
+        AMBIENT_IDLE_ENTER_AFTER_MS["min"],
+        AMBIENT_IDLE_ENTER_AFTER_MS["max"],
+    )
+    ambient_switch_interval_ms = _random_int(
+        AMBIENT_IDLE_SWITCH_INTERVAL_MS["min"],
+        AMBIENT_IDLE_SWITCH_INTERVAL_MS["max"],
+    )
 
     return {
         "name": idle_name,
         "mode": "loop",
         "enterAfterMs": enter_after_ms,
-        "loopIntervalMs": 2600,
+        "loopIntervalMs": IDLE_PLAN_LOOP_INTERVAL_MS[idle_name],
+        "ambientEnterAfterMs": ambient_enter_after_ms,
+        "ambientSwitchIntervalMs": ambient_switch_interval_ms,
         "interruptible": True,
         "source": {
             "actionEnterAfterMs": action_enter_after_ms,
@@ -1139,6 +1382,12 @@ def build_idle_plan(
             "durationSec": 12.0,
         },
         "loopEvents": deepcopy(IDLE_PLAN_LOOP_EVENTS[idle_name]),
+        "ambientPlan": {
+            "states": [
+                _build_ambient_state(settle_params, state_name)
+                for state_name in AMBIENT_IDLE_STATE_ORDER
+            ],
+        },
     }
 
 
