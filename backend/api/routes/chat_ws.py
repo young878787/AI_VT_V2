@@ -679,6 +679,12 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
         if isinstance(state, dict) and state.get("kind")
     ]
     ambient_summary = ",".join(ambient_names) if ambient_names else "none"
+    idle_state_flow = f"settleIdle:{name}"
+    if ambient_names:
+        idle_state_flow += " -> " + " -> ".join(
+            f"ambientIdle:{ambient_name}"
+            for ambient_name in ambient_names
+        )
     return (
         f"expression_plan idlePlan {name} "
         f"enterAfterMs {enter_after_ms} "
@@ -686,7 +692,8 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
         f"loopEvents {loop_summary} "
         f"ambientEnterMs {ambient_enter_after_ms} "
         f"ambientSwitchMs {ambient_switch_interval_ms} "
-        f"ambientStates {ambient_summary}"
+        f"ambientStates {ambient_summary} "
+        f"idleStateFlow {idle_state_flow}"
     )
 
 
