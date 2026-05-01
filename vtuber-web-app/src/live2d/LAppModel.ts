@@ -22,65 +22,18 @@ import type { ModelConfig } from './LAppDefine';
 import { ResourcePath, Priority } from './LAppDefine';
 import { LAppTextureManager, TextureInfo } from './LAppTextureManager';
 import { LAppDelegate } from './LAppDelegate';
-import type { ExpressionBasePose, ExpressionIdleAmbientState, ExpressionIdlePlan, ExpressionMicroEventPatch } from '../types/expressionPlan';
-
-type ExpressionParamPatch = ExpressionMicroEventPatch;
-type ExpressionOverlayKey = keyof ExpressionParamPatch | 'headIntensity';
-type BasePoseParams = ExpressionBasePose['params'];
-
-interface ActiveExpressionEvent {
-  kind: string;
-  patch: ExpressionParamPatch;
-  durationMs: number;
-  startedAtMs: number;
-  returnToBase: boolean;
-}
-
-function clampExpressionOverlayValue(key: ExpressionOverlayKey, value: number): number {
-  switch (key) {
-    case 'headIntensity':
-      return Math.max(0, Math.min(0.95, value));
-    case 'breathLevel':
-    case 'physicsImpulse':
-      return Math.max(0, Math.min(1, value));
-    case 'bodyAngleX':
-    case 'bodyAngleY':
-    case 'bodyAngleZ':
-      return Math.max(-1, Math.min(1, value));
-    case 'blushLevel':
-      return Math.max(-1, Math.min(1, value));
-    case 'eyeLOpen':
-    case 'eyeROpen':
-      return Math.max(0, Math.min(2, value));
-    case 'mouthForm':
-      return Math.max(-2, Math.min(1, value));
-    case 'browLY':
-    case 'browRY':
-    case 'browLAngle':
-    case 'browRAngle':
-    case 'browLForm':
-    case 'browRForm':
-    case 'browLX':
-    case 'browRX':
-      return Math.max(-1, Math.min(1, value));
-    case 'eyeLSmile':
-    case 'eyeRSmile':
-      return Math.max(0, Math.min(1, value));
-  }
-}
-
-function shuffleIndices(count: number): number[] {
-  const indices = Array.from({ length: count }, (_, index) => index);
-  for (let index = indices.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    [indices[index], indices[swapIndex]] = [indices[swapIndex], indices[index]];
-  }
-  return indices;
-}
-
-function randomBetween(min: number, max: number): number {
-  return min + (Math.random() * (max - min));
-}
+import type { ExpressionIdleAmbientState, ExpressionIdlePlan } from '../types/expressionPlan';
+import {
+  clampExpressionOverlayValue,
+  randomBetween,
+  shuffleIndices,
+  type ActiveExpressionEvent,
+  type BasePoseParams,
+  type ExpressionOverlayKey,
+  type ExpressionParamPatch,
+} from './expression/expressionParams';
+import { applyActiveExpressionEvents } from './expression/expressionEventRuntime';
+import { createNeutralTargetParams } from './expression/expressionState';
 
 /**
  * LAppModel 類
@@ -1259,348 +1212,100 @@ export class LAppModel extends CubismUserModel {
     LAppPal.log('✓ Renderer 初始化成功');
   }
 
-  /**
-   * 更新模型
-   */
-  public update(): void {
-    if (!this._model) return;
-
-    const deltaTimeSeconds = LAppPal.getDeltaTime();
-
-    // 更新拖曳
+  private updateDrag(deltaTimeSeconds: number): void {
     this._dragManager.update(deltaTimeSeconds);
     this._dragX = this._dragManager.getX();
     this._dragY = this._dragManager.getY();
+  }
 
-    // 更新動作
-    this._model.loadParameters();
-
-    // 只在自動播放啟用時才自動播放待機動作
+  private updateMotion(deltaTimeSeconds: number): void {
     if (this._autoEffectsEnabled) {
       if (this._motionManager.isFinished()) {
-        // 播放待機動作
         this.startRandomMotion('Idle', Priority.Idle);
       } else {
         this._motionManager.updateMotion(this._model, deltaTimeSeconds);
       }
-    } else {
-      // 即使不自動播放，如果有正在播放的動作也要更新完成
-      if (!this._motionManager.isFinished()) {
-        this._motionManager.updateMotion(this._model, deltaTimeSeconds);
-      }
+    } else if (!this._motionManager.isFinished()) {
+      this._motionManager.updateMotion(this._model, deltaTimeSeconds);
+    }
+  }
+
+  private updateEyeBlink(deltaTimeSeconds: number): void {
+    if (!this._eyeBlink) {
+      return;
     }
 
-    this._model.saveParameters();
+    this._model.setParameterValueById(this._idParamEyeLOpen, this._aiEyeBaseLOpen);
+    this._model.setParameterValueById(this._idParamEyeROpen, this._aiEyeBaseROpen);
+    this._eyeBlink.updateParameters(this._model, deltaTimeSeconds);
 
-    // ── AI 表情計算（先計算基礎值，供眨眼疊加使用）──
-    let targetBlush: number;
-    let targetBodyAngleX: number;
-    let targetBodyAngleY: number;
-    let targetBodyAngleZ: number;
-    let targetBreathLevel: number;
-    let targetPhysicsImpulse: number;
-    let targetEyeL: number;
-    let targetEyeR: number;
-    let targetMouthForm: number;
-    let targetBrowLY: number;
-    let targetBrowRY: number;
-    let targetBrowLAngle: number;
-    let targetBrowRAngle: number;
-    let targetBrowLForm: number;
-    let targetBrowRForm: number;
-    let targetEyeLSmile: number;
-    let targetEyeRSmile: number;
-    let targetBrowLX: number;
-    let targetBrowRX: number;
-    const nowMs = performance.now();
-
-    if (this._aiBehaviorTimer > 0) {
-      this._aiBehaviorTimer -= deltaTimeSeconds;
-
-      let activeIntensity = this._aiHeadIntensity;
-      if (this._aiBehaviorTimer < 1.0) {
-        activeIntensity = this._aiHeadIntensity * this._aiBehaviorTimer;
-      }
-
-      if (activeIntensity > 0.001) {
-        const headPhase = this._bodyMotionPhase * (0.9 + (this._aiPhysicsImpulse * 0.45));
-        const ampZ = 14 * activeIntensity;
-        const ampX = 10 * activeIntensity;
-        const ampY = 6 * activeIntensity;
-
-        this._model.addParameterValueById(this._idParamAngleZ, Math.sin(headPhase) * ampZ);
-        this._model.addParameterValueById(this._idParamAngleX, Math.cos(headPhase * 0.58) * ampX);
-        this._model.addParameterValueById(this._idParamAngleY, Math.cos((headPhase * 0.48) + Math.PI / 4) * ampY);
-      } else {
-        // headIntensity 為 0 時跳過頭部搖晃，但不重置計時器
-        // _aiBehaviorTimer 應自然倒計時，讓其他表情參數（mouthForm/blush/brow 等）繼續持續
-        this._aiHeadIntensity = 0;
-      }
-
-      targetBlush     = this._aiBlushLevel;
-      targetBodyAngleX = this._aiBodyAngleX;
-      targetBodyAngleY = this._aiBodyAngleY;
-      targetBodyAngleZ = this._aiBodyAngleZ;
-      targetBreathLevel = this._aiBreathLevel;
-      targetPhysicsImpulse = this._aiPhysicsImpulse;
-      targetEyeL      = this._aiEyeLOpen;
-      targetEyeR      = this._aiEyeROpen;
-      targetMouthForm = this._aiMouthForm;
-      targetBrowLY    = this._aiBrowLY;
-      targetBrowRY    = this._aiBrowRY;
-      targetBrowLAngle = this._aiBrowLAngle;
-      targetBrowRAngle = this._aiBrowRAngle;
-      targetBrowLForm = this._aiBrowLForm;
-      targetBrowRForm = this._aiBrowRForm;
-      targetEyeLSmile = this._aiEyeLSmile;
-      targetEyeRSmile = this._aiEyeRSmile;
-      targetBrowLX    = this._aiBrowLX;
-      targetBrowRX    = this._aiBrowRX;
-    } else if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
-      const ambientPlan = this._activeIdlePlan.ambientPlan;
-      const ambientReady = !!ambientPlan?.states?.length && nowMs >= this._ambientIdleStartAtMs;
-
-      if (ambientReady) {
-        if (!this._ambientIdleActiveState) {
-          this.activateAmbientState(nowMs);
-        } else if (nowMs >= this._ambientIdleNextSwitchAtMs) {
-          this.advanceAmbientState(nowMs);
-        }
-
-        const ambientParams = this._ambientIdleActivePose ?? this._activeIdlePlan.settlePose.params;
-        targetBlush     = ambientParams.blushLevel;
-        targetBodyAngleX = ambientParams.bodyAngleX;
-        targetBodyAngleY = ambientParams.bodyAngleY;
-        targetBodyAngleZ = ambientParams.bodyAngleZ;
-        targetBreathLevel = ambientParams.breathLevel;
-        targetPhysicsImpulse = ambientParams.physicsImpulse;
-        targetEyeL      = ambientParams.eyeLOpen;
-        targetEyeR      = ambientParams.eyeROpen;
-        targetMouthForm = ambientParams.mouthForm;
-        targetBrowLY    = ambientParams.browLY;
-        targetBrowRY    = ambientParams.browRY;
-        targetBrowLAngle = ambientParams.browLAngle;
-        targetBrowRAngle = ambientParams.browRAngle;
-        targetBrowLForm = ambientParams.browLForm;
-        targetBrowRForm = ambientParams.browRForm;
-        targetEyeLSmile = ambientParams.eyeLSmile;
-        targetEyeRSmile = ambientParams.eyeRSmile;
-        targetBrowLX    = ambientParams.browLX;
-        targetBrowRX    = ambientParams.browRX;
-        this._aiEyeSync = ambientParams.eyeSync;
-      } else {
-        this._aiHeadIntensity = 0;
-        const idleParams = this._activeIdlePlan.settlePose.params;
-        targetBlush     = idleParams.blushLevel;
-        targetBodyAngleX = idleParams.bodyAngleX;
-        targetBodyAngleY = idleParams.bodyAngleY;
-        targetBodyAngleZ = idleParams.bodyAngleZ;
-        targetBreathLevel = idleParams.breathLevel;
-        targetPhysicsImpulse = idleParams.physicsImpulse;
-        targetEyeL      = idleParams.eyeLOpen;
-        targetEyeR      = idleParams.eyeROpen;
-        targetMouthForm = idleParams.mouthForm;
-        targetBrowLY    = idleParams.browLY;
-        targetBrowRY    = idleParams.browRY;
-        targetBrowLAngle = idleParams.browLAngle;
-        targetBrowRAngle = idleParams.browRAngle;
-        targetBrowLForm = idleParams.browLForm;
-        targetBrowRForm = idleParams.browRForm;
-        targetEyeLSmile = idleParams.eyeLSmile;
-        targetEyeRSmile = idleParams.eyeRSmile;
-        targetBrowLX    = idleParams.browLX;
-        targetBrowRX    = idleParams.browRX;
-        this._aiEyeSync = idleParams.eyeSync;
-
-        if (nowMs >= this._idleLoopNextAtMs) {
-          for (const event of this._activeIdlePlan.loopEvents) {
-            this.enqueueMicroEvent(event);
-          }
-          this._idleLoopNextAtMs = nowMs + Math.max(500, this._activeIdlePlan.loopIntervalMs);
-        }
-      }
-    } else if (this._activeIdlePlan) {
-      this._aiHeadIntensity = 0;
-      targetBlush     = this._aiBlushLevel;
-      targetBodyAngleX = this._aiBodyAngleX;
-      targetBodyAngleY = this._aiBodyAngleY;
-      targetBodyAngleZ = this._aiBodyAngleZ;
-      targetBreathLevel = this._aiBreathLevel;
-      targetPhysicsImpulse = this._aiPhysicsImpulse;
-      targetEyeL      = this._aiEyeLOpen;
-      targetEyeR      = this._aiEyeROpen;
-      targetMouthForm = this._aiMouthForm;
-      targetBrowLY    = this._aiBrowLY;
-      targetBrowRY    = this._aiBrowRY;
-      targetBrowLAngle = this._aiBrowLAngle;
-      targetBrowRAngle = this._aiBrowRAngle;
-      targetBrowLForm = this._aiBrowLForm;
-      targetBrowRForm = this._aiBrowRForm;
-      targetEyeLSmile = this._aiEyeLSmile;
-      targetEyeRSmile = this._aiEyeRSmile;
-      targetBrowLX    = this._aiBrowLX;
-      targetBrowRX    = this._aiBrowRX;
-    } else {
-      this._aiHeadIntensity = 0;
-      targetBlush     = 0.0;
-      targetBodyAngleX = 0.0;
-      targetBodyAngleY = 0.0;
-      targetBodyAngleZ = 0.0;
-      targetBreathLevel = 0.35;
-      targetPhysicsImpulse = 0.0;
-      targetEyeL      = 1.0;
-      targetEyeR      = 1.0;
-      targetMouthForm = 0.0;
-      targetBrowLY    = 0.0;
-      targetBrowRY    = 0.0;
-      targetBrowLAngle = 0.0;
-      targetBrowRAngle = 0.0;
-      targetBrowLForm = 0.0;
-      targetBrowRForm = 0.0;
-      targetEyeLSmile = 0.0;
-      targetEyeRSmile = 0.0;
-      targetBrowLX    = 0.0;
-      targetBrowRX    = 0.0;
+    if (this._aiEyeBaseLOpen < 0.99 || this._aiEyeBaseROpen < 0.99) {
+      const blinkL = this._model.getParameterValueById(this._idParamEyeLOpen);
+      const blinkR = this._model.getParameterValueById(this._idParamEyeROpen);
+      this._model.setParameterValueById(this._idParamEyeLOpen, blinkL * this._aiEyeBaseLOpen);
+      this._model.setParameterValueById(this._idParamEyeROpen, blinkR * this._aiEyeBaseROpen);
     }
+  }
 
-    this._activeExpressionEvents = this._activeExpressionEvents.filter((event) => nowMs - event.startedAtMs < event.durationMs);
-
-    const applyOverlayValue = (key: keyof ExpressionParamPatch, target: number, patchValue: number | undefined, fade: number): number => {
-      if (typeof patchValue !== 'number') {
-        return target;
-      }
-      const clampedPatchValue = clampExpressionOverlayValue(key, patchValue);
-      return clampExpressionOverlayValue(key, target + (clampedPatchValue - target) * fade);
-    };
-
-    for (const event of this._activeExpressionEvents) {
-      const durationMs = Math.max(1, event.durationMs);
-      const progress = Math.min(1, (nowMs - event.startedAtMs) / durationMs);
-      const fade = event.returnToBase ? 1 - progress : 1;
-
-      targetBlush = applyOverlayValue('blushLevel', targetBlush, event.patch.blushLevel, fade);
-      targetBodyAngleX = applyOverlayValue('bodyAngleX', targetBodyAngleX, event.patch.bodyAngleX, fade);
-      targetBodyAngleY = applyOverlayValue('bodyAngleY', targetBodyAngleY, event.patch.bodyAngleY, fade);
-      targetBodyAngleZ = applyOverlayValue('bodyAngleZ', targetBodyAngleZ, event.patch.bodyAngleZ, fade);
-      targetBreathLevel = applyOverlayValue('breathLevel', targetBreathLevel, event.patch.breathLevel, fade);
-      targetPhysicsImpulse = applyOverlayValue('physicsImpulse', targetPhysicsImpulse, event.patch.physicsImpulse, fade);
-      targetEyeL = applyOverlayValue('eyeLOpen', targetEyeL, event.patch.eyeLOpen, fade);
-      targetEyeR = applyOverlayValue('eyeROpen', targetEyeR, event.patch.eyeROpen, fade);
-      targetMouthForm = applyOverlayValue('mouthForm', targetMouthForm, event.patch.mouthForm, fade);
-      targetBrowLY = applyOverlayValue('browLY', targetBrowLY, event.patch.browLY, fade);
-      targetBrowRY = applyOverlayValue('browRY', targetBrowRY, event.patch.browRY, fade);
-      targetBrowLAngle = applyOverlayValue('browLAngle', targetBrowLAngle, event.patch.browLAngle, fade);
-      targetBrowRAngle = applyOverlayValue('browRAngle', targetBrowRAngle, event.patch.browRAngle, fade);
-      targetBrowLForm = applyOverlayValue('browLForm', targetBrowLForm, event.patch.browLForm, fade);
-      targetBrowRForm = applyOverlayValue('browRForm', targetBrowRForm, event.patch.browRForm, fade);
-      targetEyeLSmile = applyOverlayValue('eyeLSmile', targetEyeLSmile, event.patch.eyeLSmile, fade);
-      targetEyeRSmile = applyOverlayValue('eyeRSmile', targetEyeRSmile, event.patch.eyeRSmile, fade);
-      targetBrowLX = applyOverlayValue('browLX', targetBrowLX, event.patch.browLX, fade);
-      targetBrowRX = applyOverlayValue('browRX', targetBrowRX, event.patch.browRX, fade);
-    }
-
-    const lerpFactor = Math.min(1.0, 5.0 * deltaTimeSeconds);
-    this._currentBlushLevel += (targetBlush - this._currentBlushLevel) * lerpFactor;
-    this._currentBodyAngleX += (targetBodyAngleX - this._currentBodyAngleX) * lerpFactor;
-    this._currentBodyAngleY += (targetBodyAngleY - this._currentBodyAngleY) * lerpFactor;
-    this._currentBodyAngleZ += (targetBodyAngleZ - this._currentBodyAngleZ) * lerpFactor;
-    this._currentBreathLevel += (targetBreathLevel - this._currentBreathLevel) * lerpFactor;
-    this._currentPhysicsImpulse += (targetPhysicsImpulse - this._currentPhysicsImpulse) * lerpFactor;
-    this._currentEyeLOpen += (targetEyeL - this._currentEyeLOpen) * lerpFactor;
-    this._currentEyeROpen += (targetEyeR - this._currentEyeROpen) * lerpFactor;
-    this._currentMouthForm += (targetMouthForm - this._currentMouthForm) * lerpFactor;
-    this._currentBrowLY += (targetBrowLY - this._currentBrowLY) * lerpFactor;
-    this._currentBrowRY += (targetBrowRY - this._currentBrowRY) * lerpFactor;
-    this._currentBrowLAngle += (targetBrowLAngle - this._currentBrowLAngle) * lerpFactor;
-    this._currentBrowRAngle += (targetBrowRAngle - this._currentBrowRAngle) * lerpFactor;
-    this._currentBrowLForm += (targetBrowLForm - this._currentBrowLForm) * lerpFactor;
-    this._currentBrowRForm += (targetBrowRForm - this._currentBrowRForm) * lerpFactor;
-    this._currentEyeLSmile += (targetEyeLSmile - this._currentEyeLSmile) * lerpFactor;
-    this._currentEyeRSmile += (targetEyeRSmile - this._currentEyeRSmile) * lerpFactor;
-    this._currentBrowLX += (targetBrowLX - this._currentBrowLX) * lerpFactor;
-    this._currentBrowRX += (targetBrowRX - this._currentBrowRX) * lerpFactor;
-
-    if (this._aiEyeSync && (this._aiBehaviorTimer > 0 || targetEyeL < 0.99)) {
-      this._currentBrowRY = this._currentBrowLY;
-      this._currentBrowRAngle = -this._currentBrowLAngle;
-      this._currentBrowRForm = this._currentBrowLForm;
-      this._currentEyeROpen = this._currentEyeLOpen;
-      this._currentEyeRSmile = this._currentEyeLSmile;
-      this._currentBrowRX = -this._currentBrowLX;  // 鏡像：左眉向內時右眉對稱向內
-    }
-
-    // 更新 AI 眼睛基礎值（供眨眼疊加使用）
-    this._aiEyeBaseLOpen = this._currentEyeLOpen;
-    this._aiEyeBaseROpen = this._currentEyeROpen;
-
-    // ── 眨眼（在 AI 眼睛基礎值上疊加）──
-    if (this._eyeBlink) {
-      // 先設置 AI 眼睛基礎值
-      this._model.setParameterValueById(this._idParamEyeLOpen, this._aiEyeBaseLOpen);
-      this._model.setParameterValueById(this._idParamEyeROpen, this._aiEyeBaseROpen);
-
-      // 執行眨眼
-      this._eyeBlink.updateParameters(this._model, deltaTimeSeconds);
-
-      // 如果 AI 有設置瞇眼（基礎值 < 1.0），縮放眨眼結果實現「瞇小眼眨眼」
-      if (this._aiEyeBaseLOpen < 0.99 || this._aiEyeBaseROpen < 0.99) {
-        const blinkL = this._model.getParameterValueById(this._idParamEyeLOpen);
-        const blinkR = this._model.getParameterValueById(this._idParamEyeROpen);
-        this._model.setParameterValueById(this._idParamEyeLOpen, blinkL * this._aiEyeBaseLOpen);
-        this._model.setParameterValueById(this._idParamEyeROpen, blinkR * this._aiEyeBaseROpen);
-      }
-    }
-
-    // 表情
+  private updateExpressionManager(deltaTimeSeconds: number): void {
     if (this._expressionManager) {
       this._expressionManager.updateMotion(this._model, deltaTimeSeconds);
     }
+  }
 
-    // 視線追蹤效果 - 只在視線追蹤啟用時
-    if (this._eyeTrackingEnabled) {
-      this._model.addParameterValueById(this._idParamAngleX, this._dragX * 45);
-      this._model.addParameterValueById(this._idParamAngleY, this._dragY * 45);
-      this._model.addParameterValueById(this._idParamAngleZ, this._dragX * this._dragY * -45);
-      this._model.addParameterValueById(this._idParamBodyAngleX, this._dragX * 15);
-      this._model.addParameterValueById(this._idParamEyeBallX, this._dragX * 1.5);
-      this._model.addParameterValueById(this._idParamEyeBallY, this._dragY * 1.5);
+  private applyEyeTracking(): void {
+    if (!this._eyeTrackingEnabled) {
+      return;
     }
 
-    // LipSync（嘴型同步）
+    this._model.addParameterValueById(this._idParamAngleX, this._dragX * 45);
+    this._model.addParameterValueById(this._idParamAngleY, this._dragY * 45);
+    this._model.addParameterValueById(this._idParamAngleZ, this._dragX * this._dragY * -45);
+    this._model.addParameterValueById(this._idParamBodyAngleX, this._dragX * 15);
+    this._model.addParameterValueById(this._idParamEyeBallX, this._dragX * 1.5);
+    this._model.addParameterValueById(this._idParamEyeBallY, this._dragY * 1.5);
+  }
+
+  private applyLipSync(): void {
     if (this._lipSyncValue > 0) {
       this._model.addParameterValueById(this._idParamMouthOpenY, this._lipSyncValue);
     }
+  }
 
+  private updateBodyMotion(deltaTimeSeconds: number): void {
     const bodyMotionActive = Math.abs(this._currentBodyAngleX) > 0.005
       || Math.abs(this._currentBodyAngleY) > 0.005
       || Math.abs(this._currentBodyAngleZ) > 0.005
       || this._currentBreathLevel > 0.005
       || this._currentPhysicsImpulse > 0.005;
 
-    if (bodyMotionActive) {
-      const impulse = Math.max(0, Math.min(1, this._currentPhysicsImpulse));
-      this._bodyMotionPhase += deltaTimeSeconds * (0.68 + (impulse * 0.46));
-      if (this._bodyMotionPhase > Math.PI * 2) {
-        this._bodyMotionPhase -= Math.PI * 2;
-      }
-
-      const breathWave = Math.sin(this._bodyMotionPhase);
-      const slowSway = Math.sin(this._bodyMotionPhase * 0.5);
-      const bodyX = (this._currentBodyAngleX * 11) + (slowSway * impulse * 1.35);
-      const bodyY = (this._currentBodyAngleY * 7) + (Math.cos(this._bodyMotionPhase * 0.42) * impulse * 0.82);
-      const bodyZ = (this._currentBodyAngleZ * 9) + (slowSway * impulse * 1.05);
-      const breath = Math.max(
-        0,
-        Math.min(1, this._currentBreathLevel + (breathWave * 0.055 * (0.5 + impulse))),
-      );
-
-      this._model.addParameterValueById(this._idParamBodyAngleX, bodyX);
-      this._model.addParameterValueById(this._idParamBodyAngleY, bodyY);
-      this._model.addParameterValueById(this._idParamBodyAngleZ, bodyZ);
-      this._model.setParameterValueById(this._idParamBreath, breath);
+    if (!bodyMotionActive) {
+      return;
     }
 
-    // 注入其他 AI 表情參數（不含眼睛，眼睛已由眨眼處理）
+    const impulse = Math.max(0, Math.min(1, this._currentPhysicsImpulse));
+    this._bodyMotionPhase += deltaTimeSeconds * (0.68 + (impulse * 0.46));
+    if (this._bodyMotionPhase > Math.PI * 2) {
+      this._bodyMotionPhase -= Math.PI * 2;
+    }
+
+    const breathWave = Math.sin(this._bodyMotionPhase);
+    const slowSway = Math.sin(this._bodyMotionPhase * 0.5);
+    const bodyX = (this._currentBodyAngleX * 11) + (slowSway * impulse * 1.35);
+    const bodyY = (this._currentBodyAngleY * 7) + (Math.cos(this._bodyMotionPhase * 0.42) * impulse * 0.82);
+    const bodyZ = (this._currentBodyAngleZ * 9) + (slowSway * impulse * 1.05);
+    const breath = Math.max(
+      0,
+      Math.min(1, this._currentBreathLevel + (breathWave * 0.055 * (0.5 + impulse))),
+    );
+
+    this._model.addParameterValueById(this._idParamBodyAngleX, bodyX);
+    this._model.addParameterValueById(this._idParamBodyAngleY, bodyY);
+    this._model.addParameterValueById(this._idParamBodyAngleZ, bodyZ);
+    this._model.setParameterValueById(this._idParamBreath, breath);
+  }
+
+  private applyCurrentExpressionParameters(): void {
     const hasExpression = this._aiBehaviorTimer > 0
       || this._currentBlushLevel > 0.01
       || Math.abs(this._currentMouthForm) > 0.01
@@ -1615,65 +1320,224 @@ export class LAppModel extends CubismUserModel {
       || Math.abs(this._currentBrowLX) > 0.01
       || Math.abs(this._currentBrowRX) > 0.01;
 
-    if (hasExpression) {
-      // 臉紅：同時寫入 ParamTere（Haru 等舊模型）和 ParamCheek（Hiyori/huohuo 新模型）
-      // Cubism SDK 對不存在的參數 ID 執行 set 為 no-op，因此雙寫安全。
-      this._model.setParameterValueById(this._idParamTere, this._currentBlushLevel);
-      this._model.setParameterValueById(this._idParamCheek, this._currentBlushLevel);
-      this._model.setParameterValueById(this._idParamMouthForm, this._currentMouthForm);
-      this._model.setParameterValueById(this._idParamBrowLY, this._currentBrowLY);
-      this._model.setParameterValueById(this._idParamBrowRY, this._currentBrowRY);
-      this._model.setParameterValueById(this._idParamBrowLAngle, this._currentBrowLAngle);
-      this._model.setParameterValueById(this._idParamBrowRAngle, this._currentBrowRAngle);
-      this._model.setParameterValueById(this._idParamBrowLForm, this._currentBrowLForm);
-      this._model.setParameterValueById(this._idParamBrowRForm, this._currentBrowRForm);
-      // 笑眼（三個模型均有 ParamEyeLSmile/RSmile）
-      this._model.setParameterValueById(this._idParamEyeLSmile, this._currentEyeLSmile);
-      this._model.setParameterValueById(this._idParamEyeRSmile, this._currentEyeRSmile);
-      // 眉毛水平位移（Hiyori/Haru 有效；huohuo no-op）
-      this._model.setParameterValueById(this._idParamBrowLX, this._currentBrowLX);
-      this._model.setParameterValueById(this._idParamBrowRX, this._currentBrowRX);
+    if (!hasExpression) {
+      return;
     }
 
-    // 呼吸（只在自動效果啟用時）
+    this._model.setParameterValueById(this._idParamTere, this._currentBlushLevel);
+    this._model.setParameterValueById(this._idParamCheek, this._currentBlushLevel);
+    this._model.setParameterValueById(this._idParamMouthForm, this._currentMouthForm);
+    this._model.setParameterValueById(this._idParamBrowLY, this._currentBrowLY);
+    this._model.setParameterValueById(this._idParamBrowRY, this._currentBrowRY);
+    this._model.setParameterValueById(this._idParamBrowLAngle, this._currentBrowLAngle);
+    this._model.setParameterValueById(this._idParamBrowRAngle, this._currentBrowRAngle);
+    this._model.setParameterValueById(this._idParamBrowLForm, this._currentBrowLForm);
+    this._model.setParameterValueById(this._idParamBrowRForm, this._currentBrowRForm);
+    this._model.setParameterValueById(this._idParamEyeLSmile, this._currentEyeLSmile);
+    this._model.setParameterValueById(this._idParamEyeRSmile, this._currentEyeRSmile);
+    this._model.setParameterValueById(this._idParamBrowLX, this._currentBrowLX);
+    this._model.setParameterValueById(this._idParamBrowRX, this._currentBrowRX);
+  }
+
+  private getAiTargetParams(): BasePoseParams {
+    return {
+      headIntensity: this._aiHeadIntensity,
+      bodyAngleX: this._aiBodyAngleX,
+      bodyAngleY: this._aiBodyAngleY,
+      bodyAngleZ: this._aiBodyAngleZ,
+      breathLevel: this._aiBreathLevel,
+      physicsImpulse: this._aiPhysicsImpulse,
+      blushLevel: this._aiBlushLevel,
+      eyeSync: this._aiEyeSync,
+      eyeLOpen: this._aiEyeLOpen,
+      eyeROpen: this._aiEyeROpen,
+      mouthForm: this._aiMouthForm,
+      browLY: this._aiBrowLY,
+      browRY: this._aiBrowRY,
+      browLAngle: this._aiBrowLAngle,
+      browRAngle: this._aiBrowRAngle,
+      browLForm: this._aiBrowLForm,
+      browRForm: this._aiBrowRForm,
+      eyeLSmile: this._aiEyeLSmile,
+      eyeRSmile: this._aiEyeRSmile,
+      browLX: this._aiBrowLX,
+      browRX: this._aiBrowRX,
+    };
+  }
+
+  private getNeutralTargetParams(): BasePoseParams {
+    return createNeutralTargetParams();
+  }
+
+  private updateAiHeadMotion(deltaTimeSeconds: number): void {
+    this._aiBehaviorTimer -= deltaTimeSeconds;
+
+    let activeIntensity = this._aiHeadIntensity;
+    if (this._aiBehaviorTimer < 1.0) {
+      activeIntensity = this._aiHeadIntensity * this._aiBehaviorTimer;
+    }
+
+    if (activeIntensity > 0.001) {
+      const headPhase = this._bodyMotionPhase * (0.9 + (this._aiPhysicsImpulse * 0.45));
+      const ampZ = 14 * activeIntensity;
+      const ampX = 10 * activeIntensity;
+      const ampY = 6 * activeIntensity;
+
+      this._model.addParameterValueById(this._idParamAngleZ, Math.sin(headPhase) * ampZ);
+      this._model.addParameterValueById(this._idParamAngleX, Math.cos(headPhase * 0.58) * ampX);
+      this._model.addParameterValueById(this._idParamAngleY, Math.cos((headPhase * 0.48) + Math.PI / 4) * ampY);
+    } else {
+      this._aiHeadIntensity = 0;
+    }
+  }
+
+  private resolveExpressionTargets(deltaTimeSeconds: number, nowMs: number): BasePoseParams {
+    if (this._aiBehaviorTimer > 0) {
+      this.updateAiHeadMotion(deltaTimeSeconds);
+      return this.getAiTargetParams();
+    }
+
+    if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
+      const ambientPlan = this._activeIdlePlan.ambientPlan;
+      const ambientReady = !!ambientPlan?.states?.length && nowMs >= this._ambientIdleStartAtMs;
+
+      if (ambientReady) {
+        if (!this._ambientIdleActiveState) {
+          this.activateAmbientState(nowMs);
+        } else if (nowMs >= this._ambientIdleNextSwitchAtMs) {
+          this.advanceAmbientState(nowMs);
+        }
+
+        const ambientParams = this._ambientIdleActivePose ?? this._activeIdlePlan.settlePose.params;
+        this._aiEyeSync = ambientParams.eyeSync;
+        return ambientParams;
+      }
+
+      this._aiHeadIntensity = 0;
+      const idleParams = this._activeIdlePlan.settlePose.params;
+      this._aiEyeSync = idleParams.eyeSync;
+
+      if (nowMs >= this._idleLoopNextAtMs) {
+        for (const event of this._activeIdlePlan.loopEvents) {
+          this.enqueueMicroEvent(event);
+        }
+        this._idleLoopNextAtMs = nowMs + Math.max(500, this._activeIdlePlan.loopIntervalMs);
+      }
+
+      return idleParams;
+    }
+
+    if (this._activeIdlePlan) {
+      this._aiHeadIntensity = 0;
+      return this.getAiTargetParams();
+    }
+
+    this._aiHeadIntensity = 0;
+    return this.getNeutralTargetParams();
+  }
+
+  private smoothExpressionTargets(targets: BasePoseParams, deltaTimeSeconds: number): void {
+    const lerpFactor = Math.min(1.0, 5.0 * deltaTimeSeconds);
+    this._currentBlushLevel += (targets.blushLevel - this._currentBlushLevel) * lerpFactor;
+    this._currentBodyAngleX += (targets.bodyAngleX - this._currentBodyAngleX) * lerpFactor;
+    this._currentBodyAngleY += (targets.bodyAngleY - this._currentBodyAngleY) * lerpFactor;
+    this._currentBodyAngleZ += (targets.bodyAngleZ - this._currentBodyAngleZ) * lerpFactor;
+    this._currentBreathLevel += (targets.breathLevel - this._currentBreathLevel) * lerpFactor;
+    this._currentPhysicsImpulse += (targets.physicsImpulse - this._currentPhysicsImpulse) * lerpFactor;
+    this._currentEyeLOpen += (targets.eyeLOpen - this._currentEyeLOpen) * lerpFactor;
+    this._currentEyeROpen += (targets.eyeROpen - this._currentEyeROpen) * lerpFactor;
+    this._currentMouthForm += (targets.mouthForm - this._currentMouthForm) * lerpFactor;
+    this._currentBrowLY += (targets.browLY - this._currentBrowLY) * lerpFactor;
+    this._currentBrowRY += (targets.browRY - this._currentBrowRY) * lerpFactor;
+    this._currentBrowLAngle += (targets.browLAngle - this._currentBrowLAngle) * lerpFactor;
+    this._currentBrowRAngle += (targets.browRAngle - this._currentBrowRAngle) * lerpFactor;
+    this._currentBrowLForm += (targets.browLForm - this._currentBrowLForm) * lerpFactor;
+    this._currentBrowRForm += (targets.browRForm - this._currentBrowRForm) * lerpFactor;
+    this._currentEyeLSmile += (targets.eyeLSmile - this._currentEyeLSmile) * lerpFactor;
+    this._currentEyeRSmile += (targets.eyeRSmile - this._currentEyeRSmile) * lerpFactor;
+    this._currentBrowLX += (targets.browLX - this._currentBrowLX) * lerpFactor;
+    this._currentBrowRX += (targets.browRX - this._currentBrowRX) * lerpFactor;
+
+    if (this._aiEyeSync && (this._aiBehaviorTimer > 0 || targets.eyeLOpen < 0.99)) {
+      this._currentBrowRY = this._currentBrowLY;
+      this._currentBrowRAngle = -this._currentBrowLAngle;
+      this._currentBrowRForm = this._currentBrowLForm;
+      this._currentEyeROpen = this._currentEyeLOpen;
+      this._currentEyeRSmile = this._currentEyeLSmile;
+      this._currentBrowRX = -this._currentBrowLX;
+    }
+
+    this._aiEyeBaseLOpen = this._currentEyeLOpen;
+    this._aiEyeBaseROpen = this._currentEyeROpen;
+  }
+
+  /**
+   * 更新模型
+   */
+  public update(): void {
+    if (!this._model) return;
+
+    const deltaTimeSeconds = LAppPal.getDeltaTime();
+
+    // 更新動作
+    this.updateDrag(deltaTimeSeconds);
+    this._model.loadParameters();
+    this.updateMotion(deltaTimeSeconds);
+    this._model.saveParameters();
+
+    const nowMs = performance.now();
+    const expressionTargets = this.resolveExpressionTargets(deltaTimeSeconds, nowMs);
+    const expressionEventResult = applyActiveExpressionEvents(expressionTargets, this._activeExpressionEvents, nowMs);
+    this._activeExpressionEvents = expressionEventResult.activeEvents;
+    this.smoothExpressionTargets(expressionEventResult.targets, deltaTimeSeconds);
+
+    this.updateEyeBlink(deltaTimeSeconds);
+    this.updateExpressionManager(deltaTimeSeconds);
+    this.applyEyeTracking();
+    this.applyLipSync();
+    this.updateBodyMotion(deltaTimeSeconds);
+    this.applyCurrentExpressionParameters();
+
+    this.updateBreathPhysicsPose(deltaTimeSeconds);
+    this.applyNativeParamOverrides();
+
+    this._model.update();
+  }
+
+  private updateBreathPhysicsPose(deltaTimeSeconds: number): void {
     if (this._breath && this._autoEffectsEnabled) {
       this._breath.updateParameters(this._model, deltaTimeSeconds);
     }
 
-    // 物理（只在物理效果啟用時）
     if (this._physics && this._physicsEnabled) {
       this._physics.evaluate(this._model, deltaTimeSeconds);
     }
 
-    // 姿勢
     if (this._pose) {
       this._pose.updateParameters(this._model, deltaTimeSeconds);
     }
+  }
 
-    // ── 原生參數手動覆蓋（最高優先度，最後套用）──
-    // 優先序：NativeParam > AI 表情 > 眼動追蹤 > 呼吸物理
-    // 逾時 5 秒未操作自動清除
-    if (this._nativeParamOverrides.size > 0) {
-      const nowMs = performance.now();
-      const toExpire: string[] = [];
-      for (const [paramId, override] of this._nativeParamOverrides) {
-        if (nowMs - override.lastSetAt > 5000) {
-          toExpire.push(paramId);
-        } else {
-          // 以絕對值覆蓋（不受 add 累積影響）
-          // 透過 IdManager 取得對應的 CubismIdHandle 物件（cached 引用相等性）
-          this._model.setParameterValueById(
-            CubismFramework.getIdManager().getId(paramId),
-            override.value
-          );
-        }
-      }
-      for (const paramId of toExpire) {
-        this._nativeParamOverrides.delete(paramId);
-      }
+  private applyNativeParamOverrides(): void {
+    if (this._nativeParamOverrides.size <= 0) {
+      return;
     }
 
-    this._model.update();
+    const nowMs = performance.now();
+    const toExpire: string[] = [];
+    for (const [paramId, override] of this._nativeParamOverrides) {
+      if (nowMs - override.lastSetAt > 5000) {
+        toExpire.push(paramId);
+      } else {
+        this._model.setParameterValueById(
+          CubismFramework.getIdManager().getId(paramId),
+          override.value
+        );
+      }
+    }
+    for (const paramId of toExpire) {
+      this._nativeParamOverrides.delete(paramId);
+    }
   }
 
   /**
