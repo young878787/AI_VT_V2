@@ -24,18 +24,39 @@ function applyOverlayValue(
   return clampExpressionOverlayValue(key, target + (clampedPatchValue - target) * fade);
 }
 
+function resolveEventFade(event: ActiveExpressionEvent, elapsedMs: number, durationMs: number): number {
+  const hasCustomEnvelope = typeof event.fadeInMs === 'number' || typeof event.fadeOutMs === 'number';
+  if (!hasCustomEnvelope) {
+    return event.returnToBase ? 1 - Math.min(1, elapsedMs / durationMs) : 1;
+  }
+
+  const fadeInMs = Math.max(0, Math.min(durationMs, event.fadeInMs ?? 0));
+  const fadeOutMs = Math.max(0, Math.min(durationMs, event.fadeOutMs ?? 0));
+  const fadeIn = fadeInMs > 0 ? Math.min(1, elapsedMs / fadeInMs) : 1;
+  const fadeOutStartMs = Math.max(0, durationMs - fadeOutMs);
+  const fadeOut = event.returnToBase && fadeOutMs > 0 && elapsedMs >= fadeOutStartMs
+    ? Math.max(0, (durationMs - elapsedMs) / fadeOutMs)
+    : 1;
+
+  return Math.max(0, Math.min(1, fadeIn, fadeOut));
+}
+
 export function applyActiveExpressionEvents(
   targets: BasePoseParams,
   activeEvents: ActiveExpressionEvent[],
   nowMs: number,
 ): ExpressionEventRuntimeResult {
   const nextTargets = copyBasePoseParams(targets);
-  const nextActiveEvents = activeEvents.filter((event) => nowMs - event.startedAtMs < event.durationMs);
+  const nextActiveEvents = activeEvents.filter((event) => nowMs < event.startedAtMs + event.durationMs);
 
   for (const event of nextActiveEvents) {
+    if (nowMs < event.startedAtMs) {
+      continue;
+    }
+
     const durationMs = Math.max(1, event.durationMs);
-    const progress = Math.min(1, (nowMs - event.startedAtMs) / durationMs);
-    const fade = event.returnToBase ? 1 - progress : 1;
+    const elapsedMs = nowMs - event.startedAtMs;
+    const fade = resolveEventFade(event, elapsedMs, durationMs);
 
     nextTargets.blushLevel = applyOverlayValue('blushLevel', nextTargets.blushLevel, event.patch.blushLevel, fade);
     nextTargets.bodyAngleX = applyOverlayValue('bodyAngleX', nextTargets.bodyAngleX, event.patch.bodyAngleX, fade);

@@ -124,6 +124,37 @@ const reversedInterval = makePayload([
 const forceBlinkWithoutDuration = makePayload([
   { action: 'force_blink' },
 ]);
+const validMicroEventEnvelope = {
+  ...makePayload([{ action: 'force_blink' }]),
+  sequence: [
+    {
+      kind: 'bright_sway_left',
+      durationMs: 900,
+      fadeInMs: 180,
+      fadeOutMs: 260,
+      patch: {
+        mouthForm: 0.42,
+        eyeLSmile: 0.68,
+        physicsImpulse: 0.92,
+      },
+      returnToBase: true,
+    },
+  ],
+};
+const invalidMicroEventEnvelope = {
+  ...makePayload([{ action: 'force_blink' }]),
+  sequence: [
+    {
+      kind: 'bright_sway_left',
+      durationMs: 900,
+      fadeInMs: -1,
+      patch: {
+        bodyAngleX: 0.58,
+      },
+      returnToBase: true,
+    },
+  ],
+};
 const validAmbientIdlePlan = {
   ...makePayload([{ action: 'force_blink' }]),
   idlePlan: makeIdlePlan(),
@@ -168,6 +199,12 @@ if (isExpressionPlanPayload(reversedInterval)) {
 }
 if (!isExpressionPlanPayload(forceBlinkWithoutDuration)) {
   throw new Error('Expected force_blink without durationSec to remain valid');
+}
+if (!isExpressionPlanPayload(validMicroEventEnvelope)) {
+  throw new Error('Expected micro event envelope fade fields to be valid');
+}
+if (isExpressionPlanPayload(invalidMicroEventEnvelope)) {
+  throw new Error('Expected negative micro event fadeInMs to be rejected');
 }
 if (!isExpressionPlanPayload(validAmbientIdlePlan)) {
   throw new Error('Expected ambient idle plan with ambientPlan states to be valid');

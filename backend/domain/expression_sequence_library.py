@@ -82,8 +82,32 @@ MICRO_EVENT_LIBRARY = {
 
 SEQUENCE_LIBRARY = {
     "bright_talk_bounce": [
-        {"kind": "smirk_left", "durationMs": 400, "patch": {"mouthForm": 0.30, "eyeLSmile": 0.45}, "returnToBase": True},
-        {"kind": "smirk_right", "durationMs": 400, "patch": {"mouthForm": 0.30, "eyeRSmile": 0.45}, "returnToBase": True},
+        {
+            "kind": "bright_sway_left",
+            "durationMs": 900,
+            "fadeInMs": 180,
+            "fadeOutMs": 260,
+            "patch": {
+                "mouthForm": 0.42,
+                "eyeLSmile": 0.68,
+                "breathLevel": 0.86,
+                "physicsImpulse": 0.92,
+            },
+            "returnToBase": True,
+        },
+        {
+            "kind": "bright_sway_right",
+            "durationMs": 900,
+            "fadeInMs": 180,
+            "fadeOutMs": 260,
+            "patch": {
+                "mouthForm": 0.42,
+                "eyeRSmile": 0.68,
+                "breathLevel": 0.84,
+                "physicsImpulse": 0.90,
+            },
+            "returnToBase": True,
+        },
     ],
     "pause_then_goofy": [
         {"kind": "awkward_freeze", "durationMs": 300, "patch": {"mouthForm": 0.02, "eyeLOpen": 0.88, "eyeROpen": 0.92, "blushLevel": 0.10}, "returnToBase": True},

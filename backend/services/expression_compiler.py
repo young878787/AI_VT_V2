@@ -28,6 +28,9 @@ from domain.expression_visual_signature import (
 )
 
 
+POST_SPEECH_MAIN_EXPRESSION_HOLD_MS = {"min": 6000, "max": 10000}
+
+
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
@@ -291,11 +294,11 @@ def apply_body_motion_profile(
     impulse = 0.14 + (activity * 0.36)
 
     if emotion in {"happy", "playful", "teasing"}:
-        params["bodyAngleX"] += 0.06 + warmth * 0.06
-        params["bodyAngleY"] += (playfulness - 0.25) * 0.14
-        params["bodyAngleZ"] += (0.5 - dominance) * 0.12
+        params["bodyAngleX"] += 0.09 + warmth * 0.08 + playfulness * 0.04
+        params["bodyAngleY"] += (playfulness - 0.20) * 0.18 + energy * 0.03
+        params["bodyAngleZ"] += (0.5 - dominance) * 0.16 - playfulness * 0.03
         params["breathLevel"] += breath + 0.12
-        params["physicsImpulse"] += impulse + (playfulness * 0.16)
+        params["physicsImpulse"] += impulse + (playfulness * 0.22) + (energy * 0.08)
     elif emotion == "angry":
         params["bodyAngleX"] += 0.05 + dominance * 0.10
         params["bodyAngleY"] -= 0.04 + intensity * 0.05
@@ -673,7 +676,11 @@ def build_idle_plan(
     action_enter_after_ms += sum(int(step.get("durationMs", 0)) for step in sequence)
     action_enter_after_ms += max((int(event.get("durationMs", 0)) for event in micro_events), default=0)
     speaking_enter_after_ms = estimate_dialogue_hold_ms(intent)
-    enter_after_ms = max(400, action_enter_after_ms, speaking_enter_after_ms)
+    post_speech_hold_ms = _random_int(
+        POST_SPEECH_MAIN_EXPRESSION_HOLD_MS["min"],
+        POST_SPEECH_MAIN_EXPRESSION_HOLD_MS["max"],
+    )
+    enter_after_ms = max(400, action_enter_after_ms, speaking_enter_after_ms) + post_speech_hold_ms
     ambient_enter_after_ms = enter_after_ms + _random_int(
         AMBIENT_IDLE_ENTER_AFTER_MS["min"],
         AMBIENT_IDLE_ENTER_AFTER_MS["max"],
@@ -694,6 +701,7 @@ def build_idle_plan(
         "source": {
             "actionEnterAfterMs": action_enter_after_ms,
             "speakingEnterAfterMs": speaking_enter_after_ms,
+            "postSpeechHoldMs": post_speech_hold_ms,
         },
         "settlePose": {
             "preset": idle_name,

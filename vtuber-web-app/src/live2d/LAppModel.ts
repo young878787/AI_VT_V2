@@ -1022,11 +1022,27 @@ export class LAppModel extends CubismUserModel {
     kind: string;
     patch: ExpressionParamPatch;
     durationMs: number;
+    fadeInMs?: number;
+    fadeOutMs?: number;
     returnToBase: boolean;
   }): void {
+    this.enqueueScheduledMicroEvent(event, performance.now());
+  }
+
+  private enqueueScheduledMicroEvent(
+    event: {
+      kind: string;
+      patch: ExpressionParamPatch;
+      durationMs: number;
+      fadeInMs?: number;
+      fadeOutMs?: number;
+      returnToBase: boolean;
+    },
+    startedAtMs: number,
+  ): void {
     this._activeExpressionEvents.push({
       ...event,
-      startedAtMs: performance.now(),
+      startedAtMs,
     });
   }
 
@@ -1034,10 +1050,20 @@ export class LAppModel extends CubismUserModel {
     kind: string;
     patch: ExpressionParamPatch;
     durationMs: number;
+    fadeInMs?: number;
+    fadeOutMs?: number;
     returnToBase: boolean;
   }>): void {
-    for (const step of sequence) {
-      this.enqueueMicroEvent(step);
+    let startAtMs = performance.now();
+    for (let index = 0; index < sequence.length; index += 1) {
+      const step = sequence[index];
+      const nextStep = sequence[index + 1];
+      this.enqueueScheduledMicroEvent(step, startAtMs);
+      const overlapMs = Math.min(
+        Math.max(0, step.fadeOutMs ?? 0),
+        Math.max(0, nextStep?.fadeInMs ?? 0),
+      );
+      startAtMs += Math.max(1, step.durationMs - overlapMs);
     }
   }
 
@@ -1284,16 +1310,18 @@ export class LAppModel extends CubismUserModel {
     }
 
     const impulse = Math.max(0, Math.min(1, this._currentPhysicsImpulse));
-    this._bodyMotionPhase += deltaTimeSeconds * (0.68 + (impulse * 0.46));
-    if (this._bodyMotionPhase > Math.PI * 2) {
-      this._bodyMotionPhase -= Math.PI * 2;
+    this._bodyMotionPhase += deltaTimeSeconds * (0.95 + (impulse * 0.62));
+    if (this._bodyMotionPhase > Math.PI * 200) {
+      this._bodyMotionPhase -= Math.PI * 200;
     }
 
     const breathWave = Math.sin(this._bodyMotionPhase);
-    const slowSway = Math.sin(this._bodyMotionPhase * 0.5);
-    const bodyX = (this._currentBodyAngleX * 11) + (slowSway * impulse * 1.35);
-    const bodyY = (this._currentBodyAngleY * 7) + (Math.cos(this._bodyMotionPhase * 0.42) * impulse * 0.82);
-    const bodyZ = (this._currentBodyAngleZ * 9) + (slowSway * impulse * 1.05);
+    const swayWave = Math.sin(this._bodyMotionPhase);
+    const swayAmplitude = Math.max(impulse * 5.2, Math.abs(this._currentBodyAngleX) * 24);
+    const twistAmplitude = Math.max(impulse * 4.1, Math.abs(this._currentBodyAngleZ) * 20);
+    const bodyX = (this._currentBodyAngleX * 4) + (swayWave * swayAmplitude);
+    const bodyY = (this._currentBodyAngleY * 9) + (Math.cos(this._bodyMotionPhase * 0.42) * impulse * 1.2);
+    const bodyZ = (this._currentBodyAngleZ * 4) - (swayWave * twistAmplitude);
     const breath = Math.max(
       0,
       Math.min(1, this._currentBreathLevel + (breathWave * 0.055 * (0.5 + impulse))),

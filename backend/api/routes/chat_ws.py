@@ -662,6 +662,7 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
     source = idle_plan.get("source") if isinstance(idle_plan.get("source"), dict) else {}
     action_ms = source.get("actionEnterAfterMs", "?")
     speaking_ms = source.get("speakingEnterAfterMs", "?")
+    post_speech_hold_ms = source.get("postSpeechHoldMs", "?")
     loop_events = idle_plan.get("loopEvents") if isinstance(idle_plan.get("loopEvents"), list) else []
     loop_names = [
         str(event.get("kind"))
@@ -688,7 +689,7 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
     return (
         f"expression_plan idlePlan {name} "
         f"enterAfterMs {enter_after_ms} "
-        f"actionMs {action_ms} speakingMs {speaking_ms} "
+        f"actionMs {action_ms} speakingMs {speaking_ms} postSpeechHoldMs {post_speech_hold_ms} "
         f"loopEvents {loop_summary} "
         f"ambientEnterMs {ambient_enter_after_ms} "
         f"ambientSwitchMs {ambient_switch_interval_ms} "

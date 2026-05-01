@@ -458,6 +458,41 @@ class ExpressionCompilerTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(sequence), 2)
+        self.assertEqual(sequence[0]["kind"], "bright_sway_left")
+        self.assertEqual(sequence[1]["kind"], "bright_sway_right")
+        self.assertGreaterEqual(sequence[0]["durationMs"], 900)
+        self.assertEqual(sequence[0]["fadeInMs"], 180)
+        self.assertEqual(sequence[0]["fadeOutMs"], 260)
+        self.assertEqual(sequence[1]["fadeInMs"], 180)
+        self.assertEqual(sequence[1]["fadeOutMs"], 260)
+        self.assertNotIn("bodyAngleX", sequence[0]["patch"])
+        self.assertNotIn("bodyAngleZ", sequence[0]["patch"])
+        self.assertNotIn("bodyAngleX", sequence[1]["patch"])
+        self.assertNotIn("bodyAngleZ", sequence[1]["patch"])
+        self.assertGreater(sequence[0]["patch"]["physicsImpulse"], 0.85)
+
+    def test_bright_talk_idle_timing_includes_sequential_sway_duration(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "bright_talk",
+                "intensity": 0.6,
+                "energy": 0.6,
+                "hold_ms": 1200,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        sequence_duration = sum(step["durationMs"] for step in plan["sequence"])
+        source = plan["idlePlan"]["source"]
+        self.assertGreaterEqual(sequence_duration, 1000)
+        self.assertEqual(
+            source["actionEnterAfterMs"],
+            int(plan["basePose"]["durationSec"] * 1000)
+            + sequence_duration
+            + max(event["durationMs"] for event in plan["microEvents"]),
+        )
 
     def test_select_base_pose_maps_emotion_performance_combos(self):
         self.assertEqual(select_base_pose("happy", "smile"), "happy_smile_soft")
@@ -906,7 +941,39 @@ class ExpressionCompilerTests(unittest.TestCase):
 
         source = plan["idlePlan"]["source"]
         self.assertGreater(source["speakingEnterAfterMs"], source["actionEnterAfterMs"])
-        self.assertEqual(plan["idlePlan"]["enterAfterMs"], source["speakingEnterAfterMs"])
+        self.assertGreaterEqual(source["postSpeechHoldMs"], 6000)
+        self.assertLessEqual(source["postSpeechHoldMs"], 10000)
+        self.assertEqual(
+            plan["idlePlan"]["enterAfterMs"],
+            source["speakingEnterAfterMs"] + source["postSpeechHoldMs"],
+        )
+
+    def test_idle_plan_keeps_short_spoken_expression_visible_after_speaking(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "smile",
+                "intensity": 0.45,
+                "energy": 0.45,
+                "hold_ms": 1200,
+                "spoken_text": "好喔。",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        source = plan["idlePlan"]["source"]
+        base_enter_after_ms = max(
+            400,
+            source["actionEnterAfterMs"],
+            source["speakingEnterAfterMs"],
+        )
+        self.assertGreaterEqual(source["postSpeechHoldMs"], 6000)
+        self.assertLessEqual(source["postSpeechHoldMs"], 10000)
+        self.assertEqual(
+            plan["idlePlan"]["enterAfterMs"],
+            base_enter_after_ms + source["postSpeechHoldMs"],
+        )
 
     def test_compile_expression_plan_maps_requested_idle_families(self):
         cases = [

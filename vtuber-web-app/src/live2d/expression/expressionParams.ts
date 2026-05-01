@@ -8,6 +8,8 @@ export interface ActiveExpressionEvent {
   kind: string;
   patch: ExpressionParamPatch;
   durationMs: number;
+  fadeInMs?: number;
+  fadeOutMs?: number;
   startedAtMs: number;
   returnToBase: boolean;
 }

@@ -51,6 +51,8 @@ export interface ExpressionMicroEventPatch {
 export interface ExpressionMicroEvent {
   kind: string
   durationMs: number
+  fadeInMs?: number
+  fadeOutMs?: number
   patch: ExpressionMicroEventPatch
   returnToBase: boolean
 }
@@ -75,6 +77,7 @@ export interface ExpressionIdlePlan {
   source?: {
     actionEnterAfterMs?: number
     speakingEnterAfterMs?: number
+    postSpeechHoldMs?: number
   }
   settlePose: ExpressionBasePose
   loopEvents: ExpressionMicroEvent[]
@@ -134,6 +137,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
+}
+
+function isNonNegativeNumber(value: unknown): value is number {
+  return isNumber(value) && value >= 0
 }
 
 function hasExpressionBasePoseParams(value: unknown): value is ExpressionBasePose['params'] {
@@ -208,7 +215,9 @@ function isExpressionMicroEvent(value: unknown): value is ExpressionMicroEvent {
     isRecord(value) &&
     typeof value.kind === 'string' &&
     isExpressionMicroEventPatch(value.patch) &&
-    isNumber(value.durationMs) &&
+    isNonNegativeNumber(value.durationMs) &&
+    (value.fadeInMs === undefined || isNonNegativeNumber(value.fadeInMs)) &&
+    (value.fadeOutMs === undefined || isNonNegativeNumber(value.fadeOutMs)) &&
     typeof value.returnToBase === 'boolean'
   )
 }
@@ -271,7 +280,8 @@ function isExpressionIdlePlan(value: unknown): value is ExpressionIdlePlan {
       (
         isRecord(value.source) &&
         (value.source.actionEnterAfterMs === undefined || isNumber(value.source.actionEnterAfterMs)) &&
-        (value.source.speakingEnterAfterMs === undefined || isNumber(value.source.speakingEnterAfterMs))
+        (value.source.speakingEnterAfterMs === undefined || isNumber(value.source.speakingEnterAfterMs)) &&
+        (value.source.postSpeechHoldMs === undefined || isNumber(value.source.postSpeechHoldMs))
       )
     ) &&
     isExpressionBasePose(value.settlePose) &&
