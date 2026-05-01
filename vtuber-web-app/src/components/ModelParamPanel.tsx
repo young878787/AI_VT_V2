@@ -48,6 +48,11 @@ export const ModelParamPanel: React.FC = () => {
               eyeRSmile:     raw.eyeRSmile,
               browLX:        raw.browLX,
               browRX:        raw.browRX,
+              bodyAngleX:    raw.bodyAngleX,
+              bodyAngleY:    raw.bodyAngleY,
+              bodyAngleZ:    raw.bodyAngleZ,
+              breathLevel:   raw.breathLevel,
+              physicsImpulse: raw.physicsImpulse,
             }));
             setEyeSync(raw.eyeSync);
             setTimerLeft(Math.max(0, Math.round(raw.timerRemaining)));
@@ -91,6 +96,11 @@ export const ModelParamPanel: React.FC = () => {
         eyeSync,
         next.eyeLSmile, next.eyeRSmile,
         next.browLX, next.browRX,
+        next.bodyAngleX ?? 0.0,
+        next.bodyAngleY ?? 0.0,
+        next.bodyAngleZ ?? 0.0,
+        next.breathLevel ?? 0.35,
+        next.physicsImpulse ?? 0.0,
       );
     }
   }, [params, eyeSync]);
@@ -114,7 +124,7 @@ export const ModelParamPanel: React.FC = () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (model && typeof (model as any).setAiBehavior === 'function') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (model as any).setAiBehavior(0, 0, 1, 1, DEFAULT_PARAMS.durationSec, 0, 0, 0, 0, 0, 0, 0, true);
+      (model as any).setAiBehavior(0, 0, 1, 1, DEFAULT_PARAMS.durationSec, 0, 0, 0, 0, 0, 0, 0, true, 0, 0, 0, 0, 0, 0.35, 0);
     }
   }, []);
 

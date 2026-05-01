@@ -17,6 +17,11 @@ export interface ExpressionBasePose {
     eyeRSmile: number
     browLX: number
     browRX: number
+    bodyAngleX: number
+    bodyAngleY: number
+    bodyAngleZ: number
+    breathLevel: number
+    physicsImpulse: number
   }
   durationSec: number
 }
@@ -36,6 +41,11 @@ export interface ExpressionMicroEventPatch {
   eyeRSmile?: number
   browLX?: number
   browRX?: number
+  bodyAngleX?: number
+  bodyAngleY?: number
+  bodyAngleZ?: number
+  breathLevel?: number
+  physicsImpulse?: number
 }
 
 export interface ExpressionMicroEvent {
@@ -111,6 +121,11 @@ const EXPRESSION_MICRO_EVENT_PATCH_KEYS = [
   'eyeRSmile',
   'browLX',
   'browRX',
+  'bodyAngleX',
+  'bodyAngleY',
+  'bodyAngleZ',
+  'breathLevel',
+  'physicsImpulse',
 ] as const satisfies ReadonlyArray<keyof ExpressionMicroEventPatch>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -142,7 +157,12 @@ function hasExpressionBasePoseParams(value: unknown): value is ExpressionBasePos
     isNumber(value.eyeLSmile) &&
     isNumber(value.eyeRSmile) &&
     isNumber(value.browLX) &&
-    isNumber(value.browRX)
+    isNumber(value.browRX) &&
+    isNumber(value.bodyAngleX) &&
+    isNumber(value.bodyAngleY) &&
+    isNumber(value.bodyAngleZ) &&
+    isNumber(value.breathLevel) &&
+    isNumber(value.physicsImpulse)
   )
 }
 

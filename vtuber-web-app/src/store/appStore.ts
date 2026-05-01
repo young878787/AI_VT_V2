@@ -22,7 +22,7 @@ export interface JPAFState {
 }
 
 interface AiBehaviorBridgeModel {
-  setAiBehavior?: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number) => void;
+  setAiBehavior?: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number) => void;
   setAiHappiness?: (headIntensity: number, durationSec?: number) => void;
   forceBlink?: (durationSec?: number) => void;
   pauseAutoBlink?: (durationSec?: number) => void;
@@ -93,7 +93,7 @@ interface AppState {
   updateChatMessage: (id: string, content: string) => void;
   setAiTyping: (isTyping: boolean) => void;
   setCompressing: (isCompressing: boolean) => void;
-  setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number) => void;
+  setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number) => void;
   setBlinkControl: (action: BlinkAction, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
   setExpressionPlan: (plan: ExpressionPlanPayload) => void;
   enqueueExpressionEvents: (events: ExpressionMicroEvent[]) => void;
@@ -344,7 +344,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setCompressing: (isCompressing) => set({ isCompressing }),
 
-  setAiBehavior: (headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec = 5.0, mouthForm = 0.0, browLY = 0.0, browRY = 0.0, browLAngle = 0.0, browRAngle = 0.0, browLForm = 0.0, browRForm = 0.0, eyeSync = true, eyeLSmile = 0.0, eyeRSmile = 0.0, browLX = 0.0, browRX = 0.0) => {
+  setAiBehavior: (headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec = 5.0, mouthForm = 0.0, browLY = 0.0, browRY = 0.0, browLAngle = 0.0, browRAngle = 0.0, browLForm = 0.0, browRForm = 0.0, eyeSync = true, eyeLSmile = 0.0, eyeRSmile = 0.0, browLX = 0.0, browRX = 0.0, bodyAngleX = 0.0, bodyAngleY = 0.0, bodyAngleZ = 0.0, breathLevel = 0.35, physicsImpulse = 0.0) => {
     set({ aiBehavior: { headIntensity, blushLevel, eyeLOpen, eyeROpen } });
 
     // 同步到 Live2D 模型
@@ -354,7 +354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const bridgeModel = model as unknown as AiBehaviorBridgeModel;
 
       if (typeof bridgeModel.setAiBehavior === 'function') {
-        bridgeModel.setAiBehavior(headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec, mouthForm, browLY, browRY, browLAngle, browRAngle, browLForm, browRForm, eyeSync, eyeLSmile, eyeRSmile, browLX, browRX);
+        bridgeModel.setAiBehavior(headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec, mouthForm, browLY, browRY, browLAngle, browRAngle, browLForm, browRForm, eyeSync, eyeLSmile, eyeRSmile, browLX, browRX, bodyAngleX, bodyAngleY, bodyAngleZ, breathLevel, physicsImpulse);
       } else {
         // Fallback to older method if available
         if (typeof bridgeModel.setAiHappiness === 'function') {

@@ -58,6 +58,59 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertEqual(plan["basePose"]["preset"], "happy_smile_soft")
         self.assertEqual(plan["idlePlan"]["name"], "happy_idle")
 
+    def test_compile_expression_plan_includes_body_motion_inputs_for_physics(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "surprised",
+                "performance_mode": "shock_recoil",
+                "intensity": 0.8,
+                "energy": 0.9,
+                "hold_ms": 1500,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        params = plan["basePose"]["params"]
+        for key in ("bodyAngleX", "bodyAngleY", "bodyAngleZ", "breathLevel", "physicsImpulse"):
+            self.assertIn(key, params)
+            self.assertIsInstance(params[key], float)
+
+        self.assertGreater(params["breathLevel"], 0.5)
+        self.assertGreater(params["physicsImpulse"], 0.5)
+        self.assertIn("bodyAngleX", plan["carryState"])
+        self.assertIn("physicsImpulse", plan["idlePlan"]["settlePose"]["params"])
+
+    def test_compile_expression_plan_makes_playful_motion_more_lively_than_gloomy(self):
+        playful = compile_expression_plan(
+            {
+                "emotion": "playful",
+                "performance_mode": "goofy_face",
+                "intensity": 0.7,
+                "energy": 0.75,
+                "playfulness": 0.85,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+        gloomy = compile_expression_plan(
+            {
+                "emotion": "gloomy",
+                "performance_mode": "deadpan",
+                "intensity": 0.5,
+                "energy": 0.35,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        self.assertGreater(playful["basePose"]["params"]["physicsImpulse"], 0.55)
+        self.assertGreater(
+            playful["basePose"]["params"]["physicsImpulse"],
+            gloomy["basePose"]["params"]["physicsImpulse"],
+        )
+        self.assertGreater(abs(playful["basePose"]["params"]["bodyAngleX"]), 0.08)
+
     def test_compile_expression_plan_selects_different_presets_for_happy_vs_playful_goofy(self):
         happy_plan = compile_expression_plan(
             {"emotion": "happy", "performance_mode": "smile"},
@@ -242,6 +295,9 @@ class ExpressionCompilerTests(unittest.TestCase):
         legacy = render_legacy_behavior_payload(plan)
 
         self.assertEqual(legacy["behavior_payload"]["type"], "behavior")
+        self.assertIn("bodyAngleX", legacy["behavior_payload"])
+        self.assertIn("breathLevel", legacy["behavior_payload"])
+        self.assertIn("physicsImpulse", legacy["behavior_payload"])
         self.assertIn("speaking_rate", legacy)
         self.assertEqual(
             legacy["blink_payloads"],

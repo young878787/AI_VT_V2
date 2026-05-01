@@ -72,6 +72,11 @@ class DisplaySyncService {
             data.eyeRSmile      ?? 0.0,
             data.browLX         ?? 0.0,
             data.browRX         ?? 0.0,
+            data.bodyAngleX     ?? 0.0,
+            data.bodyAngleY     ?? 0.0,
+            data.bodyAngleZ     ?? 0.0,
+            data.breathLevel    ?? 0.35,
+            data.physicsImpulse ?? 0.0,
           );
         } else if (data.type === 'expression_plan') {
           if (!isExpressionPlanPayload(data)) {

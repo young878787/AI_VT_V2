@@ -53,6 +53,11 @@ const makeBasePose = () => ({
     eyeRSmile: 0,
     browLX: 0,
     browRX: 0,
+    bodyAngleX: 0,
+    bodyAngleY: 0,
+    bodyAngleZ: 0,
+    breathLevel: 0.35,
+    physicsImpulse: 0.12,
   },
   durationSec: 1.6,
 });

@@ -124,6 +124,11 @@ CONTINUITY_FAMILY_MAP = {
 
 CONTINUITY_PARAM_WEIGHTS = {
     "headIntensity": 0.25,
+    "bodyAngleX": 0.22,
+    "bodyAngleY": 0.20,
+    "bodyAngleZ": 0.20,
+    "breathLevel": 0.30,
+    "physicsImpulse": 0.18,
     "blushLevel": 0.65,
     "eyeLOpen": 0.38,
     "eyeROpen": 0.38,
@@ -141,12 +146,26 @@ CONTINUITY_PARAM_WEIGHTS = {
 }
 
 
+MOTION_PARAM_DEFAULTS = {
+    "bodyAngleX": 0.0,
+    "bodyAngleY": 0.0,
+    "bodyAngleZ": 0.0,
+    "breathLevel": 0.35,
+    "physicsImpulse": 0.12,
+}
+
+
 IDLE_PLAN_LOOP_EVENTS = {
     "happy_idle": [
         {
             "kind": "happy_idle_warm_lift",
             "durationMs": 680,
             "patch": {
+                "bodyAngleX": 0.06,
+                "bodyAngleY": 0.04,
+                "bodyAngleZ": -0.04,
+                "breathLevel": 0.58,
+                "physicsImpulse": 0.30,
                 "mouthForm": 0.34,
                 "eyeLOpen": 0.82,
                 "eyeROpen": 0.84,
@@ -164,6 +183,11 @@ IDLE_PLAN_LOOP_EVENTS = {
             "kind": "crying_idle_tremble_breath",
             "durationMs": 1080,
             "patch": {
+                "bodyAngleX": -0.10,
+                "bodyAngleY": -0.04,
+                "bodyAngleZ": 0.02,
+                "breathLevel": 0.30,
+                "physicsImpulse": 0.12,
                 "eyeLOpen": 0.48,
                 "eyeROpen": 0.50,
                 "mouthForm": -0.42,
@@ -181,6 +205,11 @@ IDLE_PLAN_LOOP_EVENTS = {
             "kind": "angry_idle_glare_lock",
             "durationMs": 760,
             "patch": {
+                "bodyAngleX": 0.10,
+                "bodyAngleY": -0.07,
+                "bodyAngleZ": 0.10,
+                "breathLevel": 0.52,
+                "physicsImpulse": 0.52,
                 "eyeLOpen": 1.20,
                 "eyeROpen": 1.20,
                 "mouthForm": -0.26,
@@ -200,6 +229,11 @@ IDLE_PLAN_LOOP_EVENTS = {
             "kind": "shy_idle_side_peek",
             "durationMs": 640,
             "patch": {
+                "bodyAngleX": -0.06,
+                "bodyAngleY": 0.09,
+                "bodyAngleZ": -0.09,
+                "breathLevel": 0.50,
+                "physicsImpulse": 0.26,
                 "eyeLOpen": 0.58,
                 "eyeROpen": 0.88,
                 "mouthForm": 0.06,
@@ -221,6 +255,11 @@ IDLE_PLAN_LOOP_EVENTS = {
             "kind": "gloomy_idle_slow_sink",
             "durationMs": 1180,
             "patch": {
+                "bodyAngleX": -0.08,
+                "bodyAngleY": -0.06,
+                "bodyAngleZ": 0.02,
+                "breathLevel": 0.24,
+                "physicsImpulse": 0.08,
                 "eyeLOpen": 0.46,
                 "eyeROpen": 0.48,
                 "mouthForm": -0.22,
@@ -267,6 +306,11 @@ AMBIENT_IDLE_STATE_TEMPLATES = {
     "ambient_idle_breath": {
         "params": {
             "headIntensity": 0.03,
+            "bodyAngleX": 0.00,
+            "bodyAngleY": -0.02,
+            "bodyAngleZ": 0.00,
+            "breathLevel": 0.38,
+            "physicsImpulse": 0.10,
             "blushLevel": 0.02,
             "eyeSync": True,
             "eyeLOpen": 0.78,
@@ -284,6 +328,11 @@ AMBIENT_IDLE_STATE_TEMPLATES = {
             "browRX": 0.00,
         },
         "jitter": {
+            "bodyAngleX": 0.03,
+            "bodyAngleY": 0.03,
+            "bodyAngleZ": 0.03,
+            "breathLevel": 0.05,
+            "physicsImpulse": 0.03,
             "blushLevel": 0.05,
             "eyeLOpen": 0.05,
             "eyeROpen": 0.05,
@@ -303,6 +352,11 @@ AMBIENT_IDLE_STATE_TEMPLATES = {
     "ambient_idle_look_around": {
         "params": {
             "headIntensity": 0.04,
+            "bodyAngleX": 0.05,
+            "bodyAngleY": 0.06,
+            "bodyAngleZ": -0.06,
+            "breathLevel": 0.46,
+            "physicsImpulse": 0.24,
             "blushLevel": 0.00,
             "eyeSync": False,
             "eyeLOpen": 0.88,
@@ -321,6 +375,11 @@ AMBIENT_IDLE_STATE_TEMPLATES = {
         },
         "jitter": {
             "headIntensity": 0.02,
+            "bodyAngleX": 0.04,
+            "bodyAngleY": 0.04,
+            "bodyAngleZ": 0.04,
+            "breathLevel": 0.06,
+            "physicsImpulse": 0.05,
             "blushLevel": 0.04,
             "eyeLOpen": 0.06,
             "eyeROpen": 0.06,
@@ -337,7 +396,12 @@ AMBIENT_IDLE_STATE_TEMPLATES = {
     },
     "ambient_idle_active_shift": {
         "params": {
-            "headIntensity": 0.06,
+            "headIntensity": 0.08,
+            "bodyAngleX": 0.07,
+            "bodyAngleY": 0.04,
+            "bodyAngleZ": -0.05,
+            "breathLevel": 0.56,
+            "physicsImpulse": 0.34,
             "blushLevel": 0.03,
             "eyeSync": True,
             "eyeLOpen": 0.92,
@@ -356,6 +420,11 @@ AMBIENT_IDLE_STATE_TEMPLATES = {
         },
         "jitter": {
             "headIntensity": 0.02,
+            "bodyAngleX": 0.04,
+            "bodyAngleY": 0.04,
+            "bodyAngleZ": 0.04,
+            "breathLevel": 0.07,
+            "physicsImpulse": 0.05,
             "blushLevel": 0.05,
             "eyeLOpen": 0.05,
             "eyeROpen": 0.05,
@@ -378,6 +447,11 @@ AMBIENT_IDLE_STATE_TEMPLATES = {
 IDLE_PLAN_SETTLE_PATCHES = {
     "happy_idle": {
         "headIntensity": 0.05,
+        "bodyAngleX": 0.02,
+        "bodyAngleY": 0.01,
+        "bodyAngleZ": -0.01,
+        "breathLevel": 0.42,
+        "physicsImpulse": 0.14,
         "mouthForm": 0.26,
         "eyeLOpen": 0.86,
         "eyeROpen": 0.86,
@@ -392,6 +466,11 @@ IDLE_PLAN_SETTLE_PATCHES = {
     },
     "crying_idle": {
         "headIntensity": 0.01,
+        "bodyAngleX": -0.12,
+        "bodyAngleY": -0.04,
+        "bodyAngleZ": 0.02,
+        "breathLevel": 0.26,
+        "physicsImpulse": 0.08,
         "mouthForm": -0.34,
         "eyeLOpen": 0.56,
         "eyeROpen": 0.58,
@@ -410,6 +489,11 @@ IDLE_PLAN_SETTLE_PATCHES = {
     },
     "angry_glare_idle": {
         "headIntensity": 0.04,
+        "bodyAngleX": 0.06,
+        "bodyAngleY": -0.05,
+        "bodyAngleZ": 0.06,
+        "breathLevel": 0.38,
+        "physicsImpulse": 0.28,
         "mouthForm": -0.22,
         "eyeLOpen": 1.14,
         "eyeROpen": 1.14,
@@ -428,6 +512,11 @@ IDLE_PLAN_SETTLE_PATCHES = {
     },
     "shy_idle": {
         "headIntensity": 0.03,
+        "bodyAngleX": -0.04,
+        "bodyAngleY": 0.04,
+        "bodyAngleZ": -0.06,
+        "breathLevel": 0.36,
+        "physicsImpulse": 0.12,
         "mouthForm": 0.08,
         "eyeLOpen": 0.62,
         "eyeROpen": 0.84,
@@ -444,6 +533,11 @@ IDLE_PLAN_SETTLE_PATCHES = {
     },
     "gloomy_idle": {
         "headIntensity": 0.01,
+        "bodyAngleX": -0.08,
+        "bodyAngleY": -0.06,
+        "bodyAngleZ": 0.01,
+        "breathLevel": 0.20,
+        "physicsImpulse": 0.06,
         "mouthForm": -0.18,
         "eyeLOpen": 0.54,
         "eyeROpen": 0.56,
@@ -627,6 +721,11 @@ def _build_carry_state(
         "signature": signature.get("signature_name", "calm_soft"),
         "residue": residue,
         "headIntensity": params["headIntensity"],
+        "bodyAngleX": params["bodyAngleX"],
+        "bodyAngleY": params["bodyAngleY"],
+        "bodyAngleZ": params["bodyAngleZ"],
+        "breathLevel": params["breathLevel"],
+        "physicsImpulse": params["physicsImpulse"],
         "blushLevel": params["blushLevel"],
         "eyeSync": params["eyeSync"],
         "eyeLOpen": params["eyeLOpen"],
@@ -645,7 +744,13 @@ def _build_carry_state(
     }
 
 
+def _ensure_motion_params(params: dict) -> None:
+    for key, default in MOTION_PARAM_DEFAULTS.items():
+        params.setdefault(key, default)
+
+
 def _clamp_expression_params(params: dict) -> dict:
+    _ensure_motion_params(params)
     params["blushLevel"] = _clamp(params["blushLevel"], -1.0, 1.0)
     params["eyeLOpen"] = _clamp(params["eyeLOpen"], 0.0, 1.25)
     params["eyeROpen"] = _clamp(params["eyeROpen"], 0.0, 1.25)
@@ -661,6 +766,11 @@ def _clamp_expression_params(params: dict) -> dict:
     params["browLX"] = _clamp(params["browLX"], -1.0, 1.0)
     params["browRX"] = _clamp(params["browRX"], -1.0, 1.0)
     params["headIntensity"] = _clamp(params["headIntensity"], 0.0, 0.95)
+    params["bodyAngleX"] = _clamp(params["bodyAngleX"], -1.0, 1.0)
+    params["bodyAngleY"] = _clamp(params["bodyAngleY"], -1.0, 1.0)
+    params["bodyAngleZ"] = _clamp(params["bodyAngleZ"], -1.0, 1.0)
+    params["breathLevel"] = _clamp(params["breathLevel"], 0.0, 1.0)
+    params["physicsImpulse"] = _clamp(params["physicsImpulse"], 0.0, 1.0)
     return params
 
 
@@ -1040,6 +1150,78 @@ def apply_model_adapter(
     return _clamp_expression_params(params)
 
 
+def apply_body_motion_profile(
+    params: dict,
+    emotion: str,
+    performance_mode: str,
+    intensity: float,
+    energy: float,
+    playfulness: float,
+    warmth: float,
+    dominance: float,
+) -> dict:
+    activity = _clamp(0.16 + (energy * 0.42) + (intensity * 0.22) + (playfulness * 0.14), 0.0, 1.0)
+    breath = 0.30 + (energy * 0.28) + (warmth * 0.10)
+    impulse = 0.14 + (activity * 0.36)
+
+    if emotion in {"happy", "playful", "teasing"}:
+        params["bodyAngleX"] += 0.06 + warmth * 0.06
+        params["bodyAngleY"] += (playfulness - 0.25) * 0.14
+        params["bodyAngleZ"] += (0.5 - dominance) * 0.12
+        params["breathLevel"] += breath + 0.12
+        params["physicsImpulse"] += impulse + (playfulness * 0.16)
+    elif emotion == "angry":
+        params["bodyAngleX"] += 0.05 + dominance * 0.10
+        params["bodyAngleY"] -= 0.04 + intensity * 0.05
+        params["bodyAngleZ"] += (dominance - 0.5) * 0.16
+        params["breathLevel"] += 0.22 + (intensity * 0.20)
+        params["physicsImpulse"] += 0.30 + (intensity * 0.38) + (energy * 0.14)
+    elif emotion == "sad":
+        params["bodyAngleX"] -= 0.10 + intensity * 0.06
+        params["bodyAngleY"] -= 0.04
+        params["bodyAngleZ"] -= (1.0 - warmth) * 0.05
+        params["breathLevel"] += 0.18 + (intensity * 0.08)
+        params["physicsImpulse"] += 0.06 + (energy * 0.08)
+    elif emotion == "gloomy":
+        params["bodyAngleX"] -= 0.08 + intensity * 0.04
+        params["bodyAngleY"] -= 0.06
+        params["bodyAngleZ"] += 0.02
+        params["breathLevel"] += 0.16 + (energy * 0.08)
+        params["physicsImpulse"] += 0.05 + (energy * 0.06)
+    elif emotion == "shy":
+        params["bodyAngleX"] -= 0.05
+        params["bodyAngleY"] += 0.05 + warmth * 0.06
+        params["bodyAngleZ"] -= 0.06 + playfulness * 0.05
+        params["breathLevel"] += 0.28 + (intensity * 0.12)
+        params["physicsImpulse"] += 0.14 + (energy * 0.14)
+    elif emotion == "surprised":
+        params["bodyAngleX"] += 0.10 + intensity * 0.10
+        params["bodyAngleY"] += 0.06 + energy * 0.08
+        params["bodyAngleZ"] += 0.04
+        params["breathLevel"] += 0.42 + (energy * 0.16)
+        params["physicsImpulse"] += 0.36 + (energy * 0.24)
+    elif emotion == "conflicted":
+        params["bodyAngleX"] += 0.02
+        params["bodyAngleY"] += 0.05
+        params["bodyAngleZ"] -= 0.08 + intensity * 0.05
+        params["breathLevel"] += 0.28 + (energy * 0.12)
+        params["physicsImpulse"] += 0.20 + (energy * 0.16)
+    else:
+        params["breathLevel"] += 0.26 + (energy * 0.10)
+        params["physicsImpulse"] += 0.08 + (energy * 0.08)
+
+    if performance_mode in {"bright_talk", "goofy_face", "shock_recoil"}:
+        params["breathLevel"] += 0.10
+        params["physicsImpulse"] += 0.16
+    elif performance_mode in {"deadpan", "gloomy", "tense_hold"}:
+        params["physicsImpulse"] *= 0.72
+    elif performance_mode in {"meltdown", "volatile"}:
+        params["physicsImpulse"] += 0.12
+        params["bodyAngleZ"] += 0.05 if dominance >= 0.5 else -0.05
+
+    return _clamp_expression_params(params)
+
+
 def apply_base_pose_modifiers(
     intent: dict,
     base_pose: dict,
@@ -1049,6 +1231,7 @@ def apply_base_pose_modifiers(
     continuity_blend: float = 0.0,
 ) -> dict:
     params = deepcopy(base_pose["params"])
+    _ensure_motion_params(params)
 
     intensity = _coerce_float(intent.get("intensity", 0.35), 0.35)
     energy = _coerce_float(intent.get("energy", 0.35), 0.35)
@@ -1154,6 +1337,16 @@ def apply_base_pose_modifiers(
     params = _apply_previous_state_continuity(params, previous_state, continuity_blend)
     params = apply_visual_signature(params, signature=signature, intensity=intensity, energy=energy, warmth=warmth)
     params = apply_model_adapter(params, signature=signature, intensity=intensity, energy=energy, model_name=model_name)
+    params = apply_body_motion_profile(
+        params,
+        emotion=emotion,
+        performance_mode=performance_mode,
+        intensity=intensity,
+        energy=energy,
+        playfulness=playfulness,
+        warmth=warmth,
+        dominance=dominance,
+    )
 
     return {
         **base_pose,

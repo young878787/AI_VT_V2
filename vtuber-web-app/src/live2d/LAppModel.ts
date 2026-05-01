@@ -40,6 +40,13 @@ function clampExpressionOverlayValue(key: ExpressionOverlayKey, value: number): 
   switch (key) {
     case 'headIntensity':
       return Math.max(0, Math.min(0.95, value));
+    case 'breathLevel':
+    case 'physicsImpulse':
+      return Math.max(0, Math.min(1, value));
+    case 'bodyAngleX':
+    case 'bodyAngleY':
+    case 'bodyAngleZ':
+      return Math.max(-1, Math.min(1, value));
     case 'blushLevel':
       return Math.max(-1, Math.min(1, value));
     case 'eyeLOpen':
@@ -93,6 +100,9 @@ export class LAppModel extends CubismUserModel {
   private _idParamAngleY: CubismIdHandle;
   private _idParamAngleZ: CubismIdHandle;
   private _idParamBodyAngleX: CubismIdHandle;
+  private _idParamBodyAngleY: CubismIdHandle;
+  private _idParamBodyAngleZ: CubismIdHandle;
+  private _idParamBreath: CubismIdHandle;
 
   // 眼球參數 ID
   private _idParamEyeBallX: CubismIdHandle;
@@ -147,6 +157,11 @@ export class LAppModel extends CubismUserModel {
 
   // AI 控制行為參數 (目標值)
   private _aiHeadIntensity: number = 0;
+  private _aiBodyAngleX: number = 0;
+  private _aiBodyAngleY: number = 0;
+  private _aiBodyAngleZ: number = 0;
+  private _aiBreathLevel: number = 0.35;
+  private _aiPhysicsImpulse: number = 0;
   private _aiBlushLevel: number = 0;
   private _aiEyeLOpen: number = 1.0;
   private _aiEyeROpen: number = 1.0;
@@ -168,6 +183,11 @@ export class LAppModel extends CubismUserModel {
 
   // AI 控制平滑插值參數 (當前值)
   private _currentBlushLevel: number = 0;
+  private _currentBodyAngleX: number = 0;
+  private _currentBodyAngleY: number = 0;
+  private _currentBodyAngleZ: number = 0;
+  private _currentBreathLevel: number = 0.35;
+  private _currentPhysicsImpulse: number = 0;
   private _currentEyeLOpen: number = 1.0;
   private _currentEyeROpen: number = 1.0;
   private _currentMouthForm: number = 0.0;
@@ -195,6 +215,7 @@ export class LAppModel extends CubismUserModel {
   private _ambientIdleStateOrderIndex: number = 0;
   private _ambientIdleActiveState: ExpressionIdleAmbientState | null = null;
   private _ambientIdleActivePose: BasePoseParams | null = null;
+  private _bodyMotionPhase: number = 0;
 
   /**
    * 建構函式
@@ -211,6 +232,9 @@ export class LAppModel extends CubismUserModel {
     this._idParamAngleY = idManager.getId(CubismDefaultParameterId.ParamAngleY);
     this._idParamAngleZ = idManager.getId(CubismDefaultParameterId.ParamAngleZ);
     this._idParamBodyAngleX = idManager.getId(CubismDefaultParameterId.ParamBodyAngleX);
+    this._idParamBodyAngleY = idManager.getId(CubismDefaultParameterId.ParamBodyAngleY);
+    this._idParamBodyAngleZ = idManager.getId(CubismDefaultParameterId.ParamBodyAngleZ);
+    this._idParamBreath = idManager.getId(CubismDefaultParameterId.ParamBreath);
 
     // 眼球參數 ID
     this._idParamEyeBallX = idManager.getId(CubismDefaultParameterId.ParamEyeBallX);
@@ -471,6 +495,13 @@ export class LAppModel extends CubismUserModel {
         peak: 4.0,
         cycle: 15.5345,
         weight: 0.5
+      },
+      {
+        parameterId: this._idParamBreath,
+        offset: 0.5,
+        peak: 0.5,
+        cycle: 4.8,
+        weight: 0.35
       }
     ];
     this._breath.setParameters(breathParameters);
@@ -816,6 +847,11 @@ export class LAppModel extends CubismUserModel {
    * @param eyeRSmile 右眼笑眼程度 (0.0=無笑意, 1.0=瞇眼大笑)
    * @param browLX 左眉毛水平位移 (-1.0=向外, +1.0=向內)，Hiyori/Haru 有效
    * @param browRX 右眉毛水平位移 (-1.0=向外, +1.0=向內)，Hiyori/Haru 有效
+   * @param bodyAngleX 身體左右擺動輸入 (-1.0~1.0)
+   * @param bodyAngleY 身體前後/上下姿態輸入 (-1.0~1.0)
+   * @param bodyAngleZ 身體扭轉輸入 (-1.0~1.0)
+   * @param breathLevel 呼吸強度 (0.0~1.0)
+   * @param physicsImpulse 物理刺激強度 (0.0~1.0)
    */
   public setAiBehavior(
     headIntensity: number, 
@@ -835,8 +871,18 @@ export class LAppModel extends CubismUserModel {
     eyeRSmile: number = 0.0,
     browLX: number = 0.0,
     browRX: number = 0.0,
+    bodyAngleX: number = 0.0,
+    bodyAngleY: number = 0.0,
+    bodyAngleZ: number = 0.0,
+    breathLevel: number = 0.35,
+    physicsImpulse: number = 0.0,
   ): void {
     this._aiHeadIntensity = Math.max(0, Math.min(1, headIntensity));
+    this._aiBodyAngleX = Math.max(-1, Math.min(1, bodyAngleX));
+    this._aiBodyAngleY = Math.max(-1, Math.min(1, bodyAngleY));
+    this._aiBodyAngleZ = Math.max(-1, Math.min(1, bodyAngleZ));
+    this._aiBreathLevel = Math.max(0, Math.min(1, breathLevel));
+    this._aiPhysicsImpulse = Math.max(0, Math.min(1, physicsImpulse));
     this._aiBlushLevel = Math.max(-1, Math.min(1, blushLevel));    // -1=蒼白(Hiyori), 0=自然, 1=臉紅
     this._aiEyeLOpen = Math.max(0, Math.min(2, eyeLOpen));          // 1.0=預設, 2.0=瞪大
     this._aiEyeROpen = Math.max(0, Math.min(2, eyeROpen));          // 1.0=預設, 2.0=瞪大
@@ -886,6 +932,11 @@ export class LAppModel extends CubismUserModel {
       basePose.params.eyeRSmile ?? 0,
       basePose.params.browLX ?? 0,
       basePose.params.browRX ?? 0,
+      basePose.params.bodyAngleX ?? 0,
+      basePose.params.bodyAngleY ?? 0,
+      basePose.params.bodyAngleZ ?? 0,
+      basePose.params.breathLevel ?? 0.35,
+      basePose.params.physicsImpulse ?? 0,
     );
   }
 
@@ -939,6 +990,11 @@ export class LAppModel extends CubismUserModel {
       eyeRSmile: 0.03,
       browLX: 0.03,
       browRX: 0.03,
+      bodyAngleX: 0.03,
+      bodyAngleY: 0.03,
+      bodyAngleZ: 0.03,
+      breathLevel: 0.05,
+      physicsImpulse: 0.03,
     };
 
     for (const [key, spread] of Object.entries(jitterMap) as Array<[keyof BasePoseParams, number]>) {
@@ -1041,6 +1097,11 @@ export class LAppModel extends CubismUserModel {
    */
   public getAiParams(): {
     headIntensity: number;
+    bodyAngleX: number;
+    bodyAngleY: number;
+    bodyAngleZ: number;
+    breathLevel: number;
+    physicsImpulse: number;
     blushLevel: number;
     eyeLOpen: number;
     eyeROpen: number;
@@ -1062,6 +1123,11 @@ export class LAppModel extends CubismUserModel {
       // 回傳目前插值的「真實顯示值」，非目標值
       // 這樣在 AI 動作結束後「漸退」期間也能正確顯示
       headIntensity: this._aiHeadIntensity,
+      bodyAngleX:    this._currentBodyAngleX,
+      bodyAngleY:    this._currentBodyAngleY,
+      bodyAngleZ:    this._currentBodyAngleZ,
+      breathLevel:   this._currentBreathLevel,
+      physicsImpulse: this._currentPhysicsImpulse,
       blushLevel:    this._currentBlushLevel,
       eyeLOpen:      this._currentEyeLOpen,
       eyeROpen:      this._currentEyeROpen,
@@ -1228,6 +1294,11 @@ export class LAppModel extends CubismUserModel {
 
     // ── AI 表情計算（先計算基礎值，供眨眼疊加使用）──
     let targetBlush: number;
+    let targetBodyAngleX: number;
+    let targetBodyAngleY: number;
+    let targetBodyAngleZ: number;
+    let targetBreathLevel: number;
+    let targetPhysicsImpulse: number;
     let targetEyeL: number;
     let targetEyeR: number;
     let targetMouthForm: number;
@@ -1252,18 +1323,14 @@ export class LAppModel extends CubismUserModel {
       }
 
       if (activeIntensity > 0.001) {
-        const time = Date.now() / 1000;
-        const freqZ = 2.0 + (3.0 * this._aiHeadIntensity);
-        const freqX = freqZ * 0.5;
-        const freqY = freqZ * 0.5;
-        const ampZ = 25 * activeIntensity;
-        const ampX = 15 * activeIntensity;
-        const ampY = 10 * activeIntensity;
+        const headPhase = this._bodyMotionPhase * (0.9 + (this._aiPhysicsImpulse * 0.45));
+        const ampZ = 14 * activeIntensity;
+        const ampX = 10 * activeIntensity;
+        const ampY = 6 * activeIntensity;
 
-        this._model.addParameterValueById(this._idParamAngleZ, Math.sin(time * freqZ) * ampZ);
-        this._model.addParameterValueById(this._idParamAngleX, Math.cos(time * freqX) * ampX);
-        this._model.addParameterValueById(this._idParamAngleY, Math.cos(time * freqY + Math.PI/4) * ampY);
-        this._model.addParameterValueById(this._idParamBodyAngleX, Math.sin(time * freqZ) * (ampZ * 0.6));
+        this._model.addParameterValueById(this._idParamAngleZ, Math.sin(headPhase) * ampZ);
+        this._model.addParameterValueById(this._idParamAngleX, Math.cos(headPhase * 0.58) * ampX);
+        this._model.addParameterValueById(this._idParamAngleY, Math.cos((headPhase * 0.48) + Math.PI / 4) * ampY);
       } else {
         // headIntensity 為 0 時跳過頭部搖晃，但不重置計時器
         // _aiBehaviorTimer 應自然倒計時，讓其他表情參數（mouthForm/blush/brow 等）繼續持續
@@ -1271,6 +1338,11 @@ export class LAppModel extends CubismUserModel {
       }
 
       targetBlush     = this._aiBlushLevel;
+      targetBodyAngleX = this._aiBodyAngleX;
+      targetBodyAngleY = this._aiBodyAngleY;
+      targetBodyAngleZ = this._aiBodyAngleZ;
+      targetBreathLevel = this._aiBreathLevel;
+      targetPhysicsImpulse = this._aiPhysicsImpulse;
       targetEyeL      = this._aiEyeLOpen;
       targetEyeR      = this._aiEyeROpen;
       targetMouthForm = this._aiMouthForm;
@@ -1297,6 +1369,11 @@ export class LAppModel extends CubismUserModel {
 
         const ambientParams = this._ambientIdleActivePose ?? this._activeIdlePlan.settlePose.params;
         targetBlush     = ambientParams.blushLevel;
+        targetBodyAngleX = ambientParams.bodyAngleX;
+        targetBodyAngleY = ambientParams.bodyAngleY;
+        targetBodyAngleZ = ambientParams.bodyAngleZ;
+        targetBreathLevel = ambientParams.breathLevel;
+        targetPhysicsImpulse = ambientParams.physicsImpulse;
         targetEyeL      = ambientParams.eyeLOpen;
         targetEyeR      = ambientParams.eyeROpen;
         targetMouthForm = ambientParams.mouthForm;
@@ -1315,6 +1392,11 @@ export class LAppModel extends CubismUserModel {
         this._aiHeadIntensity = 0;
         const idleParams = this._activeIdlePlan.settlePose.params;
         targetBlush     = idleParams.blushLevel;
+        targetBodyAngleX = idleParams.bodyAngleX;
+        targetBodyAngleY = idleParams.bodyAngleY;
+        targetBodyAngleZ = idleParams.bodyAngleZ;
+        targetBreathLevel = idleParams.breathLevel;
+        targetPhysicsImpulse = idleParams.physicsImpulse;
         targetEyeL      = idleParams.eyeLOpen;
         targetEyeR      = idleParams.eyeROpen;
         targetMouthForm = idleParams.mouthForm;
@@ -1340,6 +1422,11 @@ export class LAppModel extends CubismUserModel {
     } else if (this._activeIdlePlan) {
       this._aiHeadIntensity = 0;
       targetBlush     = this._aiBlushLevel;
+      targetBodyAngleX = this._aiBodyAngleX;
+      targetBodyAngleY = this._aiBodyAngleY;
+      targetBodyAngleZ = this._aiBodyAngleZ;
+      targetBreathLevel = this._aiBreathLevel;
+      targetPhysicsImpulse = this._aiPhysicsImpulse;
       targetEyeL      = this._aiEyeLOpen;
       targetEyeR      = this._aiEyeROpen;
       targetMouthForm = this._aiMouthForm;
@@ -1356,6 +1443,11 @@ export class LAppModel extends CubismUserModel {
     } else {
       this._aiHeadIntensity = 0;
       targetBlush     = 0.0;
+      targetBodyAngleX = 0.0;
+      targetBodyAngleY = 0.0;
+      targetBodyAngleZ = 0.0;
+      targetBreathLevel = 0.35;
+      targetPhysicsImpulse = 0.0;
       targetEyeL      = 1.0;
       targetEyeR      = 1.0;
       targetMouthForm = 0.0;
@@ -1387,6 +1479,11 @@ export class LAppModel extends CubismUserModel {
       const fade = event.returnToBase ? 1 - progress : 1;
 
       targetBlush = applyOverlayValue('blushLevel', targetBlush, event.patch.blushLevel, fade);
+      targetBodyAngleX = applyOverlayValue('bodyAngleX', targetBodyAngleX, event.patch.bodyAngleX, fade);
+      targetBodyAngleY = applyOverlayValue('bodyAngleY', targetBodyAngleY, event.patch.bodyAngleY, fade);
+      targetBodyAngleZ = applyOverlayValue('bodyAngleZ', targetBodyAngleZ, event.patch.bodyAngleZ, fade);
+      targetBreathLevel = applyOverlayValue('breathLevel', targetBreathLevel, event.patch.breathLevel, fade);
+      targetPhysicsImpulse = applyOverlayValue('physicsImpulse', targetPhysicsImpulse, event.patch.physicsImpulse, fade);
       targetEyeL = applyOverlayValue('eyeLOpen', targetEyeL, event.patch.eyeLOpen, fade);
       targetEyeR = applyOverlayValue('eyeROpen', targetEyeR, event.patch.eyeROpen, fade);
       targetMouthForm = applyOverlayValue('mouthForm', targetMouthForm, event.patch.mouthForm, fade);
@@ -1404,6 +1501,11 @@ export class LAppModel extends CubismUserModel {
 
     const lerpFactor = Math.min(1.0, 5.0 * deltaTimeSeconds);
     this._currentBlushLevel += (targetBlush - this._currentBlushLevel) * lerpFactor;
+    this._currentBodyAngleX += (targetBodyAngleX - this._currentBodyAngleX) * lerpFactor;
+    this._currentBodyAngleY += (targetBodyAngleY - this._currentBodyAngleY) * lerpFactor;
+    this._currentBodyAngleZ += (targetBodyAngleZ - this._currentBodyAngleZ) * lerpFactor;
+    this._currentBreathLevel += (targetBreathLevel - this._currentBreathLevel) * lerpFactor;
+    this._currentPhysicsImpulse += (targetPhysicsImpulse - this._currentPhysicsImpulse) * lerpFactor;
     this._currentEyeLOpen += (targetEyeL - this._currentEyeLOpen) * lerpFactor;
     this._currentEyeROpen += (targetEyeR - this._currentEyeROpen) * lerpFactor;
     this._currentMouthForm += (targetMouthForm - this._currentMouthForm) * lerpFactor;
@@ -1467,6 +1569,35 @@ export class LAppModel extends CubismUserModel {
     // LipSync（嘴型同步）
     if (this._lipSyncValue > 0) {
       this._model.addParameterValueById(this._idParamMouthOpenY, this._lipSyncValue);
+    }
+
+    const bodyMotionActive = Math.abs(this._currentBodyAngleX) > 0.005
+      || Math.abs(this._currentBodyAngleY) > 0.005
+      || Math.abs(this._currentBodyAngleZ) > 0.005
+      || this._currentBreathLevel > 0.005
+      || this._currentPhysicsImpulse > 0.005;
+
+    if (bodyMotionActive) {
+      const impulse = Math.max(0, Math.min(1, this._currentPhysicsImpulse));
+      this._bodyMotionPhase += deltaTimeSeconds * (0.68 + (impulse * 0.46));
+      if (this._bodyMotionPhase > Math.PI * 2) {
+        this._bodyMotionPhase -= Math.PI * 2;
+      }
+
+      const breathWave = Math.sin(this._bodyMotionPhase);
+      const slowSway = Math.sin(this._bodyMotionPhase * 0.5);
+      const bodyX = (this._currentBodyAngleX * 11) + (slowSway * impulse * 1.35);
+      const bodyY = (this._currentBodyAngleY * 7) + (Math.cos(this._bodyMotionPhase * 0.42) * impulse * 0.82);
+      const bodyZ = (this._currentBodyAngleZ * 9) + (slowSway * impulse * 1.05);
+      const breath = Math.max(
+        0,
+        Math.min(1, this._currentBreathLevel + (breathWave * 0.055 * (0.5 + impulse))),
+      );
+
+      this._model.addParameterValueById(this._idParamBodyAngleX, bodyX);
+      this._model.addParameterValueById(this._idParamBodyAngleY, bodyY);
+      this._model.addParameterValueById(this._idParamBodyAngleZ, bodyZ);
+      this._model.setParameterValueById(this._idParamBreath, breath);
     }
 
     // 注入其他 AI 表情參數（不含眼睛，眼睛已由眨眼處理）

@@ -3,6 +3,11 @@ def render_legacy_behavior_payload(plan: dict) -> dict:
     behavior_payload = {
         "type": "behavior",
         "headIntensity": params["headIntensity"],
+        "bodyAngleX": params.get("bodyAngleX", 0.0),
+        "bodyAngleY": params.get("bodyAngleY", 0.0),
+        "bodyAngleZ": params.get("bodyAngleZ", 0.0),
+        "breathLevel": params.get("breathLevel", 0.35),
+        "physicsImpulse": params.get("physicsImpulse", 0.12),
         "blushLevel": params["blushLevel"],
         "eyeSync": params["eyeSync"],
         "eyeLOpen": params["eyeLOpen"],
