@@ -16,7 +16,7 @@ import { ControlPanel } from '@components/ControlPanel';
 import { AIChatPanel } from '@components/AIChatPanel';
 import { AnimeDecoration } from '@components/AnimeDecoration';
 import { HitAreaOverlay } from '@components/HitAreaOverlay';
-import { ModelParamPanel } from '@components/ModelParamPanel';
+import { ExpressionPlanDebugPanel } from '@components/ExpressionPlanDebugPanel';
 import { NativeParamPanel } from '@components/NativeParamPanel';
 import { JPAFSidebar } from '@components/JPAFSidebar';
 import { useAppStore } from '@store/appStore';
@@ -60,7 +60,7 @@ function App() {
       <div className="app-layout__bottom-center">
         <div className="app-layout__bottom-row">
           <NativeParamPanel />
-          <ModelParamPanel />
+          <ExpressionPlanDebugPanel />
         </div>
       </div>
     </div>
