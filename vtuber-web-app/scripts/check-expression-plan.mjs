@@ -59,6 +59,15 @@ const makeBasePose = () => ({
     breathLevel: 0.35,
     physicsImpulse: 0.12,
   },
+  bodyMotionProfile: {
+    style: 'bright_bounce',
+    speed: 1.2,
+    swayScale: 1.25,
+    bobScale: 1.15,
+    twistScale: 0.9,
+    breathScale: 1.1,
+    headScale: 1.1,
+  },
   durationSec: 1.6,
 });
 
@@ -184,6 +193,16 @@ const reversedAmbientPlan = {
     },
   },
 };
+const invalidBodyMotionProfile = {
+  ...makePayload([{ action: 'force_blink' }]),
+  basePose: {
+    ...makeBasePose(),
+    bodyMotionProfile: {
+      ...makeBasePose().bodyMotionProfile,
+      style: 'wild_unknown',
+    },
+  },
+};
 
 if (!isExpressionPlanPayload(validSetInterval)) {
   throw new Error('Expected a complete set_interval command to be valid');
@@ -214,6 +233,9 @@ if (isExpressionPlanPayload(reversedAmbientInterval)) {
 }
 if (isExpressionPlanPayload(reversedAmbientPlan)) {
   throw new Error('Expected ambient plan with too few states to be rejected');
+}
+if (isExpressionPlanPayload(invalidBodyMotionProfile)) {
+  throw new Error('Expected unknown body motion profile style to be rejected');
 }
 
 console.log('expressionPlan validator smoke test passed.');

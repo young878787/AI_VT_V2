@@ -7,7 +7,11 @@ from domain.expression_continuity import (
     build_carry_state,
     resolve_continuity_blend,
 )
-from domain.expression_compiler_rules import MOTION_PARAM_DEFAULTS
+from domain.expression_compiler_rules import (
+    BODY_MOTION_PROFILE_DEFAULTS,
+    BODY_MOTION_PROFILE_RULES,
+    MOTION_PARAM_DEFAULTS,
+)
 from domain.expression_idle_library import (
     AMBIENT_IDLE_ENTER_AFTER_MS,
     AMBIENT_IDLE_STATE_ORDER,
@@ -294,47 +298,47 @@ def apply_body_motion_profile(
     impulse = 0.14 + (activity * 0.36)
 
     if emotion in {"happy", "playful", "teasing"}:
-        params["bodyAngleX"] += 0.09 + warmth * 0.08 + playfulness * 0.04
-        params["bodyAngleY"] += (playfulness - 0.20) * 0.18 + energy * 0.03
-        params["bodyAngleZ"] += (0.5 - dominance) * 0.16 - playfulness * 0.03
+        params["bodyAngleX"] += 0.12 + warmth * 0.10 + playfulness * 0.06
+        params["bodyAngleY"] += (playfulness - 0.10) * 0.22 + energy * 0.06
+        params["bodyAngleZ"] += (0.5 - dominance) * 0.18 - playfulness * 0.05
         params["breathLevel"] += breath + 0.12
         params["physicsImpulse"] += impulse + (playfulness * 0.22) + (energy * 0.08)
     elif emotion == "angry":
-        params["bodyAngleX"] += 0.05 + dominance * 0.10
-        params["bodyAngleY"] -= 0.04 + intensity * 0.05
-        params["bodyAngleZ"] += (dominance - 0.5) * 0.16
-        params["breathLevel"] += 0.22 + (intensity * 0.20)
+        params["bodyAngleX"] += 0.08 + dominance * 0.12
+        params["bodyAngleY"] -= 0.10 + intensity * 0.08
+        params["bodyAngleZ"] += (dominance - 0.5) * 0.22
+        params["breathLevel"] += 0.26 + (intensity * 0.22)
         params["physicsImpulse"] += 0.30 + (intensity * 0.38) + (energy * 0.14)
     elif emotion == "sad":
         params["bodyAngleX"] -= 0.10 + intensity * 0.06
-        params["bodyAngleY"] -= 0.04
+        params["bodyAngleY"] -= 0.22 + intensity * 0.10
         params["bodyAngleZ"] -= (1.0 - warmth) * 0.05
         params["breathLevel"] += 0.18 + (intensity * 0.08)
-        params["physicsImpulse"] += 0.06 + (energy * 0.08)
+        params["physicsImpulse"] += 0.18 + (energy * 0.12)
     elif emotion == "gloomy":
-        params["bodyAngleX"] -= 0.08 + intensity * 0.04
-        params["bodyAngleY"] -= 0.06
-        params["bodyAngleZ"] += 0.02
-        params["breathLevel"] += 0.16 + (energy * 0.08)
-        params["physicsImpulse"] += 0.05 + (energy * 0.06)
+        params["bodyAngleX"] -= 0.14 + intensity * 0.06
+        params["bodyAngleY"] -= 0.16 + intensity * 0.08
+        params["bodyAngleZ"] += 0.03
+        params["breathLevel"] += 0.20 + (energy * 0.10)
+        params["physicsImpulse"] += 0.14 + (energy * 0.10)
     elif emotion == "shy":
-        params["bodyAngleX"] -= 0.05
-        params["bodyAngleY"] += 0.05 + warmth * 0.06
-        params["bodyAngleZ"] -= 0.06 + playfulness * 0.05
-        params["breathLevel"] += 0.28 + (intensity * 0.12)
-        params["physicsImpulse"] += 0.14 + (energy * 0.14)
+        params["bodyAngleX"] -= 0.10
+        params["bodyAngleY"] += 0.10 + warmth * 0.08
+        params["bodyAngleZ"] -= 0.10 + playfulness * 0.07
+        params["breathLevel"] += 0.30 + (intensity * 0.14)
+        params["physicsImpulse"] += 0.20 + (energy * 0.18)
     elif emotion == "surprised":
-        params["bodyAngleX"] += 0.10 + intensity * 0.10
-        params["bodyAngleY"] += 0.06 + energy * 0.08
-        params["bodyAngleZ"] += 0.04
+        params["bodyAngleX"] += 0.14 + intensity * 0.12
+        params["bodyAngleY"] += 0.10 + energy * 0.10
+        params["bodyAngleZ"] += 0.07
         params["breathLevel"] += 0.42 + (energy * 0.16)
         params["physicsImpulse"] += 0.36 + (energy * 0.24)
     elif emotion == "conflicted":
-        params["bodyAngleX"] += 0.02
-        params["bodyAngleY"] += 0.05
-        params["bodyAngleZ"] -= 0.08 + intensity * 0.05
-        params["breathLevel"] += 0.28 + (energy * 0.12)
-        params["physicsImpulse"] += 0.20 + (energy * 0.16)
+        params["bodyAngleX"] += 0.06
+        params["bodyAngleY"] += 0.10
+        params["bodyAngleZ"] -= 0.12 + intensity * 0.08
+        params["breathLevel"] += 0.30 + (energy * 0.14)
+        params["physicsImpulse"] += 0.28 + (energy * 0.20)
     else:
         params["breathLevel"] += 0.26 + (energy * 0.10)
         params["physicsImpulse"] += 0.08 + (energy * 0.08)
@@ -349,6 +353,47 @@ def apply_body_motion_profile(
         params["bodyAngleZ"] += 0.05 if dominance >= 0.5 else -0.05
 
     return _clamp_expression_params(params)
+
+
+def build_body_motion_profile(
+    emotion: str,
+    performance_mode: str,
+    intensity: float,
+    energy: float,
+    playfulness: float,
+) -> dict:
+    profile = deepcopy(BODY_MOTION_PROFILE_DEFAULTS)
+    profile.update(BODY_MOTION_PROFILE_RULES.get(emotion, {}))
+
+    if performance_mode in {"bright_talk", "goofy_face", "shock_recoil"}:
+        profile["speed"] += 0.08
+        profile["swayScale"] += 0.10
+        profile["bobScale"] += 0.10
+        profile["headScale"] += 0.08
+    elif performance_mode in {"deadpan", "gloomy", "tense_hold"}:
+        profile["speed"] -= 0.03 if emotion in {"sad", "gloomy"} else 0.08
+        if emotion not in {"sad", "gloomy"}:
+            profile["swayScale"] -= 0.08
+            profile["headScale"] -= 0.08
+    elif performance_mode in {"meltdown", "volatile"}:
+        profile["twistScale"] += 0.16
+        profile["headScale"] += 0.08
+
+    if emotion in {"happy", "playful", "teasing"}:
+        profile["speed"] += energy * 0.10
+        profile["swayScale"] += playfulness * 0.10
+    elif emotion in {"sad", "gloomy"}:
+        profile["speed"] -= intensity * 0.06
+        profile["swayScale"] -= intensity * 0.04
+        profile["bobScale"] += intensity * 0.08
+    elif emotion == "angry":
+        profile["twistScale"] += intensity * 0.12
+        profile["breathScale"] += intensity * 0.08
+
+    for key in ("speed", "swayScale", "bobScale", "twistScale", "breathScale", "headScale"):
+        profile[key] = round(_clamp(float(profile[key]), 0.15, 1.8), 3)
+
+    return profile
 
 
 def apply_base_pose_modifiers(
@@ -480,6 +525,13 @@ def apply_base_pose_modifiers(
     return {
         **base_pose,
         "params": params,
+        "bodyMotionProfile": build_body_motion_profile(
+            emotion=emotion,
+            performance_mode=performance_mode,
+            intensity=intensity,
+            energy=energy,
+            playfulness=playfulness,
+        ),
     }
 
 
@@ -831,6 +883,7 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
             "arc": intent.get("arc", "steady"),
             "signature": signature.get("signature_name", "calm_soft"),
             "blushPolicy": signature.get("blush_policy", "neutralize"),
+            "bodyMotionProfile": base_pose.get("bodyMotionProfile", {}).get("style", "calm_sway"),
             "idlePlan": idle_plan["name"],
         },
     }

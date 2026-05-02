@@ -17,6 +17,29 @@ from services.expression_compiler import (
 from services.expression_legacy_renderer import render_legacy_behavior_payload
 
 
+def estimate_native_body_ranges(plan: dict) -> dict:
+    params = plan["basePose"]["params"]
+    profile = plan["basePose"]["bodyMotionProfile"]
+    impulse = params["physicsImpulse"]
+    sway = max(impulse * 5.8, abs(params["bodyAngleX"]) * 27.0) * profile["swayScale"]
+    bob = max(impulse * 1.45, abs(params["bodyAngleY"]) * 7.0) * profile["bobScale"]
+    twist = max(impulse * 4.8, abs(params["bodyAngleZ"]) * 22.0) * profile["twistScale"]
+    return {
+        "x": (
+            params["bodyAngleX"] * 5.2 - sway,
+            params["bodyAngleX"] * 5.2 + sway,
+        ),
+        "y": (
+            params["bodyAngleY"] * 10.0 - bob,
+            params["bodyAngleY"] * 10.0 + bob,
+        ),
+        "z": (
+            params["bodyAngleZ"] * 5.0 - twist,
+            params["bodyAngleZ"] * 5.0 + twist,
+        ),
+    }
+
+
 class ExpressionCompilerTests(unittest.TestCase):
     def test_compile_expression_plan_selects_playful_base_pose(self):
         plan = compile_expression_plan(
@@ -110,6 +133,96 @@ class ExpressionCompilerTests(unittest.TestCase):
             gloomy["basePose"]["params"]["physicsImpulse"],
         )
         self.assertGreater(abs(playful["basePose"]["params"]["bodyAngleX"]), 0.08)
+
+    def test_compile_expression_plan_adds_emotion_specific_body_motion_profile(self):
+        happy = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "bright_talk",
+                "intensity": 0.55,
+                "energy": 0.75,
+                "playfulness": 0.45,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+        sad = compile_expression_plan(
+            {
+                "emotion": "sad",
+                "performance_mode": "tense_hold",
+                "intensity": 0.75,
+                "energy": 0.25,
+                "playfulness": 0.05,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+        angry = compile_expression_plan(
+            {
+                "emotion": "angry",
+                "performance_mode": "meltdown",
+                "intensity": 0.8,
+                "energy": 0.7,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        happy_profile = happy["basePose"]["bodyMotionProfile"]
+        sad_profile = sad["basePose"]["bodyMotionProfile"]
+        angry_profile = angry["basePose"]["bodyMotionProfile"]
+
+        self.assertEqual(happy_profile["style"], "bright_bounce")
+        self.assertEqual(sad_profile["style"], "small_sad_bob")
+        self.assertEqual(angry_profile["style"], "locked_tense")
+        self.assertGreater(happy_profile["speed"], sad_profile["speed"])
+        self.assertGreater(happy_profile["swayScale"], sad_profile["swayScale"])
+        self.assertGreater(sad_profile["bobScale"], sad_profile["swayScale"])
+        self.assertGreater(sad["basePose"]["params"]["physicsImpulse"], 0.22)
+        self.assertLess(sad["basePose"]["params"]["bodyAngleY"], -0.25)
+        self.assertGreater(sad_profile["headScale"], 0.7)
+        self.assertGreater(angry_profile["twistScale"], angry_profile["swayScale"])
+
+    def test_low_energy_emotions_still_have_visible_native_body_motion(self):
+        sad = compile_expression_plan(
+            {
+                "emotion": "sad",
+                "performance_mode": "tense_hold",
+                "intensity": 0.75,
+                "energy": 0.25,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+        gloomy = compile_expression_plan(
+            {
+                "emotion": "gloomy",
+                "performance_mode": "deadpan",
+                "intensity": 0.55,
+                "energy": 0.30,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+        shy = compile_expression_plan(
+            {
+                "emotion": "shy",
+                "performance_mode": "awkward",
+                "intensity": 0.55,
+                "energy": 0.45,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        sad_ranges = estimate_native_body_ranges(sad)
+        gloomy_ranges = estimate_native_body_ranges(gloomy)
+        shy_ranges = estimate_native_body_ranges(shy)
+
+        self.assertLess(sad_ranges["y"][0], -6.0)
+        self.assertLess(gloomy_ranges["y"][0], -3.0)
+        self.assertGreater(shy_ranges["x"][1] - shy_ranges["x"][0], 2.5)
+        self.assertGreater(shy_ranges["y"][1] - shy_ranges["y"][0], 1.5)
 
     def test_compile_expression_plan_selects_different_presets_for_happy_vs_playful_goofy(self):
         happy_plan = compile_expression_plan(

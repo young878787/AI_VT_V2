@@ -1,3 +1,24 @@
+export type BodyMotionStyle =
+  | 'calm_sway'
+  | 'bright_bounce'
+  | 'playful_swing'
+  | 'small_sad_bob'
+  | 'heavy_slow_sink'
+  | 'locked_tense'
+  | 'shy_side_sway'
+  | 'quick_recoil'
+  | 'uneasy_shift'
+
+export interface BodyMotionProfile {
+  style: BodyMotionStyle
+  speed: number
+  swayScale: number
+  bobScale: number
+  twistScale: number
+  breathScale: number
+  headScale: number
+}
+
 export interface ExpressionBasePose {
   preset: string
   params: {
@@ -23,6 +44,7 @@ export interface ExpressionBasePose {
     breathLevel: number
     physicsImpulse: number
   }
+  bodyMotionProfile?: BodyMotionProfile
   durationSec: number
 }
 
@@ -143,6 +165,33 @@ function isNonNegativeNumber(value: unknown): value is number {
   return isNumber(value) && value >= 0
 }
 
+function isBodyMotionStyle(value: unknown): value is BodyMotionStyle {
+  return (
+    value === 'calm_sway' ||
+    value === 'bright_bounce' ||
+    value === 'playful_swing' ||
+    value === 'small_sad_bob' ||
+    value === 'heavy_slow_sink' ||
+    value === 'locked_tense' ||
+    value === 'shy_side_sway' ||
+    value === 'quick_recoil' ||
+    value === 'uneasy_shift'
+  )
+}
+
+function isBodyMotionProfile(value: unknown): value is BodyMotionProfile {
+  return (
+    isRecord(value) &&
+    isBodyMotionStyle(value.style) &&
+    isNumber(value.speed) &&
+    isNumber(value.swayScale) &&
+    isNumber(value.bobScale) &&
+    isNumber(value.twistScale) &&
+    isNumber(value.breathScale) &&
+    isNumber(value.headScale)
+  )
+}
+
 function hasExpressionBasePoseParams(value: unknown): value is ExpressionBasePose['params'] {
   if (!isRecord(value)) {
     return false
@@ -244,7 +293,13 @@ function isExpressionIdleAmbientPlan(value: unknown): value is ExpressionIdleAmb
 }
 
 function isExpressionBasePose(value: unknown): value is ExpressionBasePose {
-  return isRecord(value) && typeof value.preset === 'string' && isNumber(value.durationSec) && hasExpressionBasePoseParams(value.params)
+  return (
+    isRecord(value) &&
+    typeof value.preset === 'string' &&
+    isNumber(value.durationSec) &&
+    hasExpressionBasePoseParams(value.params) &&
+    (value.bodyMotionProfile === undefined || isBodyMotionProfile(value.bodyMotionProfile))
+  )
 }
 
 function isExpressionIdlePlan(value: unknown): value is ExpressionIdlePlan {

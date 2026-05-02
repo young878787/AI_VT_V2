@@ -22,7 +22,12 @@ import type { ModelConfig } from './LAppDefine';
 import { ResourcePath, Priority } from './LAppDefine';
 import { LAppTextureManager, TextureInfo } from './LAppTextureManager';
 import { LAppDelegate } from './LAppDelegate';
-import type { ExpressionIdleAmbientState, ExpressionIdlePlan } from '../types/expressionPlan';
+import type {
+  BodyMotionProfile,
+  ExpressionBasePose,
+  ExpressionIdleAmbientState,
+  ExpressionIdlePlan,
+} from '../types/expressionPlan';
 import {
   clampExpressionOverlayValue,
   randomBetween,
@@ -34,6 +39,32 @@ import {
 } from './expression/expressionParams';
 import { applyActiveExpressionEvents } from './expression/expressionEventRuntime';
 import { createNeutralTargetParams } from './expression/expressionState';
+
+const DEFAULT_BODY_MOTION_PROFILE: BodyMotionProfile = {
+  style: 'calm_sway',
+  speed: 1,
+  swayScale: 1,
+  bobScale: 1,
+  twistScale: 1,
+  breathScale: 1,
+  headScale: 1,
+};
+
+const BODY_MOTION_NATIVE_SCALE = {
+  xPose: 5.2,
+  yPose: 10.0,
+  zPose: 5.0,
+  swayImpulse: 5.8,
+  swayPose: 27.0,
+  twistImpulse: 4.8,
+  twistPose: 22.0,
+  bobImpulse: 1.45,
+  bobPose: 7.0,
+};
+
+function clampNativeBodyAngle(value: number): number {
+  return Math.max(-10, Math.min(10, value));
+}
 
 /**
  * LAppModel 類
@@ -169,6 +200,9 @@ export class LAppModel extends CubismUserModel {
   private _ambientIdleActiveState: ExpressionIdleAmbientState | null = null;
   private _ambientIdleActivePose: BasePoseParams | null = null;
   private _bodyMotionPhase: number = 0;
+  private _aiBodyMotionProfile: BodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
+  private _activeBodyMotionProfile: BodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
+  private _lastBodyMotionDebugAtMs: number = 0;
 
   /**
    * 建構函式
@@ -856,7 +890,7 @@ export class LAppModel extends CubismUserModel {
     this._aiBehaviorTimer = durationSec;
   }
 
-  public applyBasePose(basePose: { params: BasePoseParams; durationSec: number }): void {
+  public applyBasePose(basePose: ExpressionBasePose): void {
     this._activeExpressionEvents = [];
     this._activeIdlePlan = null;
     this._idlePlanActivateAtMs = 0;
@@ -867,6 +901,7 @@ export class LAppModel extends CubismUserModel {
     this._ambientIdleStateOrderIndex = 0;
     this._ambientIdleActiveState = null;
     this._ambientIdleActivePose = null;
+    this._aiBodyMotionProfile = basePose.bodyMotionProfile ?? DEFAULT_BODY_MOTION_PROFILE;
     this.setAiBehavior(
       basePose.params.headIntensity ?? 0,
       basePose.params.blushLevel ?? 0,
@@ -1310,22 +1345,53 @@ export class LAppModel extends CubismUserModel {
     }
 
     const impulse = Math.max(0, Math.min(1, this._currentPhysicsImpulse));
-    this._bodyMotionPhase += deltaTimeSeconds * (0.95 + (impulse * 0.62));
+    const profile = this._activeBodyMotionProfile;
+    this._bodyMotionPhase += deltaTimeSeconds * (0.95 + (impulse * 0.62)) * profile.speed;
     if (this._bodyMotionPhase > Math.PI * 200) {
       this._bodyMotionPhase -= Math.PI * 200;
     }
 
     const breathWave = Math.sin(this._bodyMotionPhase);
-    const swayWave = Math.sin(this._bodyMotionPhase);
-    const swayAmplitude = Math.max(impulse * 5.2, Math.abs(this._currentBodyAngleX) * 24);
-    const twistAmplitude = Math.max(impulse * 4.1, Math.abs(this._currentBodyAngleZ) * 20);
-    const bodyX = (this._currentBodyAngleX * 4) + (swayWave * swayAmplitude);
-    const bodyY = (this._currentBodyAngleY * 9) + (Math.cos(this._bodyMotionPhase * 0.42) * impulse * 1.2);
-    const bodyZ = (this._currentBodyAngleZ * 4) - (swayWave * twistAmplitude);
+    const swayWave = profile.style === 'playful_swing'
+      ? Math.sin((this._bodyMotionPhase * 1.12) + (Math.sin(this._bodyMotionPhase * 0.37) * 0.26))
+      : Math.sin(this._bodyMotionPhase);
+    const bobPhase = profile.style === 'small_sad_bob' || profile.style === 'heavy_slow_sink'
+      ? this._bodyMotionPhase * 0.54
+      : this._bodyMotionPhase * 0.42;
+    const bobWave = Math.cos(bobPhase);
+    const swayAmplitude = Math.max(
+      impulse * BODY_MOTION_NATIVE_SCALE.swayImpulse,
+      Math.abs(this._currentBodyAngleX) * BODY_MOTION_NATIVE_SCALE.swayPose,
+    ) * profile.swayScale;
+    const twistAmplitude = Math.max(
+      impulse * BODY_MOTION_NATIVE_SCALE.twistImpulse,
+      Math.abs(this._currentBodyAngleZ) * BODY_MOTION_NATIVE_SCALE.twistPose,
+    ) * profile.twistScale;
+    const bobAmplitude = Math.max(
+      impulse * BODY_MOTION_NATIVE_SCALE.bobImpulse,
+      Math.abs(this._currentBodyAngleY) * BODY_MOTION_NATIVE_SCALE.bobPose,
+    ) * profile.bobScale;
+    const bodyX = clampNativeBodyAngle(
+      (this._currentBodyAngleX * BODY_MOTION_NATIVE_SCALE.xPose) + (swayWave * swayAmplitude),
+    );
+    const bodyY = clampNativeBodyAngle(
+      (this._currentBodyAngleY * BODY_MOTION_NATIVE_SCALE.yPose) + (bobWave * bobAmplitude),
+    );
+    const bodyZ = clampNativeBodyAngle(
+      (this._currentBodyAngleZ * BODY_MOTION_NATIVE_SCALE.zPose) - (swayWave * twistAmplitude),
+    );
     const breath = Math.max(
       0,
-      Math.min(1, this._currentBreathLevel + (breathWave * 0.055 * (0.5 + impulse))),
+      Math.min(1, this._currentBreathLevel + (breathWave * 0.055 * (0.5 + impulse) * profile.breathScale)),
     );
+
+    const nowMs = performance.now();
+    if (profile.style !== 'calm_sway' && nowMs - this._lastBodyMotionDebugAtMs > 1200) {
+      this._lastBodyMotionDebugAtMs = nowMs;
+      console.log(
+        `[BodyMotion] style=${profile.style} bodyX=${bodyX.toFixed(2)} bodyY=${bodyY.toFixed(2)} bodyZ=${bodyZ.toFixed(2)} swayAmp=${swayAmplitude.toFixed(2)} bobAmp=${bobAmplitude.toFixed(2)} impulse=${impulse.toFixed(3)} speed=${profile.speed.toFixed(2)}`
+      );
+    }
 
     this._model.addParameterValueById(this._idParamBodyAngleX, bodyX);
     this._model.addParameterValueById(this._idParamBodyAngleY, bodyY);
@@ -1406,10 +1472,12 @@ export class LAppModel extends CubismUserModel {
     }
 
     if (activeIntensity > 0.001) {
-      const headPhase = this._bodyMotionPhase * (0.9 + (this._aiPhysicsImpulse * 0.45));
-      const ampZ = 14 * activeIntensity;
-      const ampX = 10 * activeIntensity;
-      const ampY = 6 * activeIntensity;
+      const profile = this._activeBodyMotionProfile;
+      const headPhase = this._bodyMotionPhase * (0.9 + (this._aiPhysicsImpulse * 0.45)) * profile.speed;
+      const headIntensity = activeIntensity * profile.headScale;
+      const ampZ = 14 * headIntensity;
+      const ampX = 10 * headIntensity;
+      const ampY = 6 * headIntensity;
 
       this._model.addParameterValueById(this._idParamAngleZ, Math.sin(headPhase) * ampZ);
       this._model.addParameterValueById(this._idParamAngleX, Math.cos(headPhase * 0.58) * ampX);
@@ -1421,11 +1489,13 @@ export class LAppModel extends CubismUserModel {
 
   private resolveExpressionTargets(deltaTimeSeconds: number, nowMs: number): BasePoseParams {
     if (this._aiBehaviorTimer > 0) {
+      this._activeBodyMotionProfile = this._aiBodyMotionProfile;
       this.updateAiHeadMotion(deltaTimeSeconds);
       return this.getAiTargetParams();
     }
 
     if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
+      this._activeBodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
       const ambientPlan = this._activeIdlePlan.ambientPlan;
       const ambientReady = !!ambientPlan?.states?.length && nowMs >= this._ambientIdleStartAtMs;
 
@@ -1457,10 +1527,12 @@ export class LAppModel extends CubismUserModel {
 
     if (this._activeIdlePlan) {
       this._aiHeadIntensity = 0;
+      this._activeBodyMotionProfile = this._aiBodyMotionProfile;
       return this.getAiTargetParams();
     }
 
     this._aiHeadIntensity = 0;
+    this._activeBodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
     return this.getNeutralTargetParams();
   }
 
