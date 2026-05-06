@@ -83,6 +83,27 @@ const makePayload = (commands) => ({
   speakingRate: 1,
 });
 
+const makeMotionPlan = () => ({
+  theme: 'happy_bright_talk',
+  variant: 'side_sway_bounce',
+  phaseSeed: 0.42,
+  durationMs: 5200,
+  blendInMs: 480,
+  blendOutMs: 900,
+  body: {
+    sway: 1.46,
+    bob: 1.32,
+    twist: 1.08,
+    spring: 0.48,
+  },
+  head: {
+    yaw: 1.12,
+    pitch: 0.92,
+    roll: 1.22,
+    lagMs: 150,
+  },
+});
+
 const makeIdlePlan = () => ({
   name: 'happy_idle',
   mode: 'loop',
@@ -203,6 +224,20 @@ const invalidBodyMotionProfile = {
     },
   },
 };
+const validMotionPlan = {
+  ...makePayload([{ action: 'force_blink' }]),
+  motionPlan: makeMotionPlan(),
+};
+const invalidMotionPlan = {
+  ...makePayload([{ action: 'force_blink' }]),
+  motionPlan: {
+    ...makeMotionPlan(),
+    head: {
+      ...makeMotionPlan().head,
+      lagMs: -1,
+    },
+  },
+};
 
 if (!isExpressionPlanPayload(validSetInterval)) {
   throw new Error('Expected a complete set_interval command to be valid');
@@ -236,6 +271,12 @@ if (isExpressionPlanPayload(reversedAmbientPlan)) {
 }
 if (isExpressionPlanPayload(invalidBodyMotionProfile)) {
   throw new Error('Expected unknown body motion profile style to be rejected');
+}
+if (!isExpressionPlanPayload(validMotionPlan)) {
+  throw new Error('Expected motionPlan with body/head branches to be valid');
+}
+if (isExpressionPlanPayload(invalidMotionPlan)) {
+  throw new Error('Expected motionPlan with negative head lag to be rejected');
 }
 
 console.log('expressionPlan validator smoke test passed.');

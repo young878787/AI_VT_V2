@@ -19,6 +19,27 @@ export interface BodyMotionProfile {
   headScale: number
 }
 
+export interface ExpressionMotionPlan {
+  theme: string
+  variant: string
+  phaseSeed: number
+  durationMs: number
+  blendInMs: number
+  blendOutMs: number
+  body: {
+    sway: number
+    bob: number
+    twist: number
+    spring: number
+  }
+  head: {
+    yaw: number
+    pitch: number
+    roll: number
+    lagMs: number
+  }
+}
+
 export interface ExpressionBasePose {
   preset: string
   params: {
@@ -120,6 +141,7 @@ export interface ExpressionPlanPayload {
   basePose: ExpressionBasePose
   microEvents: ExpressionMicroEvent[]
   sequence: ExpressionMicroEvent[]
+  motionPlan?: ExpressionMotionPlan
   idlePlan?: ExpressionIdlePlan
   blinkPlan: {
     style: string
@@ -189,6 +211,29 @@ function isBodyMotionProfile(value: unknown): value is BodyMotionProfile {
     isNumber(value.twistScale) &&
     isNumber(value.breathScale) &&
     isNumber(value.headScale)
+  )
+}
+
+function isExpressionMotionPlan(value: unknown): value is ExpressionMotionPlan {
+  if (!isRecord(value) || !isRecord(value.body) || !isRecord(value.head)) {
+    return false
+  }
+
+  return (
+    typeof value.theme === 'string' &&
+    typeof value.variant === 'string' &&
+    isNumber(value.phaseSeed) &&
+    isNonNegativeNumber(value.durationMs) &&
+    isNonNegativeNumber(value.blendInMs) &&
+    isNonNegativeNumber(value.blendOutMs) &&
+    isNumber(value.body.sway) &&
+    isNumber(value.body.bob) &&
+    isNumber(value.body.twist) &&
+    isNumber(value.body.spring) &&
+    isNumber(value.head.yaw) &&
+    isNumber(value.head.pitch) &&
+    isNumber(value.head.roll) &&
+    isNonNegativeNumber(value.head.lagMs)
   )
 }
 
@@ -384,6 +429,10 @@ export function isExpressionPlanPayload(value: unknown): value is ExpressionPlan
   }
 
   if (!value.sequence.every(isExpressionMicroEvent)) {
+    return false
+  }
+
+  if (value.motionPlan !== undefined && !isExpressionMotionPlan(value.motionPlan)) {
     return false
   }
 

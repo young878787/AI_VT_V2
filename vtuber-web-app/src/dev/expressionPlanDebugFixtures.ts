@@ -5,6 +5,7 @@ import type {
   ExpressionIdleAmbientState,
   ExpressionIdlePlan,
   ExpressionMicroEvent,
+  ExpressionMotionPlan,
   ExpressionPlanPayload,
 } from '../types/expressionPlan';
 
@@ -20,6 +21,13 @@ export type DebugExpressionKind =
   | 'conflicted';
 
 export type DebugExpressionIntensity = 'soft' | 'normal' | 'strong';
+export type DebugMotionKind =
+  | 'buoyant_bounce'
+  | 'side_sway_bounce'
+  | 'lean_in_pop'
+  | 'swing_tease'
+  | 'locked_glare'
+  | 'tuck_side_sway';
 
 export interface DebugExpressionOptions {
   includeIdle: boolean;
@@ -37,6 +45,15 @@ export interface DebugExpressionPreset {
   accent: string;
 }
 
+export interface DebugMotionPreset {
+  kind: DebugMotionKind;
+  label: string;
+  expressionKind: DebugExpressionKind;
+  theme: string;
+  variant: string;
+  accent: string;
+}
+
 export interface DebugExpressionBackendIntent {
   primary_emotion: DebugExpressionKind
   emotion: DebugExpressionKind
@@ -51,6 +68,8 @@ export interface DebugExpressionBackendIntent {
   speaking_rate: number
   spoken_text: string
   blink_style: string
+  motion_theme?: string
+  motion_variant?: string
   topic_guard: {
     source_theme: string
     must_preserve_theme: boolean
@@ -197,6 +216,57 @@ const INTENSITY_SCALE: Record<DebugExpressionIntensity, number> = {
   normal: 1,
   strong: 1.28,
 };
+
+export const MOTION_DEBUG_PRESETS: DebugMotionPreset[] = [
+  {
+    kind: 'buoyant_bounce',
+    label: '開心彈跳',
+    expressionKind: 'happy',
+    theme: 'happy_bright_talk',
+    variant: 'buoyant_bounce',
+    accent: '#22c55e',
+  },
+  {
+    kind: 'side_sway_bounce',
+    label: '左右彈擺',
+    expressionKind: 'happy',
+    theme: 'happy_bright_talk',
+    variant: 'side_sway_bounce',
+    accent: '#06b6d4',
+  },
+  {
+    kind: 'lean_in_pop',
+    label: '前傾回彈',
+    expressionKind: 'happy',
+    theme: 'happy_bright_talk',
+    variant: 'lean_in_pop',
+    accent: '#84cc16',
+  },
+  {
+    kind: 'swing_tease',
+    label: '調皮擺頭',
+    expressionKind: 'playful',
+    theme: 'playful_tease',
+    variant: 'swing_tease',
+    accent: '#a855f7',
+  },
+  {
+    kind: 'locked_glare',
+    label: '鎖定瞪視',
+    expressionKind: 'angry',
+    theme: 'angry_tension',
+    variant: 'locked_glare',
+    accent: '#ef4444',
+  },
+  {
+    kind: 'tuck_side_sway',
+    label: '害羞側縮',
+    expressionKind: 'shy',
+    theme: 'shy_tucked',
+    variant: 'tuck_side_sway',
+    accent: '#f472b6',
+  },
+];
 
 const NEUTRAL_PARAMS: ExpressionBasePose['params'] = {
   headIntensity: 0,
@@ -724,6 +794,82 @@ function buildBasePose(
   };
 }
 
+function buildMotionPlan(
+  preset: DebugMotionPreset | undefined,
+  options: DebugExpressionOptions,
+): ExpressionMotionPlan {
+  const scale = INTENSITY_SCALE[options.intensity];
+  const theme = preset?.theme ?? 'happy_bright_talk';
+  const variant = preset?.variant ?? 'buoyant_bounce';
+  const baseByVariant: Record<string, Omit<ExpressionMotionPlan, 'theme' | 'variant' | 'phaseSeed'>> = {
+    buoyant_bounce: {
+      durationMs: 4600,
+      blendInMs: 420,
+      blendOutMs: 820,
+      body: { sway: 1.14, bob: 1.62, twist: 0.92, spring: 0.72 },
+      head: { yaw: 0.92, pitch: 1.18, roll: 1.06, lagMs: 110 },
+    },
+    side_sway_bounce: {
+      durationMs: 5200,
+      blendInMs: 480,
+      blendOutMs: 900,
+      body: { sway: 1.46, bob: 1.32, twist: 1.08, spring: 0.48 },
+      head: { yaw: 1.12, pitch: 0.92, roll: 1.22, lagMs: 150 },
+    },
+    lean_in_pop: {
+      durationMs: 4200,
+      blendInMs: 360,
+      blendOutMs: 760,
+      body: { sway: 0.94, bob: 1.48, twist: 0.82, spring: 0.9 },
+      head: { yaw: 0.84, pitch: 1.38, roll: 0.86, lagMs: 90 },
+    },
+    swing_tease: {
+      durationMs: 5600,
+      blendInMs: 460,
+      blendOutMs: 880,
+      body: { sway: 1.58, bob: 1.16, twist: 1.34, spring: 0.5 },
+      head: { yaw: 1.18, pitch: 0.76, roll: 1.42, lagMs: 170 },
+    },
+    locked_glare: {
+      durationMs: 5200,
+      blendInMs: 280,
+      blendOutMs: 720,
+      body: { sway: 0.58, bob: 0.72, twist: 1.54, spring: 0.16 },
+      head: { yaw: 0.64, pitch: 0.62, roll: 0.82, lagMs: 40 },
+    },
+    tuck_side_sway: {
+      durationMs: 5400,
+      blendInMs: 520,
+      blendOutMs: 920,
+      body: { sway: 1.02, bob: 1.24, twist: 1.08, spring: 0.34 },
+      head: { yaw: 0.86, pitch: 0.92, roll: 1.22, lagMs: 170 },
+    },
+  };
+  const base = baseByVariant[variant] ?? baseByVariant.buoyant_bounce;
+  const multiplier = options.intensity === 'strong' ? 1.08 : options.intensity === 'soft' ? 0.92 : 1;
+
+  return {
+    theme,
+    variant,
+    phaseSeed: randomBetween(0, Math.PI * 2),
+    durationMs: Math.round(base.durationMs * (0.96 + (scale * 0.06))),
+    blendInMs: base.blendInMs,
+    blendOutMs: base.blendOutMs,
+    body: {
+      sway: base.body.sway * multiplier,
+      bob: base.body.bob * multiplier,
+      twist: base.body.twist * multiplier,
+      spring: base.body.spring,
+    },
+    head: {
+      yaw: base.head.yaw * multiplier,
+      pitch: base.head.pitch * multiplier,
+      roll: base.head.roll * multiplier,
+      lagMs: base.head.lagMs,
+    },
+  };
+}
+
 function scaleMicroEventPatch(
   event: ExpressionMicroEvent,
   scale: number,
@@ -842,6 +988,18 @@ function getConfig(kind: DebugExpressionKind): DebugPresetConfig {
   return config;
 }
 
+function getMotionPreset(kind: DebugMotionKind): DebugMotionPreset {
+  const preset = MOTION_DEBUG_PRESETS.find((item) => item.kind === kind);
+  if (!preset) {
+    throw new Error(`Unknown debug motion kind: ${kind}`);
+  }
+  return preset;
+}
+
+function getDefaultMotionPreset(kind: DebugExpressionKind): DebugMotionPreset | undefined {
+  return MOTION_DEBUG_PRESETS.find((preset) => preset.expressionKind === kind);
+}
+
 export function getRandomDebugExpressionKind(): DebugExpressionKind {
   const index = Math.floor(Math.random() * DEBUG_PRESET_CONFIGS.length);
   return DEBUG_PRESET_CONFIGS[index].kind;
@@ -876,9 +1034,23 @@ export function createBackendDebugExpressionIntent(
   };
 }
 
+export function createBackendDebugMotionIntent(
+  kind: DebugMotionKind,
+  options: DebugExpressionOptions = DEFAULT_DEBUG_EXPRESSION_OPTIONS,
+): DebugExpressionBackendIntent {
+  const motionPreset = getMotionPreset(kind);
+  return {
+    ...createBackendDebugExpressionIntent(motionPreset.expressionKind, options),
+    motion_theme: motionPreset.theme,
+    motion_variant: motionPreset.variant,
+    spoken_text: `前端測試 ${motionPreset.label} motionPlan，請保留主要表情並讓動作連續。`,
+  };
+}
+
 export function createDebugExpressionPlan(
   kind: DebugExpressionKind,
   options: DebugExpressionOptions = DEFAULT_DEBUG_EXPRESSION_OPTIONS,
+  motionPreset: DebugMotionPreset | undefined = getDefaultMotionPreset(kind),
 ): ExpressionPlanPayload {
   const config = getConfig(kind);
   const basePose = buildBasePose(config, options);
@@ -892,6 +1064,7 @@ export function createDebugExpressionPlan(
     basePose,
     microEvents,
     sequence: options.includeMicroEvents ? microEvents.slice(0, 1) : [],
+    motionPlan: buildMotionPlan(motionPreset, options),
     idlePlan: options.includeIdle ? buildIdlePlan(config, basePose, options) : undefined,
     blinkPlan: {
       style: kind,
@@ -913,16 +1086,28 @@ export function createDebugExpressionPlan(
       modelName: 'frontend-debug',
       preset: config.preset,
       bodyMotionProfile: config.motionStyle,
+      motionTheme: motionPreset?.theme ?? 'none',
+      motionVariant: motionPreset?.variant ?? 'none',
     },
     debug: {
       source: 'frontend_expression_plan_debug',
       intentEmotion: kind,
       selectedBasePreset: config.preset,
       bodyMotionProfile: config.motionStyle,
+      motionTheme: motionPreset?.theme ?? 'none',
+      motionVariant: motionPreset?.variant ?? 'none',
       idlePlan: config.idleName,
       intensity: options.intensity,
     },
   };
+}
+
+export function createDebugMotionExpressionPlan(
+  kind: DebugMotionKind,
+  options: DebugExpressionOptions = DEFAULT_DEBUG_EXPRESSION_OPTIONS,
+): ExpressionPlanPayload {
+  const motionPreset = getMotionPreset(kind);
+  return createDebugExpressionPlan(motionPreset.expressionKind, options, motionPreset);
 }
 
 export function createNeutralExpressionPlan(): ExpressionPlanPayload {

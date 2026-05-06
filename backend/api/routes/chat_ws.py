@@ -656,6 +656,13 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
     idle_plan = expression_plan.get("idlePlan") if isinstance(expression_plan, dict) else None
     if not isinstance(idle_plan, dict):
         return "expression_plan"
+    motion_plan = expression_plan.get("motionPlan") if isinstance(expression_plan, dict) else None
+    motion_summary = "motionPlan none"
+    if isinstance(motion_plan, dict):
+        motion_summary = (
+            f"motionPlan {motion_plan.get('theme', 'unknown_theme')}:"
+            f"{motion_plan.get('variant', 'unknown_variant')}"
+        )
 
     name = idle_plan.get("name", "unknown_idle")
     enter_after_ms = idle_plan.get("enterAfterMs", "?")
@@ -694,7 +701,8 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
         f"ambientEnterMs {ambient_enter_after_ms} "
         f"ambientSwitchMs {ambient_switch_interval_ms} "
         f"ambientStates {ambient_summary} "
-        f"idleStateFlow {idle_state_flow}"
+        f"idleStateFlow {idle_state_flow} "
+        f"{motion_summary}"
     )
 
 

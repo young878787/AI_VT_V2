@@ -22,6 +22,7 @@ from domain.expression_idle_library import (
     IDLE_PLAN_SETTLE_PATCHES,
 )
 from domain.expression_intent_schema import DEFAULT_INTENT
+from domain.expression_motion_library import build_motion_plan
 from domain.expression_presets import BASE_POSE_PRESETS, PRESET_VARIATION_RULES
 from domain.expression_sequence_library import MICRO_EVENT_LIBRARY, SEQUENCE_LIBRARY
 from domain.expression_visual_signature import (
@@ -849,6 +850,15 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         signature=signature,
         model_name=model_name,
     )
+    motion_plan = build_motion_plan(
+        emotion,
+        performance_mode,
+        intensity,
+        energy,
+        _coerce_float(intent.get("playfulness", 0.3), 0.3),
+        intent,
+        previous_state,
+    )
     blink_plan = build_blink_plan(intent, model_name=model_name)
     idle_plan = build_idle_plan(
         emotion,
@@ -860,17 +870,22 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         intent=intent,
     )
 
+    carry_state = build_carry_state(intent, signature, base_pose["params"], continuity_blend)
+    carry_state["motionTheme"] = motion_plan["theme"]
+    carry_state["motionVariant"] = motion_plan["variant"]
+
     return {
         "type": "expression_plan",
         "basePose": base_pose,
         "microEvents": micro_events,
         "sequence": sequence,
+        "motionPlan": motion_plan,
         "idlePlan": idle_plan,
         "blinkPlan": blink_plan,
         "speakingRate": speaking_rate,
         "timingHints": build_timing_hints(intent, base_pose=base_pose, sequence=sequence),
         "modelHints": build_model_hints(intent, preset_name=preset_name, model_name=model_name),
-        "carryState": build_carry_state(intent, signature, base_pose["params"], continuity_blend),
+        "carryState": carry_state,
         "debug": {
             "intentPrimaryEmotion": emotion,
             "intentEmotion": emotion,

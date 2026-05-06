@@ -183,6 +183,28 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertGreater(sad_profile["headScale"], 0.7)
         self.assertGreater(angry_profile["twistScale"], angry_profile["swayScale"])
 
+    def test_compile_expression_plan_adds_motion_plan_branch(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "bright_talk",
+                "intensity": 0.68,
+                "energy": 0.78,
+                "playfulness": 0.58,
+                "motion_variant": "side_sway_bounce",
+            },
+            model_name="Hiyori",
+            previous_state={"motionVariant": "buoyant_bounce"},
+        )
+
+        motion_plan = plan["motionPlan"]
+        self.assertEqual(motion_plan["theme"], "happy_bright_talk")
+        self.assertEqual(motion_plan["variant"], "side_sway_bounce")
+        self.assertIn("phaseSeed", motion_plan)
+        self.assertGreater(motion_plan["body"]["sway"], 1.3)
+        self.assertGreater(motion_plan["head"]["roll"], 1.1)
+        self.assertEqual(plan["carryState"]["motionVariant"], "side_sway_bounce")
+
     def test_low_energy_emotions_still_have_visible_native_body_motion(self):
         sad = compile_expression_plan(
             {

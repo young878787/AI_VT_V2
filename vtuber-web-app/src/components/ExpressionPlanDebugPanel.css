@@ -124,7 +124,65 @@
   align-content: start;
 }
 
-.expression-debug-panel__preset-btn {
+.expression-debug-panel__main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.expression-debug-panel__main::-webkit-scrollbar {
+  width: 6px;
+}
+
+.expression-debug-panel__main::-webkit-scrollbar-thumb {
+  background: rgba(74, 143, 212, 0.28);
+  border-radius: 999px;
+}
+
+.expression-debug-panel__section {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.expression-debug-panel__section-title,
+.expression-debug-panel__motion-group-title {
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1.1;
+  color: var(--text-muted);
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.expression-debug-panel__section-title {
+  color: var(--text-secondary);
+}
+
+.expression-debug-panel__motion-group {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.expression-debug-panel__motion-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.expression-debug-panel__preset-btn,
+.expression-debug-panel__motion-btn {
   min-width: 0;
   min-height: 44px;
   display: flex;
@@ -142,16 +200,24 @@
   transition: background 0.12s, border-color 0.12s, transform 0.1s;
 }
 
-.expression-debug-panel__preset-btn:hover {
+.expression-debug-panel__preset-btn:hover,
+.expression-debug-panel__motion-btn:hover {
   background: var(--bg-hover);
   border-color: rgba(74, 143, 212, 0.26);
   transform: translateY(-1px);
 }
 
-.expression-debug-panel__preset-btn:disabled {
+.expression-debug-panel__preset-btn:disabled,
+.expression-debug-panel__motion-btn:disabled {
   opacity: 0.5;
   cursor: wait;
   transform: none;
+}
+
+.expression-debug-panel__motion-btn {
+  min-height: 40px;
+  background: rgba(34, 197, 94, 0.035);
+  border-color: rgba(34, 197, 94, 0.14);
 }
 
 .expression-debug-panel__preset-label {
@@ -322,6 +388,10 @@
   }
 
   .expression-debug-panel__preset-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .expression-debug-panel__motion-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
