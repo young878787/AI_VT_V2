@@ -216,6 +216,8 @@ const INTENSITY_SCALE: Record<DebugExpressionIntensity, number> = {
   normal: 1,
   strong: 1.28,
 };
+const BROW_EYE_DEBUG_GAP_MS = 500;
+const SPEAKING_MICRO_SEQUENCE_GAP_MS = 180;
 
 export const MOTION_DEBUG_PRESETS: DebugMotionPreset[] = [
   {
@@ -704,6 +706,330 @@ export const DEFAULT_DEBUG_EXPRESSION_OPTIONS: DebugExpressionOptions = {
   intensity: 'normal',
 };
 
+const BROW_EYE_DEBUG_EVENT_TEMPLATES: ExpressionMicroEvent[] = [
+  {
+    kind: 'debug_brow_eye_sync_lift',
+    durationMs: 940,
+    fadeInMs: 170,
+    fadeOutMs: 220,
+    patch: {
+      eyeSync: true,
+      browLY: 0.32,
+      browRY: 0.32,
+      browLAngle: 0.12,
+      browRAngle: -0.12,
+      browLForm: 0.08,
+      browRForm: 0.08,
+      eyeLOpen: 1.12,
+      eyeROpen: 1.12,
+      bodyAngleY: 0.12,
+      breathLevel: 0.55,
+      physicsImpulse: 0.28,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_sync_curve_smile',
+    durationMs: 960,
+    fadeInMs: 180,
+    fadeOutMs: 240,
+    patch: {
+      eyeSync: true,
+      browLY: 0.10,
+      browRY: 0.10,
+      browLAngle: -0.04,
+      browRAngle: 0.04,
+      browLForm: 0.38,
+      browRForm: 0.38,
+      eyeLOpen: 0.76,
+      eyeROpen: 0.76,
+      eyeLSmile: 0.68,
+      eyeRSmile: 0.68,
+      bodyAngleY: 0.08,
+      breathLevel: 0.62,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_async_left_up',
+    durationMs: 940,
+    fadeInMs: 170,
+    fadeOutMs: 230,
+    patch: {
+      eyeSync: false,
+      browLY: 0.42,
+      browRY: -0.12,
+      browLAngle: 0.22,
+      browRAngle: -0.10,
+      browLForm: 0.16,
+      browRForm: -0.06,
+      browLX: -0.12,
+      browRX: 0.08,
+      eyeLOpen: 1.16,
+      eyeROpen: 0.86,
+      eyeLSmile: 0.18,
+      bodyAngleZ: -0.10,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_async_right_up',
+    durationMs: 940,
+    fadeInMs: 170,
+    fadeOutMs: 230,
+    patch: {
+      eyeSync: false,
+      browLY: -0.12,
+      browRY: 0.42,
+      browLAngle: 0.10,
+      browRAngle: -0.22,
+      browLForm: -0.06,
+      browRForm: 0.16,
+      browLX: -0.08,
+      browRX: 0.12,
+      eyeLOpen: 0.86,
+      eyeROpen: 1.16,
+      eyeRSmile: 0.18,
+      bodyAngleZ: 0.10,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_sync_worried_curve',
+    durationMs: 980,
+    fadeInMs: 180,
+    fadeOutMs: 250,
+    patch: {
+      eyeSync: true,
+      browLY: -0.18,
+      browRY: -0.18,
+      browLAngle: -0.36,
+      browRAngle: 0.36,
+      browLForm: -0.28,
+      browRForm: -0.28,
+      browLX: 0.12,
+      browRX: -0.12,
+      eyeLOpen: 0.72,
+      eyeROpen: 0.72,
+      eyeLSmile: 0.08,
+      eyeRSmile: 0.08,
+      bodyAngleY: -0.08,
+      breathLevel: 0.40,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_sync_inward_frown',
+    durationMs: 1000,
+    fadeInMs: 180,
+    fadeOutMs: 250,
+    patch: {
+      eyeSync: true,
+      browLY: -0.24,
+      browRY: -0.24,
+      browLAngle: 0.58,
+      browRAngle: -0.58,
+      browLForm: -0.40,
+      browRForm: -0.40,
+      browLX: 0.26,
+      browRX: -0.26,
+      eyeLOpen: 0.88,
+      eyeROpen: 0.88,
+      eyeLSmile: 0.0,
+      eyeRSmile: 0.0,
+      bodyAngleY: -0.04,
+      physicsImpulse: 0.24,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_async_skeptic_curve',
+    durationMs: 980,
+    fadeInMs: 180,
+    fadeOutMs: 240,
+    patch: {
+      eyeSync: false,
+      browLY: 0.22,
+      browRY: -0.08,
+      browLAngle: 0.10,
+      browRAngle: 0.18,
+      browLForm: 0.30,
+      browRForm: -0.22,
+      browLX: -0.16,
+      browRX: 0.18,
+      eyeLOpen: 0.98,
+      eyeROpen: 0.72,
+      eyeLSmile: 0.10,
+      eyeRSmile: 0.0,
+      bodyAngleZ: -0.12,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_sync_surprise_lift',
+    durationMs: 940,
+    fadeInMs: 160,
+    fadeOutMs: 220,
+    patch: {
+      eyeSync: true,
+      browLY: 0.44,
+      browRY: 0.44,
+      browLAngle: 0.02,
+      browRAngle: -0.02,
+      browLForm: 0.18,
+      browRForm: 0.18,
+      eyeLOpen: 1.20,
+      eyeROpen: 1.20,
+      bodyAngleY: 0.16,
+      breathLevel: 0.66,
+      physicsImpulse: 0.34,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_sync_sharp_squint',
+    durationMs: 980,
+    fadeInMs: 180,
+    fadeOutMs: 250,
+    patch: {
+      eyeSync: true,
+      browLY: -0.18,
+      browRY: -0.18,
+      browLAngle: 0.34,
+      browRAngle: -0.34,
+      browLForm: -0.20,
+      browRForm: -0.20,
+      browLX: 0.18,
+      browRX: -0.18,
+      eyeLOpen: 0.62,
+      eyeROpen: 0.62,
+      eyeLSmile: 0.02,
+      eyeRSmile: 0.02,
+      physicsImpulse: 0.20,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'debug_brow_eye_async_wink_tease',
+    durationMs: 960,
+    fadeInMs: 170,
+    fadeOutMs: 240,
+    patch: {
+      eyeSync: false,
+      browLY: 0.20,
+      browRY: 0.02,
+      browLAngle: 0.10,
+      browRAngle: -0.02,
+      browLForm: 0.24,
+      browRForm: 0.06,
+      browLX: -0.10,
+      browRX: 0.04,
+      eyeLOpen: 0.48,
+      eyeROpen: 1.04,
+      eyeLSmile: 0.82,
+      eyeRSmile: 0.18,
+      bodyAngleZ: -0.08,
+    },
+    returnToBase: true,
+  },
+];
+
+const SPEAKING_MICRO_EVENT_TEMPLATES: ExpressionMicroEvent[] = [
+  {
+    kind: 'happy_smile_pulse',
+    durationMs: 640,
+    fadeInMs: 160,
+    fadeOutMs: 240,
+    patch: {
+      mouthForm: 0.36,
+      eyeLSmile: 0.54,
+      eyeRSmile: 0.48,
+      blushLevel: 0.08,
+      breathLevel: 0.72,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'happy_brow_lift',
+    durationMs: 560,
+    fadeInMs: 140,
+    fadeOutMs: 220,
+    patch: {
+      browLY: 0.22,
+      browRY: 0.18,
+      browLAngle: 0.10,
+      browRAngle: -0.08,
+      eyeLSmile: 0.42,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'shy_blush_pulse',
+    durationMs: 760,
+    fadeInMs: 180,
+    fadeOutMs: 300,
+    patch: {
+      blushLevel: 0.62,
+      eyeLOpen: 0.72,
+      eyeROpen: 0.76,
+      mouthForm: 0.18,
+      breathLevel: 0.66,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'angry_brow_press',
+    durationMs: 620,
+    fadeInMs: 120,
+    fadeOutMs: 240,
+    patch: {
+      browLY: -0.18,
+      browRY: -0.14,
+      browLAngle: 0.48,
+      browRAngle: -0.44,
+      browLForm: -0.34,
+      browRForm: -0.28,
+      browLX: 0.22,
+      browRX: -0.20,
+      blushLevel: -0.45,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'sad_brow_waver',
+    durationMs: 760,
+    fadeInMs: 190,
+    fadeOutMs: 300,
+    patch: {
+      browLY: -0.18,
+      browRY: -0.16,
+      browLAngle: -0.34,
+      browRAngle: 0.32,
+      browLX: 0.14,
+      browRX: -0.12,
+      mouthForm: -0.34,
+      blushLevel: -0.42,
+    },
+    returnToBase: true,
+  },
+  {
+    kind: 'surprised_eye_pop',
+    durationMs: 420,
+    fadeInMs: 120,
+    fadeOutMs: 220,
+    patch: {
+      eyeLOpen: 1.22,
+      eyeROpen: 1.22,
+      browLY: 0.34,
+      browRY: 0.34,
+      mouthForm: 0.20,
+      breathLevel: 0.78,
+      physicsImpulse: 0.62,
+    },
+    returnToBase: true,
+  },
+];
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -875,13 +1201,132 @@ function scaleMicroEventPatch(
   scale: number,
 ): ExpressionMicroEvent {
   const patch = Object.fromEntries(
-    Object.entries(event.patch).map(([key, value]) => [key, clamp(value * scale, -1, 1)]),
+    Object.entries(event.patch).map(([key, value]) => [
+      key,
+      typeof value === 'number' ? clamp(value * scale, -1, 1) : value,
+    ]),
   ) as ExpressionMicroEvent['patch'];
 
   return {
     ...event,
     durationMs: Math.round(event.durationMs * randomBetween(0.92, 1.12)),
     patch,
+  };
+}
+
+function clampMicroEventPatchValue(key: keyof ExpressionMicroEvent['patch'], value: number): number {
+  switch (key) {
+    case 'eyeLOpen':
+    case 'eyeROpen':
+      return clamp(value, 0, 2);
+    case 'eyeLSmile':
+    case 'eyeRSmile':
+    case 'breathLevel':
+    case 'physicsImpulse':
+      return clamp(value, 0, 1);
+    case 'mouthForm':
+      return clamp(value, -2, 1);
+    default:
+      return clamp(value, -1, 1);
+  }
+}
+
+function scaleBrowEyeEvent(event: ExpressionMicroEvent, scale: number): ExpressionMicroEvent {
+  const patch = Object.fromEntries(
+    Object.entries(event.patch).map(([key, value]) => {
+      if (typeof value !== 'number') {
+        return [key, value];
+      }
+
+      return [
+        key,
+        clampMicroEventPatchValue(
+          key as keyof ExpressionMicroEvent['patch'],
+          value * (0.82 + (scale * 0.18)),
+        ),
+      ];
+    }),
+  ) as ExpressionMicroEvent['patch'];
+
+  return {
+    ...event,
+    patch,
+  };
+}
+
+function buildBrowEyeGapEvent(index: number): ExpressionMicroEvent {
+  return {
+    kind: `debug_brow_eye_gap_${index + 1}`,
+    durationMs: BROW_EYE_DEBUG_GAP_MS,
+    patch: {},
+    returnToBase: false,
+  };
+}
+
+function estimateSequenceDurationMs(sequence: ExpressionMicroEvent[]): number {
+  let startAtMs = 0;
+  let endAtMs = 0;
+  for (let index = 0; index < sequence.length; index += 1) {
+    const event = sequence[index];
+    const nextEvent = sequence[index + 1];
+    endAtMs = Math.max(endAtMs, startAtMs + event.durationMs);
+    const overlapMs = Math.min(
+      Math.max(0, event.fadeOutMs ?? 0),
+      Math.max(0, nextEvent?.fadeInMs ?? 0),
+    );
+    startAtMs += Math.max(1, event.durationMs - overlapMs);
+  }
+  return Math.round(endAtMs);
+}
+
+function buildBrowEyeDebugSequence(options: DebugExpressionOptions): {
+  durationMs: number;
+  sequence: ExpressionMicroEvent[];
+} {
+  const scale = INTENSITY_SCALE[options.intensity];
+  const sequence = BROW_EYE_DEBUG_EVENT_TEMPLATES.flatMap((event, index) => {
+    const displayEvent = scaleBrowEyeEvent(event, scale);
+    return index < BROW_EYE_DEBUG_EVENT_TEMPLATES.length - 1
+      ? [displayEvent, buildBrowEyeGapEvent(index)]
+      : [displayEvent];
+  });
+
+  const sequenceDurationMs = estimateSequenceDurationMs(sequence);
+  const durationMs = clamp(sequenceDurationMs + 600, 10000, 15000);
+
+  return {
+    durationMs,
+    sequence,
+  };
+}
+
+function buildSpeakingMicroGapEvent(index: number): ExpressionMicroEvent {
+  return {
+    kind: `debug_speaking_micro_gap_${index + 1}`,
+    durationMs: SPEAKING_MICRO_SEQUENCE_GAP_MS,
+    patch: {},
+    returnToBase: false,
+  };
+}
+
+function buildSpeakingMicroDebugSequence(options: DebugExpressionOptions): {
+  durationMs: number;
+  sequence: ExpressionMicroEvent[];
+} {
+  const scale = INTENSITY_SCALE[options.intensity];
+  const sequence = SPEAKING_MICRO_EVENT_TEMPLATES.flatMap((event, index) => {
+    const displayEvent = scaleBrowEyeEvent(event, scale);
+    return index < SPEAKING_MICRO_EVENT_TEMPLATES.length - 1
+      ? [displayEvent, buildSpeakingMicroGapEvent(index)]
+      : [displayEvent];
+  });
+
+  const sequenceDurationMs = estimateSequenceDurationMs(sequence);
+  const durationMs = clamp(sequenceDurationMs + 1400, 6000, 9000);
+
+  return {
+    durationMs,
+    sequence,
   };
 }
 
@@ -1047,6 +1492,19 @@ export function createBackendDebugMotionIntent(
   };
 }
 
+export function createBackendDebugSpeakingMicroIntent(
+  options: DebugExpressionOptions = DEFAULT_DEBUG_EXPRESSION_OPTIONS,
+): DebugExpressionBackendIntent {
+  return {
+    ...createBackendDebugExpressionIntent('happy', options),
+    performance_mode: 'bright_talk',
+    arc: 'steady',
+    hold_ms: 1800,
+    spoken_text:
+      '前端測試說話期間微表情，請讓主要開心表情維持，同時在說話中平滑穿插眉毛上挑、笑眼、嘴角、臉紅與呼吸小變化，整段不要只停在同一張臉。',
+  };
+}
+
 export function createDebugExpressionPlan(
   kind: DebugExpressionKind,
   options: DebugExpressionOptions = DEFAULT_DEBUG_EXPRESSION_OPTIONS,
@@ -1108,6 +1566,159 @@ export function createDebugMotionExpressionPlan(
 ): ExpressionPlanPayload {
   const motionPreset = getMotionPreset(kind);
   return createDebugExpressionPlan(motionPreset.expressionKind, options, motionPreset);
+}
+
+export function createDebugBrowEyeExpressionPlan(
+  options: DebugExpressionOptions = DEFAULT_DEBUG_EXPRESSION_OPTIONS,
+): ExpressionPlanPayload {
+  const scale = INTENSITY_SCALE[options.intensity];
+  const browEyeDemo = buildBrowEyeDebugSequence(options);
+  const { durationMs, sequence } = browEyeDemo;
+  const params = scaleParams({
+    ...NEUTRAL_PARAMS,
+    eyeSync: false,
+    headIntensity: 0.22,
+    mouthForm: 0.08,
+    eyeLOpen: 1.02,
+    eyeROpen: 1.0,
+    eyeLSmile: 0.10,
+    eyeRSmile: 0.08,
+    browLY: 0.04,
+    browRY: 0.02,
+    browLAngle: 0.02,
+    browRAngle: -0.02,
+    bodyAngleY: 0.04,
+    breathLevel: 0.44,
+    physicsImpulse: 0.18,
+  }, scale);
+  params.eyeSync = false;
+
+  const bodyMotionProfile: BodyMotionProfile = {
+    ...DEFAULT_MOTION_PROFILE,
+    style: 'bright_bounce',
+    speed: 1.22,
+    bobScale: 1.18,
+    headScale: 1.12,
+  };
+  const basePose: ExpressionBasePose = {
+    preset: 'debug_brow_eye_cute',
+    params,
+    bodyMotionProfile,
+    durationSec: durationMs / 1000,
+  };
+
+  return {
+    type: 'expression_plan',
+    basePose,
+    microEvents: [],
+    sequence,
+    motionPlan: undefined,
+    idlePlan: undefined,
+    blinkPlan: {
+      style: 'brow_eye_debug',
+      commands: [
+        { action: 'pause', durationSec: basePose.durationSec },
+      ],
+    },
+    speakingRate: options.intensity === 'strong' ? 1.08 : options.intensity === 'soft' ? 0.96 : 1,
+    timingHints: {
+      debugGeneratedAt: Date.now(),
+      basePoseDurationMs: Math.round(basePose.durationSec * 1000),
+      browEyeSequenceTargetMs: durationMs,
+      browEyeSequenceActualMs: estimateSequenceDurationMs(sequence),
+      browEyeGapMs: BROW_EYE_DEBUG_GAP_MS,
+    },
+    modelHints: {
+      modelName: 'frontend-debug',
+      preset: 'debug_brow_eye_cute',
+      bodyMotionProfile: bodyMotionProfile.style,
+    },
+    debug: {
+      source: 'frontend_expression_plan_debug',
+      intentEmotion: 'brow_eye_cute',
+      selectedBasePreset: 'debug_brow_eye_cute',
+      bodyMotionProfile: bodyMotionProfile.style,
+      idlePlan: 'none',
+      intensity: options.intensity,
+      sequenceEvents: sequence.length,
+      browEyeDesigns: BROW_EYE_DEBUG_EVENT_TEMPLATES.length,
+    },
+  };
+}
+
+export function createDebugSpeakingMicroExpressionPlan(
+  options: DebugExpressionOptions = DEFAULT_DEBUG_EXPRESSION_OPTIONS,
+): ExpressionPlanPayload {
+  const scale = INTENSITY_SCALE[options.intensity];
+  const speakingMicroDemo = buildSpeakingMicroDebugSequence(options);
+  const { durationMs, sequence } = speakingMicroDemo;
+  const config = getConfig('happy');
+  const params = scaleParams({
+    ...NEUTRAL_PARAMS,
+    ...config.basePatch,
+    eyeSync: true,
+    mouthForm: 0.28,
+    eyeLOpen: 0.98,
+    eyeROpen: 0.98,
+    eyeLSmile: 0.34,
+    eyeRSmile: 0.34,
+    browLY: 0.08,
+    browRY: 0.08,
+    browLAngle: 0.04,
+    browRAngle: -0.04,
+  }, scale);
+  params.eyeSync = true;
+
+  const bodyMotionProfile: BodyMotionProfile = {
+    ...config.motionProfile,
+    speed: Math.max(config.motionProfile.speed, 1.28),
+    swayScale: Math.max(config.motionProfile.swayScale, 1.42),
+    bobScale: Math.max(config.motionProfile.bobScale, 1.28),
+  };
+  const basePose: ExpressionBasePose = {
+    preset: 'debug_speaking_micro_happy',
+    params,
+    bodyMotionProfile,
+    durationSec: durationMs / 1000,
+  };
+
+  return {
+    type: 'expression_plan',
+    basePose,
+    microEvents: [],
+    sequence,
+    motionPlan: buildMotionPlan(getDefaultMotionPreset('happy'), options),
+    idlePlan: undefined,
+    blinkPlan: {
+      style: 'speaking_micro_debug',
+      commands: [
+        { action: 'set_interval', intervalMin: 0.82, intervalMax: 1.7 },
+      ],
+    },
+    speakingRate: options.intensity === 'strong' ? 1.1 : options.intensity === 'soft' ? 0.96 : 1.02,
+    timingHints: {
+      debugGeneratedAt: Date.now(),
+      basePoseDurationMs: Math.round(basePose.durationSec * 1000),
+      speakingMicroSequenceTargetMs: durationMs,
+      speakingMicroSequenceActualMs: estimateSequenceDurationMs(sequence),
+      speakingMicroGapMs: SPEAKING_MICRO_SEQUENCE_GAP_MS,
+    },
+    modelHints: {
+      modelName: 'frontend-debug',
+      preset: 'debug_speaking_micro_happy',
+      bodyMotionProfile: bodyMotionProfile.style,
+    },
+    debug: {
+      source: 'frontend_expression_plan_debug',
+      intentEmotion: 'speaking_micro_happy',
+      selectedBasePreset: 'debug_speaking_micro_happy',
+      bodyMotionProfile: bodyMotionProfile.style,
+      idlePlan: 'none',
+      intensity: options.intensity,
+      sequenceEvents: sequence.length,
+      speakingMicroDesigns: SPEAKING_MICRO_EVENT_TEMPLATES.length,
+    },
+  };
 }
 
 export function createNeutralExpressionPlan(): ExpressionPlanPayload {

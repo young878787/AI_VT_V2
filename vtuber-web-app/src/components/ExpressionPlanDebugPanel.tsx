@@ -1,14 +1,8 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import {
-  createBackendDebugExpressionIntent,
-  createBackendDebugMotionIntent,
-  createDebugExpressionPlan,
-  createDebugMotionExpressionPlan,
-  createNeutralExpressionPlan,
   DEFAULT_DEBUG_EXPRESSION_OPTIONS,
   EXPRESSION_DEBUG_PRESETS,
   MOTION_DEBUG_PRESETS,
-  getRandomDebugExpressionKind,
   type DebugMotionKind,
   type DebugExpressionIntensity,
   type DebugExpressionKind,
@@ -28,9 +22,11 @@ interface AppliedSummary {
   idlePlan: string;
   physicsImpulse: number;
   durationSec: number;
+  sequenceEvents: number;
+  sequencePreview: string;
 }
 
-type DebugPlanSource = 'mock' | 'backend';
+type DebugPlanSource = 'backend' | 'reset';
 
 function summarizePlan(label: string, plan: ExpressionPlanPayload): AppliedSummary {
   return {
@@ -41,6 +37,15 @@ function summarizePlan(label: string, plan: ExpressionPlanPayload): AppliedSumma
     idlePlan: plan.idlePlan?.name ?? 'none',
     physicsImpulse: plan.basePose.params.physicsImpulse,
     durationSec: plan.basePose.durationSec,
+    sequenceEvents: plan.sequence.filter((event) => (
+      !event.kind.startsWith('debug_brow_eye_gap_') &&
+      !event.kind.startsWith('debug_speaking_micro_gap_')
+    )).length,
+    sequencePreview: plan.sequence
+      .filter((event) => !event.kind.startsWith('debug_brow_eye_gap_') && !event.kind.startsWith('debug_speaking_micro_gap_'))
+      .slice(0, 4)
+      .map((event) => event.kind)
+      .join(',') || 'none',
   };
 }
 
@@ -49,7 +54,6 @@ export const ExpressionPlanDebugPanel = () => {
   const setBlinkControl = useAppStore((state) => state.setBlinkControl);
   const currentModelName = useAppStore((state) => state.currentModelName);
   const [options, setOptions] = useState<DebugExpressionOptions>(DEFAULT_DEBUG_EXPRESSION_OPTIONS);
-  const [source, setSource] = useState<DebugPlanSource>('mock');
   const [summary, setSummary] = useState<AppliedSummary | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
@@ -69,7 +73,7 @@ export const ExpressionPlanDebugPanel = () => {
 
   const applyPlan = (label: string, plan: ExpressionPlanPayload, planSource: DebugPlanSource) => {
     if (!isExpressionPlanPayload(plan)) {
-      setLastError(`${planSource === 'backend' ? 'backend' : 'mock'} expression_plan 格式未通過前端 validator`);
+      setLastError('backend expression_plan 格式未通過前端 validator');
       console.warn('[ExpressionPlanDebug] invalid expression_plan:', plan);
       return;
     }
@@ -93,37 +97,55 @@ export const ExpressionPlanDebugPanel = () => {
     });
   };
 
-  const compileBackendPlan = async (kind: DebugExpressionKind): Promise<ExpressionPlanPayload> => {
-    const intent = createBackendDebugExpressionIntent(kind, options);
+  const compileBackendPlan = async (
+    kind: DebugExpressionKind,
+  ): Promise<{ plan: ExpressionPlanPayload; label?: string }> => {
     const response = await compileDebugExpressionPlan({
       modelName: currentModelName || 'Hiyori',
-      intent,
+      kind,
+      intensity: options.intensity,
     });
-    return response.plan;
+    return { plan: response.plan, label: response.summary?.label };
   };
 
-  const compileBackendMotionPlan = async (kind: DebugMotionKind): Promise<ExpressionPlanPayload> => {
-    const intent = createBackendDebugMotionIntent(kind, options);
+  const compileBackendRandomPlan = async (): Promise<{ plan: ExpressionPlanPayload; label?: string }> => {
     const response = await compileDebugExpressionPlan({
       modelName: currentModelName || 'Hiyori',
-      intent,
+      random: true,
+      intensity: options.intensity,
     });
-    return response.plan;
+    return { plan: response.plan, label: response.summary?.label };
+  };
+
+  const compileBackendMotionPlan = async (
+    kind: DebugMotionKind,
+  ): Promise<{ plan: ExpressionPlanPayload; label?: string }> => {
+    const response = await compileDebugExpressionPlan({
+      modelName: currentModelName || 'Hiyori',
+      motionKind: kind,
+      intensity: options.intensity,
+    });
+    return { plan: response.plan, label: response.summary?.label };
+  };
+
+  const compileBackendScenarioPlan = async (
+    scenario: 'speaking_micro' | 'brow_eye_micro',
+  ): Promise<{ plan: ExpressionPlanPayload; label?: string }> => {
+    const response = await compileDebugExpressionPlan({
+      modelName: currentModelName || 'Hiyori',
+      scenario,
+      intensity: options.intensity,
+    });
+    return { plan: response.plan, label: response.summary?.label };
   };
 
   const applyPreset = async (kind: DebugExpressionKind) => {
     const preset = presetByKind.get(kind);
-    const label = preset?.label ?? kind;
-
-    if (source === 'mock') {
-      applyPlan(label, createDebugExpressionPlan(kind, options), 'mock');
-      return;
-    }
-
     setIsCompiling(true);
     setLastError(null);
     try {
-      applyPlan(label, await compileBackendPlan(kind), 'backend');
+      const response = await compileBackendPlan(kind);
+      applyPlan(response.label ?? preset?.label ?? kind, response.plan, 'backend');
     } catch (error) {
       const message = error instanceof Error ? error.message : '後端 expression_plan 編譯失敗';
       setLastError(message);
@@ -134,19 +156,11 @@ export const ExpressionPlanDebugPanel = () => {
   };
 
   const applyRandom = async () => {
-    const kind = getRandomDebugExpressionKind();
-    const preset = presetByKind.get(kind);
-    const label = preset ? `隨機:${preset.label}` : '隨機';
-
-    if (source === 'mock') {
-      applyPlan(label, createDebugExpressionPlan(kind, options), 'mock');
-      return;
-    }
-
     setIsCompiling(true);
     setLastError(null);
     try {
-      applyPlan(label, await compileBackendPlan(kind), 'backend');
+      const response = await compileBackendRandomPlan();
+      applyPlan(response.label ? `隨機:${response.label}` : '隨機', response.plan, 'backend');
     } catch (error) {
       const message = error instanceof Error ? error.message : '後端 expression_plan 編譯失敗';
       setLastError(message);
@@ -156,19 +170,43 @@ export const ExpressionPlanDebugPanel = () => {
     }
   };
 
-  const applyMotionPreset = async (kind: DebugMotionKind) => {
-    const preset = MOTION_DEBUG_PRESETS.find((item) => item.kind === kind);
-    const label = preset ? `動作:${preset.label}` : `動作:${kind}`;
-
-    if (source === 'mock') {
-      applyPlan(label, createDebugMotionExpressionPlan(kind, options), 'mock');
-      return;
-    }
-
+  const applyBrowEyeRandom = async () => {
     setIsCompiling(true);
     setLastError(null);
     try {
-      applyPlan(label, await compileBackendMotionPlan(kind), 'backend');
+      const response = await compileBackendScenarioPlan('brow_eye_micro');
+      applyPlan(response.label ?? '眉毛:隨機微動', response.plan, 'backend');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '後端 brow/eye micro 編譯失敗';
+      setLastError(message);
+      console.warn('[ExpressionPlanDebug] backend brow/eye micro compile failed:', error);
+    } finally {
+      setIsCompiling(false);
+    }
+  };
+
+  const applySpeakingMicroTest = async () => {
+    setIsCompiling(true);
+    setLastError(null);
+    try {
+      const response = await compileBackendScenarioPlan('speaking_micro');
+      applyPlan(response.label ?? '說話:微表情', response.plan, 'backend');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '後端 speaking micro 編譯失敗';
+      setLastError(message);
+      console.warn('[ExpressionPlanDebug] backend speaking micro compile failed:', error);
+    } finally {
+      setIsCompiling(false);
+    }
+  };
+
+  const applyMotionPreset = async (kind: DebugMotionKind) => {
+    const preset = MOTION_DEBUG_PRESETS.find((item) => item.kind === kind);
+    setIsCompiling(true);
+    setLastError(null);
+    try {
+      const response = await compileBackendMotionPlan(kind);
+      applyPlan(response.label ? `動作:${response.label}` : preset ? `動作:${preset.label}` : `動作:${kind}`, response.plan, 'backend');
     } catch (error) {
       const message = error instanceof Error ? error.message : '後端 motionPlan 編譯失敗';
       setLastError(message);
@@ -178,16 +216,27 @@ export const ExpressionPlanDebugPanel = () => {
     }
   };
 
-  const resetNeutral = () => {
-    applyPlan('中性復原', createNeutralExpressionPlan(), 'mock');
+  const resetNeutral = async () => {
+    setIsCompiling(true);
+    setLastError(null);
+    try {
+      const response = await compileDebugExpressionPlan({
+        modelName: currentModelName || 'Hiyori',
+        kind: 'neutral',
+        intensity: 'normal',
+      });
+      applyPlan(response.summary?.label ?? '中性復原', response.plan, 'reset');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '後端 neutral 編譯失敗';
+      setLastError(message);
+      console.warn('[ExpressionPlanDebug] backend neutral compile failed:', error);
+    } finally {
+      setIsCompiling(false);
+    }
   };
 
   const setIntensity = (intensity: DebugExpressionIntensity) => {
     setOptions((current) => ({ ...current, intensity }));
-  };
-
-  const toggleOption = (key: keyof Pick<DebugExpressionOptions, 'includeIdle' | 'includeAmbient' | 'includeMicroEvents'>) => {
-    setOptions((current) => ({ ...current, [key]: !current[key] }));
   };
 
   return (
@@ -196,14 +245,20 @@ export const ExpressionPlanDebugPanel = () => {
         <div className="expression-debug-panel__header-left">
           <span className="expression-debug-panel__title">Expression Plan 動作測試</span>
           <span className="expression-debug-panel__badge">
-            {source === 'backend' ? 'Backend compile' : 'Mock fixture'}
+            Backend fake AI
           </span>
         </div>
         <div className="expression-debug-panel__header-actions">
           <button type="button" className="expression-debug-panel__action-btn" onClick={applyRandom} disabled={isCompiling}>
             {isCompiling ? '編譯中' : '隨機測試'}
           </button>
-          <button type="button" className="expression-debug-panel__reset-btn" onClick={resetNeutral}>
+          <button type="button" className="expression-debug-panel__action-btn" onClick={applyBrowEyeRandom} disabled={isCompiling}>
+            眉毛
+          </button>
+          <button type="button" className="expression-debug-panel__action-btn" onClick={applySpeakingMicroTest} disabled={isCompiling}>
+            說話
+          </button>
+          <button type="button" className="expression-debug-panel__reset-btn" onClick={resetNeutral} disabled={isCompiling}>
             中性復原
           </button>
         </div>
@@ -259,24 +314,6 @@ export const ExpressionPlanDebugPanel = () => {
 
         <div className="expression-debug-panel__side">
           <div className="expression-debug-panel__controls">
-            <div className="expression-debug-panel__segmented" aria-label="資料來源">
-              {(['mock', 'backend'] as DebugPlanSource[]).map((nextSource) => (
-                <button
-                  key={nextSource}
-                  type="button"
-                  className={
-                    source === nextSource
-                      ? 'expression-debug-panel__segment expression-debug-panel__segment--active'
-                      : 'expression-debug-panel__segment'
-                  }
-                  onClick={() => setSource(nextSource)}
-                  disabled={isCompiling}
-                >
-                  {nextSource === 'mock' ? 'Mock' : 'Backend'}
-                </button>
-              ))}
-            </div>
-
             <div className="expression-debug-panel__segmented" aria-label="動作強度">
               {(['soft', 'normal', 'strong'] as DebugExpressionIntensity[]).map((intensity) => (
                 <button
@@ -294,34 +331,6 @@ export const ExpressionPlanDebugPanel = () => {
                 </button>
               ))}
             </div>
-
-            <label className="expression-debug-panel__toggle">
-              <input
-                type="checkbox"
-                checked={options.includeMicroEvents}
-                onChange={() => toggleOption('includeMicroEvents')}
-                disabled={source === 'backend' || isCompiling}
-              />
-              micro
-            </label>
-            <label className="expression-debug-panel__toggle">
-              <input
-                type="checkbox"
-                checked={options.includeIdle}
-                onChange={() => toggleOption('includeIdle')}
-                disabled={source === 'backend' || isCompiling}
-              />
-              idle
-            </label>
-            <label className="expression-debug-panel__toggle">
-              <input
-                type="checkbox"
-                checked={options.includeAmbient}
-                onChange={() => toggleOption('includeAmbient')}
-                disabled={source === 'backend' || isCompiling || !options.includeIdle}
-              />
-              ambient
-            </label>
           </div>
 
           <div className="expression-debug-panel__summary">
@@ -351,6 +360,14 @@ export const ExpressionPlanDebugPanel = () => {
                 <div className="expression-debug-panel__summary-row">
                   <span>duration</span>
                   <strong>{summary.durationSec.toFixed(1)}s</strong>
+                </div>
+                <div className="expression-debug-panel__summary-row">
+                  <span>sequence</span>
+                  <strong>{summary.sequenceEvents}</strong>
+                </div>
+                <div className="expression-debug-panel__summary-row">
+                  <span>events</span>
+                  <strong>{summary.sequencePreview}</strong>
                 </div>
               </>
             ) : (

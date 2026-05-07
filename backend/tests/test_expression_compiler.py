@@ -606,6 +606,136 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertNotIn("bodyAngleZ", sequence[1]["patch"])
         self.assertGreater(sequence[0]["patch"]["physicsImpulse"], 0.85)
 
+    def test_happy_long_speech_adds_speaking_micro_sequence(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "bright_talk",
+                "intensity": 0.62,
+                "energy": 0.72,
+                "playfulness": 0.45,
+                "spoken_text": "今天這段話會稍微長一點，所以說話時眉毛、眼睛和嘴角都應該有連續的小變化，而不是只停在同一張表情。",
+                "hold_ms": 1200,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        sequence = plan["sequence"]
+        self.assertGreaterEqual(len(sequence), 3)
+        self.assertLessEqual(len(sequence), 6)
+        self.assertEqual(sequence[0]["kind"], "bright_sway_left")
+        self.assertEqual(sequence[1]["kind"], "bright_sway_right")
+        self.assertTrue(
+            any(
+                step["kind"].startswith("happy_") or step["kind"].startswith("brow_micro_")
+                for step in sequence[2:]
+            )
+        )
+        self.assertTrue(any(step["kind"].startswith("brow_micro_") for step in sequence[2:]))
+        for step in sequence:
+            self.assertIn("fadeInMs", step)
+            self.assertIn("fadeOutMs", step)
+            self.assertGreaterEqual(step["durationMs"], 500)
+            self.assertLessEqual(step["durationMs"], 1500)
+            self.assertNotIn("bodyAngleX", step["patch"])
+            self.assertNotIn("bodyAngleY", step["patch"])
+            self.assertNotIn("bodyAngleZ", step["patch"])
+
+    def test_happy_dialogue_adds_varied_brow_micro_transitions(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "smile",
+                "intensity": 0.66,
+                "energy": 0.74,
+                "spoken_text": (
+                    "我懂你的意思了，這邊可以先這樣安排，然後等下一段再補更多細節。"
+                    "說話時希望雙眉上揚、彎眉和理解的表情可以輪流出現，不要只停在同一張笑臉。"
+                ),
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        brow_events = [step for step in plan["sequence"] if step["kind"].startswith("brow_micro_")]
+
+        self.assertGreaterEqual(len(brow_events), 2)
+        self.assertGreaterEqual(len({step["kind"] for step in brow_events}), 2)
+        self.assertTrue(any(step["patch"].get("browLForm", 0.0) > 0.2 for step in brow_events))
+        self.assertTrue(any(step["patch"].get("browLY", 0.0) > 0.2 for step in brow_events))
+        for step in brow_events:
+            self.assertGreaterEqual(step["durationMs"], 500)
+            self.assertLessEqual(step["durationMs"], 1500)
+
+    def test_surprised_dialogue_uses_dual_brow_lift_variations(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "surprised",
+                "performance_mode": "shock_recoil",
+                "intensity": 0.72,
+                "energy": 0.78,
+                "spoken_text": "欸，原來是這樣嗎？我剛剛理解到重點了，這個轉折需要眉毛明顯上揚一下。",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        brow_events = [step for step in plan["sequence"] if step["kind"].startswith("brow_micro_")]
+
+        self.assertGreaterEqual(len(brow_events), 1)
+        self.assertTrue(any(step["patch"].get("eyeSync") is True for step in brow_events))
+        self.assertTrue(any(step["patch"].get("browLY", 0.0) >= 0.24 for step in brow_events))
+
+    def test_angry_speaking_micro_sequence_keeps_angry_face_semantics(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "angry",
+                "performance_mode": "meltdown",
+                "intensity": 0.82,
+                "energy": 0.70,
+                "spoken_text": "我真的有點生氣，這段話要維持皺眉和瞪人的感覺，不要突然變成可愛或開玩笑的表情。",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        forbidden = {"wink_left", "wink_right", "smirk_left", "smirk_right", "goofy_eye_cross_bias"}
+        sequence = plan["sequence"]
+        self.assertGreaterEqual(len(sequence), 3)
+        self.assertTrue(forbidden.isdisjoint({step["kind"] for step in sequence}))
+        for step in sequence:
+            blush = step["patch"].get("blushLevel")
+            if blush is not None:
+                self.assertLessEqual(blush, 0.0)
+
+    def test_low_mood_speaking_micro_sequence_stays_visible_at_low_energy(self):
+        for emotion, performance_mode in (("sad", "tense_hold"), ("gloomy", "deadpan")):
+            with self.subTest(emotion=emotion, performance_mode=performance_mode):
+                plan = compile_expression_plan(
+                    {
+                        "emotion": emotion,
+                        "performance_mode": performance_mode,
+                        "intensity": 0.58,
+                        "energy": 0.28,
+                        "spoken_text": "聲音不高，但說話時仍然需要看到眉毛和眼睛有細小變化，不要整段都像完全靜止。",
+                    },
+                    model_name="Hiyori",
+                    previous_state=None,
+                )
+
+                sequence = plan["sequence"]
+                self.assertGreaterEqual(len(sequence), 2)
+                self.assertTrue(
+                    any(
+                        {"browLY", "browLAngle", "eyeLOpen"}.intersection(step["patch"])
+                        for step in sequence
+                    )
+                )
+                self.assertTrue(
+                    any(step["patch"].get("blushLevel", 0.0) <= 0.0 for step in sequence)
+                )
+
     def test_bright_talk_idle_timing_includes_sequential_sway_duration(self):
         plan = compile_expression_plan(
             {
@@ -1075,12 +1205,11 @@ class ExpressionCompilerTests(unittest.TestCase):
         )
 
         source = plan["idlePlan"]["source"]
-        self.assertGreater(source["speakingEnterAfterMs"], source["actionEnterAfterMs"])
         self.assertGreaterEqual(source["postSpeechHoldMs"], 6000)
         self.assertLessEqual(source["postSpeechHoldMs"], 10000)
         self.assertEqual(
             plan["idlePlan"]["enterAfterMs"],
-            source["speakingEnterAfterMs"] + source["postSpeechHoldMs"],
+            max(source["actionEnterAfterMs"], source["speakingEnterAfterMs"]) + source["postSpeechHoldMs"],
         )
 
     def test_idle_plan_keeps_short_spoken_expression_visible_after_speaking(self):

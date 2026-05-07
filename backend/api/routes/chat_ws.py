@@ -663,6 +663,13 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
             f"motionPlan {motion_plan.get('theme', 'unknown_theme')}:"
             f"{motion_plan.get('variant', 'unknown_variant')}"
         )
+    sequence_events = expression_plan.get("sequence") if isinstance(expression_plan.get("sequence"), list) else []
+    sequence_names = [
+        str(event.get("kind"))
+        for event in sequence_events
+        if isinstance(event, dict) and event.get("kind")
+    ]
+    sequence_summary = ",".join(sequence_names) if sequence_names else "none"
 
     name = idle_plan.get("name", "unknown_idle")
     enter_after_ms = idle_plan.get("enterAfterMs", "?")
@@ -697,6 +704,7 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
         f"expression_plan idlePlan {name} "
         f"enterAfterMs {enter_after_ms} "
         f"actionMs {action_ms} speakingMs {speaking_ms} postSpeechHoldMs {post_speech_hold_ms} "
+        f"sequenceEvents {len(sequence_names)} speakingSequence {sequence_summary} "
         f"loopEvents {loop_summary} "
         f"ambientEnterMs {ambient_enter_after_ms} "
         f"ambientSwitchMs {ambient_switch_interval_ms} "

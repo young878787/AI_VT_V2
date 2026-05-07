@@ -59,7 +59,7 @@ def resolve_visual_signature(emotion: str, performance_mode: str, intent: dict) 
 
     mode_defaults = {
         "smile": ("happy_soft", "keep", "open", "calm", "smile", 0.0, []),
-        "bright_talk": ("bright_talk", "keep", "open", "calm", "smile", 0.1, ["uneven_brow_pop"]),
+        "bright_talk": ("bright_talk", "keep", "open", "calm", "smile", 0.1, ["brow_micro_dual_lift", "uneven_brow_pop"]),
         "goofy_face": ("goofy_asym", "boost", "soft_squint", "one_up_one_down", "smile", 0.85, ["goofy_eye_cross_bias"]),
         "cheeky_wink": ("cheeky_wink", "keep", "soft_squint", "one_up_one_down", "smirk", 0.65, ["wink_left"]),
         "smug": ("smug_tease", "neutralize", "soft_squint", "asymmetric_tense", "smirk", 0.45, ["smirk_left"]),
@@ -121,6 +121,9 @@ def resolve_visual_signature(emotion: str, performance_mode: str, intent: dict) 
         signature["signature_name"] = "bright_talk" if performance_mode == "bright_talk" else "happy_soft"
         signature["blush_policy"] = "keep"
         signature["mouth_pattern"] = "smile"
+        _append_unique(signature["event_bias"], "brow_micro_curve_smile")
+        if performance_mode == "bright_talk":
+            _append_unique(signature["event_bias"], "brow_micro_understand_lift")
     elif emotion == "playful":
         if performance_mode == "goofy_face":
             signature["signature_name"] = "goofy_asym"
@@ -136,6 +139,7 @@ def resolve_visual_signature(emotion: str, performance_mode: str, intent: dict) 
         signature["signature_name"] = "surprised_shock"
         signature["eye_shape"] = "wide"
         signature["mouth_pattern"] = "open_shock"
+        _append_unique(signature["event_bias"], "brow_micro_surprise_arc")
         _append_unique(signature["event_bias"], "shock_pop")
     elif emotion == "neutral":
         if performance_mode == "smile":

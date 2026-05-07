@@ -1,7 +1,7 @@
 import type { ExpressionBasePose, ExpressionMicroEventPatch } from '../../types/expressionPlan';
 
 export type ExpressionParamPatch = ExpressionMicroEventPatch;
-export type ExpressionOverlayKey = keyof ExpressionParamPatch | 'headIntensity';
+export type ExpressionOverlayKey = Exclude<keyof ExpressionParamPatch, 'eyeSync'> | 'headIntensity';
 export type BasePoseParams = ExpressionBasePose['params'];
 
 export interface ActiveExpressionEvent {

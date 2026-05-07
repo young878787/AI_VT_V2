@@ -131,7 +131,12 @@ def normalize_expression_intent(raw_intent: dict, emotion_state: dict | None = N
     normalized = dict(DEFAULT_INTENT)
     normalized["topic_guard"] = dict(DEFAULT_TOPIC_GUARD)
 
-    known_keys = set(DEFAULT_INTENT.keys()) | {"primary_emotion", "secondary_emotion"}
+    known_keys = set(DEFAULT_INTENT.keys()) | {
+        "primary_emotion",
+        "secondary_emotion",
+        "motion_theme",
+        "motion_variant",
+    }
     for key, value in raw_intent.items():
         if key in known_keys:
             if key in ("must_include", "avoid", "topic_guard"):

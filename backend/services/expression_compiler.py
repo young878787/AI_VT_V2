@@ -24,7 +24,11 @@ from domain.expression_idle_library import (
 from domain.expression_intent_schema import DEFAULT_INTENT
 from domain.expression_motion_library import build_motion_plan
 from domain.expression_presets import BASE_POSE_PRESETS, PRESET_VARIATION_RULES
-from domain.expression_sequence_library import MICRO_EVENT_LIBRARY, SEQUENCE_LIBRARY
+from domain.expression_sequence_library import (
+    MICRO_EVENT_LIBRARY,
+    SEQUENCE_LIBRARY,
+    SPEAKING_SEQUENCE_POOLS,
+)
 from domain.expression_visual_signature import (
     resolve_effective_performance_mode,
     resolve_topic_guard,
@@ -619,7 +623,6 @@ def build_expression_sequence(
     signature: dict | None = None,
     model_name: str = "Hiyori",
 ) -> list[dict]:
-    del emotion
     if signature is None:
         signature = resolve_visual_signature(intent.get("emotion", "neutral"), performance_mode, intent)
 
@@ -649,20 +652,186 @@ def build_expression_sequence(
     else:
         seq_name = mode_sequence_map.get(performance_mode)
 
-    if not seq_name or seq_name not in SEQUENCE_LIBRARY or energy <= 0.35:
-        return []
-
     duration_scale = 1.0 + max(0.0, intensity - 0.55) * 0.35
     if model_name.lower() == "hiyori":
         duration_scale += 0.10
 
     sequence = []
-    for step in SEQUENCE_LIBRARY[seq_name]:
-        seq_step = deepcopy(step)
-        seq_step["durationMs"] = max(160, min(1200, int(seq_step["durationMs"] * duration_scale)))
-        sequence.append(seq_step)
+    if seq_name and seq_name in SEQUENCE_LIBRARY and energy > 0.35:
+        for step in SEQUENCE_LIBRARY[seq_name]:
+            seq_step = deepcopy(step)
+            seq_step["durationMs"] = max(160, min(1200, int(seq_step["durationMs"] * duration_scale)))
+            sequence.append(seq_step)
+
+    if arc != "steady":
+        return sequence
+
+    fixed_timeline_ms = _sequence_timeline_ms(sequence)
+    sequence.extend(
+        build_speaking_micro_sequence(
+            emotion,
+            performance_mode,
+            intensity,
+            energy,
+            intent,
+            existing_sequence=sequence,
+            model_name=model_name,
+        )
+    )
+
+    hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
+    max_timeline_ms = max(
+        fixed_timeline_ms,
+        int(_clamp(estimate_dialogue_hold_ms(intent) or hold_ms, 900, 8000)),
+    )
+    return _cap_sequence_timeline(sequence, max_timeline_ms)
+
+
+def _resolve_speaking_sequence_count(speaking_ms: int, hold_ms: float) -> int:
+    budget_ms = int(_clamp(speaking_ms or hold_ms, 900, 8000))
+    if budget_ms < 1800:
+        return 1
+    if budget_ms < 3200:
+        return 2
+    if budget_ms < 4600:
+        return 3
+    if budget_ms < 6200:
+        return 4
+    if budget_ms < 7600:
+        return 5
+    return 6
+
+
+def _speaking_pool_key(emotion: str, performance_mode: str) -> str:
+    if performance_mode in {"gloomy", "deadpan"}:
+        return "gloomy"
+    if performance_mode == "awkward":
+        return "shy"
+    if performance_mode in {"meltdown", "volatile"}:
+        return "angry" if emotion == "angry" else "conflicted"
+    if performance_mode in {"goofy_face", "smug", "cheeky_wink"} and emotion in {"playful", "teasing", "neutral"}:
+        return "playful" if emotion != "teasing" else "teasing"
+    if performance_mode == "shock_recoil":
+        return "surprised"
+    return emotion if emotion in SPEAKING_SEQUENCE_POOLS else "neutral"
+
+
+def _apply_speaking_event_defaults(event: dict, index: int, intensity: float, energy: float) -> dict:
+    seq_step = deepcopy(event)
+    base_duration = int(seq_step.get("durationMs", 560))
+    duration_scale = 0.92 + max(0.0, intensity) * 0.16 + max(0.0, energy - 0.45) * 0.10
+    seq_step["durationMs"] = max(500, min(1500, int(base_duration * duration_scale)))
+    seq_step.setdefault("fadeInMs", 120 + ((index % 3) * 30))
+    seq_step.setdefault("fadeOutMs", 200 + ((index % 2) * 50))
+    seq_step["fadeInMs"] = max(120, min(220, int(seq_step["fadeInMs"])))
+    seq_step["fadeOutMs"] = max(180, min(320, int(seq_step["fadeOutMs"])))
+    seq_step["returnToBase"] = bool(seq_step.get("returnToBase", True))
+    return seq_step
+
+
+def build_speaking_micro_sequence(
+    emotion: str,
+    performance_mode: str,
+    intensity: float,
+    energy: float,
+    intent: dict,
+    existing_sequence: list[dict] | None = None,
+    model_name: str = "Hiyori",
+) -> list[dict]:
+    del model_name
+    avoid = set(intent.get("avoid") or [])
+    spoken_text = str(intent.get("spoken_text") or intent.get("dialogue_text") or "").strip()
+    if not spoken_text:
+        return []
+
+    existing_sequence = existing_sequence or []
+    existing_kinds = {
+        str(step.get("kind"))
+        for step in existing_sequence
+        if isinstance(step, dict) and step.get("kind")
+    }
+    speaking_ms = estimate_dialogue_hold_ms(intent)
+    hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
+    target_count = _resolve_speaking_sequence_count(speaking_ms, hold_ms)
+    remaining_count = max(0, min(6, target_count) - len(existing_sequence))
+    if remaining_count <= 0:
+        return []
+
+    pool_key = _speaking_pool_key(emotion, performance_mode)
+    pool = [
+        name
+        for name in SPEAKING_SEQUENCE_POOLS.get(pool_key, SPEAKING_SEQUENCE_POOLS["neutral"])
+        if name not in avoid and name not in existing_kinds and name in MICRO_EVENT_LIBRARY
+    ]
+    if not pool:
+        return []
+
+    selected: list[str] = []
+    available = pool[:]
+    random.shuffle(available)
+
+    brow_micro_candidates = [name for name in available if name.startswith("brow_micro_")]
+    if brow_micro_candidates:
+        random.shuffle(brow_micro_candidates)
+        target_brow_count = 2 if remaining_count >= 3 else 1
+        for name in brow_micro_candidates[:target_brow_count]:
+            selected.append(name)
+            if name in available:
+                available.remove(name)
+
+    while len(selected) < remaining_count:
+        if not available:
+            available = pool[:]
+            random.shuffle(available)
+        name = available.pop(0)
+        if selected and selected[-1] == name and len(pool) > 1:
+            available.append(name)
+            continue
+        selected.append(name)
+
+    sequence = []
+    for index, name in enumerate(selected):
+        sequence.append(
+            _apply_speaking_event_defaults(
+                MICRO_EVENT_LIBRARY[name],
+                index + len(existing_sequence),
+                intensity,
+                energy,
+            )
+        )
 
     return sequence
+
+
+def _sequence_timeline_ms(sequence: list[dict]) -> int:
+    if not sequence:
+        return 0
+
+    total_ms = 0
+    for index, step in enumerate(sequence):
+        duration_ms = max(1, int(step.get("durationMs", 0)))
+        next_step = sequence[index + 1] if index + 1 < len(sequence) else None
+        overlap_ms = min(
+            max(0, int(step.get("fadeOutMs", 0))),
+            max(0, int(next_step.get("fadeInMs", 0))) if isinstance(next_step, dict) else 0,
+        )
+        total_ms += max(1, duration_ms - overlap_ms)
+
+    return total_ms
+
+
+def _cap_sequence_timeline(sequence: list[dict], max_timeline_ms: int) -> list[dict]:
+    if max_timeline_ms <= 0:
+        return sequence
+
+    capped: list[dict] = []
+    for step in sequence:
+        candidate = capped + [step]
+        if _sequence_timeline_ms(candidate) > max_timeline_ms and capped:
+            break
+        capped = candidate
+
+    return capped
 
 
 def build_blink_plan(intent: dict, model_name: str) -> dict:

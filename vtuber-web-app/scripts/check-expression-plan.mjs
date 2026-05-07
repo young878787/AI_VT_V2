@@ -163,6 +163,7 @@ const validMicroEventEnvelope = {
       fadeInMs: 180,
       fadeOutMs: 260,
       patch: {
+        eyeSync: false,
         mouthForm: 0.42,
         eyeLSmile: 0.68,
         physicsImpulse: 0.92,
@@ -179,6 +180,7 @@ const invalidMicroEventEnvelope = {
       durationMs: 900,
       fadeInMs: -1,
       patch: {
+        eyeSync: 'nope',
         bodyAngleX: 0.58,
       },
       returnToBase: true,
@@ -228,6 +230,57 @@ const validMotionPlan = {
   ...makePayload([{ action: 'force_blink' }]),
   motionPlan: makeMotionPlan(),
 };
+const validSpeakingMicroSequence = {
+  ...makePayload([{ action: 'set_interval', intervalMin: 0.82, intervalMax: 1.7 }]),
+  sequence: [
+    {
+      kind: 'happy_smile_pulse',
+      durationMs: 640,
+      fadeInMs: 160,
+      fadeOutMs: 240,
+      patch: {
+        mouthForm: 0.36,
+        eyeLSmile: 0.54,
+        eyeRSmile: 0.48,
+        blushLevel: 0.08,
+        breathLevel: 0.72,
+      },
+      returnToBase: true,
+    },
+    {
+      kind: 'happy_brow_lift',
+      durationMs: 560,
+      fadeInMs: 140,
+      fadeOutMs: 220,
+      patch: {
+        browLY: 0.22,
+        browRY: 0.18,
+        browLAngle: 0.10,
+        browRAngle: -0.08,
+        eyeLSmile: 0.42,
+      },
+      returnToBase: true,
+    },
+    {
+      kind: 'angry_brow_press',
+      durationMs: 620,
+      fadeInMs: 120,
+      fadeOutMs: 240,
+      patch: {
+        browLY: -0.18,
+        browRY: -0.14,
+        browLAngle: 0.48,
+        browRAngle: -0.44,
+        browLForm: -0.34,
+        browRForm: -0.28,
+        browLX: 0.22,
+        browRX: -0.20,
+        blushLevel: -0.45,
+      },
+      returnToBase: true,
+    },
+  ],
+};
 const invalidMotionPlan = {
   ...makePayload([{ action: 'force_blink' }]),
   motionPlan: {
@@ -274,6 +327,9 @@ if (isExpressionPlanPayload(invalidBodyMotionProfile)) {
 }
 if (!isExpressionPlanPayload(validMotionPlan)) {
   throw new Error('Expected motionPlan with body/head branches to be valid');
+}
+if (!isExpressionPlanPayload(validSpeakingMicroSequence)) {
+  throw new Error('Expected speaking micro expression sequence to be valid');
 }
 if (isExpressionPlanPayload(invalidMotionPlan)) {
   throw new Error('Expected motionPlan with negative head lag to be rejected');

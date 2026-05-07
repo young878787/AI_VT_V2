@@ -1,4 +1,4 @@
-import type { DebugExpressionBackendIntent } from '../dev/expressionPlanDebugFixtures';
+import type { DebugExpressionIntensity, DebugExpressionKind, DebugMotionKind } from '../dev/expressionPlanDebugFixtures';
 import type { ExpressionPlanPayload } from '../types/expressionPlan';
 
 const _port = import.meta.env.BACKEND_PORT || '9999';
@@ -6,7 +6,12 @@ const BACKEND = `http://localhost:${_port}`;
 
 export interface CompileExpressionPlanRequest {
   modelName: string;
-  intent: DebugExpressionBackendIntent;
+  intent?: Record<string, unknown>;
+  kind?: DebugExpressionKind | 'neutral';
+  motionKind?: DebugMotionKind;
+  intensity?: DebugExpressionIntensity;
+  random?: boolean;
+  scenario?: 'speaking_micro' | 'brow_eye_micro';
 }
 
 export interface CompileExpressionPlanResponse {
@@ -16,6 +21,11 @@ export interface CompileExpressionPlanResponse {
     bodyMotionProfile?: string;
     idlePlan?: string;
     emotion?: string;
+    label?: string;
+    source?: string;
+    rawReply?: string | null;
+    spokenText?: string;
+    motionKind?: string;
   };
 }
 

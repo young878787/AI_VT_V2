@@ -2,7 +2,7 @@ import {
   clampExpressionOverlayValue,
   type ActiveExpressionEvent,
   type BasePoseParams,
-  type ExpressionParamPatch,
+  type ExpressionOverlayKey,
 } from './expressionParams';
 import { copyBasePoseParams } from './expressionState';
 
@@ -12,7 +12,7 @@ export interface ExpressionEventRuntimeResult {
 }
 
 function applyOverlayValue(
-  key: keyof ExpressionParamPatch,
+  key: ExpressionOverlayKey,
   target: number,
   patchValue: number | undefined,
   fade: number,
@@ -58,6 +58,9 @@ export function applyActiveExpressionEvents(
     const elapsedMs = nowMs - event.startedAtMs;
     const fade = resolveEventFade(event, elapsedMs, durationMs);
 
+    if (typeof event.patch.eyeSync === 'boolean') {
+      nextTargets.eyeSync = event.patch.eyeSync;
+    }
     nextTargets.blushLevel = applyOverlayValue('blushLevel', nextTargets.blushLevel, event.patch.blushLevel, fade);
     nextTargets.bodyAngleX = applyOverlayValue('bodyAngleX', nextTargets.bodyAngleX, event.patch.bodyAngleX, fade);
     nextTargets.bodyAngleY = applyOverlayValue('bodyAngleY', nextTargets.bodyAngleY, event.patch.bodyAngleY, fade);

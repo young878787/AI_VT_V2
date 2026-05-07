@@ -1611,6 +1611,7 @@ export class LAppModel extends CubismUserModel {
 
   private smoothExpressionTargets(targets: BasePoseParams, deltaTimeSeconds: number): void {
     const lerpFactor = Math.min(1.0, 5.0 * deltaTimeSeconds);
+    this._aiEyeSync = targets.eyeSync;
     this._currentBlushLevel += (targets.blushLevel - this._currentBlushLevel) * lerpFactor;
     this._currentBodyAngleX += (targets.bodyAngleX - this._currentBodyAngleX) * lerpFactor;
     this._currentBodyAngleY += (targets.bodyAngleY - this._currentBodyAngleY) * lerpFactor;

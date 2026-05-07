@@ -70,6 +70,7 @@ export interface ExpressionBasePose {
 }
 
 export interface ExpressionMicroEventPatch {
+  eyeSync?: boolean
   blushLevel?: number
   eyeLOpen?: number
   eyeROpen?: number
@@ -154,6 +155,7 @@ export interface ExpressionPlanPayload {
 }
 
 const EXPRESSION_MICRO_EVENT_PATCH_KEYS = [
+  'eyeSync',
   'blushLevel',
   'eyeLOpen',
   'eyeROpen',
@@ -300,7 +302,7 @@ function isExpressionMicroEventPatch(value: unknown): value is ExpressionMicroEv
 
   return Object.entries(value).every(([key, patchValue]) => (
     EXPRESSION_MICRO_EVENT_PATCH_KEYS.includes(key as keyof ExpressionMicroEventPatch) &&
-    isNumber(patchValue)
+    (key === 'eyeSync' ? typeof patchValue === 'boolean' : isNumber(patchValue))
   ))
 }
 
