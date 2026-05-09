@@ -26,6 +26,7 @@ from domain.expression_motion_library import build_motion_plan
 from domain.expression_presets import BASE_POSE_PRESETS, PRESET_VARIATION_RULES
 from domain.expression_sequence_library import (
     MICRO_EVENT_LIBRARY,
+    MICRO_EXPRESSION_THEME_POOLS,
     SEQUENCE_LIBRARY,
     SPEAKING_SEQUENCE_POOLS,
 )
@@ -38,6 +39,14 @@ from domain.expression_visual_signature import (
 
 
 POST_SPEECH_MAIN_EXPRESSION_HOLD_MS = {"min": 6000, "max": 10000}
+BODY_BOUNCE_MICRO_EVENT_KINDS = {
+    "happy_body_bounce_pop",
+    "happy_body_sway_bounce_left",
+    "happy_body_sway_bounce_right",
+    "playful_body_rebound",
+    "tease_body_lean_rebound",
+}
+BODY_BOUNCE_POOL_KEYS = {"happy", "playful", "teasing", "neutral"}
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
@@ -622,6 +631,7 @@ def build_expression_sequence(
     intent: dict,
     signature: dict | None = None,
     model_name: str = "Hiyori",
+    action_duration_ms: int | None = None,
 ) -> list[dict]:
     if signature is None:
         signature = resolve_visual_signature(intent.get("emotion", "neutral"), performance_mode, intent)
@@ -660,13 +670,11 @@ def build_expression_sequence(
     if seq_name and seq_name in SEQUENCE_LIBRARY and energy > 0.35:
         for step in SEQUENCE_LIBRARY[seq_name]:
             seq_step = deepcopy(step)
-            seq_step["durationMs"] = max(160, min(1200, int(seq_step["durationMs"] * duration_scale)))
+            seq_step["durationMs"] = max(1000, min(3000, int(seq_step["durationMs"] * duration_scale)))
             sequence.append(seq_step)
 
-    if arc != "steady":
-        return sequence
-
-    fixed_timeline_ms = _sequence_timeline_ms(sequence)
+    hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
+    target_timeline_ms = _resolve_sequence_target_timeline_ms(intent, hold_ms, action_duration_ms)
     sequence.extend(
         build_speaking_micro_sequence(
             emotion,
@@ -676,30 +684,30 @@ def build_expression_sequence(
             intent,
             existing_sequence=sequence,
             model_name=model_name,
+            target_timeline_ms=target_timeline_ms,
         )
     )
 
-    hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
-    max_timeline_ms = max(
-        fixed_timeline_ms,
-        int(_clamp(estimate_dialogue_hold_ms(intent) or hold_ms, 900, 8000)),
+    return _cap_sequence_timeline(sequence, target_timeline_ms + 350)
+
+
+def _resolve_sequence_target_timeline_ms(intent: dict, hold_ms: float, action_duration_ms: int | None = None) -> int:
+    target_ms = max(
+        int(hold_ms),
+        int(action_duration_ms or 0),
+        int(estimate_dialogue_hold_ms(intent) or 0),
     )
-    return _cap_sequence_timeline(sequence, max_timeline_ms)
+    return int(_clamp(target_ms, 1200, 14000))
 
 
-def _resolve_speaking_sequence_count(speaking_ms: int, hold_ms: float) -> int:
-    budget_ms = int(_clamp(speaking_ms or hold_ms, 900, 8000))
-    if budget_ms < 1800:
-        return 1
-    if budget_ms < 3200:
-        return 2
-    if budget_ms < 4600:
-        return 3
-    if budget_ms < 6200:
-        return 4
-    if budget_ms < 7600:
-        return 5
-    return 6
+def _resolve_speaking_sequence_count(speaking_ms: int, hold_ms: float, intensity: float, energy: float) -> int:
+    budget_ms = int(_clamp(speaking_ms or hold_ms, 1200, 14000))
+    count = int((budget_ms + 1599) // 1600)
+
+    if intensity >= 0.72 or energy >= 0.72:
+        count += 1
+
+    return int(_clamp(count, 2, 12))
 
 
 def _speaking_pool_key(emotion: str, performance_mode: str) -> str:
@@ -719,14 +727,394 @@ def _speaking_pool_key(emotion: str, performance_mode: str) -> str:
 def _apply_speaking_event_defaults(event: dict, index: int, intensity: float, energy: float) -> dict:
     seq_step = deepcopy(event)
     base_duration = int(seq_step.get("durationMs", 560))
-    duration_scale = 0.92 + max(0.0, intensity) * 0.16 + max(0.0, energy - 0.45) * 0.10
-    seq_step["durationMs"] = max(500, min(1500, int(base_duration * duration_scale)))
-    seq_step.setdefault("fadeInMs", 120 + ((index % 3) * 30))
-    seq_step.setdefault("fadeOutMs", 200 + ((index % 2) * 50))
-    seq_step["fadeInMs"] = max(120, min(220, int(seq_step["fadeInMs"])))
-    seq_step["fadeOutMs"] = max(180, min(320, int(seq_step["fadeOutMs"])))
+    duration_scale = 1.55 + max(0.0, intensity) * 0.32 + max(0.0, energy - 0.45) * 0.22
+    cadence_variation_ms = (index % 3) * 180
+    seq_step["durationMs"] = max(1000, min(3000, int(base_duration * duration_scale) + cadence_variation_ms))
+    seq_step.setdefault("fadeInMs", 180 + ((index % 3) * 40))
+    seq_step.setdefault("fadeOutMs", 240 + ((index % 2) * 60))
+    seq_step["fadeInMs"] = max(160, min(360, int(seq_step["fadeInMs"])))
+    seq_step["fadeOutMs"] = max(220, min(480, int(seq_step["fadeOutMs"])))
     seq_step["returnToBase"] = bool(seq_step.get("returnToBase", True))
+    _apply_body_bounce_event_variation(seq_step, index, intensity, energy)
     return seq_step
+
+
+def _is_body_bounce_event_name(name: object) -> bool:
+    return str(name or "") in BODY_BOUNCE_MICRO_EVENT_KINDS
+
+
+def _apply_body_bounce_event_variation(seq_step: dict, index: int, intensity: float, energy: float) -> None:
+    kind = str(seq_step.get("kind") or "")
+    patch = seq_step.get("patch")
+    if not _is_body_bounce_event_name(kind) or not isinstance(patch, dict):
+        return
+
+    seq_step["durationMs"] = int(_clamp(
+        int(seq_step.get("durationMs", 1000)) * random.uniform(0.56, 0.78),
+        620,
+        1450,
+    ))
+
+    energy_boost = _clamp((energy - 0.45) * 0.24, 0.0, 0.16)
+    intensity_boost = _clamp((intensity - 0.50) * 0.18, 0.0, 0.12)
+    body_scale = random.uniform(0.96, 1.30) + energy_boost + intensity_boost
+    bounce_scale = random.uniform(1.05, 1.42) + energy_boost
+    impulse_scale = random.uniform(0.98, 1.22) + intensity_boost
+
+    if "bodyAngleX" in patch:
+        patch["bodyAngleX"] = round(_clamp(float(patch["bodyAngleX"]) * body_scale, -0.58, 0.58), 3)
+    if "bodyAngleY" in patch:
+        patch["bodyAngleY"] = round(_clamp(float(patch["bodyAngleY"]) * bounce_scale, 0.18, 0.68), 3)
+    if "bodyAngleZ" in patch:
+        patch["bodyAngleZ"] = round(_clamp(float(patch["bodyAngleZ"]) * random.uniform(0.96, 1.28), -0.55, 0.55), 3)
+    if "breathLevel" in patch:
+        patch["breathLevel"] = round(_clamp(float(patch["breathLevel"]) * random.uniform(1.00, 1.12), 0.72, 1.00), 3)
+    if "physicsImpulse" in patch:
+        patch["physicsImpulse"] = round(_clamp(float(patch["physicsImpulse"]) * impulse_scale, 0.70, 1.00), 3)
+
+    duration_ms = max(1, int(seq_step.get("durationMs", 1000)))
+    max_fade_in_ms = max(90, min(260, int(duration_ms * 0.22)))
+    max_fade_out_ms = max(160, min(420, int(duration_ms * 0.36)))
+    seq_step["fadeInMs"] = int(_clamp(int(seq_step.get("fadeInMs", 150)) - 55 + ((index % 2) * 12), 70, max_fade_in_ms))
+    seq_step["fadeOutMs"] = int(_clamp(max(int(seq_step.get("fadeOutMs", 240)) - 80, int(duration_ms * 0.20)), 150, max_fade_out_ms))
+
+
+def _allowed_secondary_micro_pool(pool_key: str, secondary_emotion: str) -> str | None:
+    if not secondary_emotion or secondary_emotion == "neutral" or secondary_emotion == pool_key:
+        return None
+    if secondary_emotion not in MICRO_EXPRESSION_THEME_POOLS:
+        return None
+
+    if pool_key == "angry":
+        return secondary_emotion if secondary_emotion == "conflicted" else None
+    if pool_key in {"sad", "gloomy"}:
+        return secondary_emotion if secondary_emotion in {"shy", "conflicted", "sad", "gloomy"} else None
+
+    return secondary_emotion
+
+
+def _micro_family_weight(family: str, pool_key: str, intent: dict, source_scale: float) -> float:
+    secondary = str(intent.get("secondary_emotion") or "")
+    arc = str(intent.get("arc") or "steady")
+    performance_mode = str(intent.get("performance_mode") or "")
+    asymmetry_bias = str(intent.get("asymmetry_bias") or "auto")
+    intensity = _coerce_float(intent.get("intensity", 0.35), 0.35)
+    energy = _coerce_float(intent.get("energy", 0.35), 0.35)
+    playfulness = _coerce_float(intent.get("playfulness", 0.3), 0.3)
+    warmth = _coerce_float(intent.get("warmth", 0.5), 0.5)
+    dominance = _coerce_float(intent.get("dominance", 0.5), 0.5)
+
+    weight = source_scale
+    if family == "core":
+        weight *= 1.05
+    if family in {"brow_lift", "surprise"} and (
+        secondary == "surprised" or arc in {"pop_then_settle", "widen_then_tease"} or pool_key == "surprised"
+    ):
+        weight *= 2.35
+    if family in {"understanding", "brow_curve", "brow_shape"} and (warmth >= 0.55 or pool_key in {"happy", "neutral", "shy"}):
+        weight *= 1.75
+    if family == "brow_bounce" and (pool_key in {"happy", "playful", "teasing", "neutral"} or energy >= 0.55):
+        weight *= 2.15
+    if family == "body_bounce" and (pool_key in {"happy", "playful", "teasing", "neutral"} or energy >= 0.58):
+        weight *= 2.25 + (energy * 0.35) + (playfulness * 0.25)
+    if family == "asymmetry" and (
+        asymmetry_bias in {"subtle", "strong"}
+        or playfulness >= 0.58
+        or performance_mode in {"goofy_face", "smug", "cheeky_wink"}
+    ):
+        weight *= 2.05
+    if family in {"brow_press", "stare", "tension"} and (pool_key == "angry" or dominance >= 0.62 or intensity >= 0.68):
+        weight *= 1.85
+    if family in {"worry", "low_eye"} and (pool_key in {"sad", "gloomy", "shy"} or energy <= 0.35):
+        weight *= 1.75
+
+    return max(0.05, weight)
+
+
+def _build_micro_expression_candidates(pool_key: str, intent: dict, avoid: set[str], existing_kinds: set[str]) -> list[dict]:
+    candidates: list[dict] = []
+
+    def add_pool(source_key: str, source_scale: float) -> None:
+        for family, event_names in MICRO_EXPRESSION_THEME_POOLS.get(source_key, {}).items():
+            weight = _micro_family_weight(family, source_key, intent, source_scale)
+            for name in event_names:
+                if name in avoid or name in existing_kinds or name not in MICRO_EVENT_LIBRARY:
+                    continue
+                candidates.append({"name": name, "family": family, "weight": weight})
+
+    add_pool(pool_key, 1.0)
+    secondary_key = _allowed_secondary_micro_pool(pool_key, str(intent.get("secondary_emotion") or ""))
+    if secondary_key:
+        add_pool(secondary_key, 0.65)
+
+    if not candidates:
+        for name in SPEAKING_SEQUENCE_POOLS.get(pool_key, SPEAKING_SEQUENCE_POOLS["neutral"]):
+            if name in avoid or name in existing_kinds or name not in MICRO_EVENT_LIBRARY:
+                continue
+            candidates.append({"name": name, "family": "core", "weight": 1.0})
+
+    return candidates
+
+
+def _weighted_micro_pick(
+    candidates: list[dict],
+    selected_names: set[str],
+    family_counts: dict[str, int],
+    last_family: str | None,
+    family: str | None = None,
+) -> dict | None:
+    eligible = [
+        candidate
+        for candidate in candidates
+        if candidate["name"] not in selected_names
+        and (family is None or candidate["family"] == family)
+        and candidate["family"] != last_family
+        and family_counts.get(candidate["family"], 0) < 3
+    ]
+    if not eligible:
+        eligible = [
+            candidate
+            for candidate in candidates
+            if candidate["name"] not in selected_names
+            and (family is None or candidate["family"] == family)
+            and family_counts.get(candidate["family"], 0) < 3
+        ]
+    if not eligible:
+        eligible = [
+            candidate
+            for candidate in candidates
+            if family is None or candidate["family"] == family
+        ]
+    if not eligible:
+        return None
+    if family is not None:
+        brow_micro_eligible = [
+            candidate for candidate in eligible if str(candidate["name"]).startswith("brow_micro_")
+        ]
+        if brow_micro_eligible:
+            eligible = brow_micro_eligible
+        if family == "brow_bounce":
+            down_bounce = [
+                candidate for candidate in eligible if candidate["name"] == "brow_micro_bounce_down"
+            ]
+            if down_bounce:
+                eligible = down_bounce
+        elif family == "brow_shape":
+            shape_wave = [
+                candidate for candidate in eligible if candidate["name"] == "brow_micro_shape_wave"
+            ]
+            if shape_wave:
+                eligible = shape_wave
+        elif family == "understanding":
+            understand_lift = [
+                candidate for candidate in eligible if candidate["name"] == "brow_micro_understand_lift"
+            ]
+            if understand_lift:
+                eligible = understand_lift
+
+    total_weight = sum(float(candidate["weight"]) for candidate in eligible)
+    cursor = random.random() * total_weight
+    for candidate in eligible:
+        cursor -= float(candidate["weight"])
+        if cursor <= 0:
+            return candidate
+    return eligible[-1]
+
+
+def _required_micro_families(pool_key: str, intent: dict, remaining_count: int) -> list[str]:
+    secondary = str(intent.get("secondary_emotion") or "")
+    arc = str(intent.get("arc") or "steady")
+    asymmetry_bias = str(intent.get("asymmetry_bias") or "auto")
+
+    if pool_key == "angry":
+        families = ["brow_press", "stare", "tension"]
+    elif pool_key in {"sad", "gloomy"}:
+        families = ["worry", "low_eye", "tension"]
+    elif pool_key == "surprised":
+        families = ["brow_lift", "surprise", "understanding"]
+    elif pool_key in {"playful", "teasing"}:
+        families = ["body_bounce", "asymmetry", "brow_shape", "brow_bounce", "brow_lift", "brow_curve"]
+    elif pool_key == "shy":
+        families = ["brow_curve", "worry", "asymmetry"]
+    elif pool_key == "conflicted":
+        families = ["asymmetry", "worry", "tension"]
+    else:
+        families = ["body_bounce", "brow_bounce", "brow_shape", "brow_curve", "brow_lift", "understanding"]
+
+    if secondary == "surprised" or arc in {"pop_then_settle", "widen_then_tease"}:
+        families.insert(0, "surprise")
+        families.insert(1, "brow_lift")
+        families.insert(2, "understanding")
+    if asymmetry_bias == "strong" and pool_key not in {"angry", "sad", "gloomy"}:
+        families.insert(0, "asymmetry")
+
+    unique: list[str] = []
+    for family in families:
+        if family not in unique:
+            unique.append(family)
+
+    target = 1
+    if remaining_count >= 2:
+        target = 2
+    if remaining_count >= 3:
+        target = 3
+    if remaining_count >= 5:
+        target = 4
+    if remaining_count >= 7:
+        target = 4
+
+    return unique[:target]
+
+
+def _target_body_bounce_count(pool_key: str, remaining_count: int, intent: dict) -> int:
+    if pool_key not in BODY_BOUNCE_POOL_KEYS:
+        return 0
+
+    secondary = str(intent.get("secondary_emotion") or "")
+    arc = str(intent.get("arc") or "steady")
+    energy = _coerce_float(intent.get("energy", 0.35), 0.35)
+    playfulness = _coerce_float(intent.get("playfulness", 0.3), 0.3)
+    target = 1
+    if remaining_count >= 4:
+        target = 2
+    if remaining_count >= 6 or (remaining_count >= 5 and (energy >= 0.78 or playfulness >= 0.68)):
+        target = 3
+    if secondary == "surprised" or arc in {"pop_then_settle", "widen_then_tease"}:
+        target = min(target, 1)
+    return min(target, remaining_count)
+
+
+def _append_selected_micro_candidate(
+    selected: list[str],
+    selected_names: set[str],
+    family_counts: dict[str, int],
+    candidate: dict,
+) -> str:
+    selected.append(str(candidate["name"]))
+    selected_names.add(str(candidate["name"]))
+    family = str(candidate["family"])
+    family_counts[family] = family_counts.get(family, 0) + 1
+    return family
+
+
+def _select_weighted_micro_events(pool_key: str, intent: dict, remaining_count: int, avoid: set[str], existing_kinds: set[str]) -> list[str]:
+    candidates = _build_micro_expression_candidates(pool_key, intent, avoid, existing_kinds)
+    if not candidates:
+        return []
+
+    selected: list[str] = []
+    selected_names: set[str] = set()
+    family_counts: dict[str, int] = {}
+    last_family: str | None = None
+
+    target_body_bounces = _target_body_bounce_count(pool_key, remaining_count, intent)
+    while (
+        len(selected) < remaining_count
+        and family_counts.get("body_bounce", 0) < target_body_bounces
+    ):
+        candidate = _weighted_micro_pick(candidates, selected_names, family_counts, last_family, family="body_bounce")
+        if not candidate:
+            break
+        last_family = _append_selected_micro_candidate(selected, selected_names, family_counts, candidate)
+
+    for family in _required_micro_families(pool_key, intent, remaining_count):
+        if family == "body_bounce" and family_counts.get("body_bounce", 0) >= target_body_bounces:
+            continue
+        candidate = _weighted_micro_pick(candidates, selected_names, family_counts, last_family, family=family)
+        if not candidate:
+            continue
+        last_family = _append_selected_micro_candidate(selected, selected_names, family_counts, candidate)
+        if len(selected) >= remaining_count:
+            return selected
+
+    while len(selected) < remaining_count:
+        candidate = _weighted_micro_pick(candidates, selected_names, family_counts, last_family)
+        if not candidate:
+            break
+        last_family = _append_selected_micro_candidate(selected, selected_names, family_counts, candidate)
+
+    return selected
+
+
+def _resolve_micro_motif_count(target_count: int, target_timeline_ms: int, existing_timeline_ms: int, pool_key: str) -> int:
+    remaining_timeline_ms = max(0, target_timeline_ms - existing_timeline_ms)
+    segment_ms = 850 if pool_key in BODY_BOUNCE_POOL_KEYS else 1800
+    timeline_count = int((remaining_timeline_ms + segment_ms - 1) // segment_ms)
+    max_count = 8 if pool_key in BODY_BOUNCE_POOL_KEYS else 6
+    return int(_clamp(min(target_count, timeline_count), 2, max_count))
+
+
+def _shuffled_micro_motif(motif: list[str], last_name: str | None) -> list[str]:
+    if len(motif) <= 1:
+        return list(motif)
+
+    body_items = [name for name in motif if _is_body_bounce_event_name(name)]
+    other_items = [name for name in motif if not _is_body_bounce_event_name(name)]
+    if len(body_items) >= 2:
+        rotated = []
+        for index, name in enumerate(body_items):
+            rotated.append(name)
+            if index < len(other_items):
+                rotated.append(other_items[index])
+        rotated.extend(other_items[len(body_items):])
+    else:
+        rotated = list(motif)
+
+    if last_name and rotated[0] == last_name:
+        rotated = rotated[1:] + rotated[:1]
+    return rotated
+
+
+def _append_sequence_step_to_target(sequence: list[dict], step: dict, target_timeline_ms: int) -> bool:
+    current_timeline_ms = _sequence_timeline_ms(sequence)
+    if current_timeline_ms >= target_timeline_ms:
+        return False
+
+    candidate_timeline_ms = _sequence_timeline_ms(sequence + [step])
+    if candidate_timeline_ms <= target_timeline_ms + 350:
+        sequence.append(step)
+        return True
+
+    remaining_ms = target_timeline_ms - current_timeline_ms
+    if remaining_ms < 650 and current_timeline_ms >= int(target_timeline_ms * 0.86):
+        return False
+
+    previous_step = sequence[-1] if sequence else None
+    overlap_ms = min(
+        max(0, int(previous_step.get("fadeOutMs", 0))) if isinstance(previous_step, dict) else 0,
+        max(0, int(step.get("fadeInMs", 0))),
+    )
+    adjusted_duration_ms = remaining_ms + overlap_ms
+    min_duration_ms = _sequence_step_min_duration_ms(step)
+    if adjusted_duration_ms < min_duration_ms:
+        adjusted_duration_ms = min_duration_ms
+
+    if adjusted_duration_ms <= 3000:
+        step["durationMs"] = int(adjusted_duration_ms)
+        sequence.append(step)
+        return True
+
+    return False
+
+
+def _sequence_step_min_duration_ms(step: dict) -> int:
+    return 620 if _is_body_bounce_event_name(step.get("kind")) else 1000
+
+
+def _spread_sequence_step_duration(sequence: list[dict], step: dict, target_timeline_ms: int, remaining_steps: int) -> dict:
+    if remaining_steps <= 1:
+        return step
+
+    remaining_timeline_ms = max(0, target_timeline_ms - _sequence_timeline_ms(sequence))
+    previous_step = sequence[-1] if sequence else None
+    overlap_ms = min(
+        max(0, int(previous_step.get("fadeOutMs", 0))) if isinstance(previous_step, dict) else 0,
+        max(0, int(step.get("fadeInMs", 0))),
+    )
+    spread_duration_ms = int((remaining_timeline_ms / remaining_steps) + overlap_ms)
+    min_duration_ms = _sequence_step_min_duration_ms(step)
+    step["durationMs"] = max(min_duration_ms, min(int(step.get("durationMs", min_duration_ms)), min(3000, spread_duration_ms)))
+    return step
 
 
 def build_speaking_micro_sequence(
@@ -737,6 +1125,7 @@ def build_speaking_micro_sequence(
     intent: dict,
     existing_sequence: list[dict] | None = None,
     model_name: str = "Hiyori",
+    target_timeline_ms: int | None = None,
 ) -> list[dict]:
     del model_name
     avoid = set(intent.get("avoid") or [])
@@ -745,6 +1134,7 @@ def build_speaking_micro_sequence(
         return []
 
     existing_sequence = existing_sequence or []
+    existing_timeline_ms = _sequence_timeline_ms(existing_sequence)
     existing_kinds = {
         str(step.get("kind"))
         for step in existing_sequence
@@ -752,55 +1142,64 @@ def build_speaking_micro_sequence(
     }
     speaking_ms = estimate_dialogue_hold_ms(intent)
     hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
-    target_count = _resolve_speaking_sequence_count(speaking_ms, hold_ms)
-    remaining_count = max(0, min(6, target_count) - len(existing_sequence))
-    if remaining_count <= 0:
+    target_timeline_ms = int(target_timeline_ms or _resolve_sequence_target_timeline_ms(intent, hold_ms))
+    if existing_timeline_ms >= target_timeline_ms:
         return []
 
+    target_count = _resolve_speaking_sequence_count(target_timeline_ms, hold_ms, intensity, energy)
     pool_key = _speaking_pool_key(emotion, performance_mode)
-    pool = [
-        name
-        for name in SPEAKING_SEQUENCE_POOLS.get(pool_key, SPEAKING_SEQUENCE_POOLS["neutral"])
-        if name not in avoid and name not in existing_kinds and name in MICRO_EVENT_LIBRARY
-    ]
-    if not pool:
+    motif_count = _resolve_micro_motif_count(target_count, target_timeline_ms, existing_timeline_ms, pool_key)
+    selected_motif = _select_weighted_micro_events(pool_key, intent, motif_count, avoid, existing_kinds)
+    if not selected_motif:
         return []
 
-    selected: list[str] = []
-    available = pool[:]
-    random.shuffle(available)
+    sequence: list[dict] = []
+    scheduled: list[dict] = list(existing_sequence)
+    last_name = str(existing_sequence[-1].get("kind")) if existing_sequence else None
+    target_additional_ms = max(0, target_timeline_ms - existing_timeline_ms)
+    desired_additional_steps = int(_clamp((target_additional_ms + 1399) // 1400, 1, 16))
 
-    brow_micro_candidates = [name for name in available if name.startswith("brow_micro_")]
-    if brow_micro_candidates:
-        random.shuffle(brow_micro_candidates)
-        target_brow_count = 2 if remaining_count >= 3 else 1
-        for name in brow_micro_candidates[:target_brow_count]:
-            selected.append(name)
-            if name in available:
-                available.remove(name)
-
-    while len(selected) < remaining_count:
-        if not available:
-            available = pool[:]
-            random.shuffle(available)
-        name = available.pop(0)
-        if selected and selected[-1] == name and len(pool) > 1:
-            available.append(name)
-            continue
-        selected.append(name)
-
-    sequence = []
-    for index, name in enumerate(selected):
-        sequence.append(
-            _apply_speaking_event_defaults(
+    while _sequence_timeline_ms(scheduled) < target_timeline_ms and len(sequence) < 16:
+        appended_in_cycle = False
+        for name in _shuffled_micro_motif(selected_motif, last_name):
+            step = _apply_speaking_event_defaults(
                 MICRO_EVENT_LIBRARY[name],
-                index + len(existing_sequence),
+                len(scheduled),
                 intensity,
                 energy,
             )
-        )
+            step = _spread_sequence_step_duration(
+                scheduled,
+                step,
+                target_timeline_ms,
+                max(1, desired_additional_steps - len(sequence)),
+            )
+            if not _append_sequence_step_to_target(scheduled, step, target_timeline_ms):
+                continue
+            sequence.append(step)
+            last_name = name
+            appended_in_cycle = True
+            if _sequence_timeline_ms(scheduled) >= int(target_timeline_ms * 0.96):
+                break
+            if len(sequence) >= 16:
+                break
+        if not appended_in_cycle:
+            break
+        if _sequence_timeline_ms(scheduled) >= int(target_timeline_ms * 0.96):
+            break
 
-    return sequence
+    if sequence:
+        return sequence
+
+    fallback_name = selected_motif[0]
+    return [
+        _apply_speaking_event_defaults(
+            MICRO_EVENT_LIBRARY[fallback_name],
+            len(existing_sequence),
+            intensity,
+            energy,
+        )
+    ]
 
 
 def _sequence_timeline_ms(sequence: list[dict]) -> int:
@@ -877,6 +1276,12 @@ def resolve_idle_plan_name(emotion: str, performance_mode: str, topic_guard: dic
         return "shy_idle"
     if emotion == "gloomy" or performance_mode in {"gloomy", "deadpan"}:
         return "gloomy_idle"
+    if emotion == "surprised" or performance_mode == "shock_recoil":
+        return "surprised_idle"
+    if emotion == "conflicted":
+        return "conflicted_idle"
+    if emotion == "neutral":
+        return "neutral_idle"
     return "happy_idle"
 
 
@@ -895,7 +1300,7 @@ def build_idle_plan(
     settle_params = _clamp_expression_params(settle_params)
 
     action_enter_after_ms = int(base_pose["durationSec"] * 1000)
-    action_enter_after_ms += sum(int(step.get("durationMs", 0)) for step in sequence)
+    action_enter_after_ms += _sequence_timeline_ms(sequence)
     action_enter_after_ms += max((int(event.get("durationMs", 0)) for event in micro_events), default=0)
     speaking_enter_after_ms = estimate_dialogue_hold_ms(intent)
     post_speech_hold_ms = _random_int(
@@ -1010,15 +1415,6 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         signature=signature,
         model_name=model_name,
     )
-    sequence = build_expression_sequence(
-        emotion,
-        performance_mode,
-        intensity,
-        energy,
-        intent,
-        signature=signature,
-        model_name=model_name,
-    )
     motion_plan = build_motion_plan(
         emotion,
         performance_mode,
@@ -1027,6 +1423,16 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         _coerce_float(intent.get("playfulness", 0.3), 0.3),
         intent,
         previous_state,
+    )
+    sequence = build_expression_sequence(
+        emotion,
+        performance_mode,
+        intensity,
+        energy,
+        intent,
+        signature=signature,
+        model_name=model_name,
+        action_duration_ms=int(motion_plan.get("durationMs", 0)),
     )
     blink_plan = build_blink_plan(intent, model_name=model_name)
     idle_plan = build_idle_plan(

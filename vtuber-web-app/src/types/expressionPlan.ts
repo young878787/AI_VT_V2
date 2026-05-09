@@ -111,7 +111,7 @@ export interface ExpressionIdleAmbientPlan {
 }
 
 export interface ExpressionIdlePlan {
-  name: 'happy_idle' | 'crying_idle' | 'angry_glare_idle' | 'shy_idle' | 'gloomy_idle'
+  name: 'happy_idle' | 'crying_idle' | 'angry_glare_idle' | 'shy_idle' | 'gloomy_idle' | 'neutral_idle' | 'surprised_idle' | 'conflicted_idle'
   mode: 'loop'
   enterAfterMs: number
   loopIntervalMs: number
@@ -359,7 +359,10 @@ function isExpressionIdlePlan(value: unknown): value is ExpressionIdlePlan {
     value.name !== 'crying_idle' &&
     value.name !== 'angry_glare_idle' &&
     value.name !== 'shy_idle' &&
-    value.name !== 'gloomy_idle'
+    value.name !== 'gloomy_idle' &&
+    value.name !== 'neutral_idle' &&
+    value.name !== 'surprised_idle' &&
+    value.name !== 'conflicted_idle'
   ) {
     return false
   }

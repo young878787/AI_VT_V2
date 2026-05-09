@@ -10,6 +10,7 @@ from services.expression_compiler import (
     build_blink_plan,
     build_expression_sequence,
     compile_expression_plan,
+    estimate_dialogue_hold_ms,
     resolve_effective_performance_mode,
     resolve_topic_guard,
     select_base_pose,
@@ -38,6 +39,26 @@ def estimate_native_body_ranges(plan: dict) -> dict:
             params["bodyAngleZ"] * 5.0 + twist,
         ),
     }
+
+
+def estimate_sequence_timeline_ms(sequence: list[dict]) -> int:
+    total_ms = 0
+    for index, step in enumerate(sequence):
+        next_step = sequence[index + 1] if index + 1 < len(sequence) else None
+        overlap_ms = min(
+            max(0, int(step.get("fadeOutMs", 0))),
+            max(0, int(next_step.get("fadeInMs", 0))) if isinstance(next_step, dict) else 0,
+        )
+        total_ms += max(1, int(step.get("durationMs", 0)) - overlap_ms)
+    return total_ms
+
+
+def is_body_bounce_step(step: dict) -> bool:
+    return str(step.get("kind") or "").startswith(("happy_body_", "playful_body_", "tease_body_"))
+
+
+def expected_sequence_step_min_duration_ms(step: dict) -> int:
+    return 620 if is_body_bounce_step(step) else 1000
 
 
 class ExpressionCompilerTests(unittest.TestCase):
@@ -204,6 +225,70 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertGreater(motion_plan["body"]["sway"], 1.3)
         self.assertGreater(motion_plan["head"]["roll"], 1.1)
         self.assertEqual(plan["carryState"]["motionVariant"], "side_sway_bounce")
+
+    def test_body_motion_profile_and_motion_theme_stay_explicit(self):
+        expected_pairs = [
+            ("happy", "bright_talk", "bright_bounce", "happy_bright_talk"),
+            ("playful", "goofy_face", "playful_swing", "playful_tease"),
+            ("sad", "tense_hold", "small_sad_bob", "low_mood"),
+            ("gloomy", "deadpan", "heavy_slow_sink", "low_mood"),
+            ("angry", "meltdown", "locked_tense", "angry_tension"),
+            ("shy", "awkward", "shy_side_sway", "shy_tucked"),
+            ("surprised", "shock_recoil", "quick_recoil", "surprised_recoil"),
+            ("conflicted", "smile", "uneasy_shift", "uneasy_shift"),
+        ]
+
+        for emotion, performance_mode, expected_style, expected_theme in expected_pairs:
+            with self.subTest(emotion=emotion, performance_mode=performance_mode):
+                plan = compile_expression_plan(
+                    {
+                        "emotion": emotion,
+                        "performance_mode": performance_mode,
+                        "intensity": 0.70,
+                        "energy": 0.70,
+                        "playfulness": 0.45,
+                    },
+                    model_name="Hiyori",
+                    previous_state=None,
+                )
+
+                self.assertEqual(plan["basePose"]["bodyMotionProfile"]["style"], expected_style)
+                self.assertEqual(plan["motionPlan"]["theme"], expected_theme)
+
+    def test_tense_conflicted_currently_uses_mixed_motion_semantics(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "conflicted",
+                "performance_mode": "tense_hold",
+                "intensity": 0.70,
+                "energy": 0.45,
+                "playfulness": 0.20,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        self.assertEqual(plan["basePose"]["bodyMotionProfile"]["style"], "uneasy_shift")
+        self.assertEqual(plan["motionPlan"]["theme"], "low_mood")
+
+    def test_motion_theme_override_does_not_rewrite_body_motion_profile(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "sad",
+                "performance_mode": "tense_hold",
+                "motion_theme": "happy_bright_talk",
+                "motion_variant": "side_sway_bounce",
+                "intensity": 0.70,
+                "energy": 0.35,
+                "playfulness": 0.20,
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        self.assertEqual(plan["basePose"]["bodyMotionProfile"]["style"], "small_sad_bob")
+        self.assertEqual(plan["motionPlan"]["theme"], "happy_bright_talk")
+        self.assertEqual(plan["motionPlan"]["variant"], "side_sway_bounce")
 
     def test_low_energy_emotions_still_have_visible_native_body_motion(self):
         sad = compile_expression_plan(
@@ -623,7 +708,7 @@ class ExpressionCompilerTests(unittest.TestCase):
 
         sequence = plan["sequence"]
         self.assertGreaterEqual(len(sequence), 3)
-        self.assertLessEqual(len(sequence), 6)
+        self.assertLessEqual(len(sequence), 8)
         self.assertEqual(sequence[0]["kind"], "bright_sway_left")
         self.assertEqual(sequence[1]["kind"], "bright_sway_right")
         self.assertTrue(
@@ -636,11 +721,19 @@ class ExpressionCompilerTests(unittest.TestCase):
         for step in sequence:
             self.assertIn("fadeInMs", step)
             self.assertIn("fadeOutMs", step)
-            self.assertGreaterEqual(step["durationMs"], 500)
-            self.assertLessEqual(step["durationMs"], 1500)
-            self.assertNotIn("bodyAngleX", step["patch"])
-            self.assertNotIn("bodyAngleY", step["patch"])
-            self.assertNotIn("bodyAngleZ", step["patch"])
+            self.assertGreaterEqual(step["durationMs"], expected_sequence_step_min_duration_ms(step))
+            self.assertLessEqual(step["durationMs"], 3000)
+
+        body_events = [
+            step for step in sequence
+            if any(key in step["patch"] for key in ("bodyAngleX", "bodyAngleY", "bodyAngleZ"))
+        ]
+        self.assertGreaterEqual(len(body_events), 1)
+        for step in body_events:
+            self.assertLessEqual(step["fadeInMs"], step["durationMs"])
+            self.assertLessEqual(step["fadeOutMs"], step["durationMs"])
+            self.assertGreaterEqual(step["patch"].get("physicsImpulse", 0.0), 0.70)
+            self.assertGreaterEqual(step["patch"].get("bodyAngleY", 0.0), 0.18)
 
     def test_happy_dialogue_adds_varied_brow_micro_transitions(self):
         plan = compile_expression_plan(
@@ -665,8 +758,165 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertTrue(any(step["patch"].get("browLForm", 0.0) > 0.2 for step in brow_events))
         self.assertTrue(any(step["patch"].get("browLY", 0.0) > 0.2 for step in brow_events))
         for step in brow_events:
-            self.assertGreaterEqual(step["durationMs"], 500)
-            self.assertLessEqual(step["durationMs"], 1500)
+            self.assertGreaterEqual(step["durationMs"], 1000)
+            self.assertLessEqual(step["durationMs"], 3000)
+
+    def test_happy_bright_talk_rotates_brow_height_and_shape_details(self):
+        intent = {
+            "emotion": "happy",
+            "performance_mode": "bright_talk",
+            "intensity": 0.72,
+            "energy": 0.80,
+            "warmth": 0.75,
+            "spoken_text": (
+                "今天很開心，想要活潑一點講話，眉毛眼睛嘴角都要有小變化，"
+                "但不要只有一直上抬眉毛，要有上下挑眉和眉毛形狀變化。"
+            ),
+        }
+        plan = compile_expression_plan(intent, model_name="Hiyori", previous_state=None)
+
+        sequence = plan["sequence"]
+        kinds = {step["kind"] for step in sequence}
+        timeline_ms = estimate_sequence_timeline_ms(sequence)
+        speaking_ms = estimate_dialogue_hold_ms(intent)
+        brow_values = [
+            step["patch"].get("browLY")
+            for step in sequence
+            if isinstance(step["patch"].get("browLY"), (int, float))
+        ]
+        brow_forms = [
+            step["patch"].get("browLForm")
+            for step in sequence
+            if isinstance(step["patch"].get("browLForm"), (int, float))
+        ]
+
+        self.assertIn("brow_micro_bounce_down", kinds)
+        self.assertIn("brow_micro_shape_wave", kinds)
+        self.assertTrue(any(kind.startswith("happy_body_") for kind in kinds))
+        self.assertTrue(any(value < 0 for value in brow_values))
+        self.assertTrue(any(value > 0.25 for value in brow_values))
+        self.assertGreaterEqual(max(brow_forms) - min(brow_forms), 0.4)
+        self.assertGreaterEqual(timeline_ms, int(speaking_ms * 0.70))
+
+    def test_happy_body_bounce_micro_events_share_expression_duration(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "performance_mode": "bright_talk",
+                "intensity": 0.74,
+                "energy": 0.82,
+                "playfulness": 0.62,
+                "spoken_text": "這段開心說話要有身體彈跳，但彈跳要跟微表情同一段時間完成，不要額外開一條更長的動作。",
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        body_events = [
+            step for step in plan["sequence"]
+            if str(step["kind"]).startswith(("happy_body_", "playful_body_", "tease_body_"))
+        ]
+
+        self.assertGreaterEqual(len(body_events), 2)
+        for step in body_events:
+            self.assertIn("durationMs", step)
+            self.assertGreaterEqual(step["durationMs"], 620)
+            self.assertLessEqual(step["durationMs"], 1450)
+            self.assertLessEqual(step["fadeInMs"], step["durationMs"])
+            self.assertLessEqual(step["fadeOutMs"], step["durationMs"])
+            self.assertLessEqual(step["fadeInMs"], int(step["durationMs"] * 0.22))
+            self.assertLessEqual(step["fadeOutMs"], int(step["durationMs"] * 0.36))
+            self.assertGreaterEqual(step["patch"]["bodyAngleY"], 0.18)
+            self.assertLessEqual(step["patch"]["bodyAngleY"], 0.68)
+            self.assertGreaterEqual(step["patch"]["physicsImpulse"], 0.70)
+            self.assertLessEqual(step["patch"]["physicsImpulse"], 1.00)
+
+        self.assertGreaterEqual(len({step["kind"] for step in body_events}), 2)
+
+    def test_speaking_micro_sequence_rotates_until_dialogue_hold_is_covered(self):
+        intent = {
+            "emotion": "happy",
+            "secondary_emotion": "surprised",
+            "performance_mode": "smile",
+            "intensity": 0.70,
+            "energy": 0.78,
+            "warmth": 0.72,
+            "arc": "pop_then_settle",
+            "spoken_text": (
+                "原來是這樣，我突然懂了！這段回答要保留開心主題，但中間可以穿插驚訝、理解、"
+                "雙眉上揚和彎眉笑的細節。接下來還要繼續說一段，讓同一組微表情系列能夠輪轉，"
+                "直到整句話差不多講完，而不是前面一兩秒就全部閃完。"
+            ),
+        }
+        plan = compile_expression_plan(intent, model_name="Hiyori", previous_state=None)
+
+        sequence = plan["sequence"]
+        timeline_ms = estimate_sequence_timeline_ms(sequence)
+        speaking_ms = estimate_dialogue_hold_ms(intent)
+
+        self.assertGreaterEqual(len(sequence), 6)
+        self.assertGreaterEqual(timeline_ms, int(speaking_ms * 0.70))
+        self.assertLessEqual(timeline_ms, speaking_ms + 350)
+        for step in sequence:
+            self.assertGreaterEqual(step["durationMs"], expected_sequence_step_min_duration_ms(step))
+        self.assertLessEqual(max(step["durationMs"] for step in sequence), 3000)
+
+    def test_short_happy_action_rotates_micro_sequence_to_motion_duration(self):
+        intent = {
+            "emotion": "happy",
+            "performance_mode": "bright_talk",
+            "motion_variant": "side_sway_bounce",
+            "intensity": 0.70,
+            "energy": 0.80,
+            "warmth": 0.75,
+            "spoken_text": "好喔，這段要活潑一點。",
+        }
+        plan = compile_expression_plan(intent, model_name="Hiyori", previous_state=None)
+
+        sequence = plan["sequence"]
+        timeline_ms = estimate_sequence_timeline_ms(sequence)
+        motion_ms = int(plan["motionPlan"]["durationMs"])
+        brow_events = [step for step in sequence if step["kind"].startswith("brow_micro_")]
+        body_events = [
+            step for step in sequence
+            if str(step["kind"]).startswith(("happy_body_", "playful_body_", "tease_body_"))
+        ]
+
+        self.assertGreaterEqual(timeline_ms, int(motion_ms * 0.96))
+        self.assertLessEqual(timeline_ms, motion_ms + 350)
+        self.assertGreaterEqual(len(brow_events), 1)
+        self.assertGreaterEqual(len(body_events), 2)
+        for step in brow_events + body_events:
+            self.assertGreaterEqual(step["durationMs"], expected_sequence_step_min_duration_ms(step))
+            self.assertLessEqual(step["durationMs"], 3000)
+
+    def test_secondary_emotion_weights_micro_expression_theme_pool(self):
+        plan = compile_expression_plan(
+            {
+                "emotion": "happy",
+                "secondary_emotion": "surprised",
+                "performance_mode": "smile",
+                "intensity": 0.70,
+                "energy": 0.78,
+                "warmth": 0.72,
+                "arc": "pop_then_settle",
+                "spoken_text": (
+                    "原來是這樣，我突然懂了！這段回答要保留開心主題，但中間可以穿插驚訝、理解、"
+                    "雙眉上揚和彎眉笑的細節，整段不要只有一兩種眉毛切換。"
+                ),
+            },
+            model_name="Hiyori",
+            previous_state=None,
+        )
+
+        sequence = plan["sequence"]
+        kinds = {step["kind"] for step in sequence}
+        brow_kinds = {kind for kind in kinds if kind.startswith("brow_micro_")}
+
+        self.assertGreaterEqual(len(sequence), 5)
+        self.assertGreaterEqual(len(brow_kinds), 3)
+        self.assertTrue({"brow_micro_dual_lift", "brow_micro_surprise_arc"}.intersection(kinds))
+        self.assertIn("brow_micro_understand_lift", kinds)
 
     def test_surprised_dialogue_uses_dual_brow_lift_variations(self):
         plan = compile_expression_plan(
@@ -749,7 +999,7 @@ class ExpressionCompilerTests(unittest.TestCase):
             previous_state=None,
         )
 
-        sequence_duration = sum(step["durationMs"] for step in plan["sequence"])
+        sequence_duration = estimate_sequence_timeline_ms(plan["sequence"])
         source = plan["idlePlan"]["source"]
         self.assertGreaterEqual(sequence_duration, 1000)
         self.assertEqual(

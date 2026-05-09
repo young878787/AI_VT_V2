@@ -49,6 +49,29 @@ ARC_ALIASES = {
 }
 
 
+def _merge_emotion_state_hints(raw_intent: dict, emotion_state: dict | None) -> dict:
+    if not emotion_state:
+        return raw_intent
+
+    merged = dict(raw_intent)
+    if "emotion" not in merged and "primary_emotion" not in merged:
+        primary = emotion_state.get("primary_emotion") or emotion_state.get("emotion")
+        if primary:
+            merged["emotion"] = primary
+    if "secondary_emotion" not in merged and emotion_state.get("secondary_emotion"):
+        merged["secondary_emotion"] = emotion_state["secondary_emotion"]
+    if "tempo" not in merged and emotion_state.get("pace"):
+        pace = str(emotion_state["pace"])
+        merged["tempo"] = "fast" if pace == "medium_fast" else pace
+    if "arc" not in merged and emotion_state.get("expression_arc"):
+        merged["arc"] = emotion_state["expression_arc"]
+    if "asymmetry_bias" not in merged and emotion_state.get("asymmetry_bias"):
+        asymmetry = str(emotion_state["asymmetry_bias"])
+        merged["asymmetry_bias"] = "subtle" if asymmetry == "slight" else asymmetry
+
+    return merged
+
+
 def _extract_first_json_object(raw_text: str) -> dict:
     decoder = json.JSONDecoder()
     text = raw_text or ""
@@ -146,7 +169,8 @@ def parse_expression_intent(
     previous_state: dict | None,
     user_message: str | None = None,
 ) -> dict:
-    raw_intent = _apply_expression_aliases(_extract_first_json_object(raw_text))
+    raw_intent = _merge_emotion_state_hints(_extract_first_json_object(raw_text), emotion_state)
+    raw_intent = _apply_expression_aliases(raw_intent)
     direct_override = _infer_direct_expression_override(user_message)
     if direct_override:
         raw_intent = {

@@ -36,6 +36,27 @@ class ExpressionIntentParserTests(unittest.TestCase):
         self.assertEqual(intent["arc"], "steady")
         self.assertEqual(intent["hold_ms"], 1600)
 
+    def test_parse_expression_intent_reuses_emotion_state_micro_expression_hints(self):
+        intent = parse_expression_intent(
+            '{}',
+            emotion_state={
+                "primary_emotion": "happy",
+                "secondary_emotion": "surprised",
+                "intensity": 0.66,
+                "energy": 0.74,
+                "pace": "medium_fast",
+                "asymmetry_bias": "slight",
+                "expression_arc": "neutral_to_smile",
+            },
+            previous_state=None,
+        )
+
+        self.assertEqual(intent["emotion"], "happy")
+        self.assertEqual(intent["secondary_emotion"], "surprised")
+        self.assertEqual(intent["tempo"], "fast")
+        self.assertEqual(intent["asymmetry_bias"], "subtle")
+        self.assertEqual(intent["arc"], "pause_then_smirk")
+
     def test_parse_expression_intent_replaces_invalid_enum_with_default(self):
         intent = parse_expression_intent(
             '{"emotion":"playful","arc":"explode_forever","blink_style":"laser"}',
