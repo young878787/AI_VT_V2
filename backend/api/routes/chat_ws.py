@@ -663,6 +663,14 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
             f"motionPlan {motion_plan.get('theme', 'unknown_theme')}:"
             f"{motion_plan.get('variant', 'unknown_variant')}"
         )
+    eye_motion_plan = expression_plan.get("eyeMotionPlan") if isinstance(expression_plan, dict) else None
+    eye_motion_summary = "eyeMotionPlan none"
+    if isinstance(eye_motion_plan, dict):
+        eye_motion_summary = (
+            f"eyeMotionPlan {eye_motion_plan.get('style', 'unknown_style')} "
+            f"amp {eye_motion_plan.get('amplitudeX', '?')}/{eye_motion_plan.get('amplitudeY', '?')} "
+            f"freq {eye_motion_plan.get('frequencyHz', '?')}"
+        )
     sequence_events = expression_plan.get("sequence") if isinstance(expression_plan.get("sequence"), list) else []
     sequence_names = [
         str(event.get("kind"))
@@ -710,7 +718,8 @@ def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
         f"ambientSwitchMs {ambient_switch_interval_ms} "
         f"ambientStates {ambient_summary} "
         f"idleStateFlow {idle_state_flow} "
-        f"{motion_summary}"
+        f"{motion_summary} "
+        f"{eye_motion_summary}"
     )
 
 
@@ -723,6 +732,8 @@ def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict 
     eye_r_open = float(behavior_payload.get("eyeROpen", 1.0))
     eye_l_smile = float(behavior_payload.get("eyeLSmile", 0.0))
     eye_r_smile = float(behavior_payload.get("eyeRSmile", 0.0))
+    eye_ball_x = float(behavior_payload.get("eyeBallX", 0.0))
+    eye_ball_y = float(behavior_payload.get("eyeBallY", 0.0))
     eye_sync = bool(behavior_payload.get("eyeSync", True))
     brow_l_y = float(behavior_payload.get("browLY", 0.0))
     brow_r_y = float(behavior_payload.get("browRY", 0.0))
@@ -775,6 +786,8 @@ def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict 
         "eye_r_open": eye_r_open,
         "eye_l_smile": eye_l_smile,
         "eye_r_smile": eye_r_smile,
+        "eyeBallX": eye_ball_x,
+        "eyeBallY": eye_ball_y,
         "brow_l_y": brow_l_y,
         "brow_r_y": brow_r_y,
         "brow_l_angle": brow_l_angle,

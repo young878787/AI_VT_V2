@@ -138,12 +138,12 @@ def resolve_motion_theme(emotion: str, performance_mode: str, intent: dict) -> s
         return "angry_tension"
     if emotion == "shy" or performance_mode == "awkward":
         return "shy_tucked"
+    if emotion == "conflicted":
+        return "uneasy_shift"
     if emotion in {"sad", "gloomy"} or performance_mode in {"gloomy", "deadpan", "tense_hold"}:
         return "low_mood"
     if emotion == "surprised" or performance_mode == "shock_recoil":
         return "surprised_recoil"
-    if emotion == "conflicted":
-        return "uneasy_shift"
     return "happy_bright_talk"
 
 

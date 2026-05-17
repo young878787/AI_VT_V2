@@ -24,6 +24,8 @@ def render_legacy_behavior_payload(plan: dict) -> dict:
         "eyeRSmile": params["eyeRSmile"],
         "browLX": params["browLX"],
         "browRX": params["browRX"],
+        "eyeBallX": params.get("eyeBallX", 0.0),
+        "eyeBallY": params.get("eyeBallY", 0.0),
     }
     return {
         "behavior_payload": behavior_payload,

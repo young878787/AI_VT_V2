@@ -23,6 +23,8 @@ export function createNeutralTargetParams(): BasePoseParams {
     eyeRSmile: 0,
     browLX: 0,
     browRX: 0,
+    eyeBallX: 0,
+    eyeBallY: 0,
   };
 }
 

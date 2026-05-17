@@ -22,6 +22,7 @@ everything/
 .agent/
 .agents/
 .github/prompts
+AGENTS.md
 # ============================================================
 # Memory / Persistent Data (user-specific, not for VCS)
 # ============================================================

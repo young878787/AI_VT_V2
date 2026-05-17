@@ -22,6 +22,7 @@ from domain.expression_idle_library import (
     IDLE_PLAN_SETTLE_PATCHES,
 )
 from domain.expression_intent_schema import DEFAULT_INTENT
+from domain.expression_eye_motion_library import build_eye_motion_plan
 from domain.expression_motion_library import build_motion_plan
 from domain.expression_presets import BASE_POSE_PRESETS, PRESET_VARIATION_RULES
 from domain.expression_sequence_library import (
@@ -88,6 +89,8 @@ def _clamp_expression_params(params: dict) -> dict:
     params["eyeRSmile"] = _clamp(params["eyeRSmile"], 0.0, 1.0)
     params["browLX"] = _clamp(params["browLX"], -1.0, 1.0)
     params["browRX"] = _clamp(params["browRX"], -1.0, 1.0)
+    params["eyeBallX"] = _clamp(params["eyeBallX"], -1.0, 1.0)
+    params["eyeBallY"] = _clamp(params["eyeBallY"], -1.0, 1.0)
     params["headIntensity"] = _clamp(params["headIntensity"], 0.0, 0.95)
     params["bodyAngleX"] = _clamp(params["bodyAngleX"], -1.0, 1.0)
     params["bodyAngleY"] = _clamp(params["bodyAngleY"], -1.0, 1.0)
@@ -520,6 +523,18 @@ def apply_base_pose_modifiers(
         params["browRY"] -= 0.08
         params["browLX"] -= 0.06
         params["browRX"] += 0.06
+        params["eyeBallX"] += 0.08
+
+    if emotion == "shy":
+        params["eyeBallX"] -= 0.12 + intensity * 0.04
+        params["eyeBallY"] -= 0.02
+    elif emotion == "conflicted":
+        params["eyeBallX"] += 0.05 + intensity * 0.03
+    elif emotion == "surprised":
+        params["eyeBallY"] += 0.04 + energy * 0.03
+    elif performance_mode == "goofy_face":
+        params["eyeBallX"] += 0.10 + playfulness * 0.05
+        params["eyeBallY"] -= 0.03
 
     params = _clamp_expression_params(params)
     params = apply_previous_state_continuity(params, previous_state, continuity_blend)
@@ -1424,6 +1439,14 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         intent,
         previous_state,
     )
+    eye_motion_plan = build_eye_motion_plan(
+        emotion,
+        performance_mode,
+        intensity,
+        energy,
+        intent,
+        action_duration_ms=int(motion_plan.get("durationMs", 0)),
+    )
     sequence = build_expression_sequence(
         emotion,
         performance_mode,
@@ -1455,6 +1478,7 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         "microEvents": micro_events,
         "sequence": sequence,
         "motionPlan": motion_plan,
+        "eyeMotionPlan": eye_motion_plan,
         "idlePlan": idle_plan,
         "blinkPlan": blink_plan,
         "speakingRate": speaking_rate,
@@ -1474,6 +1498,12 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
             "signature": signature.get("signature_name", "calm_soft"),
             "blushPolicy": signature.get("blush_policy", "neutralize"),
             "bodyMotionProfile": base_pose.get("bodyMotionProfile", {}).get("style", "calm_sway"),
+            "bodyMotionProfileSource": "emotion_performance",
+            "motionTheme": motion_plan["theme"],
+            "motionVariant": motion_plan["variant"],
+            "eyeMotionStyle": eye_motion_plan["style"],
+            "motionThemeOverride": intent.get("motion_theme") == motion_plan["theme"],
+            "motionThemeOverrideKeepsBodyProfile": intent.get("motion_theme") == motion_plan["theme"],
             "idlePlan": idle_plan["name"],
         },
     }

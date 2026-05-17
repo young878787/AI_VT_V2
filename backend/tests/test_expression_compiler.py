@@ -9,6 +9,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from services.expression_compiler import (
     build_blink_plan,
     build_expression_sequence,
+    build_micro_events,
     compile_expression_plan,
     estimate_dialogue_hold_ms,
     resolve_effective_performance_mode,
@@ -116,14 +117,56 @@ class ExpressionCompilerTests(unittest.TestCase):
         )
 
         params = plan["basePose"]["params"]
-        for key in ("bodyAngleX", "bodyAngleY", "bodyAngleZ", "breathLevel", "physicsImpulse"):
+        for key in ("bodyAngleX", "bodyAngleY", "bodyAngleZ", "breathLevel", "physicsImpulse", "eyeBallX", "eyeBallY"):
             self.assertIn(key, params)
             self.assertIsInstance(params[key], float)
 
         self.assertGreater(params["breathLevel"], 0.5)
         self.assertGreater(params["physicsImpulse"], 0.5)
+        self.assertEqual(plan["eyeMotionPlan"]["style"], "alert_scan")
         self.assertIn("bodyAngleX", plan["carryState"])
+        self.assertIn("eyeBallX", plan["carryState"])
         self.assertIn("physicsImpulse", plan["idlePlan"]["settlePose"]["params"])
+
+    def test_eye_motion_plan_styles_follow_expression_context(self):
+        cases = [
+            ("happy", "bright_talk", "soft_saccade"),
+            ("conflicted", "tense_hold", "nervous_tremor"),
+            ("angry", "meltdown", "locked_stare"),
+            ("playful", "goofy_face", "dizzy_dart"),
+        ]
+
+        for emotion, performance_mode, expected_style in cases:
+            with self.subTest(emotion=emotion, performance_mode=performance_mode):
+                plan = compile_expression_plan(
+                    {
+                        "emotion": emotion,
+                        "performance_mode": performance_mode,
+                        "intensity": 0.72,
+                        "energy": 0.68,
+                        "hold_ms": 1700,
+                    },
+                    model_name="Hiyori",
+                    previous_state=None,
+                )
+
+                eye_motion_plan = plan["eyeMotionPlan"]
+                self.assertEqual(eye_motion_plan["style"], expected_style)
+                self.assertGreaterEqual(eye_motion_plan["durationMs"], 1700)
+                self.assertIn("eyeMotionStyle", plan["debug"])
+
+    def test_goofy_micro_events_can_choreograph_eye_ball_target(self):
+        events = build_micro_events(
+            "playful",
+            "goofy_face",
+            0.75,
+            0.80,
+            {"emotion": "playful", "performance_mode": "goofy_face"},
+            model_name="Hiyori",
+        )
+
+        self.assertTrue(events)
+        self.assertIn("eyeBallX", events[0]["patch"])
 
     def test_compile_expression_plan_makes_playful_motion_more_lively_than_gloomy(self):
         playful = compile_expression_plan(
@@ -235,7 +278,7 @@ class ExpressionCompilerTests(unittest.TestCase):
             ("angry", "meltdown", "locked_tense", "angry_tension"),
             ("shy", "awkward", "shy_side_sway", "shy_tucked"),
             ("surprised", "shock_recoil", "quick_recoil", "surprised_recoil"),
-            ("conflicted", "smile", "uneasy_shift", "uneasy_shift"),
+            ("conflicted", "tense_hold", "uneasy_shift", "uneasy_shift"),
         ]
 
         for emotion, performance_mode, expected_style, expected_theme in expected_pairs:
@@ -254,8 +297,10 @@ class ExpressionCompilerTests(unittest.TestCase):
 
                 self.assertEqual(plan["basePose"]["bodyMotionProfile"]["style"], expected_style)
                 self.assertEqual(plan["motionPlan"]["theme"], expected_theme)
+                self.assertEqual(plan["debug"]["bodyMotionProfile"], expected_style)
+                self.assertEqual(plan["debug"]["motionTheme"], expected_theme)
 
-    def test_tense_conflicted_currently_uses_mixed_motion_semantics(self):
+    def test_tense_conflicted_keeps_conflicted_motion_theme(self):
         plan = compile_expression_plan(
             {
                 "emotion": "conflicted",
@@ -269,7 +314,8 @@ class ExpressionCompilerTests(unittest.TestCase):
         )
 
         self.assertEqual(plan["basePose"]["bodyMotionProfile"]["style"], "uneasy_shift")
-        self.assertEqual(plan["motionPlan"]["theme"], "low_mood")
+        self.assertEqual(plan["motionPlan"]["theme"], "uneasy_shift")
+        self.assertFalse(plan["debug"]["motionThemeOverride"])
 
     def test_motion_theme_override_does_not_rewrite_body_motion_profile(self):
         plan = compile_expression_plan(
@@ -289,6 +335,11 @@ class ExpressionCompilerTests(unittest.TestCase):
         self.assertEqual(plan["basePose"]["bodyMotionProfile"]["style"], "small_sad_bob")
         self.assertEqual(plan["motionPlan"]["theme"], "happy_bright_talk")
         self.assertEqual(plan["motionPlan"]["variant"], "side_sway_bounce")
+        self.assertEqual(plan["debug"]["bodyMotionProfile"], "small_sad_bob")
+        self.assertEqual(plan["debug"]["bodyMotionProfileSource"], "emotion_performance")
+        self.assertEqual(plan["debug"]["motionTheme"], "happy_bright_talk")
+        self.assertTrue(plan["debug"]["motionThemeOverride"])
+        self.assertTrue(plan["debug"]["motionThemeOverrideKeepsBodyProfile"])
 
     def test_low_energy_emotions_still_have_visible_native_body_motion(self):
         sad = compile_expression_plan(

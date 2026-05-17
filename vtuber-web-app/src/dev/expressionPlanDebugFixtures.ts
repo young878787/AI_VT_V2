@@ -2,6 +2,7 @@ import type {
   BodyMotionProfile,
   BodyMotionStyle,
   ExpressionBasePose,
+  ExpressionEyeMotionPlan,
   ExpressionIdleAmbientState,
   ExpressionIdlePlan,
   ExpressionMicroEvent,
@@ -287,6 +288,8 @@ const NEUTRAL_PARAMS: ExpressionBasePose['params'] = {
   eyeRSmile: 0,
   browLX: 0,
   browRX: 0,
+  eyeBallX: 0,
+  eyeBallY: 0,
   bodyAngleX: 0,
   bodyAngleY: 0,
   bodyAngleZ: 0,
@@ -1072,6 +1075,8 @@ function scaleParams(
     eyeRSmile: clamp(scaled(params.eyeRSmile, scale), 0, 1),
     browLX: clamp(scaled(params.browLX, scale), -1, 1),
     browRX: clamp(scaled(params.browRX, scale), -1, 1),
+    eyeBallX: clamp(scaled(params.eyeBallX, scale), -1, 1),
+    eyeBallY: clamp(scaled(params.eyeBallY, scale), -1, 1),
     bodyAngleX: clamp(scaled(params.bodyAngleX, scale), -1, 1),
     bodyAngleY: clamp(scaled(params.bodyAngleY, scale), -1, 1),
     bodyAngleZ: clamp(scaled(params.bodyAngleZ, scale), -1, 1),
@@ -1088,6 +1093,8 @@ function jitterParams(params: ExpressionBasePose['params']): ExpressionBasePose[
     bodyAngleZ: clamp(params.bodyAngleZ + randomBetween(-0.08, 0.08), -1, 1),
     breathLevel: clamp(params.breathLevel + randomBetween(-0.04, 0.05), 0, 1),
     physicsImpulse: clamp(params.physicsImpulse + randomBetween(-0.08, 0.08), 0, 1),
+    eyeBallX: clamp(params.eyeBallX + randomBetween(-0.04, 0.04), -1, 1),
+    eyeBallY: clamp(params.eyeBallY + randomBetween(-0.02, 0.02), -1, 1),
   };
 }
 
@@ -1193,6 +1200,35 @@ function buildMotionPlan(
       roll: base.head.roll * multiplier,
       lagMs: base.head.lagMs,
     },
+  };
+}
+
+function buildEyeMotionPlan(kind: DebugExpressionKind, options: DebugExpressionOptions): ExpressionEyeMotionPlan {
+  const styleByKind: Record<DebugExpressionKind, ExpressionEyeMotionPlan['style']> = {
+    happy: 'soft_saccade',
+    playful: 'dizzy_dart',
+    teasing: 'soft_saccade',
+    angry: 'locked_stare',
+    sad: 'none',
+    gloomy: 'none',
+    shy: 'nervous_tremor',
+    surprised: 'alert_scan',
+    conflicted: 'nervous_tremor',
+  };
+  const style = styleByKind[kind];
+  const scale = INTENSITY_SCALE[options.intensity];
+  const baseAmplitude = style === 'dizzy_dart' ? 0.22 : style === 'alert_scan' ? 0.20 : style === 'nervous_tremor' ? 0.08 : 0.10;
+
+  return {
+    style,
+    intensity: style === 'none' ? 0 : clamp(0.28 + (scale * 0.34), 0, 1),
+    durationMs: style === 'none' ? 900 : 4400,
+    blendInMs: 220,
+    blendOutMs: 520,
+    amplitudeX: style === 'none' ? 0 : baseAmplitude,
+    amplitudeY: style === 'none' ? 0 : Math.max(0.02, baseAmplitude * 0.35),
+    frequencyHz: style === 'nervous_tremor' || style === 'locked_stare' ? 6.8 : style === 'dizzy_dart' ? 2.1 : 0.7,
+    phaseSeed: randomBetween(0, 1),
   };
 }
 
@@ -1343,10 +1379,13 @@ function buildAmbientState(
     params.headIntensity = clamp(params.headIntensity + 0.05, 0, 1);
     params.bodyAngleX = clamp(params.bodyAngleX + 0.08, -1, 1);
     params.bodyAngleZ = clamp(params.bodyAngleZ - 0.05, -1, 1);
+    params.eyeBallX = clamp(params.eyeBallX - 0.18, -1, 1);
+    params.eyeBallY = clamp(params.eyeBallY + 0.02, -1, 1);
   } else {
     params.bodyAngleX = clamp(params.bodyAngleX - 0.08, -1, 1);
     params.bodyAngleY = clamp(params.bodyAngleY + 0.04, -1, 1);
     params.physicsImpulse = clamp(params.physicsImpulse + 0.08, 0, 1);
+    params.eyeBallX = clamp(params.eyeBallX + 0.10, -1, 1);
   }
 
   return { kind, params };
@@ -1523,6 +1562,7 @@ export function createDebugExpressionPlan(
     microEvents,
     sequence: options.includeMicroEvents ? microEvents.slice(0, 1) : [],
     motionPlan: buildMotionPlan(motionPreset, options),
+    eyeMotionPlan: buildEyeMotionPlan(kind, options),
     idlePlan: options.includeIdle ? buildIdlePlan(config, basePose, options) : undefined,
     blinkPlan: {
       style: kind,
@@ -1613,6 +1653,7 @@ export function createDebugBrowEyeExpressionPlan(
     microEvents: [],
     sequence,
     motionPlan: undefined,
+    eyeMotionPlan: buildEyeMotionPlan('happy', options),
     idlePlan: undefined,
     blinkPlan: {
       style: 'brow_eye_debug',
@@ -1688,6 +1729,7 @@ export function createDebugSpeakingMicroExpressionPlan(
     microEvents: [],
     sequence,
     motionPlan: buildMotionPlan(getDefaultMotionPreset('happy'), options),
+    eyeMotionPlan: buildEyeMotionPlan('happy', options),
     idlePlan: undefined,
     blinkPlan: {
       style: 'speaking_micro_debug',

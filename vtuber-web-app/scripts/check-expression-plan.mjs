@@ -53,6 +53,8 @@ const makeBasePose = () => ({
     eyeRSmile: 0,
     browLX: 0,
     browRX: 0,
+    eyeBallX: 0,
+    eyeBallY: 0,
     bodyAngleX: 0,
     bodyAngleY: 0,
     bodyAngleZ: 0,
@@ -102,6 +104,18 @@ const makeMotionPlan = () => ({
     roll: 1.22,
     lagMs: 150,
   },
+});
+
+const makeEyeMotionPlan = () => ({
+  style: 'soft_saccade',
+  intensity: 0.42,
+  durationMs: 3600,
+  blendInMs: 240,
+  blendOutMs: 480,
+  amplitudeX: 0.12,
+  amplitudeY: 0.04,
+  frequencyHz: 0.82,
+  phaseSeed: 0.37,
 });
 
 const makeIdlePlan = () => ({
@@ -166,6 +180,8 @@ const validMicroEventEnvelope = {
         eyeSync: false,
         mouthForm: 0.42,
         eyeLSmile: 0.68,
+        eyeBallX: -0.14,
+        eyeBallY: 0.04,
         physicsImpulse: 0.92,
       },
       returnToBase: true,
@@ -229,6 +245,17 @@ const invalidBodyMotionProfile = {
 const validMotionPlan = {
   ...makePayload([{ action: 'force_blink' }]),
   motionPlan: makeMotionPlan(),
+};
+const validEyeMotionPlan = {
+  ...makePayload([{ action: 'force_blink' }]),
+  eyeMotionPlan: makeEyeMotionPlan(),
+};
+const invalidEyeMotionPlan = {
+  ...makePayload([{ action: 'force_blink' }]),
+  eyeMotionPlan: {
+    ...makeEyeMotionPlan(),
+    style: 'wild_stare',
+  },
 };
 const validSpeakingMicroSequence = {
   ...makePayload([{ action: 'set_interval', intervalMin: 0.82, intervalMax: 1.7 }]),
@@ -327,6 +354,12 @@ if (isExpressionPlanPayload(invalidBodyMotionProfile)) {
 }
 if (!isExpressionPlanPayload(validMotionPlan)) {
   throw new Error('Expected motionPlan with body/head branches to be valid');
+}
+if (!isExpressionPlanPayload(validEyeMotionPlan)) {
+  throw new Error('Expected eyeMotionPlan with gaze overlay fields to be valid');
+}
+if (isExpressionPlanPayload(invalidEyeMotionPlan)) {
+  throw new Error('Expected unknown eyeMotionPlan style to be rejected');
 }
 if (!isExpressionPlanPayload(validSpeakingMicroSequence)) {
   throw new Error('Expected speaking micro expression sequence to be valid');

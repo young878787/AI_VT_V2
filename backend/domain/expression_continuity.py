@@ -80,6 +80,8 @@ def _resolve_previous_state_residue(previous_state: dict | None) -> float:
             "browRAngle",
             "browLForm",
             "browRForm",
+            "eyeBallX",
+            "eyeBallY",
         )
     )
     return 0.22 if has_pose_data else 0.0
@@ -200,4 +202,6 @@ def build_carry_state(
         "eyeRSmile": params["eyeRSmile"],
         "browLX": params["browLX"],
         "browRX": params["browRX"],
+        "eyeBallX": params["eyeBallX"],
+        "eyeBallY": params["eyeBallY"],
     }

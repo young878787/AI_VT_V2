@@ -40,6 +40,26 @@ export interface ExpressionMotionPlan {
   }
 }
 
+export type ExpressionEyeMotionStyle =
+  | 'none'
+  | 'soft_saccade'
+  | 'nervous_tremor'
+  | 'alert_scan'
+  | 'locked_stare'
+  | 'dizzy_dart'
+
+export interface ExpressionEyeMotionPlan {
+  style: ExpressionEyeMotionStyle
+  intensity: number
+  durationMs: number
+  blendInMs: number
+  blendOutMs: number
+  amplitudeX: number
+  amplitudeY: number
+  frequencyHz: number
+  phaseSeed: number
+}
+
 export interface ExpressionBasePose {
   preset: string
   params: {
@@ -59,6 +79,8 @@ export interface ExpressionBasePose {
     eyeRSmile: number
     browLX: number
     browRX: number
+    eyeBallX: number
+    eyeBallY: number
     bodyAngleX: number
     bodyAngleY: number
     bodyAngleZ: number
@@ -85,6 +107,8 @@ export interface ExpressionMicroEventPatch {
   eyeRSmile?: number
   browLX?: number
   browRX?: number
+  eyeBallX?: number
+  eyeBallY?: number
   bodyAngleX?: number
   bodyAngleY?: number
   bodyAngleZ?: number
@@ -143,6 +167,7 @@ export interface ExpressionPlanPayload {
   microEvents: ExpressionMicroEvent[]
   sequence: ExpressionMicroEvent[]
   motionPlan?: ExpressionMotionPlan
+  eyeMotionPlan?: ExpressionEyeMotionPlan
   idlePlan?: ExpressionIdlePlan
   blinkPlan: {
     style: string
@@ -170,6 +195,8 @@ const EXPRESSION_MICRO_EVENT_PATCH_KEYS = [
   'eyeRSmile',
   'browLX',
   'browRX',
+  'eyeBallX',
+  'eyeBallY',
   'bodyAngleX',
   'bodyAngleY',
   'bodyAngleZ',
@@ -239,6 +266,32 @@ function isExpressionMotionPlan(value: unknown): value is ExpressionMotionPlan {
   )
 }
 
+function isExpressionEyeMotionStyle(value: unknown): value is ExpressionEyeMotionStyle {
+  return (
+    value === 'none' ||
+    value === 'soft_saccade' ||
+    value === 'nervous_tremor' ||
+    value === 'alert_scan' ||
+    value === 'locked_stare' ||
+    value === 'dizzy_dart'
+  )
+}
+
+function isExpressionEyeMotionPlan(value: unknown): value is ExpressionEyeMotionPlan {
+  return (
+    isRecord(value) &&
+    isExpressionEyeMotionStyle(value.style) &&
+    isNumber(value.intensity) &&
+    isNonNegativeNumber(value.durationMs) &&
+    isNonNegativeNumber(value.blendInMs) &&
+    isNonNegativeNumber(value.blendOutMs) &&
+    isNumber(value.amplitudeX) &&
+    isNumber(value.amplitudeY) &&
+    isNumber(value.frequencyHz) &&
+    isNumber(value.phaseSeed)
+  )
+}
+
 function hasExpressionBasePoseParams(value: unknown): value is ExpressionBasePose['params'] {
   if (!isRecord(value)) {
     return false
@@ -261,6 +314,8 @@ function hasExpressionBasePoseParams(value: unknown): value is ExpressionBasePos
     isNumber(value.eyeRSmile) &&
     isNumber(value.browLX) &&
     isNumber(value.browRX) &&
+    isNumber(value.eyeBallX) &&
+    isNumber(value.eyeBallY) &&
     isNumber(value.bodyAngleX) &&
     isNumber(value.bodyAngleY) &&
     isNumber(value.bodyAngleZ) &&
@@ -438,6 +493,10 @@ export function isExpressionPlanPayload(value: unknown): value is ExpressionPlan
   }
 
   if (value.motionPlan !== undefined && !isExpressionMotionPlan(value.motionPlan)) {
+    return false
+  }
+
+  if (value.eyeMotionPlan !== undefined && !isExpressionEyeMotionPlan(value.eyeMotionPlan)) {
     return false
   }
 

@@ -25,6 +25,7 @@ import { LAppDelegate } from './LAppDelegate';
 import type {
   BodyMotionProfile,
   ExpressionBasePose,
+  ExpressionEyeMotionPlan,
   ExpressionIdleAmbientState,
   ExpressionIdlePlan,
   ExpressionMotionPlan,
@@ -51,6 +52,17 @@ const DEFAULT_BODY_MOTION_PROFILE: BodyMotionProfile = {
   headScale: 1,
 };
 
+const IDLE_BODY_MOTION_PROFILES: Record<ExpressionIdlePlan['name'], BodyMotionProfile> = {
+  happy_idle:       { style: 'calm_sway',      speed: 0.8,  swayScale: 0.35, bobScale: 0.25, twistScale: 0.2,  breathScale: 0.5,  headScale: 1 },
+  angry_glare_idle: { style: 'locked_tense',    speed: 0.7,  swayScale: 0.3,  bobScale: 0.2,  twistScale: 0.3,  breathScale: 0.5,  headScale: 1 },
+  crying_idle:      { style: 'small_sad_bob',   speed: 0.6,  swayScale: 0.25, bobScale: 0.3,  twistScale: 0.15, breathScale: 0.4,  headScale: 1 },
+  shy_idle:         { style: 'shy_side_sway',   speed: 0.7,  swayScale: 0.35, bobScale: 0.2,  twistScale: 0.25, breathScale: 0.5,  headScale: 1 },
+  gloomy_idle:      { style: 'heavy_slow_sink', speed: 0.45, swayScale: 0.2,  bobScale: 0.35, twistScale: 0.15, breathScale: 0.35, headScale: 1 },
+  neutral_idle:     { style: 'calm_sway',       speed: 0.8,  swayScale: 0.3,  bobScale: 0.2,  twistScale: 0.15, breathScale: 0.5,  headScale: 1 },
+  surprised_idle:   { style: 'calm_sway',       speed: 0.85, swayScale: 0.35, bobScale: 0.25, twistScale: 0.2,  breathScale: 0.55, headScale: 1 },
+  conflicted_idle:  { style: 'uneasy_shift',    speed: 0.75, swayScale: 0.35, bobScale: 0.25, twistScale: 0.3,  breathScale: 0.5,  headScale: 1 },
+};
+
 const BODY_MOTION_NATIVE_SCALE = {
   xPose: 5.2,
   yPose: 10.0,
@@ -74,6 +86,10 @@ function clampMotionScale(value: number, minimum: number, maximum: number): numb
 function smoothStep(value: number): number {
   const t = Math.max(0, Math.min(1, value));
   return t * t * (3 - (2 * t));
+}
+
+function clampEyeBall(value: number): number {
+  return Math.max(-1, Math.min(1, value));
 }
 
 /**
@@ -172,6 +188,8 @@ export class LAppModel extends CubismUserModel {
   private _aiEyeRSmile: number = 0.0;
   private _aiBrowLX: number = 0.0;
   private _aiBrowRX: number = 0.0;
+  private _aiEyeBallX: number = 0.0;
+  private _aiEyeBallY: number = 0.0;
   private _aiEyeSync: boolean = true;  // 是否同步（含眉毛）
   private _aiBehaviorTimer: number = 0;
 
@@ -195,6 +213,8 @@ export class LAppModel extends CubismUserModel {
   private _currentEyeRSmile: number = 0.0;
   private _currentBrowLX: number = 0.0;
   private _currentBrowRX: number = 0.0;
+  private _currentEyeBallX: number = 0.0;
+  private _currentEyeBallY: number = 0.0;
 
   // 原生參數手動覆蓋 (NativeParamPanel 使用者手動控制)
   // key = paramId (string), value = { value, lastSetAt (performance.now ms) }
@@ -214,6 +234,8 @@ export class LAppModel extends CubismUserModel {
   private _activeBodyMotionProfile: BodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
   private _activeMotionPlan: ExpressionMotionPlan | null = null;
   private _motionPlanStartedAtMs: number = 0;
+  private _activeEyeMotionPlan: ExpressionEyeMotionPlan | null = null;
+  private _eyeMotionPlanStartedAtMs: number = 0;
   private _lastBodyMotionDebugAtMs: number = 0;
 
   /**
@@ -851,6 +873,8 @@ export class LAppModel extends CubismUserModel {
    * @param bodyAngleZ 身體扭轉輸入 (-1.0~1.0)
    * @param breathLevel 呼吸強度 (0.0~1.0)
    * @param physicsImpulse 物理刺激強度 (0.0~1.0)
+   * @param eyeBallX 眼球水平視線 (-1.0~1.0)
+   * @param eyeBallY 眼球垂直視線 (-1.0~1.0)
    */
   public setAiBehavior(
     headIntensity: number, 
@@ -875,6 +899,8 @@ export class LAppModel extends CubismUserModel {
     bodyAngleZ: number = 0.0,
     breathLevel: number = 0.35,
     physicsImpulse: number = 0.0,
+    eyeBallX: number = 0.0,
+    eyeBallY: number = 0.0,
   ): void {
     this._aiHeadIntensity = Math.max(0, Math.min(1, headIntensity));
     this._aiBodyAngleX = Math.max(-1, Math.min(1, bodyAngleX));
@@ -899,6 +925,8 @@ export class LAppModel extends CubismUserModel {
     this._aiEyeRSmile = Math.max(0, Math.min(1, eyeRSmile));
     this._aiBrowLX = Math.max(-1, Math.min(1, browLX));
     this._aiBrowRX = Math.max(-1, Math.min(1, browRX));
+    this._aiEyeBallX = clampEyeBall(eyeBallX);
+    this._aiEyeBallY = clampEyeBall(eyeBallY);
     this._aiBehaviorTimer = durationSec;
   }
 
@@ -913,6 +941,8 @@ export class LAppModel extends CubismUserModel {
     this._ambientIdleStateOrderIndex = 0;
     this._ambientIdleActiveState = null;
     this._ambientIdleActivePose = null;
+    this._activeEyeMotionPlan = null;
+    this._eyeMotionPlanStartedAtMs = 0;
     this._aiBodyMotionProfile = basePose.bodyMotionProfile ?? DEFAULT_BODY_MOTION_PROFILE;
     this.setAiBehavior(
       basePose.params.headIntensity ?? 0,
@@ -937,6 +967,8 @@ export class LAppModel extends CubismUserModel {
       basePose.params.bodyAngleZ ?? 0,
       basePose.params.breathLevel ?? 0.35,
       basePose.params.physicsImpulse ?? 0,
+      basePose.params.eyeBallX ?? 0,
+      basePose.params.eyeBallY ?? 0,
     );
   }
 
@@ -949,6 +981,19 @@ export class LAppModel extends CubismUserModel {
         + `durationMs=${Math.round(motionPlan.durationMs)} `
         + `body=${motionPlan.body.sway.toFixed(2)}/${motionPlan.body.bob.toFixed(2)}/${motionPlan.body.twist.toFixed(2)} `
         + `head=${motionPlan.head.yaw.toFixed(2)}/${motionPlan.head.pitch.toFixed(2)}/${motionPlan.head.roll.toFixed(2)}`,
+      );
+    }
+  }
+
+  public applyEyeMotionPlan(eyeMotionPlan?: ExpressionEyeMotionPlan): void {
+    this._activeEyeMotionPlan = eyeMotionPlan?.style === 'none' ? null : eyeMotionPlan ?? null;
+    this._eyeMotionPlanStartedAtMs = this._activeEyeMotionPlan ? performance.now() : 0;
+    if (this._activeEyeMotionPlan) {
+      LAppPal.log(
+        `[EyeMotion] eyeMotionPlan ${this._activeEyeMotionPlan.style} `
+        + `durationMs=${Math.round(this._activeEyeMotionPlan.durationMs)} `
+        + `amp=${this._activeEyeMotionPlan.amplitudeX.toFixed(2)}/${this._activeEyeMotionPlan.amplitudeY.toFixed(2)} `
+        + `freq=${this._activeEyeMotionPlan.frequencyHz.toFixed(2)} intensity=${this._activeEyeMotionPlan.intensity.toFixed(2)}`,
       );
     }
   }
@@ -1003,6 +1048,8 @@ export class LAppModel extends CubismUserModel {
       eyeRSmile: 0.03,
       browLX: 0.03,
       browRX: 0.03,
+      eyeBallX: 0.08,
+      eyeBallY: 0.04,
       bodyAngleX: 0.03,
       bodyAngleY: 0.03,
       bodyAngleZ: 0.03,
@@ -1156,6 +1203,8 @@ export class LAppModel extends CubismUserModel {
     eyeRSmile: number;
     browLX: number;
     browRX: number;
+    eyeBallX: number;
+    eyeBallY: number;
     timerRemaining: number;
   } {
     return {
@@ -1182,6 +1231,8 @@ export class LAppModel extends CubismUserModel {
       eyeRSmile:     this._currentEyeRSmile,
       browLX:        this._currentBrowLX,
       browRX:        this._currentBrowRX,
+      eyeBallX:      this._currentEyeBallX,
+      eyeBallY:      this._currentEyeBallY,
       timerRemaining: this._aiBehaviorTimer,
     };
   }
@@ -1352,6 +1403,87 @@ export class LAppModel extends CubismUserModel {
     this._model.addParameterValueById(this._idParamEyeBallY, this._dragY * 1.5);
   }
 
+  private resolveEyeMotionBlend(nowMs: number): number {
+    const eyeMotionPlan = this._activeEyeMotionPlan;
+    if (!eyeMotionPlan || this._eyeMotionPlanStartedAtMs <= 0) {
+      return 0;
+    }
+
+    const elapsedMs = nowMs - this._eyeMotionPlanStartedAtMs;
+    const durationMs = Math.max(1, eyeMotionPlan.durationMs);
+    const blendInMs = Math.max(1, eyeMotionPlan.blendInMs);
+    const blendOutMs = Math.max(1, eyeMotionPlan.blendOutMs);
+
+    if (elapsedMs >= durationMs) {
+      this._activeEyeMotionPlan = null;
+      this._eyeMotionPlanStartedAtMs = 0;
+      return 0;
+    }
+
+    const inBlend = smoothStep(elapsedMs / blendInMs);
+    const outBlend = smoothStep((durationMs - elapsedMs) / blendOutMs);
+    return Math.max(0, Math.min(1, inBlend, outBlend));
+  }
+
+  private resolveEyeMotionOffset(nowMs: number): { x: number; y: number } {
+    const eyeMotionPlan = this._activeEyeMotionPlan;
+    const blend = this.resolveEyeMotionBlend(nowMs);
+    if (!eyeMotionPlan || blend <= 0) {
+      return { x: 0, y: 0 };
+    }
+
+    const elapsedSeconds = Math.max(0, (nowMs - this._eyeMotionPlanStartedAtMs) / 1000);
+    const intensity = Math.max(0, Math.min(1, eyeMotionPlan.intensity));
+    const phase = (elapsedSeconds * Math.max(0.05, eyeMotionPlan.frequencyHz) * Math.PI * 2)
+      + (eyeMotionPlan.phaseSeed * Math.PI * 2);
+    const ampX = clampEyeBall(eyeMotionPlan.amplitudeX) * intensity * blend;
+    const ampY = clampEyeBall(eyeMotionPlan.amplitudeY) * intensity * blend;
+
+    switch (eyeMotionPlan.style) {
+      case 'soft_saccade':
+        return {
+          x: Math.sin(phase * 0.54) * ampX,
+          y: Math.sin((phase * 0.38) + 1.2) * ampY,
+        };
+      case 'nervous_tremor':
+        return {
+          x: (Math.sin(phase) + (Math.sin(phase * 2.7) * 0.35)) * ampX,
+          y: (Math.cos(phase * 1.3) + (Math.sin(phase * 3.1) * 0.22)) * ampY,
+        };
+      case 'alert_scan':
+        return {
+          x: Math.sin(phase * 0.72) * ampX,
+          y: Math.cos(phase * 0.36) * ampY * 0.65,
+        };
+      case 'locked_stare':
+        return {
+          x: Math.sin(phase * 1.8) * ampX * 0.35,
+          y: Math.cos(phase * 1.4) * ampY * 0.25,
+        };
+      case 'dizzy_dart':
+        return {
+          x: (Math.sin(phase * 1.4) + (Math.cos(phase * 0.7) * 0.5)) * ampX,
+          y: (Math.cos(phase * 1.2) + (Math.sin(phase * 0.9) * 0.45)) * ampY,
+        };
+      case 'none':
+      default:
+        return { x: 0, y: 0 };
+    }
+  }
+
+  private applyEyeGaze(nowMs: number): void {
+    const motionOffset = this.resolveEyeMotionOffset(nowMs);
+    const eyeBallX = clampEyeBall(this._currentEyeBallX + motionOffset.x);
+    const eyeBallY = clampEyeBall(this._currentEyeBallY + motionOffset.y);
+
+    if (Math.abs(eyeBallX) < 0.001 && Math.abs(eyeBallY) < 0.001) {
+      return;
+    }
+
+    this._model.addParameterValueById(this._idParamEyeBallX, eyeBallX);
+    this._model.addParameterValueById(this._idParamEyeBallY, eyeBallY);
+  }
+
   private applyLipSync(): void {
     if (this._lipSyncValue > 0) {
       this._model.addParameterValueById(this._idParamMouthOpenY, this._lipSyncValue);
@@ -1520,6 +1652,8 @@ export class LAppModel extends CubismUserModel {
       eyeRSmile: this._aiEyeRSmile,
       browLX: this._aiBrowLX,
       browRX: this._aiBrowRX,
+      eyeBallX: this._aiEyeBallX,
+      eyeBallY: this._aiEyeBallY,
     };
   }
 
@@ -1558,6 +1692,26 @@ export class LAppModel extends CubismUserModel {
     }
   }
 
+  private updateIdleHeadMotion(): void {
+    const profile = this._activeBodyMotionProfile;
+    const intensityMod = 0.9 + 0.2 * Math.sin(this._bodyMotionPhase * 0.09);
+    const headIntensity = this._aiHeadIntensity * intensityMod * profile.headScale;
+
+    if (headIntensity < 0.001) {
+      return;
+    }
+
+    const resonanceMod = 0.95 + 0.1 * Math.sin(this._bodyMotionPhase * 0.13);
+    const headPhase = this._bodyMotionPhase * resonanceMod * profile.speed;
+    const ampZ = 14 * headIntensity;
+    const ampX = 10 * headIntensity;
+    const ampY = 6 * headIntensity;
+
+    this._model.addParameterValueById(this._idParamAngleZ, Math.sin(headPhase) * ampZ);
+    this._model.addParameterValueById(this._idParamAngleX, Math.cos(headPhase * 0.58) * ampX);
+    this._model.addParameterValueById(this._idParamAngleY, Math.cos((headPhase * 0.48) + Math.PI / 4) * ampY);
+  }
+
   private resolveExpressionTargets(deltaTimeSeconds: number, nowMs: number): BasePoseParams {
     if (this._aiBehaviorTimer > 0) {
       this._activeBodyMotionProfile = this._aiBodyMotionProfile;
@@ -1568,7 +1722,7 @@ export class LAppModel extends CubismUserModel {
     if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
       this._activeMotionPlan = null;
       this._motionPlanStartedAtMs = 0;
-      this._activeBodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
+      this._activeBodyMotionProfile = IDLE_BODY_MOTION_PROFILES[this._activeIdlePlan.name];
       const ambientPlan = this._activeIdlePlan.ambientPlan;
       const ambientReady = !!ambientPlan?.states?.length && nowMs >= this._ambientIdleStartAtMs;
 
@@ -1581,11 +1735,14 @@ export class LAppModel extends CubismUserModel {
 
         const ambientParams = this._ambientIdleActivePose ?? this._activeIdlePlan.settlePose.params;
         this._aiEyeSync = ambientParams.eyeSync;
+        this._aiHeadIntensity = ambientParams.headIntensity;
+        this.updateIdleHeadMotion();
         return ambientParams;
       }
 
-      this._aiHeadIntensity = 0;
       const idleParams = this._activeIdlePlan.settlePose.params;
+      this._aiHeadIntensity = idleParams.headIntensity;
+      this.updateIdleHeadMotion();
       this._aiEyeSync = idleParams.eyeSync;
 
       if (nowMs >= this._idleLoopNextAtMs) {
@@ -1631,6 +1788,8 @@ export class LAppModel extends CubismUserModel {
     this._currentEyeRSmile += (targets.eyeRSmile - this._currentEyeRSmile) * lerpFactor;
     this._currentBrowLX += (targets.browLX - this._currentBrowLX) * lerpFactor;
     this._currentBrowRX += (targets.browRX - this._currentBrowRX) * lerpFactor;
+    this._currentEyeBallX += (targets.eyeBallX - this._currentEyeBallX) * lerpFactor;
+    this._currentEyeBallY += (targets.eyeBallY - this._currentEyeBallY) * lerpFactor;
 
     if (this._aiEyeSync && (this._aiBehaviorTimer > 0 || targets.eyeLOpen < 0.99)) {
       this._currentBrowRY = this._currentBrowLY;
@@ -1668,6 +1827,7 @@ export class LAppModel extends CubismUserModel {
     this.updateEyeBlink(deltaTimeSeconds);
     this.updateExpressionManager(deltaTimeSeconds);
     this.applyEyeTracking();
+    this.applyEyeGaze(nowMs);
     this.applyLipSync();
     this.updateBodyMotion(deltaTimeSeconds);
     this.applyCurrentExpressionParameters();

@@ -119,6 +119,8 @@ CONTINUITY_PARAM_WEIGHTS = {
     "eyeRSmile": 0.5,
     "browLX": 0.42,
     "browRX": 0.42,
+    "eyeBallX": 0.28,
+    "eyeBallY": 0.24,
 }
 
 
@@ -128,6 +130,8 @@ MOTION_PARAM_DEFAULTS = {
     "bodyAngleZ": 0.0,
     "breathLevel": 0.35,
     "physicsImpulse": 0.12,
+    "eyeBallX": 0.0,
+    "eyeBallY": 0.0,
 }
 
 

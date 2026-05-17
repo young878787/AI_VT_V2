@@ -40,6 +40,8 @@ export function clampExpressionOverlayValue(key: ExpressionOverlayKey, value: nu
     case 'browRForm':
     case 'browLX':
     case 'browRX':
+    case 'eyeBallX':
+    case 'eyeBallY':
       return Math.max(-1, Math.min(1, value));
     case 'eyeLSmile':
     case 'eyeRSmile':

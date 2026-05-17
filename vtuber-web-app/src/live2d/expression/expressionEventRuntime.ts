@@ -80,6 +80,8 @@ export function applyActiveExpressionEvents(
     nextTargets.eyeRSmile = applyOverlayValue('eyeRSmile', nextTargets.eyeRSmile, event.patch.eyeRSmile, fade);
     nextTargets.browLX = applyOverlayValue('browLX', nextTargets.browLX, event.patch.browLX, fade);
     nextTargets.browRX = applyOverlayValue('browRX', nextTargets.browRX, event.patch.browRX, fade);
+    nextTargets.eyeBallX = applyOverlayValue('eyeBallX', nextTargets.eyeBallX, event.patch.eyeBallX, fade);
+    nextTargets.eyeBallY = applyOverlayValue('eyeBallY', nextTargets.eyeBallY, event.patch.eyeBallY, fade);
   }
 
   return {

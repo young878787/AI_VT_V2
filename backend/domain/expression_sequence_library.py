@@ -32,7 +32,7 @@ MICRO_EVENT_LIBRARY = {
     "goofy_eye_cross_bias": {
         "kind": "goofy_eye_cross_bias",
         "durationMs": 380,
-        "patch": {"eyeLOpen": 0.58, "eyeROpen": 0.94, "browLAngle": 0.18, "mouthForm": 0.10},
+        "patch": {"eyeLOpen": 0.58, "eyeROpen": 0.94, "browLAngle": 0.18, "mouthForm": 0.10, "eyeBallX": 0.22, "eyeBallY": -0.04},
         "returnToBase": True,
     },
     "uneven_brow_pop": {
@@ -50,25 +50,25 @@ MICRO_EVENT_LIBRARY = {
     "tense_squeeze": {
         "kind": "tense_squeeze",
         "durationMs": 400,
-        "patch": {"eyeLOpen": 0.62, "eyeROpen": 0.62, "browLAngle": -0.12, "browRAngle": 0.12, "browLX": 0.10, "browRX": -0.10, "blushLevel": -0.08},
+        "patch": {"eyeLOpen": 0.62, "eyeROpen": 0.62, "browLAngle": -0.12, "browRAngle": 0.12, "browLX": 0.10, "browRX": -0.10, "eyeBallX": 0.10, "eyeBallY": -0.02, "blushLevel": -0.08},
         "returnToBase": True,
     },
     "shock_pop": {
         "kind": "shock_pop",
         "durationMs": 200,
-        "patch": {"eyeLOpen": 1.25, "eyeROpen": 1.25, "browLY": 0.32, "browRY": 0.32, "mouthForm": 0.14},
+        "patch": {"eyeLOpen": 1.25, "eyeROpen": 1.25, "browLY": 0.32, "browRY": 0.32, "mouthForm": 0.14, "eyeBallY": 0.08},
         "returnToBase": True,
     },
     "volatile_twitch": {
         "kind": "volatile_twitch",
         "durationMs": 280,
-        "patch": {"eyeLOpen": 0.60, "eyeROpen": 1.02, "browLAngle": 0.10, "browRAngle": -0.14, "mouthForm": 0.06},
+        "patch": {"eyeLOpen": 0.60, "eyeROpen": 1.02, "browLAngle": 0.10, "browRAngle": -0.14, "mouthForm": 0.06, "eyeBallX": -0.16, "eyeBallY": 0.03},
         "returnToBase": True,
     },
     "meltdown_warp": {
         "kind": "meltdown_warp",
         "durationMs": 450,
-        "patch": {"eyeLOpen": 0.40, "eyeROpen": 1.15, "browLAngle": 0.35, "browRAngle": 0.10, "mouthForm": -0.12, "browLForm": -0.20, "blushLevel": 0.08},
+        "patch": {"eyeLOpen": 0.40, "eyeROpen": 1.15, "browLAngle": 0.35, "browRAngle": 0.10, "mouthForm": -0.12, "browLForm": -0.20, "eyeBallX": 0.24, "eyeBallY": -0.05, "blushLevel": 0.08},
         "returnToBase": True,
     },
     "awkward_freeze": {
