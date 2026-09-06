@@ -49,6 +49,19 @@ BODY_BOUNCE_MICRO_EVENT_KINDS = {
 }
 BODY_BOUNCE_POOL_KEYS = {"happy", "playful", "teasing", "neutral"}
 
+EMOTION_MICRO_EVENT_POOLS: dict[str, list[str]] = {
+    "happy": ["happy_smile_pulse", "happy_brow_lift", "brow_micro_curve_smile", "brow_micro_dual_lift"],
+    "playful": ["playful_body_rebound", "playful_brow_spark", "brow_micro_shape_wave", "happy_smile_pulse"],
+    "teasing": ["tease_body_lean_rebound", "playful_brow_spark", "smirk_left", "happy_brow_lift"],
+    "angry": ["angry_brow_press", "angry_eye_narrow", "tense_squeeze", "angry_stare_flash"],
+    "sad": ["sad_brow_waver", "brow_micro_inner_worry", "sad_eye_sink", "gloomy_flat_hold"],
+    "gloomy": ["gloomy_flat_hold", "brow_micro_inner_worry", "gloom_drop", "sad_eye_sink"],
+    "shy": ["shy_blush_pulse", "shy_peek_left", "awkward_freeze", "brow_micro_curve_smile"],
+    "surprised": ["surprised_eye_pop", "brow_micro_surprise_arc", "shock_pop", "brow_micro_dual_lift"],
+    "conflicted": ["conflicted_brow_tilt", "brow_micro_soft_question", "volatile_twitch", "brow_micro_inner_worry"],
+    "neutral": ["brow_micro_understand_lift", "happy_brow_lift", "brow_micro_curve_smile", "brow_micro_dual_lift"],
+}
+
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
@@ -564,6 +577,19 @@ def apply_base_pose_modifiers(
     }
 
 
+MAX_MICRO_EVENTS = 3
+
+
+def _merge_micro_event_lists(primary: list[dict], secondary: list[dict]) -> list[dict]:
+    result: list[dict] = list(primary)
+    existing_kinds: set[str] = {str(e.get("kind") or "") for e in result}
+    for event in secondary:
+        if str(event.get("kind") or "") not in existing_kinds and len(result) < MAX_MICRO_EVENTS:
+            result.append(event)
+            existing_kinds.add(str(event.get("kind") or ""))
+    return result[:MAX_MICRO_EVENTS]
+
+
 def build_micro_events(
     emotion: str,
     performance_mode: str,
@@ -634,6 +660,48 @@ def build_micro_events(
         events.append(event)
         if len(events) >= 2:
             break
+
+    return events
+
+
+def build_emotion_micro_events(
+    emotion: str,
+    intensity: float,
+    energy: float,
+    intent: dict,
+    model_name: str = "Hiyori",
+) -> list[dict]:
+    if energy < 0.45:
+        return []
+
+    pool = EMOTION_MICRO_EVENT_POOLS.get(emotion)
+    if not pool:
+        return []
+
+    avoid = set(intent.get("avoid") or [])
+    available = [name for name in pool if name in MICRO_EVENT_LIBRARY and name not in avoid]
+    if not available:
+        return []
+
+    if energy >= 0.72:
+        target_count = 2
+    elif energy >= 0.65:
+        target_count = random.choice([1, 2])
+    else:
+        target_count = 1
+
+    selected: list[str] = random.sample(available, min(target_count, len(available)))
+
+    events: list[dict] = []
+    duration_scale = 1.0 + max(0.0, intensity - 0.45) * 0.40 + max(0.0, energy - 0.50) * 0.25
+    if model_name.lower() == "hiyori":
+        duration_scale += 0.10
+
+    for name in selected:
+        event = deepcopy(MICRO_EVENT_LIBRARY[name])
+        scaled = max(180, min(1200, int(event["durationMs"] * duration_scale)))
+        event["durationMs"] = scaled
+        events.append(event)
 
     return events
 
@@ -831,7 +899,7 @@ def _micro_family_weight(family: str, pool_key: str, intent: dict, source_scale:
     if family == "brow_bounce" and (pool_key in {"happy", "playful", "teasing", "neutral"} or energy >= 0.55):
         weight *= 2.15
     if family == "body_bounce" and (pool_key in {"happy", "playful", "teasing", "neutral"} or energy >= 0.58):
-        weight *= 2.25 + (energy * 0.35) + (playfulness * 0.25)
+        weight *= 1.50 + (energy * 0.35) + (playfulness * 0.25)
     if family == "asymmetry" and (
         asymmetry_bias in {"subtle", "strong"}
         or playfulness >= 0.58
@@ -1430,6 +1498,14 @@ def compile_expression_plan(intent: dict, model_name: str, previous_state: dict 
         signature=signature,
         model_name=model_name,
     )
+    emotion_micro_events = build_emotion_micro_events(
+        emotion,
+        intensity,
+        energy,
+        intent,
+        model_name=model_name,
+    )
+    micro_events = _merge_micro_event_lists(emotion_micro_events, micro_events)
     motion_plan = build_motion_plan(
         emotion,
         performance_mode,
