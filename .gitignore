@@ -51,6 +51,7 @@ Thumbs.db
 *.swo
 .idea/
 .vscode/
+.commandcode/
 *.suo
 *.user
 
