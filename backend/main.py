@@ -12,6 +12,7 @@ from api.routes.chat_ws import router as chat_router
 from api.routes.display_ws import router as display_router
 from api.routes.expression_debug_router import router as expression_debug_router
 from api.routes.memory_router import router as memory_router
+from api.routes.voice_ws import router as voice_router
 
 app = FastAPI()
 
@@ -28,6 +29,7 @@ app.include_router(chat_router)
 app.include_router(display_router)
 app.include_router(expression_debug_router)
 app.include_router(memory_router)
+app.include_router(voice_router)
 
 
 if __name__ == "__main__":

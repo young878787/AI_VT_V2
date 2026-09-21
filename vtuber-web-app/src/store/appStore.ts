@@ -41,6 +41,9 @@ interface AppState {
   microphoneEnabled: boolean;
   microphonePermission: 'granted' | 'denied' | 'prompt';
 
+  // 語音輸入（ASR）狀態
+  voiceModeEnabled: boolean;
+
   // 模型載入狀態
   modelLoading: boolean;
   modelLoaded: boolean;
@@ -83,6 +86,7 @@ interface AppState {
   // 動作
   toggleMicrophone: () => void;
   setMicrophonePermission: (permission: 'granted' | 'denied' | 'prompt') => void;
+  setVoiceModeEnabled: (enabled: boolean) => void;
   setModelLoading: (loading: boolean) => void;
   setModelLoaded: (loaded: boolean) => void;
   setModelError: (error: string | null) => void;
@@ -131,6 +135,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 初始狀態
   microphoneEnabled: false,
   microphonePermission: 'prompt',
+  voiceModeEnabled: false,
   modelLoading: false,
   modelLoaded: false,
   modelError: null,
@@ -180,6 +185,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setMicrophonePermission: (permission) =>
     set({ microphonePermission: permission }),
+
+  setVoiceModeEnabled: (enabled) =>
+    set({ voiceModeEnabled: enabled }),
 
   setModelLoading: (loading) =>
     set({ modelLoading: loading }),
