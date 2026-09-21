@@ -9,3 +9,8 @@ python-multipart
 # TTS (Google Cloud Text-to-Speech)
 # 安裝後需設定 GOOGLE_APPLICATION_CREDENTIALS 環境變數
 google-cloud-texttospeech
+
+# Voice pipeline（ASR / VAD / TTS，port 自 voice_txt；實測 numpy 2.5.3、sherpa-onnx 1.13.8）
+numpy>=1.26
+sherpa-onnx>=1.12
+piper-tts[zh]

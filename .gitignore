@@ -24,6 +24,11 @@ everything/
 .github/prompts
 AGENTS.md
 # ============================================================
+# Local ONNX Models (ASR / VAD / Piper TTS，由 voice_txt/models 複製)
+# ============================================================
+backend/models/
+
+# ============================================================
 # Memory / Persistent Data (user-specific, not for VCS)
 # ============================================================
 backend/memory/user_profile.json
