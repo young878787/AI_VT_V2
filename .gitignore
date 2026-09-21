@@ -27,6 +27,8 @@ AGENTS.md
 # Local ONNX Models (ASR / VAD / Piper TTS，由 voice_txt/models 複製)
 # ============================================================
 backend/models/
+voice_txt/
+voice_clone_onnx/
 
 # ============================================================
 # Memory / Persistent Data (user-specific, not for VCS)
