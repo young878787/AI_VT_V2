@@ -2,6 +2,7 @@ fastapi
 uvicorn
 websockets
 openai
+httpx
 python-dotenv
 tiktoken
 python-multipart

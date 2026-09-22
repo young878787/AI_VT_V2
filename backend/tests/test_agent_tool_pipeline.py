@@ -27,6 +27,13 @@ from api.routes.chat_ws import (
 
 
 class AgentToolPipelineTests(unittest.TestCase):
+    def setUp(self):
+        # 本測試類別針對 llm（Expression Agent）路徑的 TTS/speaking_rate 行為；
+        # .env 若設 EXPRESSION_DECIDER=jev 會改變路由，必須固定回 llm。
+        patcher = patch("api.routes.chat_ws.EXPRESSION_DECIDER", "llm")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     class _FakeWebSocket:
         def __init__(self):
             self.payloads: list[dict] = []

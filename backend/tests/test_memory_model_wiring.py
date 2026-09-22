@@ -5,6 +5,7 @@ import os
 import pathlib
 import sys
 import unittest
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -25,6 +26,13 @@ from domain.jpaf import JPAFSession
 
 
 class MemoryModelWiringTests(unittest.TestCase):
+    def setUp(self):
+        # 本測試類別的 wiring 測試針對 llm（Expression Agent）路徑；
+        # .env 若設 EXPRESSION_DECIDER=jev 會改變路由，必須固定回 llm。
+        patcher = patch("api.routes.chat_ws.EXPRESSION_DECIDER", "llm")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     class _FakeWebSocket:
         def __init__(self):
             self.payloads: list[dict] = []
@@ -496,6 +504,141 @@ class MemoryModelWiringTests(unittest.TestCase):
         self.assertIn("behavior", broadcast_types)
         self.assertLess(broadcast_types.index("expression_plan"), broadcast_types.index("blink_control"))
         self.assertLess(broadcast_types.index("expression_plan"), broadcast_types.index("behavior"))
+
+    def test_websocket_endpoint_jev_mode_sends_plan_in_parallel_and_skips_expression_agent(self):
+        websocket = self._FakeWebSocket()
+        websocket.queue_received_text('{"content": "今天超開心的！", "model_name": "Hiyori"}')
+
+        class _FakeResponse:
+            def __init__(self, message):
+                self.choices = [SimpleNamespace(message=message)]
+
+        memory_response = _FakeResponse(SimpleNamespace(content="", tool_calls=[]))
+
+        async def _fake_collect_agent_a(messages):
+            return "jev text", None, None
+
+        async def _fake_call_memory_agent(messages, model_name):
+            return memory_response
+
+        async def _fake_call_jev(state, questions):
+            self.assertIn("user_message", state)
+            self.assertIn("emotion", questions)
+            return {
+                "emotion": {"type": "choice", "choice": "happy", "confidence": 0.91},
+                "performance_mode": {"type": "choice", "choice": "bright_talk", "confidence": 0.68},
+                "arc": {"type": "choice", "choice": "steady", "confidence": 0.85},
+                "intensity": {"type": "score", "score": 2.3, "confidence": 0.77},
+                "energy": {"type": "score", "score": 3.1, "confidence": 0.80},
+                "wants_goofy": {"type": "noul", "noul": 0.12},
+                "needs_special_blink": {"type": "noul", "noul": 0.05},
+            }
+
+        async def _run_route():
+            with ExitStack() as stack:
+                stack.enter_context(patch("api.routes.chat_ws.EXPRESSION_DECIDER", "jev"))
+                mock_call_jev = stack.enter_context(
+                    patch("api.routes.chat_ws.call_jev", side_effect=_fake_call_jev)
+                )
+                stack.enter_context(patch("api.routes.chat_ws.collect_agent_a", side_effect=_fake_collect_agent_a))
+                mock_call_expression_agent = stack.enter_context(
+                    patch("api.routes.chat_ws.call_expression_agent")
+                )
+                stack.enter_context(patch("api.routes.chat_ws.call_memory_agent", side_effect=_fake_call_memory_agent))
+                stack.enter_context(patch("api.routes.chat_ws.broadcast_to_displays"))
+                stack.enter_context(patch("api.routes.chat_ws.load_jpaf_state", return_value=None))
+                stack.enter_context(patch("api.routes.chat_ws.save_jpaf_state"))
+                stack.enter_context(patch("api.routes.chat_ws.load_user_profile", return_value={}))
+                stack.enter_context(patch("api.routes.chat_ws.load_memory_notes", return_value=[]))
+                stack.enter_context(patch("api.routes.chat_ws.build_agent_a_prompt", return_value="agent-a-system"))
+                mock_build_live2d_prompt = stack.enter_context(patch("api.routes.chat_ws.build_live2d_prompt"))
+                stack.enter_context(patch("api.routes.chat_ws.build_memory_prompt", return_value="memory-system"))
+                stack.enter_context(patch("api.routes.chat_ws.execute_profile_update"))
+                stack.enter_context(patch("api.routes.chat_ws.append_memory_note"))
+                stack.enter_context(patch("api.routes.chat_ws.log_turn"))
+                stack.enter_context(patch("api.routes.chat_ws.save_session_messages"))
+                stack.enter_context(patch("api.routes.chat_ws.synthesize_and_send_voice"))
+                stack.enter_context(patch("api.routes.chat_ws.estimate_token_count", return_value=0))
+                stack.enter_context(patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", False))
+                stack.enter_context(patch("api.routes.chat_ws.COMPRESS_TOKEN_THRESHOLD", 999999))
+                await websocket_endpoint(websocket)
+
+            return mock_call_expression_agent, mock_build_live2d_prompt, mock_call_jev
+
+        mock_call_expression_agent, mock_build_live2d_prompt, mock_call_jev = asyncio.run(_run_route())
+
+        # Expression Agent 已完全退役：prompt 與 LLM 呼叫皆不發生
+        mock_call_expression_agent.assert_not_called()
+        mock_build_live2d_prompt.assert_not_called()
+        mock_call_jev.assert_called_once()
+
+        payload_types = [payload.get("type") for payload in websocket.payloads]
+        self.assertIn("expression_plan", payload_types)
+        self.assertIn("behavior", payload_types)
+        # plan 在對話完成前（text_stream 之前）就已送達，且不重複發送
+        self.assertEqual(payload_types.count("expression_plan"), 1)
+        self.assertLess(payload_types.index("expression_plan"), payload_types.index("text_stream"))
+
+        expression_plan_payload = next(
+            payload for payload in websocket.payloads if payload.get("type") == "expression_plan"
+        )
+        self.assertEqual(expression_plan_payload["carryState"]["emotion"], "happy")
+
+    def test_websocket_endpoint_jev_mode_keyword_override_skips_jev_call(self):
+        websocket = self._FakeWebSocket()
+        websocket.queue_received_text('{"content": "你好兇喔，我很生氣！", "model_name": "Hiyori"}')
+
+        class _FakeResponse:
+            def __init__(self, message):
+                self.choices = [SimpleNamespace(message=message)]
+
+        memory_response = _FakeResponse(SimpleNamespace(content="", tool_calls=[]))
+
+        async def _fake_collect_agent_a(messages):
+            return "override text", None, None
+
+        async def _fake_call_memory_agent(messages, model_name):
+            return memory_response
+
+        async def _fail_call_jev(state, questions):
+            raise AssertionError("Jev 不應被呼叫：規則層關鍵詞覆寫應先行")
+
+        async def _run_route():
+            with ExitStack() as stack:
+                stack.enter_context(patch("api.routes.chat_ws.EXPRESSION_DECIDER", "jev"))
+                stack.enter_context(patch("api.routes.chat_ws.call_jev", side_effect=_fail_call_jev))
+                stack.enter_context(patch("api.routes.chat_ws.collect_agent_a", side_effect=_fake_collect_agent_a))
+                mock_call_expression_agent = stack.enter_context(
+                    patch("api.routes.chat_ws.call_expression_agent")
+                )
+                stack.enter_context(patch("api.routes.chat_ws.call_memory_agent", side_effect=_fake_call_memory_agent))
+                stack.enter_context(patch("api.routes.chat_ws.broadcast_to_displays"))
+                stack.enter_context(patch("api.routes.chat_ws.load_jpaf_state", return_value=None))
+                stack.enter_context(patch("api.routes.chat_ws.save_jpaf_state"))
+                stack.enter_context(patch("api.routes.chat_ws.load_user_profile", return_value={}))
+                stack.enter_context(patch("api.routes.chat_ws.load_memory_notes", return_value=[]))
+                stack.enter_context(patch("api.routes.chat_ws.build_agent_a_prompt", return_value="agent-a-system"))
+                stack.enter_context(patch("api.routes.chat_ws.build_live2d_prompt"))
+                stack.enter_context(patch("api.routes.chat_ws.build_memory_prompt", return_value="memory-system"))
+                stack.enter_context(patch("api.routes.chat_ws.execute_profile_update"))
+                stack.enter_context(patch("api.routes.chat_ws.append_memory_note"))
+                stack.enter_context(patch("api.routes.chat_ws.log_turn"))
+                stack.enter_context(patch("api.routes.chat_ws.save_session_messages"))
+                stack.enter_context(patch("api.routes.chat_ws.synthesize_and_send_voice"))
+                stack.enter_context(patch("api.routes.chat_ws.estimate_token_count", return_value=0))
+                stack.enter_context(patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", False))
+                stack.enter_context(patch("api.routes.chat_ws.COMPRESS_TOKEN_THRESHOLD", 999999))
+                await websocket_endpoint(websocket)
+
+            return mock_call_expression_agent
+
+        mock_call_expression_agent = asyncio.run(_run_route())
+        mock_call_expression_agent.assert_not_called()
+
+        expression_plan_payload = next(
+            payload for payload in websocket.payloads if payload.get("type") == "expression_plan"
+        )
+        self.assertEqual(expression_plan_payload["carryState"]["emotion"], "angry")
 
     def test_websocket_endpoint_fails_fast_on_legacy_expression_tool_call_shape_without_json_content(self):
         websocket = self._FakeWebSocket()

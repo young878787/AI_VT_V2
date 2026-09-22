@@ -158,6 +158,24 @@ CHAT_PERSISTENCE_ENABLED: bool = env_flag("CHAT_PERSISTENCE_ENABLED", False)
 CHAT_PERSISTENCE_MAX_MESSAGES: int = int(os.getenv("CHAT_PERSISTENCE_MAX_MESSAGES", "80"))
 
 # ============================================================
+# Jev（System One）表情決策設定
+# ============================================================
+EXPRESSION_DECIDER: str = os.getenv("EXPRESSION_DECIDER", "llm").lower().strip()
+if EXPRESSION_DECIDER not in ("jev", "llm"):
+    raise RuntimeError(
+        f"未知的 EXPRESSION_DECIDER='{EXPRESSION_DECIDER}'。支援值: jev | llm"
+    )
+JEV_MODEL_NAME: str = os.getenv("JEV_MODEL_NAME", "jev-latest").strip()
+JEV_TIMEOUT_SEC: float = float(os.getenv("JEV_TIMEOUT_SEC", "2.0"))
+if EXPRESSION_DECIDER == "jev" and not os.getenv("OPENROUTER_API_KEY", "").strip():
+    raise RuntimeError(
+        "EXPRESSION_DECIDER=jev 但 OPENROUTER_API_KEY 未設定，"
+        "請在 .env 設定 OpenRouter API key（Jev 經 OpenRouter System One 端點計費）"
+    )
+
+OPENROUTER_SYSTEMONE_URL: str = "https://openrouter.ai/api/v1/systemone"
+
+# ============================================================
 # Context 壓縮閾值
 # ============================================================
 COMPRESS_TOKEN_THRESHOLD: int = 230_000

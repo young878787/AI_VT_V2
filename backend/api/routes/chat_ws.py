@@ -14,9 +14,13 @@ from core.config import (
     CHAT_PERSISTENCE_ENABLED,
     COMPRESS_TOKEN_THRESHOLD,
     COMPRESS_KEEP_RECENT,
+    EXPRESSION_DECIDER,
+    JEV_MODEL_NAME,
 )
 from core.utils import normalize_session_id
 from domain.jpaf import JPAFSession
+from domain.jev_questions import build_jev_state, build_questions, map_answers_to_intent
+from infrastructure.typesafe_client import call_jev
 from domain.agent_a_prompts import build_agent_a_prompt
 from domain.agent_b_prompts import build_live2d_prompt, build_memory_prompt
 from infrastructure.memory_store import (
@@ -45,7 +49,11 @@ from services.agent_tool_pipeline import (
     summarize_tool_names,
 )
 from services.expression_compiler import compile_expression_plan
-from services.expression_intent_parser import parse_expression_intent
+from services.expression_intent_parser import (
+    parse_expression_intent,
+    normalize_expression_intent,
+    _infer_direct_expression_override,
+)
 from services.expression_legacy_renderer import render_legacy_behavior_payload
 from services.memory_service import execute_profile_update
 from api.display_manager import broadcast_to_displays
@@ -194,6 +202,7 @@ async def websocket_endpoint(websocket: WebSocket):
     tts_tasks: set[asyncio.Task] = set()
     last_behavior_payload: dict | None = None
     last_expression_carry_state: dict | None = None
+    last_emotion_state: dict | None = None
 
     # 載入或初始化 JPAF session
     jpaf_data = load_jpaf_state()
@@ -232,6 +241,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 incoming_session_id=incoming_session_id,
                 last_expression_carry_state=last_expression_carry_state,
             )
+            if session_changed:
+                last_emotion_state = None
             messages = _reset_messages_for_session(
                 current_session_id=current_session_id,
                 incoming_session_id=incoming_session_id,
@@ -267,6 +278,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 1. 清空短期記憶（in-memory 對話歷史）
                 messages = []
                 last_behavior_payload = None
+                last_expression_carry_state = None
+                last_emotion_state = None
                 # 2. 清空 session 持久化檔案（避免下次連線重新載入舊歷史）
                 if CHAT_PERSISTENCE_ENABLED and current_session_id:
                     save_session_messages(current_session_id, [])
@@ -294,6 +307,35 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             model_name = normalize_model_name(data.get("model_name", "Hiyori"))
+
+            # ================================================================
+            # 步驟 0（V2）：規則層關鍵詞覆寫先行（0ms，命中則跳過 Jev）；
+            # 未命中且 jev 模式 → 使用者訊息一到就 create_task 平行發 Jev，
+            # 表情 plan 在 Dialogue Agent 串流期間即送達前端。
+            # ================================================================
+            direct_expression_override = _infer_direct_expression_override(user_message)
+            jev_task: asyncio.Task | None = None
+            if EXPRESSION_DECIDER == "jev":
+                _jev_history = [
+                    m for m in messages
+                    if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+                ]
+                print(f"[Jev] 平行表情決策啟動（model={JEV_MODEL_NAME}）")
+                jev_task = asyncio.create_task(
+                    _produce_and_send_jev_plan(
+                        websocket=websocket,
+                        broadcast_func=broadcast_to_displays,
+                        model_name=model_name,
+                        user_message=user_message,
+                        history=_jev_history,
+                        jpaf_session=jpaf_session,
+                        last_emotion_state=last_emotion_state,
+                        previous_expression_source=(
+                            last_expression_carry_state or last_behavior_payload
+                        ),
+                        direct_override=direct_expression_override or None,
+                    )
+                )
 
             # ================================================================
             # 步驟 1：組裝 Dialogue Agent 系統 Prompt（VTuber + JPAF）
@@ -332,6 +374,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not agent_a_text:
                     agent_a_text = "（默默地點頭）"
 
+                # 留存本輪情緒，作為下一輪 Jev state 的情緒記憶
+                if emotion_state:
+                    last_emotion_state = emotion_state
+
                 # 更新 JPAF session
                 if jpaf_state:
                     # (1) LLM 主動觸發的 Reflection（備用路徑）
@@ -367,48 +413,68 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
                 # ============================================================
-                # 步驟 3：Expression Agent + Memory Agent 並行呼叫
+                # 步驟 3：Expression 決策 + Memory Agent
+                # jev：表情已由背景任務（Jev/規則層）平行決策並提前送出
+                # llm：維持現行 Expression Agent + Memory Agent 並行呼叫
                 # ============================================================
-                print(
-                    f"[{AI_PROVIDER.upper()}] Chat Orchestrator: parallel Expression Agent + Memory Agent..."
-                )
-
                 previous_expression_source = last_expression_carry_state or last_behavior_payload
-                previous_expression_state = _summarize_previous_expression_state(
-                    previous_expression_source
-                )
+                live2d_response = None
 
-                # Expression Agent prompt
-                live2d_system = build_live2d_prompt(
-                    user_message,
-                    agent_a_text,
-                    previous_expression_state,
-                    emotion_state,
-                    model_name,
-                )
-                live2d_messages = [
-                    {"role": "system", "content": live2d_system},
-                    {"role": "user", "content": "請根據上述上下文輸出單一 JSON expression intent，僅回傳 JSON object，不要輸出說明文字或任何 tool calls。"},
-                ]
+                if EXPRESSION_DECIDER == "jev":
+                    print(
+                        f"[{AI_PROVIDER.upper()}] Chat Orchestrator: expression decided in parallel (Jev); calling Memory Agent..."
+                    )
+                    memory_system = build_memory_prompt(user_message, agent_a_text, model_name)
+                    memory_messages = [
+                        {"role": "system", "content": memory_system},
+                        {"role": "user", "content": "請分析用戶訊息，判斷是否需要記憶操作。"},
+                    ]
+                    memory_response = await call_memory_agent(memory_messages, model_name)
+                else:
+                    print(
+                        f"[{AI_PROVIDER.upper()}] Chat Orchestrator: parallel Expression Agent + Memory Agent..."
+                    )
 
-                # Memory Agent prompt
-                memory_system = build_memory_prompt(user_message, agent_a_text, model_name)
-                memory_messages = [
-                    {"role": "system", "content": memory_system},
-                    {"role": "user", "content": "請分析用戶訊息，判斷是否需要記憶操作。"},
-                ]
+                    previous_expression_state = _summarize_previous_expression_state(
+                        previous_expression_source
+                    )
 
-                # 並行呼叫
-                live2d_response, memory_response = await asyncio.gather(
-                    call_expression_agent(live2d_messages, model_name),
-                    call_memory_agent(memory_messages, model_name),
-                )
+                    # Expression Agent prompt
+                    live2d_system = build_live2d_prompt(
+                        user_message,
+                        agent_a_text,
+                        previous_expression_state,
+                        emotion_state,
+                        model_name,
+                    )
+                    live2d_messages = [
+                        {"role": "system", "content": live2d_system},
+                        {"role": "user", "content": "請根據上述上下文輸出單一 JSON expression intent，僅回傳 JSON object，不要輸出說明文字或任何 tool calls。"},
+                    ]
+
+                    # Memory Agent prompt
+                    memory_system = build_memory_prompt(user_message, agent_a_text, model_name)
+                    memory_messages = [
+                        {"role": "system", "content": memory_system},
+                        {"role": "user", "content": "請分析用戶訊息，判斷是否需要記憶操作。"},
+                    ]
+
+                    # 並行呼叫
+                    live2d_response, memory_response = await asyncio.gather(
+                        call_expression_agent(live2d_messages, model_name),
+                        call_memory_agent(memory_messages, model_name),
+                    )
 
                 # ============================================================
-                # 步驟 4：處理 Chat Orchestrator tool calls
+                # 步驟 4：處理 Expression 結果與 Memory Agent tool calls
                 # ============================================================
                 memory_calls: list[dict] = []
-                if live2d_response.choices and len(live2d_response.choices) > 0:
+                if EXPRESSION_DECIDER == "jev":
+                    # Jev 平行結果（多半在對話串流期間已完成並提前送出）
+                    jev_out = await jev_task
+                    jev_task = None
+                    expression_plan = jev_out["expression_plan"]
+                elif live2d_response.choices and len(live2d_response.choices) > 0:
                     expression_msg = live2d_response.choices[0].message
                     expression_raw = expression_msg.content or ""
                     expression_tool_calls = getattr(expression_msg, "tool_calls", []) or []
@@ -495,16 +561,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
 
                 # ---- 先送出 expression plan，再保留 legacy payload fallback ----
-                await websocket.send_json(expression_plan)
-                await broadcast_to_displays(expression_plan)
+                # jev 模式：plan / blink / behavior 已由背景任務提前送達，不再重送
+                if EXPRESSION_DECIDER != "jev":
+                    await websocket.send_json(expression_plan)
+                    await broadcast_to_displays(expression_plan)
 
-                for blink_payload in legacy_render["blink_payloads"]:
-                    await websocket.send_json(blink_payload)
-                    await broadcast_to_displays(blink_payload)
+                    for blink_payload in legacy_render["blink_payloads"]:
+                        await websocket.send_json(blink_payload)
+                        await broadcast_to_displays(blink_payload)
 
-                # ---- 送出 behavior payload ----
-                await websocket.send_json(behavior_payload)
-                await broadcast_to_displays(behavior_payload)
+                    # ---- 送出 behavior payload ----
+                    await websocket.send_json(behavior_payload)
+                    await broadcast_to_displays(behavior_payload)
 
                 # ---- 送出 JPAF 狀態更新 ----
                 await websocket.send_json({
@@ -797,3 +865,111 @@ def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict 
         "brow_l_x": brow_l_x,
         "brow_r_x": brow_r_x,
     }
+
+
+# ============================================================
+# V2：Jev（System One）平行表情決策
+# ============================================================
+# mood → speaking_rate 規則表（源自 Hiyori.json speaking_rate_hints）
+_JEV_SPEAKING_RATE_MAP: dict[str, float] = {
+    "happy": 1.25,      # 開心興奮 1.1～1.4
+    "playful": 1.25,
+    "teasing": 1.25,
+    "sad": 0.8,         # 傷心沉思 0.7～0.9
+    "gloomy": 0.8,
+    "shy": 0.95,        # 撒嬌 0.9～1.0
+    "surprised": 1.15,  # 驚訝 1.1～1.2
+}
+
+
+def _resolve_jev_speaking_rate(emotion: str | None) -> float:
+    return _JEV_SPEAKING_RATE_MAP.get(emotion or "", 1.0)
+
+
+def _build_jev_last_expression(previous_expression_source: dict | None) -> dict | None:
+    """Jev state 的 last_expression：中文摘要 + 上一輪情緒/簽名/連續性快照。"""
+    summary_state = _summarize_previous_expression_state(previous_expression_source)
+    if not summary_state:
+        return None
+    snapshot = dict(summary_state)
+    for key in ("emotion", "performanceMode", "signature", "residue"):
+        value = (previous_expression_source or {}).get(key)
+        if value is not None:
+            snapshot[key] = value
+    return snapshot
+
+
+async def _decide_intent_via_jev(
+    user_message: str,
+    history: list,
+    jpaf_session,
+    last_emotion_state: dict | None,
+    previous_expression_source: dict | None,
+) -> dict:
+    """呼叫 Jev 取得 intent；失敗/逾時回 {}，由 normalize 用 DEFAULT_INTENT + 情緒記憶兜底。"""
+    state = build_jev_state(
+        user_message,
+        history,
+        jpaf_session=jpaf_session,
+        last_emotion_state=last_emotion_state,
+        last_expression=_build_jev_last_expression(previous_expression_source),
+    )
+    answers = await call_jev(state, build_questions())
+    if not answers:
+        print("[Jev] 無 answers，走 DEFAULT_INTENT + 情緒記憶 fallback")
+        return {}
+    intent = map_answers_to_intent(answers)
+    if intent.get("emotion"):
+        intent["speaking_rate"] = _resolve_jev_speaking_rate(intent["emotion"])
+    print(f"[Jev] intent: {intent}")
+    return intent
+
+
+async def _produce_and_send_jev_plan(
+    websocket: WebSocket,
+    broadcast_func,
+    model_name: str,
+    user_message: str,
+    history: list,
+    jpaf_session,
+    last_emotion_state: dict | None,
+    previous_expression_source: dict | None,
+    direct_override: dict | None,
+) -> dict:
+    """V2 平行路徑：Jev/規則層 intent → normalize → compile → 提前送 plan。
+
+    使用者訊息一到就以 create_task 與 Dialogue Agent 平行執行；
+    回傳 expression_plan 供主迴圈更新 carry state。"""
+    if direct_override:
+        intent = dict(direct_override)
+    else:
+        intent = await _decide_intent_via_jev(
+            user_message,
+            history,
+            jpaf_session,
+            last_emotion_state,
+            previous_expression_source,
+        )
+    if intent.get("emotion") and "speaking_rate" not in intent:
+        intent["speaking_rate"] = _resolve_jev_speaking_rate(intent["emotion"])
+
+    normalized = normalize_expression_intent(intent, None, previous_expression_source)
+    expression_plan = compile_expression_plan(
+        normalized,
+        model_name=model_name,
+        previous_state=previous_expression_source,
+    )
+    legacy_render = render_legacy_behavior_payload(expression_plan)
+    print(f"[Jev Expression Plan] {_summarize_expression_plan_for_log(expression_plan)}")
+
+    await websocket.send_json(expression_plan)
+    await broadcast_func(expression_plan)
+
+    for blink_payload in legacy_render["blink_payloads"]:
+        await websocket.send_json(blink_payload)
+        await broadcast_func(blink_payload)
+
+    await websocket.send_json(legacy_render["behavior_payload"])
+    await broadcast_func(legacy_render["behavior_payload"])
+
+    return {"expression_plan": expression_plan}
