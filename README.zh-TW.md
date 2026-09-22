@@ -113,6 +113,17 @@ npm run dev
 
 在瀏覽器開啟 `http://localhost:${FRONTEND_PORT}`。
 
+### Headless Chat 測試（不開前端）
+
+```bash
+cd backend
+python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt   # 腳本模式（20 輪範例對話表）
+python tools/chat_test_cli.py                                            # 互動模式
+python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
+```
+
+直接連 `/ws/chat` 進行真實 LLM 多輪對話測試，逐輪擷取回覆文字、情緒、JPAF 人格狀態與記憶檔變更。每次執行一律先重置記憶，保證全新測試起點。報告輸出至 `backend/log/chat_test_reports/`（以時間命名的 Markdown，已 gitignore）。
+
 ---
 
 ## 記憶系統說明

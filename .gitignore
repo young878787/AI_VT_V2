@@ -35,6 +35,7 @@ voice_clone_onnx/
 # ============================================================
 backend/memory/user_profile.json
 backend/memory/memory.md
+backend/memory/jpaf_state.json
 
 # ============================================================
 # Node.js / Frontend
@@ -67,6 +68,7 @@ Thumbs.db
 # ============================================================
 *.log
 logs/
+backend/log/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

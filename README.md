@@ -102,6 +102,31 @@ npm run dev
 # 並在 .env 設 TTS_ENABLED=true、TTS_LANGUAGE、TTS_VOICE_NAME
 ```
 
+## Headless Chat 測試（不開前端）
+
+`backend/tools/chat_test_cli.py` 可在不啟動前端的情況下，直接連 `/ws/chat` 進行真實 LLM 多輪對話測試，逐輪擷取回覆文字、情緒（behavior payload）、JPAF 人格狀態（persona / weights）與記憶檔變更（user_profile / memory.md / jpaf_state）。
+
+```bash
+cd backend
+
+# 腳本模式：使用對話表逐輪發送（backend/tools/chat_test_scenarios.txt 為 20 輪範例）
+python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt
+
+# 互動模式：手動輸入對話
+python tools/chat_test_cli.py
+
+# 限制輪數 / 自訂連線位置
+python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
+python tools/chat_test_cli.py --url ws://localhost:9000/ws/chat
+```
+
+每次執行一律先重置記憶（user_profile / memory.md / jpaf_state / 對話歷史），保證全新測試起點。輸出：
+
+- `backend/log/chat_test_report.jsonl` — 逐輪原始資料（append）
+- `backend/log/chat_test_reports/chat_test_YYYYMMDD_HHMMSS.md` — Markdown 報告（以時間命名，方便查閱舊結果），含逐輪摘要表、JPAF 演化與記憶時間線
+
+以上 log 檔案皆已 gitignore。每輪失敗（API 錯誤 / 斷線）會自動重連並重試（`--retries`，預設 2 次），避免單一失敗卡死整場測試。
+
 ## 作品展示
 
 - 作品展示網址（選填）：（待補）
