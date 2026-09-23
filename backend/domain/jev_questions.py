@@ -1,7 +1,7 @@
 """JEV Emotion / Action questions 與 Action answers → expression intent。"""
 import math
 
-from domain.emotion_state import EMOTION_FIELDS, PERSONALITY
+from domain.emotion_state import CHARACTER_EXPRESSION_PROFILE, EMOTION_FIELDS, PERSONALITY
 from domain.expression_intent_schema import (
     ALLOWED_ARCS,
     ALLOWED_EMOTIONS,
@@ -102,13 +102,24 @@ _EMOTION_QUESTIONS = {
     "wants_continue_interaction": "露西亞是否希望目前話題或親密互動繼續？",
 }
 
+_EMOTION_EVALUATION_RULES = (
+    "你是情緒狀態估計器，只估計露西亞此刻的內在情緒。",
+    "以 current_user_input 的當輪可觀察線索為最高優先；recent_dialogue 只用來解讀當輪線索。",
+    "previous_emotion_state 只供連續性參考，不代表本輪仍有相同情緒；沒有當輪支持證據時，降低對應分數，不沿用舊分數。",
+    "character_expression_profile 只可協助解讀模糊線索；不能獨立構成情緒證據，也不能直接提高任何情緒分數。",
+    "明確否認某種情緒通常是該情緒的反向證據；只有強烈、可觀察的相反線索才可推翻。",
+    "判斷 masking_positive_feeling 時，否認本身不足以提高分數；必須同時有可觀察的正面感受及掩飾行為。",
+    "relevant_memory 只能協助理解當輪提及的人事物，不能單獨作為情緒證據。",
+)
+
 
 def build_emotion_questions() -> dict:
     assert set(_EMOTION_QUESTIONS) == set(EMOTION_FIELDS)
+    rules = "\n".join(f"- {rule}" for rule in _EMOTION_EVALUATION_RULES)
     return {
         field: {
             "type": "noul",
-            "instructions": question + "結合 personality、recent_dialogue、previous_emotion_state 與 current_user_input 獨立判斷；不輸出理由。",
+            "instructions": f"{question}\n\n判斷規則：\n{rules}\n不輸出理由。",
             "criteria": {"true": "符合", "false": "不符合"},
         }
         for field, question in _EMOTION_QUESTIONS.items()
@@ -130,7 +141,7 @@ def build_emotion_context(
         and isinstance(msg.get("content"), str)
     ][-16:]
     context = {
-        "personality": PERSONALITY,
+        "character_expression_profile": CHARACTER_EXPRESSION_PROFILE,
         "recent_dialogue": dialogue,
         "current_user_input": user_message[:4000],
     }
@@ -224,7 +235,7 @@ def build_action_context(
     previous_expression_carry_state: dict | None,
 ) -> dict:
     state = {
-        "personality": emotion_context["personality"],
+        "personality": PERSONALITY,
         "recent_dialogue": emotion_context["recent_dialogue"],
         "current_user_input": emotion_context["current_user_input"],
         "current_emotion_state": current_emotion_state,

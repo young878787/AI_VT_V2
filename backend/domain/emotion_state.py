@@ -14,6 +14,17 @@ PERSONALITY = {
     ],
 }
 
+# JEV emotion scoring gets a separate, evidence-neutral profile. Keep behavioral
+# style cues here instead of sending the chat persona's emotional traits as priors.
+CHARACTER_EXPRESSION_PROFILE = {
+    "name": "露西亞",
+    "style": [
+        "傾向間接表達親密感",
+        "面對親密情緒時可能否認或轉移話題",
+    ],
+    "usage": "只協助解讀當輪模糊線索，不可直接提高任何情緒分數。",
+}
+
 EMOTION_FIELDS = (
     "shy",
     "pleased",

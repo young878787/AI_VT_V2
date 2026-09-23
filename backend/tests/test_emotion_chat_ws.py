@@ -14,7 +14,12 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from api.routes.chat_ws import websocket_endpoint
 from domain.agent_a_prompts import build_agent_a_prompt
-from domain.emotion_state import EMOTION_FIELDS, NEUTRAL_EMOTION_STATE
+from domain.emotion_state import (
+    CHARACTER_EXPRESSION_PROFILE,
+    EMOTION_FIELDS,
+    NEUTRAL_EMOTION_STATE,
+    PERSONALITY,
+)
 
 
 def emotion_answers(score=0.6):
@@ -116,7 +121,9 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(types.count("stream_end"), 1)
         self.assertNotIn("jpaf_update", types)
         self.assertIs(captured["chat_states"][0], captured["jev_states"][1]["current_emotion_state"])
-        self.assertEqual(captured["jev_states"][0]["personality"]["name"], "露西亞")
+        self.assertEqual(captured["jev_states"][0]["character_expression_profile"], CHARACTER_EXPRESSION_PROFILE)
+        self.assertNotIn("personality", captured["jev_states"][0])
+        self.assertEqual(captured["jev_states"][1]["personality"], PERSONALITY)
         self.assertNotIn("memory", str(captured["jev_states"][0]))
         self.assertIn("shy: 0.80", captured["prompts"][0])
         self.assertIn("只輸出使用者會聽見的純文字", captured["prompts"][0])

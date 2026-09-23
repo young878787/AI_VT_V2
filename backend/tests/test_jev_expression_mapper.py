@@ -11,6 +11,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from domain.emotion_state import (
+    CHARACTER_EXPRESSION_PROFILE,
     EMOTION_FIELDS,
     NEUTRAL_EMOTION_STATE,
     PERSONALITY,
@@ -58,6 +59,12 @@ class EmotionContractTests(unittest.TestCase):
         self.assertEqual(set(questions), set(EMOTION_FIELDS))
         self.assertTrue(all(item["type"] == "noul" for item in questions.values()))
         self.assertEqual(state_from_jev_answers(emotion_answers()), dict.fromkeys(EMOTION_FIELDS, 0.6))
+        for item in questions.values():
+            instructions = item["instructions"]
+            self.assertIn("當輪可觀察線索為最高優先", instructions)
+            self.assertIn("不能獨立構成情緒證據", instructions)
+            self.assertIn("previous_emotion_state 只供連續性參考", instructions)
+            self.assertIn("否認本身不足以提高分數", instructions)
 
     def test_rejects_partial_extra_invalid_and_nonfinite_states_atomically(self):
         valid = dict(NEUTRAL_EMOTION_STATE)
@@ -90,8 +97,9 @@ class EmotionContractTests(unittest.TestCase):
                 {"role": "assistant", "content": f"reply {index}"},
             ])
         context = build_emotion_context("latest", history, NEUTRAL_EMOTION_STATE)
-        self.assertEqual(set(context), {"personality", "recent_dialogue", "current_user_input", "previous_emotion_state"})
-        self.assertEqual(context["personality"], PERSONALITY)
+        self.assertEqual(set(context), {"character_expression_profile", "recent_dialogue", "current_user_input", "previous_emotion_state"})
+        self.assertEqual(context["character_expression_profile"], CHARACTER_EXPRESSION_PROFILE)
+        self.assertNotIn("personality", context)
         self.assertEqual(len(context["recent_dialogue"]), 16)
         self.assertEqual(context["recent_dialogue"][0]["text"], "user 2")
         self.assertNotIn("latest", str(context["recent_dialogue"]))
@@ -101,6 +109,7 @@ class EmotionContractTests(unittest.TestCase):
         emotion = dict.fromkeys(EMOTION_FIELDS, 0.5)
         context = build_emotion_context("hello", [], None)
         action_context = build_action_context(context, emotion, {"emotion": "happy"})
+        self.assertEqual(action_context["personality"], PERSONALITY)
         self.assertIs(action_context["current_emotion_state"], emotion)
         self.assertEqual(set(build_action_questions()), set(action_answers()))
         intent = map_answers_to_intent(action_answers())
