@@ -138,7 +138,11 @@ class EmotionContractTests(unittest.TestCase):
             mock.patch("infrastructure.memory_store.CHAT_SESSION_DIR", directory + "/sessions"), \
             mock.patch("infrastructure.memory_store.MEMORY_DIR", directory), \
             mock.patch("infrastructure.memory_store.USER_PROFILE_PATH", directory + "/profile.json"), \
-            mock.patch("infrastructure.memory_store.MEMORY_MD_PATH", directory + "/memory.md"):
+            mock.patch("infrastructure.memory_store.MEMORY_MD_PATH", directory + "/memory.md"), \
+            mock.patch("infrastructure.memory_records.MEMORY_MD_PATH", directory + "/memory.md"), \
+            mock.patch("infrastructure.memory_records.RECORDS_PATH", directory + "/records.json"), \
+            mock.patch("services.memory_jobs.JOB_DIR", directory + "/jobs"), \
+            mock.patch("services.memory_jobs.EPOCH_PATH", directory + "/jobs/epoch.json"):
             state = dict(NEUTRAL_EMOTION_STATE)
             for session_id in ("session_1", "session_2"):
                 save_session_emotion_state(session_id, state)

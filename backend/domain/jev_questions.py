@@ -119,10 +119,11 @@ def build_emotion_context(
     user_message: str,
     chat_history: list[dict],
     previous_emotion_state: dict | None,
+    relevant_memory: str = "",
 ) -> dict:
     """只傳最近 8 輪已完成的真實對話，不含本輪 user 訊息。"""
     dialogue = [
-        {"role": msg["role"], "text": msg["content"]}
+        {"role": msg["role"], "text": msg["content"][:500]}
         for msg in chat_history
         if isinstance(msg, dict)
         and msg.get("role") in ("user", "assistant")
@@ -131,10 +132,12 @@ def build_emotion_context(
     context = {
         "personality": PERSONALITY,
         "recent_dialogue": dialogue,
-        "current_user_input": user_message,
+        "current_user_input": user_message[:4000],
     }
     if previous_emotion_state is not None:
         context["previous_emotion_state"] = previous_emotion_state
+    if relevant_memory:
+        context["relevant_memory"] = relevant_memory[:800]
     return context
 
 
@@ -228,6 +231,10 @@ def build_action_context(
     }
     if previous_expression_carry_state is not None:
         state["previous_expression_carry_state"] = previous_expression_carry_state
+    if emotion_context.get("relevant_memory"):
+        state["relevant_memory"] = emotion_context["relevant_memory"]
+    if emotion_context.get("current_action"):
+        state["current_action"] = emotion_context["current_action"]
     return state
 
 

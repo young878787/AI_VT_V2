@@ -4,7 +4,6 @@ import pathlib
 import sys
 import tempfile
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import WebSocketDisconnect
@@ -39,17 +38,28 @@ class FakeWebSocket:
     def __init__(self, frames):
         self.frames = [json.dumps(frame) for frame in frames]
         self.payloads = []
+        self._turn_finished = asyncio.Event()
+        self._wait_for_turn = False
 
     async def accept(self):
         pass
 
     async def receive_text(self):
+        if self._wait_for_turn:
+            await self._turn_finished.wait()
+            self._turn_finished.clear()
+            self._wait_for_turn = False
         if self.frames:
-            return self.frames.pop(0)
+            frame = self.frames.pop(0)
+            if "\"content\"" in frame:
+                self._wait_for_turn = True
+            return frame
         raise WebSocketDisconnect()
 
     async def send_json(self, payload):
         self.payloads.append(payload)
+        if payload.get("type") == "stream_end":
+            self._turn_finished.set()
 
 
 class EmotionWebSocketTests(unittest.TestCase):
@@ -68,25 +78,22 @@ class EmotionWebSocketTests(unittest.TestCase):
             captured["prompts"].append(prompt)
             return prompt
 
-        async def fake_chat(messages):
+        async def fake_chat(messages, send_chunk):
             await asyncio.sleep(0)
+            await send_chunk("露西亞的回覆")
             return "露西亞的回覆"
-
-        async def fake_memory(messages, model_name):
-            return SimpleNamespace(choices=[])
 
         async def run():
             with patch("api.routes.chat_ws.call_jev", side_effect=fake_call_jev), \
-                patch("api.routes.chat_ws.collect_agent_a", side_effect=fake_chat), \
-                patch("api.routes.chat_ws.call_memory_agent", side_effect=fake_memory), \
+                patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
                 patch("api.routes.chat_ws.build_agent_a_prompt", side_effect=fake_prompt), \
                 patch("api.routes.chat_ws.broadcast_to_displays"), \
                 patch("api.routes.chat_ws.load_user_profile", return_value={}), \
-                patch("api.routes.chat_ws.load_memory_notes", return_value=""), \
+                patch("api.routes.chat_ws.search_relevant_records", return_value=""), \
                 patch("api.routes.chat_ws.log_turn"), \
                 patch("api.routes.chat_ws.synthesize_and_send_voice"), \
-                patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", persistence), \
-                patch("api.routes.chat_ws.COMPRESS_TOKEN_THRESHOLD", 999999):
+                patch("api.routes.chat_ws.enqueue_input"), \
+                patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", persistence):
                 if storage is None:
                     await websocket_endpoint(socket)
                 else:
@@ -102,8 +109,10 @@ class EmotionWebSocketTests(unittest.TestCase):
             [{"content": "妳今天好可愛"}], [emotion_answers(0.8), action_answers()],
         )
         types = [payload["type"] for payload in socket.payloads]
-        self.assertEqual(types[0], "emotion_update")
+        self.assertEqual(types[:2], ["input_accepted", "emotion_update"])
         self.assertEqual(types.count("expression_plan"), 1)
+        self.assertNotIn("behavior", types)
+        self.assertNotIn("blink_control", types)
         self.assertEqual(types.count("stream_end"), 1)
         self.assertNotIn("jpaf_update", types)
         self.assertIs(captured["chat_states"][0], captured["jev_states"][1]["current_emotion_state"])

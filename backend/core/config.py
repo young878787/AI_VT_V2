@@ -68,6 +68,25 @@ API_KEY: str = os.getenv(_cfg["api_key_env"], "")
 BASE_URL: str = os.getenv(_cfg["base_url_env"], _cfg["base_url_default"])
 MODEL_NAME: str = os.getenv(_cfg["model_env"], _cfg["model_default"])
 
+
+def role_model_config(role: str) -> tuple[str, str, str, str]:
+    """Chat／Memory 可獨立選 provider；未指定時沿用原設定。"""
+    provider = (os.getenv(f"{role}_AI_PROVIDER") or AI_PROVIDER).lower().strip()
+    if provider not in _PROVIDER_CONFIG:
+        raise RuntimeError(f"未知的 {role}_AI_PROVIDER='{provider}'")
+    cfg = _PROVIDER_CONFIG[provider]
+    api_key = os.getenv(cfg["api_key_env"], "")
+    if not api_key:
+        raise RuntimeError(f"{role}_AI_PROVIDER={provider} 需要 {cfg['api_key_env']}")
+    base_url = os.getenv(cfg["base_url_env"], cfg["base_url_default"])
+    model = os.getenv(f"{role}_MODEL_NAME") or os.getenv(cfg["model_env"], cfg["model_default"])
+    return provider, api_key, base_url, model
+
+
+CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_URL, CHAT_MODEL_NAME = role_model_config("CHAT")
+MEMORY_PROVIDER, MEMORY_API_KEY, MEMORY_BASE_URL, MEMORY_MODEL_NAME = role_model_config("MEMORY")
+CHAT_CONTEXT_TOKEN_BUDGET: int = max(512, int(os.getenv("CHAT_CONTEXT_TOKEN_BUDGET", "8192")))
+
 # 後備模型（僅 qwen provider 使用；其他 provider 設為 None）
 FALLBACK_MODEL: str | None = None
 if AI_PROVIDER == "qwen":

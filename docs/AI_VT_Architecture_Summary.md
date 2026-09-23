@@ -37,7 +37,7 @@ User Input ────────►│ Input Processor │
              ▼                             ▼
       ┌─────────────┐               ┌─────────────┐
       │ JEV Decision │               │ Chat Model  │
-      │   Engine     │               │ 快速模型     │
+      │   Engine     │               │ 快速/急速模型     │
       └──────┬──────┘               └──────┬──────┘
              │                             │
              │                             ▼
@@ -76,7 +76,7 @@ User Input ────────►│ Input Processor │
 
 ──────────────── Background ────────────────
 
-Conversation / Interaction Event
+Conversation / Interaction Event (後端可使用雲端大模型 配置處理 不用很快)
               │
               ▼
       ┌───────────────┐
@@ -96,6 +96,7 @@ Conversation / Interaction Event
       ┌───────┼──────────────┐
       ▼       ▼              ▼
     短期     長期           特別記憶
+    user.update 或是 memory.update 事件
               │
               ▼
           遺忘 / 衰減
@@ -159,6 +160,8 @@ Chat Engine 負責：
 Chat Model 不應負責維護完整角色狀態。
 
 它只需要取得必要的 Context。
+包含對話上下文，user對話關聯記憶(之後memory引用向量等)，還有情緒狀態
+高輸入理解資訊 輸出低 處理回覆對話
 
 ---
 

@@ -13,8 +13,14 @@ from api.routes.display_ws import router as display_router
 from api.routes.expression_debug_router import router as expression_debug_router
 from api.routes.memory_router import router as memory_router
 from api.routes.voice_ws import router as voice_router
+from services.memory_jobs import start_worker
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+async def start_background_memory() -> None:
+    start_worker()
 
 app.add_middleware(
     CORSMiddleware,

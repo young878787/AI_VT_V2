@@ -972,6 +972,14 @@ export class LAppModel extends CubismUserModel {
     );
   }
 
+  public cancelExpressionAction(): void {
+    this._activeExpressionEvents = [];
+    this._activeMotionPlan = null;
+    this._activeEyeMotionPlan = null;
+    this._activeIdlePlan = null;
+    this.setAiBehavior(0, 0, 1, 1, 0.2);
+  }
+
   public applyMotionPlan(motionPlan?: ExpressionMotionPlan): void {
     this._activeMotionPlan = motionPlan ?? null;
     this._motionPlanStartedAtMs = motionPlan ? performance.now() : 0;

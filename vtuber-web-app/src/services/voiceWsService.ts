@@ -50,7 +50,7 @@ class VoiceWsService {
                 if (data.type === 'asr_final') {
                     if (data.text.trim()) {
                         // 辨識完成 → 作為使用者訊息送進聊天管線
-                        wsService.sendMessage(data.text.trim());
+                        wsService.sendMessage(data.text.trim(), 'voice');
                     }
                 } else if (data.type === 'error') {
                     console.error('[VoiceWS] 錯誤:', data.message);

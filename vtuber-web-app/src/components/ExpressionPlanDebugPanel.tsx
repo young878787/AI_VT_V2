@@ -9,6 +9,7 @@ import {
   type DebugExpressionOptions,
 } from '../dev/expressionPlanDebugFixtures';
 import { compileDebugExpressionPlan } from '../services/expressionDebugService';
+import { actionScheduler } from '../services/actionScheduler';
 import { useAppStore } from '../store/appStore';
 import type { ExpressionPlanPayload } from '../types/expressionPlan';
 import { isExpressionPlanPayload } from '../types/expressionPlan';
@@ -50,8 +51,6 @@ function summarizePlan(label: string, plan: ExpressionPlanPayload): AppliedSumma
 }
 
 export const ExpressionPlanDebugPanel = () => {
-  const setExpressionPlan = useAppStore((state) => state.setExpressionPlan);
-  const setBlinkControl = useAppStore((state) => state.setBlinkControl);
   const currentModelName = useAppStore((state) => state.currentModelName);
   const [options, setOptions] = useState<DebugExpressionOptions>(DEFAULT_DEBUG_EXPRESSION_OPTIONS);
   const [summary, setSummary] = useState<AppliedSummary | null>(null);
@@ -78,10 +77,7 @@ export const ExpressionPlanDebugPanel = () => {
       return;
     }
 
-    setExpressionPlan(plan);
-    for (const command of plan.blinkPlan.commands) {
-      setBlinkControl(command.action, command.durationSec ?? 0, command.intervalMin, command.intervalMax);
-    }
+    actionScheduler.submit(plan, 'debug');
 
     setSummary(summarizePlan(label, plan));
     setLastError(null);

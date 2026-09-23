@@ -4,7 +4,10 @@ AI 客戶端：OpenAI 相容客戶端初始化、extra_body 組裝、含後備�
 import os
 from openai import AsyncOpenAI
 
-from core.config import AI_PROVIDER, API_KEY, BASE_URL, MODEL_NAME, FALLBACK_MODEL
+from core.config import (
+    AI_PROVIDER, API_KEY, BASE_URL, MODEL_NAME, FALLBACK_MODEL,
+    CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_URL, MEMORY_PROVIDER, MEMORY_API_KEY, MEMORY_BASE_URL,
+)
 from core.utils import env_flag
 
 # 初始化 OpenAI 相容客戶端（OpenRouter / Nvidia / Google AI Studio / DashScope）
@@ -12,6 +15,19 @@ client: AsyncOpenAI = AsyncOpenAI(
     base_url=BASE_URL,
     api_key=API_KEY,
 )
+
+_role_clients = {
+    "chat": client if (CHAT_PROVIDER, CHAT_BASE_URL) == (AI_PROVIDER, BASE_URL) else AsyncOpenAI(base_url=CHAT_BASE_URL, api_key=CHAT_API_KEY),
+    "memory": client if (MEMORY_PROVIDER, MEMORY_BASE_URL) == (AI_PROVIDER, BASE_URL) else AsyncOpenAI(base_url=MEMORY_BASE_URL, api_key=MEMORY_API_KEY),
+}
+
+
+def no_thinking_extra_body(provider: str) -> dict:
+    if provider == "nvidia":
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    if provider == "qwen":
+        return {"enable_thinking": False}
+    return {}
 
 
 def _build_extra_body() -> dict:
@@ -58,11 +74,13 @@ async def chat_create_with_fallback(**kwargs) -> object:
     自動切換 model= 重試一次。僅 qwen provider 有後備模型，
     其他 provider 的 FALLBACK_MODEL 為 None，行為等同直接呼叫。
     """
+    role = kwargs.pop("role", None)
+    target = _role_clients.get(role, client)
     try:
-        return await client.chat.completions.create(**kwargs)
+        return await target.chat.completions.create(**kwargs)
     except Exception as e:
-        if FALLBACK_MODEL and kwargs.get("model") != FALLBACK_MODEL:
+        if (role is None or (role == "chat" and CHAT_PROVIDER == AI_PROVIDER) or (role == "memory" and MEMORY_PROVIDER == AI_PROVIDER)) and FALLBACK_MODEL and kwargs.get("model") != FALLBACK_MODEL:
             print(f"[Fallback] 主模型失敗 ({e})，切換至後備模型: {FALLBACK_MODEL}")
             fallback_kwargs = {**kwargs, "model": FALLBACK_MODEL}
-            return await client.chat.completions.create(**fallback_kwargs)
+            return await target.chat.completions.create(**fallback_kwargs)
         raise

@@ -69,7 +69,15 @@ def get_meaningful_memory_tool_arguments(tool_name: str, args: dict, model_name:
         content = _clean_non_empty_string(args.get("content"))
         if not content:
             return None
-        return {"content": content}
+        result = {"content": content}
+        if args.get("memory_type") in {"short_term", "long_term", "special"}:
+            result["memory_type"] = args["memory_type"]
+        if args.get("ttl") in {"session", "long", "forever"}:
+            result["ttl"] = args["ttl"]
+        importance = args.get("importance")
+        if isinstance(importance, (int, float)) and not isinstance(importance, bool) and 0 <= importance <= 1:
+            result["importance"] = float(importance)
+        return result
 
     return args
 

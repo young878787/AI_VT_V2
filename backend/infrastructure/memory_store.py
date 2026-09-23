@@ -5,6 +5,7 @@
 import os
 import json
 import tempfile
+import threading
 from datetime import datetime
 
 from core.config import (
@@ -24,6 +25,22 @@ from domain.emotion_state import validate_emotion_state
 # ============================================================
 _profile_cache: dict | None = None
 _memory_cache: str | None = None
+_write_lock = threading.RLock()
+
+
+def _atomic_write(path: str, content: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(path), delete=False) as file:
+            temporary_path = file.name
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 # ============================================================
@@ -54,9 +71,7 @@ def save_user_profile(profile: dict) -> None:
     """寫入 user_profile.json，同步更新 cache"""
     global _profile_cache
     profile["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(USER_PROFILE_PATH, "w", encoding="utf-8") as f:
-        json.dump(profile, f, ensure_ascii=False, indent=2)
+    _atomic_write(USER_PROFILE_PATH, json.dumps(profile, ensure_ascii=False, indent=2))
     _profile_cache = profile
 
 
@@ -71,16 +86,10 @@ def load_memory_notes(max_lines: int = 50) -> str:
     try:
         with open(MEMORY_MD_PATH, "r", encoding="utf-8") as f:
             lines = f.readlines()
-        # 跳過標題行，取最後 max_lines 條有效內容
         content_lines = [
             l.strip() for l in lines if l.strip() and not l.strip().startswith("# ")
         ]
-        recent = (
-            content_lines[-max_lines:]
-            if len(content_lines) > max_lines
-            else content_lines
-        )
-        _memory_cache = "\n".join(recent)
+        _memory_cache = "\n".join(content_lines[-max_lines:])
         return _memory_cache
     except FileNotFoundError:
         _memory_cache = ""
@@ -90,11 +99,15 @@ def load_memory_notes(max_lines: int = 50) -> str:
 def append_memory_note(note: str) -> None:
     """追加一條記憶到 memory.md，並使 cache 失效（下次重新讀取）"""
     global _memory_cache
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    date_prefix = datetime.now().strftime("[%m/%d %H:%M]")
-    with open(MEMORY_MD_PATH, "a", encoding="utf-8") as f:
-        f.write(f"\n- {date_prefix} {note}")
-    _memory_cache = None  # 使 cache 失效，下次重新讀取最新內容
+    with _write_lock:
+        try:
+            with open(MEMORY_MD_PATH, "r", encoding="utf-8") as file:
+                existing = file.read()
+        except FileNotFoundError:
+            existing = "# Memory Notes\n"
+        date_prefix = datetime.now().strftime("[%m/%d %H:%M]")
+        _atomic_write(MEMORY_MD_PATH, existing + f"\n- {date_prefix} {note}")
+        _memory_cache = None
 
 
 # ============================================================
@@ -166,6 +179,33 @@ def reset_memory_notes() -> None:
     with open(MEMORY_MD_PATH, "w", encoding="utf-8") as f:
         f.write("# Memory Notes\n")
     _memory_cache = None
+
+
+def _session_summary_path(session_id: str) -> str:
+    normalized = normalize_session_id(session_id)
+    if not normalized or normalized != session_id:
+        raise ValueError("無效的 session_id")
+    return os.path.join(CHAT_SESSION_DIR, f"{normalized}.summary.json")
+
+
+def load_session_summary(session_id: str) -> str:
+    try:
+        with open(_session_summary_path(session_id), "r", encoding="utf-8") as file:
+            value = json.load(file)
+        return value.get("summary", "") if isinstance(value, dict) else ""
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+
+
+def save_session_summary(session_id: str, summary: str) -> None:
+    _atomic_write(_session_summary_path(session_id), json.dumps({"summary": summary[:4000]}, ensure_ascii=False))
+
+
+def reset_session_summary(session_id: str) -> None:
+    try:
+        os.unlink(_session_summary_path(session_id))
+    except FileNotFoundError:
+        pass
 
 
 # ============================================================

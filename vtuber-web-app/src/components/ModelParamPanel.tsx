@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
+import { actionScheduler } from '../services/actionScheduler';
 import {
   PARAM_DEFS,
   MISSING_PARAMS,
@@ -80,6 +81,7 @@ export const ModelParamPanel: React.FC = () => {
     if (eyeSync && key === 'browLX') next.browRX = -value;
     if (eyeSync && key === 'browRX') next.browLX = -value;
     setParams(next);
+    actionScheduler.manualControl();
 
     const model = LAppLive2DManager.getInstance().getActiveModel();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -118,6 +120,7 @@ export const ModelParamPanel: React.FC = () => {
   }, []);
 
   const handleReset = useCallback(() => {
+    actionScheduler.manualControl();
     setParams(DEFAULT_PARAMS);
     setIsManual(false);
     const model = LAppLive2DManager.getInstance().getActiveModel();

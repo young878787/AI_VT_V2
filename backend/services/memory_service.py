@@ -2,7 +2,7 @@
 記憶服務：user_profile 更新邏輯（Use Case 層）。
 """
 from domain.tools.schema_loader import load_schema
-from infrastructure.memory_store import load_user_profile, save_user_profile
+from infrastructure.memory_store import load_user_profile, save_user_profile, _write_lock
 
 
 def _get_allowed_profile_field_types(model_name: str) -> tuple[set[str], set[str]]:
@@ -48,9 +48,16 @@ def _get_allowed_profile_field_types(model_name: str) -> tuple[set[str], set[str
     return list_fields, str_fields
 
 
-def execute_profile_update(action: str, field: str, value: str, model_name: str = "Hiyori") -> dict:
+def execute_profile_update(action: str, field: str, value: str, model_name: str = "Hiyori", operation_id: str | None = None) -> dict:
     """執行 user_profile 的更新操作"""
+    with _write_lock:
+        return _execute_profile_update_locked(action, field, value, model_name, operation_id)
+
+
+def _execute_profile_update_locked(action: str, field: str, value: str, model_name: str, operation_id: str | None) -> dict:
     profile = load_user_profile()
+    if operation_id and operation_id in profile.get("_applied_operations", []):
+        return profile
 
     list_fields, str_fields = _get_allowed_profile_field_types(model_name)
 
@@ -69,5 +76,7 @@ def execute_profile_update(action: str, field: str, value: str, model_name: str 
     elif field in str_fields:
         profile[field] = value
 
+    if operation_id:
+        profile.setdefault("_applied_operations", []).append(operation_id)
     save_user_profile(profile)
     return profile

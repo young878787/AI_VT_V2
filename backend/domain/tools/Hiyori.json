@@ -204,6 +204,22 @@
               "content": {
                 "type": "string",
                 "description": "要記錄的事件內容"
+              },
+              "memory_type": {
+                "type": "string",
+                "enum": ["short_term", "long_term", "special"],
+                "description": "短期脈絡、長期事實或生日／承諾等特殊事件"
+              },
+              "importance": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "此事對未來互動的重要程度"
+              },
+              "ttl": {
+                "type": "string",
+                "enum": ["session", "long", "forever"],
+                "description": "建議保留時間，最終由後端規則決定"
               }
             },
             "required": ["content"]
@@ -477,7 +493,7 @@
       },
       "save_memory_note": {
         "description": "當對話中發生以下情況時，應該呼叫：用戶分享重要經歷或事件、討論了有趣或有意義的話題、用戶透露重要的個人近況、對話中達成了某種共識或約定。",
-        "format": "簡潔描述事件（10-30字）"
+        "format": "簡潔描述事件（10-30字）；可附 memory_type、importance（0 到 1）與 ttl，生日或承諾選 special"
       },
       "principles": [
         "寧可多記也不要漏記——記錄了不重要的東西只是浪費一點空間，但漏掉重要資訊會讓用戶覺得你不記得他",

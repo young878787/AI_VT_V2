@@ -10,6 +10,7 @@ import { Priority } from '../live2d/LAppDefine';
 import { LipSyncManager } from '../audio/LipSyncManager';
 import { MicrophoneManager } from '../audio/MicrophoneManager';
 import { voiceWsService } from '../services/voiceWsService';
+import { actionScheduler } from '../services/actionScheduler';
 import { ModelImportButton } from './ModelImportButton';
 import './ControlPanel.css';
 
@@ -225,11 +226,13 @@ export const ControlPanel = () => {
 
   // 動作播放
   const handlePlayMotion = useCallback((index: number) => {
+    actionScheduler.manualControl();
     const model = LAppLive2DManager.getInstance().getActiveModel();
     if (model) model.startMotion(selectedMotionGroup, index, Priority.Force);
   }, [selectedMotionGroup]);
 
   const handlePlayRandomMotion = useCallback(() => {
+    actionScheduler.manualControl();
     const model = LAppLive2DManager.getInstance().getActiveModel();
     if (model) model.startRandomMotion(selectedMotionGroup, Priority.Force);
   }, [selectedMotionGroup]);

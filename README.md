@@ -11,25 +11,25 @@
 ## 核心功能
 
 - AI 生成心情對應（核心差異）：每次回覆都由 LLM 依語境即時生成心情與表情參數，而非播放固定動作；同樣的話在開心、害羞、生氣時表情不同，每次皆有隨機性與多元變化。
-- 即時表情驅動：LLM 透過結構化 tool call（`set_ai_behavior` / expression plan）同時輸出回覆文字與表情參數（眼睛、眉毛、嘴、臉紅、頭部角度、呼吸）。
+- 即時表情驅動：JEV 決定結構化表演意圖，Chat 模型獨立輸出對白；`expression_plan` 控制眼睛、眉毛、嘴、臉紅與頭部參數（眼睛、眉毛、嘴、臉紅、頭部角度、呼吸）。
 - 獨特表情編譯：後端 `compile_expression_plan()` 將 AI 意圖轉為前端可播放的 expression plan，含平滑插值過渡。
-- 持久化記憶：`backend/memory/` 下以 `user_profile.json` 存使用者特徵偏好，以 `memory.md` 追加記錄重要事件，跨 session 有效。
-- 上下文自動壓縮：對話歷史接近 token 上限（約 230,000 tokens）時，自動摘要舊訊息並寫入記憶，維持 context window 可用。
+- 持久化記憶：`backend/memory/` 下以 `user_profile.json` 存使用者特徵偏好，以 `memory_records.json` 保存重要事件，`memory.md` 提供舊資料匯入與相容檢視，跨 session 有效。
+- 背景記憶整理：Memory Agent 分類並保存事件；已採納紀錄的長期摘要保存來源 ID，不覆蓋原紀錄。
+- 上下文自動壓縮：Chat 只取最近對話與有界相關記憶；手動壓縮的摘要存於 session 專用檔，維持 context window 可用。
 - 可選 TTS 語音：支援 Google Cloud TTS（Chirp 3 HD），可開關（`TTS_ENABLED`）。
 - 手動除錯面板：ControlPanel / ModelParamPanel 可手動調參、即時檢視 Live2D 參數。
 
 ## 系統架構
 
 ```text
-使用者輸入
-  → React 前端 (AIChatPanel → wsService)
-  → WebSocket → Python FastAPI 後端 (/ws/chat)
-  → 組裝 System Prompt（含 user_profile + memory）
-  → LLM Provider (OpenRouter / NVIDIA / Google / Qwen)
-  → Tool Calls：表情意圖 + 記憶更新
-  → compile_expression_plan()
-  → WebSocket 回傳：串流文字 + expression_plan
-  → 前端 LAppModel 套用至 Live2D 模型（平滑插值）
+使用者文字／語音 → /ws/chat → 輸入正規化與 Memory 持久待辦
+                            ↓
+                        JEV Emotion → Runtime Emotion
+                            ├── Chat 逐段文字 → TTS
+                            └── JEV Action → expression compiler → expression_plan
+                                                        ↓
+                                  前端 Action Scheduler → Live2D adapter → LAppModel
+背景 Memory worker → user_profile.json／memory_records.json
 ```
 
 目錄結構（重點）：
@@ -41,7 +41,8 @@ AI_VT_V2/
 │   ├── requirements.txt       # Python 相依套件
 │   └── memory/                # 持久化記憶（gitignored，執行時自動建立）
 │       ├── user_profile.json  # 使用者個性與喜好
-│       └── memory.md          # 帶時間戳記的事件日誌
+│       ├── memory_records.json # 長期記憶真值
+│       └── memory_jobs/      # 可重跑的背景待辦
 └── vtuber-web-app/            # React + TypeScript + Vite 前端
     └── src/
         ├── components/        # AIChatPanel / ControlPanel / Live2DCanvas 等
@@ -50,19 +51,13 @@ AI_VT_V2/
         └── store/appStore.ts  # Zustand 全域狀態
 ```
 
-前端、後端、模型、資料與外部服務協作方式：
-
-1. 使用者在聊天面板輸入訊息，前端經 WebSocket 送至後端。
-2. 後端載入 `user_profile.json` 與 `memory.md`，動態組裝 System Prompt，再呼叫所選 LLM provider。
-3. LLM 回傳結構化 tool call：表情意圖（`set_ai_behavior`）與記憶更新（`update_user_profile`、`save_memory_note`）。
-4. 後端經 expression compiler 產生 `expression_plan`，與串流文字一併回傳前端。
-5. 前端 `LAppModel` 以平滑插值將參數套用至 Live2D 模型；記憶檔為 JSON + Markdown 純文字檔，無額外資料庫。
+前端送出 `turn_id`；後端固定本輪對話、profile 與相關記憶快照。JEV 更新六欄情緒後，Chat 逐段回覆，Action 獨立產生 `expression_plan`。前端 Scheduler 統一仲裁對話與手動操作；背景 Memory worker 依持久待辦判斷、去重並寫入記憶。`stream_end` 只表示文字完成，Action 與 Memory 可稍後完成。
 
 ## 使用技術
 
 | 類型 | 技術／服務 | 用途 |
 | --- | --- | --- |
-| AI 模型 | OpenRouter / NVIDIA Build / Google AI Studio (Gemini) / 阿里雲 Qwen（DashScope，相容 OpenAI API） | 對話生成、表情意圖與記憶更新 tool call |
+| AI 模型 | OpenRouter / NVIDIA Build / Google AI Studio (Gemini) / 阿里雲 Qwen（DashScope，相容 OpenAI API） | Chat 對白、Memory 判斷；JEV 另行決定情緒與動作 |
 | 前端 | React 19、TypeScript、Vite（rolldown-vite）、Zustand | UI、Live2D 渲染、WebSocket 客戶端、全域狀態 |
 | 後端 | Python、FastAPI、WebSocket（uvicorn）、tiktoken | 對話編排、expression compiler、記憶系統、token 估算 |
 | Sponsor 技術 | 阿里雲 Qwen（DashScope）、Google Cloud Text-to-Speech（Chirp 3 HD） | LLM 對話備選模型、語音合成（可選） |
@@ -83,6 +78,8 @@ cp .env.example .env
 # OPENROUTER_API_KEY=your_key_here
 # BACKEND_PORT=9000
 # FRONTEND_PORT=5287
+# Chat／背景 Memory 可選擇分開設定 CHAT_AI_PROVIDER、CHAT_MODEL_NAME、
+# MEMORY_AI_PROVIDER、MEMORY_MODEL_NAME；未設定時沿用 AI_PROVIDER 的模型。
 
 # 4. 啟動後端（Windows PowerShell）
 cd backend
@@ -142,7 +139,7 @@ JEV Emotion 與 Action 使用 OpenRouter System One，啟動前需設定 `OPENRO
 
 - Live2D 模型以 Hiyori（SDK 範例模型）調校為主，換其他模型時表情幅度可能需重新調 adapter。
 - Cubism SDK 與模型 binary 為 gitignored，新環境需手動放置，無法一鍵重現。
-- 對話歷史接近 token 上限時依賴自動摘要，超長記憶仍可能遺失細節。
+- Chat 僅取最近 8 輪與有界相關記憶；較早但未摘要的細節可能不在當輪上下文。
 - TTS 需要 Google Cloud ADC 登入，未設定則僅有文字無語音。
 - 目前無 CI，`npm run build` 在部分 Windows 環境可能出現 `spawn EPERM`（與程式碼正確性無關，重試或換終端機即可）。
 
@@ -150,7 +147,7 @@ JEV Emotion 與 Action 使用 OpenRouter System One，啟動前需設定 `OPENRO
 
 - 多模型 expression adapter（Haru 等）與表情差異放大。
 - TTS 串流播放與口型（lip sync）對齊優化。
-- 記憶檢索排序與 session 級對話持久化（`CHAT_PERSISTENCE_*` 目前預設關閉）。
+- 更精細的記憶檢索排序與長期情緒趨勢；session 級對話持久化（`CHAT_PERSISTENCE_*` 目前預設關閉）。
 - 補上 `LICENSE` 與 CI（lint / typecheck / backend unittest）。
 
 ## 第三方服務、資料與素材

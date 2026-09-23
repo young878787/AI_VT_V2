@@ -40,7 +40,24 @@ def snapshot_memory(memory_dir: Path) -> dict:
     return {
         "user_profile": read(memory_dir / "user_profile.json"),
         "memory_md": read(memory_dir / "memory.md"),
+        "memory_records": read(memory_dir / "memory_records.json"),
     }
+
+
+async def wait_memory_job(memory_dir: Path, event_id: str | None, timeout: float = 30) -> str | None:
+    if not event_id:
+        return None
+    path = memory_dir / "memory_jobs" / f"{event_id}.json"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            job = json.loads(path.read_text(encoding="utf-8"))
+            if job.get("status") in {"done", "failed"}:
+                return job["status"]
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        await asyncio.sleep(0.1)
+    return "timeout"
 
 
 def create_run_dir() -> Path:
@@ -123,33 +140,49 @@ async def run_turn(
     emotion = source = expression = expression_debug = None
     errors = []
     first_text_sec = None
+    emotion_sec = expression_sec = stream_end_sec = None
+    event_id = None
+    turn_id = uuid.uuid4().hex
+    stream_complete = False
     try:
         async with asyncio.timeout(timeout):
             await ws.send(json.dumps({
                 "type": "chat", "content": user_message, "model_name": model_name,
                 "session_id": session_id,
+                "turn_id": turn_id,
             }, ensure_ascii=False))
             while True:
                 message = json.loads(await ws.recv())
                 message_type = message.get("type")
+                if message.get("turn_id") not in (None, turn_id):
+                    continue
+                if message_type == "input_accepted":
+                    event_id = message.get("event_id")
                 if message_type == "emotion_update":
                     emotion = message.get("state")
                     source = message.get("source")
+                    emotion_sec = round(time.monotonic() - started, 2)
                 elif message_type == "expression_plan":
                     expression_debug = message.get("debug")
                     expression = (expression_debug or {}).get("intentEmotion")
+                    expression_sec = round(time.monotonic() - started, 2)
                 elif message_type == "text_stream":
                     if first_text_sec is None:
                         first_text_sec = round(time.monotonic() - started, 2)
                     reply_parts.append(message.get("content", ""))
                 elif message_type == "error":
                     errors.append(message.get("content", "未知錯誤"))
-                if message_type in ("stream_end", "error"):
+                if message_type == "stream_end":
+                    stream_complete = True
+                    stream_end_sec = round(time.monotonic() - started, 2)
+                if message_type == "error" or (stream_complete and expression is not None):
                     break
     except TimeoutError:
         errors.append(f"單輪逾時（>{timeout:g}s）")
     except (websockets.ConnectionClosed, OSError, ValueError) as exc:
         errors.append(f"連線或回應錯誤：{exc}")
+    memory_status = await wait_memory_job(memory_dir, event_id) if not errors else None
+    memory_completion_sec = round(time.monotonic() - started, 2) if memory_status else None
     after = snapshot_memory(memory_dir)
     return {
         "turn": turn,
@@ -161,8 +194,13 @@ async def run_turn(
         "expression": expression,
         "expression_debug": expression_debug,
         "memory_changes": {key: after[key] for key in after if after[key] != before[key]},
+        "memory_job_status": memory_status,
         "errors": errors,
         "latency_first_text_sec": first_text_sec,
+        "latency_emotion_sec": emotion_sec,
+        "latency_expression_sec": expression_sec,
+        "latency_stream_end_sec": stream_end_sec,
+        "latency_memory_completion_sec": memory_completion_sec,
         "duration_sec": round(time.monotonic() - started, 2),
     }
 

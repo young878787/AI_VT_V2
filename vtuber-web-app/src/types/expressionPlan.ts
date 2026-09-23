@@ -163,6 +163,7 @@ export type BlinkAction = BlinkCommand['action']
 
 export interface ExpressionPlanPayload {
   type: 'expression_plan'
+  turn_id?: string
   basePose: ExpressionBasePose
   microEvents: ExpressionMicroEvent[]
   sequence: ExpressionMicroEvent[]

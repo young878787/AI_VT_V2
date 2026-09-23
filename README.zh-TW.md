@@ -9,9 +9,9 @@
 ## 核心能力
 
 - AI 根據對話內容即時驅動 Live2D 模型的表情參數（眼睛、眉毛、嘴角、臉紅、頭部動作）。
-- 每次回覆均搭配 AI 自行設計的獨特表情，透過工具呼叫（Tool Calls）實現。
+- JEV 決定情緒與表演意圖，後端編譯 expression plan，前端 Scheduler 控制播放。
 - 持久化記憶系統能跨對話記住使用者的個性特徵、喜好及重要事件。
-- 當對話歷史趨近模型的 token 上限時，系統自動壓縮舊訊息並產生摘要寫入記憶。
+- Chat 使用有界近期對話與相關記憶；對話摘要保存在 session 專用檔。
 
 ---
 
@@ -24,7 +24,8 @@ AI_VT_V2/
 │   ├── requirements.txt       # Python 相依套件
 │   └── memory/                # 持久化記憶（已 gitignore，執行時自動建立）
 │       ├── user_profile.json  # 使用者個性與喜好資料
-│       └── memory.md          # 帶時間戳記的事件日誌
+│       ├── memory_records.json # 長期記憶紀錄
+│       └── memory_jobs/      # 背景記憶待辦
 │
 └── vtuber-web-app/            # React + TypeScript + Vite 前端
     └── src/
@@ -61,12 +62,10 @@ AI_VT_V2/
 
 ## 運作流程
 
-1. 使用者在聊天面板輸入訊息。
-2. 前端透過 WebSocket 傳送至 Python 後端。
-3. 後端動態組裝 System Prompt（包含使用者畫像與共同回憶），透過選定 provider（OpenRouter / NVIDIA / Google AI Studio）呼叫 LLM。
-4. LLM 使用結構化工具呼叫決定表情參數（`set_ai_behavior`），並視情況更新記憶（`update_user_profile`、`save_memory_note`）。
-5. 後端將表情資料與串流文字同步回傳給前端。
-6. 前端以平滑插值的方式將表情參數套用至 Live2D 模型。
+1. 前端將文字或 ASR 完稿與 `turn_id` 送到 `/ws/chat`；後端固定本輪上下文快照並建立背景記憶待辦。
+2. JEV Emotion 更新六欄即時情緒；Chat 逐段產生可唸對白，JEV Action 並行決定表演意圖。
+3. expression compiler 產生 `expression_plan`，前端 Action Scheduler 仲裁後交給 Live2D 播放。
+4. `stream_end` 代表文字完成；Memory worker 之後可獨立判斷、去重並保存記憶。
 
 ---
 
@@ -89,6 +88,7 @@ OPENROUTER_API_KEY=your_key_here
 # 或使用 Google
 # AI_PROVIDER=google
 # GOOGLE_API_KEY=your_key_here
+# 可選：CHAT_AI_PROVIDER / CHAT_MODEL_NAME、MEMORY_AI_PROVIDER / MEMORY_MODEL_NAME
 ```
 
 ### 後端啟動
@@ -128,12 +128,14 @@ CLI 會自動啟動隔離測試後端，逐輪擷取回覆、JEV 六欄位情緒
 
 ## 記憶系統說明
 
-AI 在 `backend/memory/`（已排除版本控制）維護兩個持久化檔案：
+AI 在 `backend/memory/`（已排除版本控制）維護持久化資料：
 
 - `user_profile.json` — 記錄使用者的核心特徵、溝通風格、興趣與討厭的事物。
-- `memory.md` — 以追加方式記錄重要對話事件，附帶時間戳記。
+- `memory_records.json` — 結構化長期記憶；舊 `memory.md` 匯入前會備份，之後保留相容檢視。
+- `memory_jobs/` — 可追蹤、可重跑的背景記憶待辦。
+- `long_term_summary.json` — 由已採納紀錄生成、附來源 ID 的長期摘要。
 
-當對話歷史接近模型的 token 上限（約 230,000 tokens）時，系統會自動將較舊的訊息壓縮為摘要，並寫入 `memory.md`，以維持上下文視窗的可用空間。
+Chat 每輪使用最近 8 輪與有界相關記憶。手動壓縮的對話摘要存入對應 session 的摘要檔，不混入長期記憶。
 
 ---
 
