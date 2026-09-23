@@ -1,7 +1,9 @@
 """Chat WebSocket：JEV Emotion → 共用 state 的 Chat / JEV Action。"""
 
 import asyncio
+import hashlib
 import json
+import math
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -15,14 +17,20 @@ from core.config import (
 from core.prompt_logger import log_turn, reset_log
 from core.utils import normalize_session_id
 from domain.agent_a_prompts import build_agent_a_prompt
-from domain.emotion_state import resolve_emotion_state, NEUTRAL_EMOTION_STATE
-from domain.expression_intent_schema import ALLOWED_EMOTIONS, normalize_expression_intent
+from domain.emotion_state import EMOTION_FIELDS, resolve_emotion_state, NEUTRAL_EMOTION_STATE
+from domain.expression_intent_schema import (
+    ALLOWED_EMOTIONS,
+    ALLOWED_PERFORMANCE_MODES,
+    normalize_expression_intent,
+)
 from domain.input_event import normalize_chat_input
 from domain.jev_questions import (
-    build_action_context,
+    BASE_EMOTION_CRITERIA,
+    CONFIDENCE_THRESHOLD,
+    JEV_DECISION_CRITERIA_VERSION,
     build_action_questions,
-    build_emotion_context,
-    build_emotion_questions,
+    build_jev_context,
+    build_jev_questions,
     map_answers_to_intent,
 )
 from infrastructure.memory_store import (
@@ -99,31 +107,85 @@ def _fallback_action_intent(previous_state: dict | None) -> dict:
     }
 
 
+def _choice_fallback_reason(answer: object, allowed: set[str]) -> str:
+    if not isinstance(answer, dict):
+        return "missing_answer"
+    choice = answer.get("choice")
+    if not isinstance(choice, str) or choice not in allowed:
+        return "invalid_choice"
+    confidence = answer.get("confidence")
+    if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
+            or not math.isfinite(confidence)):
+        return "invalid_confidence"
+    if confidence < CONFIDENCE_THRESHOLD:
+        return "low_confidence"
+    return "none"
+
+
+def _record_choice_debug(debug: dict, answers: object, answer_key: str, prefix: str, allowed: set[str]) -> None:
+    answer = answers.get(answer_key) if isinstance(answers, dict) else None
+    debug[f"jev{prefix}Choice"] = "none"
+    if not isinstance(answer, dict):
+        return
+    choice = answer.get("choice")
+    if isinstance(choice, str) and choice in allowed:
+        debug[f"jev{prefix}Choice"] = choice
+    confidence = answer.get("confidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and math.isfinite(confidence):
+        debug[f"jev{prefix}Confidence"] = float(confidence)
+    probabilities = answer.get("probabilities")
+    if isinstance(probabilities, dict):
+        for option in sorted(allowed):
+            probability = probabilities.get(option)
+            if (isinstance(probability, (int, float)) and not isinstance(probability, bool)
+                    and math.isfinite(probability) and 0.0 <= probability <= 1.0):
+                debug[f"jev{prefix}Probability_{option}"] = float(probability)
+
+
+def _action_decision_debug(answers: object, previous_state: dict | None, history_count: int) -> dict:
+    previous_emotion = previous_state.get("emotion") if isinstance(previous_state, dict) else None
+    debug = {
+        "jevDecisionCriteriaVersion": JEV_DECISION_CRITERIA_VERSION,
+        "jevDecisionHistoryMessages": history_count,
+        "jevDecisionPreviousEmotion": (
+            previous_emotion if isinstance(previous_emotion, str) and previous_emotion in ALLOWED_EMOTIONS else "none"
+        ),
+    }
+    _record_choice_debug(debug, answers, "base_emotion", "BaseEmotion", set(BASE_EMOTION_CRITERIA))
+    _record_choice_debug(
+        debug, answers, "interaction_attitude", "InteractionAttitude", ALLOWED_PERFORMANCE_MODES,
+    )
+    return debug
+
+
 async def _produce_and_send_action_plan(
     websocket: WebSocket,
     model_name: str,
-    emotion_context: dict,
-    emotion_state: dict,
+    answers: object,
     previous_expression_state: dict | None,
+    history_count: int,
+    question_hash: str,
     turn_id: str | None = None,
     legacy_payloads: bool = False,
     send_func=None,
 ) -> dict:
-    """JEV Action 與 Chat 同時執行；完成後提早送出表情 plan。"""
+    """將單次 JEV 回應的兩個 Choice 編譯為表情 plan。"""
+    base_answer = answers.get("base_emotion") if isinstance(answers, dict) else None
+    attitude_answer = answers.get("interaction_attitude") if isinstance(answers, dict) else None
+    base_fallback_reason = _choice_fallback_reason(base_answer, set(BASE_EMOTION_CRITERIA))
+    attitude_fallback_reason = _choice_fallback_reason(attitude_answer, ALLOWED_PERFORMANCE_MODES)
+    fallback = _fallback_action_intent(previous_expression_state)
     try:
-        questions = build_action_questions()
-        answers = await call_jev(
-            build_action_context(emotion_context, emotion_state, previous_expression_state),
-            questions,
-        )
-        if not isinstance(answers, dict) or set(answers) != set(questions):
-            raise ValueError("JEV Action answers 缺欄位")
-        intent = map_answers_to_intent(answers)
-        if intent.get("emotion") not in ALLOWED_EMOTIONS:
-            raise ValueError("JEV Action 未產生有效 emotion choice")
+        intent = map_answers_to_intent(answers if isinstance(answers, dict) else {})
     except Exception as exc:
-        print(f"[JEV Action] 使用上一輪表情 fallback: {exc}")
-        intent = _fallback_action_intent(previous_expression_state)
+        print(f"[JEV Decision] 表演欄位解析失敗，使用 fallback: {exc}")
+        intent = {}
+        base_fallback_reason = "mapping_error"
+        attitude_fallback_reason = "mapping_error"
+    if "emotion" not in intent:
+        intent["emotion"] = fallback["emotion"]
+    if "performance_mode" not in intent:
+        intent["performance_mode"] = fallback["performance_mode"] if not isinstance(answers, dict) else "smile"
 
     intent["speaking_rate"] = {
         "happy": 1.25, "playful": 1.25, "teasing": 1.25,
@@ -140,6 +202,25 @@ async def _produce_and_send_action_plan(
         print(f"[JEV Action] compiler fallback 至 neutral: {exc}")
         normalized = normalize_expression_intent({"emotion": "neutral", "performance_mode": "smile"})
         plan = compile_expression_plan(normalized, model_name=model_name, previous_state=None)
+        base_fallback_reason = "compiler_error"
+        attitude_fallback_reason = "compiler_error"
+    decision_debug = _action_decision_debug(
+        answers, previous_expression_state, history_count,
+    )
+    fallback_count = sum(reason != "none" for reason in (base_fallback_reason, attitude_fallback_reason))
+    decision_debug["jevDecisionSource"] = (
+        "jev" if fallback_count == 0 else "fallback" if fallback_count == 2 else "partial_fallback"
+    )
+    decision_debug["jevBaseEmotionFallbackReason"] = base_fallback_reason
+    decision_debug["jevInteractionAttitudeFallbackReason"] = attitude_fallback_reason
+    decision_debug["jevResolvedEmotion"] = plan["debug"]["intentEmotion"]
+    decision_debug["jevResolvedAttitude"] = plan["debug"]["intentPerformanceMode"]
+    decision_debug["jevDecisionQuestionHash"] = question_hash
+    expected_action_fields = set(build_action_questions())
+    missing_action_fields = sorted(expected_action_fields - set(answers)) if isinstance(answers, dict) else sorted(expected_action_fields)
+    decision_debug["jevDecisionMissingActionFields"] = ",".join(missing_action_fields) or "none"
+    plan["debug"].update(decision_debug)
+    print("[JEV Decision] " + json.dumps(decision_debug, ensure_ascii=False), flush=True)
     render = render_legacy_behavior_payload(plan) if legacy_payloads else None
     if turn_id:
         plan = {**plan, "turn_id": turn_id}
@@ -190,15 +271,28 @@ async def websocket_endpoint(websocket: WebSocket):
         nonlocal messages, emotion_state, expression_state, version
         action_task: asyncio.Task | None = None
         try:
-            context = build_emotion_context(text, snapshot["messages"], snapshot["emotion"], snapshot["memory"])
-            if snapshot["action"]:
-                context["current_action"] = snapshot["action"]
+            context = build_jev_context(
+                text,
+                snapshot["messages"],
+                snapshot["emotion"],
+                snapshot["expression"],
+                snapshot["memory"],
+                snapshot["action"],
+            )
+            questions = build_jev_questions()
+            question_hash = hashlib.sha256(
+                json.dumps(questions, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:12]
             try:
-                answers = await call_jev(context, build_emotion_questions())
+                answers = await call_jev(context, questions)
             except Exception as exc:
-                print(f"[JEV Emotion] 呼叫失敗，使用 fallback: {exc}")
+                print(f"[JEV Decision] 呼叫失敗，使用 fallback: {exc}")
                 answers = None
-            next_emotion, source = resolve_emotion_state(answers, snapshot["emotion"])
+            emotion_answers = (
+                {field: answers.get(field) for field in EMOTION_FIELDS}
+                if isinstance(answers, dict) else None
+            )
+            next_emotion, source = resolve_emotion_state(emotion_answers, snapshot["emotion"])
             if active_turn_id != turn_id:
                 return
             emotion_state = next_emotion
@@ -213,7 +307,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 prompt += "\n\n本 session 已完成的對話摘要：\n" + snapshot["summary"][:4000]
             chat_messages = build_chat_context(prompt, snapshot["messages"], text)
             action_task = asyncio.create_task(_produce_and_send_action_plan(
-                websocket, model_name, context, next_emotion, snapshot["expression"], turn_id, legacy, send,
+                websocket,
+                model_name,
+                answers,
+                snapshot["expression"],
+                len(context["recent_dialogue"]),
+                question_hash,
+                turn_id,
+                legacy,
+                send,
             ))
 
             async def send_chunk(piece: str) -> None:

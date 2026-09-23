@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from collections import Counter
 import hashlib
 import json
 import os
@@ -204,6 +205,15 @@ def print_turn(record: dict) -> None:
     print(f"露西亞: {record['reply']}")
     print(f"情緒 ({record['emotion_source']}): {json.dumps(record['emotion_state'], ensure_ascii=False)}")
     print(f"表情: {record['expression']}")
+    debug = record.get("expression_debug") or {}
+    if debug.get("jevBaseEmotionChoice"):
+        print(
+            f"JEV 表演: {debug['jevBaseEmotionChoice']} + "
+            f"{debug.get('jevInteractionAttitudeChoice', '-')} → "
+            f"{debug.get('jevResolvedEmotion', '-')} / "
+            f"{debug.get('jevResolvedAttitude', '-')} "
+            f"({debug.get('jevDecisionSource', '-')})"
+        )
     if record["memory_changes"]:
         print(f"記憶變更: {', '.join(record['memory_changes'])}")
     if record["errors"]:
@@ -226,19 +236,93 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
     ]
     if error:
         lines.append(f"- 停止原因：{error}")
-    lines.extend(["", "| # | 使用者 | AI 回覆 | JEV 情緒六欄位 | 來源 | 表情 | 重試 | 記憶變更 | 錯誤 |",
-                  "|---|---|---|---|---|---|---|---|---|"])
+    if records:
+        first_debug = records[0].get("expression_debug") or {}
+        criteria_version = first_debug.get("jevDecisionCriteriaVersion")
+        if criteria_version:
+            question_hash = first_debug.get("jevDecisionQuestionHash")
+            lines.append(f"- JEV 聯合判準版本：`{criteria_version}`；問題指紋：`{question_hash or '-'}`")
+
+    debug_rows = [(record, record.get("expression_debug") or {}) for record in records]
+    base_counts = Counter(debug.get("jevBaseEmotionChoice", "-") for _, debug in debug_rows)
+    attitude_counts = Counter(debug.get("jevInteractionAttitudeChoice", "-") for _, debug in debug_rows)
+    expression_counts = Counter(record.get("expression") or "-" for record in records)
+    fallback_rows = [
+        (record, debug) for record, debug in debug_rows
+        if debug.get("jevDecisionSource") != "jev" or record.get("errors")
+    ]
+
+    def counts_text(counts: Counter) -> str:
+        return "、".join(f"{key} {value}" for key, value in counts.most_common()) or "-"
+
+    lines.extend([
+        "", "## 統計摘要", "",
+        f"- 基礎情緒：{counts_text(base_counts)}",
+        f"- 互動態度：{counts_text(attitude_counts)}",
+        f"- 最終表情：{counts_text(expression_counts)}",
+        f"- 需檢查輪次：{len(fallback_rows)} / {len(records)}",
+        "", "## 20 輪決策總覽", "",
+        "| # | 使用者 | AI 回覆 | 基礎情緒 | 互動態度 | 最終表情 | 最終態度 | 信心 | 狀態 |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ])
     for record in records:
-        state = record.get("emotion_state") or {}
-        scores = ", ".join(f"{key}={value:.2f}" for key, value in state.items()) or "-"
+        debug = record.get("expression_debug") or {}
+        def diagnostic_value(key: str) -> str:
+            value = debug.get(key, "-")
+            return f"{value:.2f}" if isinstance(value, (int, float)) else str(value)
+
+        source = debug.get("jevDecisionSource")
+        status_text = "錯誤" if record.get("errors") else (
+            "OK" if source == "jev" else "部分回退" if source == "partial_fallback" else "回退"
+        )
         cells = [
-            record["turn"], record["user"], record["reply"], scores,
-            record.get("emotion_source") or "-", record.get("expression") or "-",
-            record.get("attempts", 1) - 1,
-            ", ".join(record.get("memory_changes", {})) or "-",
-            ", ".join(record.get("errors", [])) or "-",
+            record["turn"], record["user"], record.get("reply") or "-",
+            diagnostic_value("jevBaseEmotionChoice"),
+            diagnostic_value("jevInteractionAttitudeChoice"),
+            record.get("expression") or "-",
+            diagnostic_value("jevResolvedAttitude"),
+            f"B {diagnostic_value('jevBaseEmotionConfidence')} / A {diagnostic_value('jevInteractionAttitudeConfidence')}",
+            status_text,
         ]
         lines.append("| " + " | ".join(str(cell).replace("|", "\\|").replace("\n", " ") for cell in cells) + " |")
+    lines.extend(["", "## 需查看的輪次", ""])
+    if fallback_rows:
+        for record, debug in fallback_rows:
+            reasons = []
+            if debug.get("jevBaseEmotionFallbackReason") not in (None, "none"):
+                reasons.append(f"基礎情緒 {debug.get('jevBaseEmotionFallbackReason')}")
+            if debug.get("jevInteractionAttitudeFallbackReason") not in (None, "none"):
+                reasons.append(f"互動態度 {debug.get('jevInteractionAttitudeFallbackReason')}")
+            if record.get("errors"):
+                reasons.append("錯誤：" + ", ".join(record["errors"]))
+            lines.append(
+                f"- 第 {record['turn']} 輪：{record['user']}（" + "; ".join(reasons) + "）"
+            )
+    else:
+        lines.append("- 無")
+
+    lines.extend(["", "## 詳細資料", ""])
+    for record in records:
+        debug = record.get("expression_debug") or {}
+        summary = (
+            f"第 {record['turn']} 輪｜{record['user']}｜"
+            f"{debug.get('jevBaseEmotionChoice', '-')} + "
+            f"{debug.get('jevInteractionAttitudeChoice', '-')} → "
+            f"{record.get('expression') or '-'}"
+        )
+        detail = {
+            "emotion_state": record.get("emotion_state") or {},
+            "emotion_source": record.get("emotion_source") or "-",
+            "reply": record.get("reply") or "",
+            "expression_debug": debug,
+            "memory_changes": record.get("memory_changes", {}),
+            "errors": record.get("errors", []),
+        }
+        lines.extend([
+            "<details>", f"<summary>{summary}</summary>", "",
+            "```json", json.dumps(detail, ensure_ascii=False, indent=2), "```", "",
+            "</details>", "",
+        ])
     lines.append("")
     temporary = path.with_suffix(".tmp")
     temporary.write_text("\n".join(lines), encoding="utf-8")

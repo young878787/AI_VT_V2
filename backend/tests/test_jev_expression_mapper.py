@@ -20,10 +20,11 @@ from domain.emotion_state import (
     validate_emotion_state,
 )
 from domain.jev_questions import (
-    build_action_context,
     build_action_questions,
     build_emotion_context,
     build_emotion_questions,
+    build_jev_context,
+    build_jev_questions,
     map_answers_to_intent,
 )
 from api.routes.memory_router import reset_memory
@@ -42,15 +43,18 @@ def emotion_answers(score=0.6):
 
 def action_answers():
     return {
-        "emotion": {"type": "choice", "choice": "shy", "confidence": 0.9},
-        "secondary_emotion": {"type": "choice", "choice": "none", "confidence": 0.9},
-        "performance_mode": {"type": "choice", "choice": "awkward", "confidence": 0.9},
+        "base_emotion": {"type": "choice", "choice": "shy", "confidence": 0.9},
+        "interaction_attitude": {"type": "choice", "choice": "awkward", "confidence": 0.9},
         "arc": {"type": "choice", "choice": "steady", "confidence": 0.9},
         "intensity": {"type": "score", "score": 2.4, "confidence": 0.9},
         "energy": {"type": "score", "score": 2, "confidence": 0.9},
         "wants_goofy": {"type": "noul", "noul": 0.1},
         "needs_special_blink": {"type": "noul", "noul": 0.8},
     }
+
+
+def combined_answers(score=0.6):
+    return {**emotion_answers(score), **action_answers()}
 
 
 class EmotionContractTests(unittest.TestCase):
@@ -105,17 +109,40 @@ class EmotionContractTests(unittest.TestCase):
         self.assertNotIn("latest", str(context["recent_dialogue"]))
         self.assertNotIn("memory secret", str(context))
 
-    def test_action_uses_same_state_and_maps_to_compiler_intent(self):
-        emotion = dict.fromkeys(EMOTION_FIELDS, 0.5)
-        context = build_emotion_context("hello", [], None)
-        action_context = build_action_context(context, emotion, {"emotion": "happy"})
-        self.assertEqual(action_context["personality"], PERSONALITY)
-        self.assertIs(action_context["current_emotion_state"], emotion)
+    def test_single_call_context_and_questions_contain_emotion_and_two_axes(self):
+        context = build_jev_context(
+            "hello", [], None, {"emotion": "happy"}, "memory", {"status": "started"},
+        )
+        self.assertEqual(context["interaction_personality"], PERSONALITY)
+        self.assertEqual(context["previous_expression_carry_state"], {"emotion": "happy"})
+        self.assertEqual(context["relevant_memory"], "memory")
+        self.assertEqual(context["current_action"], {"status": "started"})
         self.assertEqual(set(build_action_questions()), set(action_answers()))
+        self.assertEqual(set(build_jev_questions()), set(combined_answers()))
+        primary_instructions = build_action_questions()["base_emotion"]["instructions"]
+        self.assertIn("一般友善、輕微正向或想繼續互動仍選 neutral", primary_instructions)
+        self.assertIn("聯合判斷", primary_instructions)
+        self.assertIn("不代表露西亞必然具有相同情緒", primary_instructions)
+        self.assertIn("共同互動很開心時可選 happy", primary_instructions)
+        attitude_instructions = build_action_questions()["interaction_attitude"]["instructions"]
+        self.assertIn("要求開玩笑或調皮回應時優先考慮 cheeky_wink", attitude_instructions)
         intent = map_answers_to_intent(action_answers())
         self.assertEqual(intent["emotion"], "shy")
+        self.assertEqual(intent["performance_mode"], "awkward")
+        self.assertNotIn("secondary_emotion", intent)
         self.assertEqual(intent["intensity"], 0.6)
         self.assertEqual(intent["blink_style"], "shy_fast")
+
+    def test_two_choices_are_passed_through_without_pair_mapping(self):
+        questions = build_action_questions()
+        self.assertNotIn("playful", questions["base_emotion"]["criteria"])
+        self.assertIn("cheeky_wink", questions["interaction_attitude"]["criteria"])
+        answers = action_answers()
+        answers["base_emotion"]["choice"] = "happy"
+        answers["interaction_attitude"]["choice"] = "deadpan"
+        intent = map_answers_to_intent(answers)
+        self.assertEqual(intent["emotion"], "happy")
+        self.assertEqual(intent["performance_mode"], "deadpan")
 
     def test_action_nonfinite_scores_cannot_reach_compiler(self):
         answers = action_answers()

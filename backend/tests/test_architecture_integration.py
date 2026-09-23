@@ -16,8 +16,7 @@ from services.chat_service import _VisibleTextFilter, build_chat_context, estima
 from infrastructure import memory_store, memory_records
 from services import memory_jobs
 from api.routes.chat_ws import websocket_endpoint
-from domain.emotion_state import EMOTION_FIELDS
-from backend.tests.test_emotion_chat_ws import action_answers
+from backend.tests.test_emotion_chat_ws import jev_answers
 from services import memory_consolidation
 from types import SimpleNamespace
 from core.config import role_model_config, provider_from_url
@@ -120,12 +119,10 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                     completed.set()
 
         async def fake_jev(context, questions):
-            if "shy" in questions:
-                if context["current_user_input"] == "第一句":
-                    started.set()
-                    await asyncio.Event().wait()
-                return {field: {"type": "noul", "noul": 0.7} for field in EMOTION_FIELDS}
-            return action_answers()
+            if context["current_user_input"] == "第一句":
+                started.set()
+                await asyncio.Event().wait()
+            return jev_answers(0.7)
 
         async def fake_chat(messages, send_chunk):
             await send_chunk("第二句回覆")

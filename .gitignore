@@ -83,3 +83,4 @@ yarn-error.log*
 # Local docs (not for VCS, keep local only)
 # ============================================================
 docs/
+.env_copy

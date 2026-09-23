@@ -28,15 +28,18 @@ def emotion_answers(score=0.6):
 
 def action_answers():
     return {
-        "emotion": {"type": "choice", "choice": "shy", "confidence": 0.9},
-        "secondary_emotion": {"type": "choice", "choice": "none", "confidence": 0.9},
-        "performance_mode": {"type": "choice", "choice": "awkward", "confidence": 0.9},
+        "base_emotion": {"type": "choice", "choice": "shy", "confidence": 0.9},
+        "interaction_attitude": {"type": "choice", "choice": "awkward", "confidence": 0.9},
         "arc": {"type": "choice", "choice": "steady", "confidence": 0.9},
         "intensity": {"type": "score", "score": 2.4, "confidence": 0.9},
         "energy": {"type": "score", "score": 2, "confidence": 0.9},
         "wants_goofy": {"type": "noul", "noul": 0.1},
         "needs_special_blink": {"type": "noul", "noul": 0.2},
     }
+
+
+def jev_answers(score=0.6):
+    return {**emotion_answers(score), **action_answers()}
 
 
 class FakeWebSocket:
@@ -109,9 +112,12 @@ class EmotionWebSocketTests(unittest.TestCase):
         asyncio.run(run())
         return socket, captured
 
-    def test_jev_emotion_precedes_chat_and_action_and_is_shared(self):
+    def test_single_jev_call_precedes_chat_and_drives_both_axes(self):
+        answers = jev_answers(0.8)
+        answers["base_emotion"]["probabilities"] = {"shy": 0.75, "neutral": 0.2, "happy": 0.05}
+        answers["interaction_attitude"]["probabilities"] = {"awkward": 0.8, "smile": 0.2}
         socket, captured = self._run(
-            [{"content": "妳今天好可愛"}], [emotion_answers(0.8), action_answers()],
+            [{"content": "妳今天好可愛"}], [answers],
         )
         types = [payload["type"] for payload in socket.payloads]
         self.assertEqual(types[:2], ["input_accepted", "emotion_update"])
@@ -120,49 +126,87 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertNotIn("blink_control", types)
         self.assertEqual(types.count("stream_end"), 1)
         self.assertNotIn("jpaf_update", types)
-        self.assertIs(captured["chat_states"][0], captured["jev_states"][1]["current_emotion_state"])
+        self.assertEqual(len(captured["jev_states"]), 1)
         self.assertEqual(captured["jev_states"][0]["character_expression_profile"], CHARACTER_EXPRESSION_PROFILE)
-        self.assertNotIn("personality", captured["jev_states"][0])
-        self.assertEqual(captured["jev_states"][1]["personality"], PERSONALITY)
+        self.assertEqual(captured["jev_states"][0]["interaction_personality"], PERSONALITY)
         self.assertNotIn("memory", str(captured["jev_states"][0]))
         self.assertIn("shy: 0.80", captured["prompts"][0])
         self.assertIn("只輸出使用者會聽見的純文字", captured["prompts"][0])
+        plan = next(item for item in socket.payloads if item["type"] == "expression_plan")
+        self.assertEqual(plan["debug"]["jevBaseEmotionChoice"], "shy")
+        self.assertEqual(plan["debug"]["jevInteractionAttitudeChoice"], "awkward")
+        self.assertEqual(plan["debug"]["jevResolvedEmotion"], "shy")
+        self.assertEqual(plan["debug"]["jevResolvedAttitude"], "awkward")
+        self.assertEqual(plan["debug"]["jevBaseEmotionConfidence"], 0.9)
+        self.assertEqual(plan["debug"]["jevBaseEmotionProbability_happy"], 0.05)
+        self.assertEqual(plan["debug"]["jevInteractionAttitudeProbability_smile"], 0.2)
+        self.assertEqual(plan["debug"]["jevDecisionSource"], "jev")
+        self.assertEqual(plan["debug"]["jevDecisionHistoryMessages"], 0)
+        self.assertEqual(len(plan["debug"]["jevDecisionQuestionHash"]), 12)
         self.assertEqual(socket.payloads[-1]["type"], "stream_end")
 
     def test_emotion_failure_uses_previous_state_without_partial_merge(self):
-        invalid = emotion_answers(0.1)
+        invalid = jev_answers(0.1)
         invalid.pop("shy")
         socket, captured = self._run(
             [{"content": "第一句"}, {"content": "第二句"}],
-            [emotion_answers(0.8), action_answers(), invalid, action_answers()],
+            [jev_answers(0.8), invalid],
         )
         updates = [item for item in socket.payloads if item["type"] == "emotion_update"]
         self.assertEqual([item["source"] for item in updates], ["jev", "previous_fallback"])
         self.assertEqual(updates[0]["state"], updates[1]["state"])
-        self.assertEqual(captured["jev_states"][2]["previous_emotion_state"], updates[0]["state"])
-        self.assertEqual(len(captured["jev_states"][2]["recent_dialogue"]), 2)
+        self.assertEqual(captured["jev_states"][1]["previous_emotion_state"], updates[0]["state"])
+        self.assertEqual(len(captured["jev_states"][1]["recent_dialogue"]), 2)
+        plans = [item for item in socket.payloads if item["type"] == "expression_plan"]
+        self.assertEqual(plans[-1]["debug"]["jevDecisionSource"], "jev")
 
     def test_action_failure_uses_neutral_plan_and_chat_still_finishes(self):
-        socket, _ = self._run([{"content": "嗨"}], [None, None])
+        socket, _ = self._run([{"content": "嗨"}], [None])
         updates = [item for item in socket.payloads if item["type"] == "emotion_update"]
         self.assertEqual(updates[0]["source"], "neutral_fallback")
         self.assertEqual(updates[0]["state"], NEUTRAL_EMOTION_STATE)
         plan = next(item for item in socket.payloads if item["type"] == "expression_plan")
         self.assertEqual(plan["carryState"]["emotion"], "neutral")
+        self.assertEqual(plan["debug"]["jevDecisionSource"], "fallback")
+        self.assertEqual(plan["debug"]["jevBaseEmotionFallbackReason"], "missing_answer")
+        self.assertEqual(plan["debug"]["jevInteractionAttitudeFallbackReason"], "missing_answer")
         self.assertIn("text_stream", [item["type"] for item in socket.payloads])
+
+    def test_low_confidence_base_keeps_valid_attitude(self):
+        answers = jev_answers(0.2)
+        answers["base_emotion"]["confidence"] = 0.4
+        socket, _ = self._run([{"content": "嗨"}], [answers])
+        plan = next(item for item in socket.payloads if item["type"] == "expression_plan")
+        self.assertEqual(plan["debug"]["jevBaseEmotionChoice"], "shy")
+        self.assertEqual(plan["debug"]["jevBaseEmotionFallbackReason"], "low_confidence")
+        self.assertEqual(plan["debug"]["jevInteractionAttitudeFallbackReason"], "none")
+        self.assertEqual(plan["debug"]["jevDecisionSource"], "partial_fallback")
+        self.assertEqual(plan["debug"]["jevResolvedEmotion"], "neutral")
+        self.assertEqual(plan["debug"]["jevResolvedAttitude"], "awkward")
+
+    def test_low_confidence_attitude_keeps_valid_base(self):
+        answers = jev_answers(0.8)
+        answers["base_emotion"]["choice"] = "happy"
+        answers["interaction_attitude"]["confidence"] = 0.4
+        socket, _ = self._run([{"content": "今天聊得很開心"}], [answers])
+        plan = next(item for item in socket.payloads if item["type"] == "expression_plan")
+        self.assertEqual(plan["debug"]["jevBaseEmotionFallbackReason"], "none")
+        self.assertEqual(plan["debug"]["jevInteractionAttitudeFallbackReason"], "low_confidence")
+        self.assertEqual(plan["debug"]["jevResolvedEmotion"], "happy")
+        self.assertEqual(plan["debug"]["jevResolvedAttitude"], "smile")
 
     def test_persisted_session_is_restored_and_isolated(self):
         with tempfile.TemporaryDirectory() as storage:
             first, _ = self._run(
                 [{"content": "hi", "session_id": "session_a"}],
-                [emotion_answers(0.8), action_answers()], True, storage,
+                [jev_answers(0.8)], True, storage,
             )
             first_state = next(item["state"] for item in first.payloads if item["type"] == "emotion_update")
             second, captured = self._run(
                 [{"type": "sync", "session_id": "session_a"},
                  {"content": "back", "session_id": "session_a"},
                  {"type": "sync", "session_id": "session_b"}],
-                [None, action_answers()], True, storage,
+                [None], True, storage,
             )
             updates = [item for item in second.payloads if item["type"] == "emotion_update"]
             self.assertEqual(updates[0]["state"], first_state)

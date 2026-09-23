@@ -24,8 +24,8 @@ class Task2NamingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("build_emotion_questions", source)
-        self.assertIn("build_action_questions", source)
+        self.assertIn("build_jev_questions", source)
+        self.assertEqual(source.count("await call_jev("), 1)
         self.assertNotIn("EXPRESSION_DECIDER", source)
         self.assertNotIn("call_expression_agent", source)
 

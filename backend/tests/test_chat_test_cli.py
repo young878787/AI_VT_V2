@@ -52,6 +52,34 @@ class ChatTestCliTests(unittest.TestCase):
             finally:
                 log_file.close()
 
+    def test_report_shows_joint_jev_choices_and_fallbacks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = make_record(1)
+            record["expression_debug"] = {
+                "jevBaseEmotionChoice": "shy", "jevBaseEmotionConfidence": 0.8,
+                "jevInteractionAttitudeChoice": "awkward",
+                "jevInteractionAttitudeConfidence": 0.75,
+                "jevResolvedEmotion": "shy", "jevResolvedAttitude": "awkward",
+                "jevDecisionSource": "jev",
+                "jevBaseEmotionFallbackReason": "none",
+                "jevInteractionAttitudeFallbackReason": "none",
+                "jevDecisionCriteriaVersion": "joint_two_axis_v3",
+                "jevDecisionQuestionHash": "abc123abc123",
+            }
+            path = pathlib.Path(directory) / "report.md"
+            cli.write_markdown_report([record], path, {
+                "run_id": "test", "planned_turns": 1, "started_at": "now",
+                "scenario": "test", "scenario_sha256": "hash",
+                "ai_provider": "test", "chat_model": "test", "jev_model": "test",
+            }, "completed", None)
+            report = path.read_text(encoding="utf-8")
+            self.assertIn("## 統計摘要", report)
+            self.assertIn("## 20 輪決策總覽", report)
+            self.assertIn("| 1 | message 1 | 露西亞的回答 | shy | awkward | shy | awkward | B 0.80 / A 0.75 | OK |", report)
+            self.assertIn("<details>", report)
+            self.assertIn("## 詳細資料", report)
+            self.assertIn("問題指紋：`abc123abc123`", report)
+
     def test_failed_turn_stops_scenario_and_keeps_partial_report(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

@@ -11,10 +11,11 @@ from domain.expression_intent_schema import (
 CONFIDENCE_THRESHOLD = 0.5
 NOUL_GOOFY_THRESHOLD = 0.7
 NOUL_BLINK_THRESHOLD = 0.6
+JEV_DECISION_CRITERIA_VERSION = "joint_two_axis_v3"
 
 _EMOTION_DESC = {
-    "neutral": "平靜、中性、沒有明顯情緒波動",
-    "happy": "開心、愉悅、滿足",
+    "neutral": "日常平靜、友善或只有輕微正向感受；當輪沒有足夠明確的其他主表情線索",
+    "happy": "當輪有明確的開心、喜悅或被取悅線索；單純友善、想繼續聊天或輕微滿足不足以選此項",
     "playful": "調皮、玩鬧、想逗對方",
     "teasing": "挑釁、壞笑、得理不饒人",
     "angry": "生氣、憤怒、不滿",
@@ -25,19 +26,24 @@ _EMOTION_DESC = {
     "conflicted": "矛盾、拉扯、左右為難",
 }
 
-_MODE_DESC = {
-    "smile": "自然微笑，一般對話的穩定表情",
-    "bright_talk": "活潑日常說話感，表情生動",
-    "goofy_face": "做鬼臉、搞怪，臉明顯歪掉",
-    "cheeky_wink": "單眼眨眼壞笑",
-    "smug": "得意、欠揍的炫耀臉",
-    "deadpan": "面無表情、平淡敷衍",
-    "gloomy": "陰沉壓低、氣氛沉重",
-    "volatile": "情緒不穩定、在波動",
-    "meltdown": "表情崩壞、失控爆發",
-    "awkward": "尷尬、彆扭、不知道怎麼反應",
-    "tense_hold": "壓著情緒、忍住不發作",
-    "shock_recoil": "嚇到後仰、被震懾",
+_BASE_EMOTION_DESC = {
+    key: value for key, value in _EMOTION_DESC.items()
+    if key not in {"playful", "teasing"}
+}
+
+_INTERACTION_ATTITUDE_DESC = {
+    "smile": "自然、友善地互動；沒有更明顯態度時使用",
+    "bright_talk": "開朗熱情、主動帶動氣氛",
+    "goofy_face": "刻意裝傻、搞怪或做鬼臉",
+    "cheeky_wink": "調皮玩鬧，以眨眼逗對方",
+    "smug": "得意、壞笑或帶自信地逗弄對方",
+    "deadpan": "冷淡、平靜或面無表情地回應",
+    "gloomy": "消沉壓低、帶沉重氣氛互動",
+    "volatile": "態度搖擺、情緒表現不穩定",
+    "meltdown": "失控爆發；只在當輪有強烈爆發證據時使用",
+    "awkward": "彆扭、害羞或不知道如何回應",
+    "tense_hold": "壓著情緒、克制反應",
+    "shock_recoil": "受到突然衝擊而明顯退縮或震驚",
 }
 
 _ARC_DESC = {
@@ -73,11 +79,10 @@ def _assert_whitelist_sync() -> None:
             f"EMOTION_CRITERIA 與 ALLOWED_EMOTIONS 不同步: "
             f"{set(_EMOTION_DESC) ^ ALLOWED_EMOTIONS}"
         )
-    if set(_MODE_DESC) != ALLOWED_PERFORMANCE_MODES:
-        raise RuntimeError(
-            f"MODE_CRITERIA 與 ALLOWED_PERFORMANCE_MODES 不同步: "
-            f"{set(_MODE_DESC) ^ ALLOWED_PERFORMANCE_MODES}"
-        )
+    if not set(_BASE_EMOTION_DESC) < ALLOWED_EMOTIONS:
+        raise RuntimeError("BASE_EMOTION_CRITERIA 必須是 ALLOWED_EMOTIONS 的真子集")
+    if set(_INTERACTION_ATTITUDE_DESC) != ALLOWED_PERFORMANCE_MODES:
+        raise RuntimeError("INTERACTION_ATTITUDE_CRITERIA 與 performance modes 不同步")
     if set(_ARC_DESC) != ALLOWED_ARCS:
         raise RuntimeError(
             f"ARC_CRITERIA 與 ALLOWED_ARCS 不同步: {set(_ARC_DESC) ^ ALLOWED_ARCS}"
@@ -87,7 +92,8 @@ def _assert_whitelist_sync() -> None:
 _assert_whitelist_sync()
 
 EMOTION_CRITERIA = dict(_EMOTION_DESC)
-MODE_CRITERIA = dict(_MODE_DESC)
+BASE_EMOTION_CRITERIA = dict(_BASE_EMOTION_DESC)
+INTERACTION_ATTITUDE_CRITERIA = dict(_INTERACTION_ATTITUDE_DESC)
 ARC_CRITERIA = dict(_ARC_DESC)
 INTENSITY_LEVELS = list(_INTENSITY_LEVELS)
 ENERGY_LEVELS = list(_ENERGY_LEVELS)
@@ -153,32 +159,37 @@ def build_emotion_context(
 
 
 def build_action_questions() -> dict:
-    """Action 單獨決定表情演出，不輸出 Emotion State。"""
+    """與 Emotion State 同次送出的兩軸表演問題。"""
     return {
-        "emotion": {
+        "base_emotion": {
             "type": "choice",
             "instructions": (
-                "將 `current_emotion_state` 映射成 Live2D compiler 的主表情 emotion label。"
-                "`current_user_input` 僅用來判斷是否為明確的表演請求；不要重新判斷角色內在情緒。"
+                "選擇這一輪實際呈現給使用者看的基礎情緒底色，並與本次六欄情緒評分保持一致。"
+                "這一題與 `interaction_attitude` 必須聯合判斷：先決定基礎情緒，"
+                "再選能一致呈現它的互動態度。`interaction_personality` 不能獨立構成情緒證據。"
+                "使用者描述自己的情緒不代表露西亞必然具有相同情緒；應判斷露西亞當輪要呈現的反應。"
+                "使用者明確難過且露西亞正在同理安慰時可選 sad；使用者對第三方生氣時，"
+                "除非露西亞也有明確憤怒反應，否則不要直接選 angry。"
+                "使用者明確表示這段共同互動很開心時可選 happy。"
+                "一般友善、輕微正向或想繼續互動仍選 neutral；"
+                "只有當輪明確喜悅才選 happy。"
+                "playful 與 teasing 是互動態度，不是基礎情緒。"
             ),
-            "criteria": dict(EMOTION_CRITERIA),
+            "criteria": dict(BASE_EMOTION_CRITERIA),
         },
-        "secondary_emotion": {
+        "interaction_attitude": {
             "type": "choice",
             "instructions": (
-                "除了主要情緒外，`current_emotion_state` 與 `recent_dialogue` "
-                "是否還帶有第二層情緒？若沒有選 none。"
+                "選擇角色當輪面對使用者的可見互動態度，並與 `base_emotion` 聯合判斷。"
+                "態度不得取代或反轉基礎情緒。`current_user_input` 的明確表演請求是態度證據："
+                "要求開玩笑或調皮回應時優先考慮 cheeky_wink，要求搞怪或鬼臉時選 goofy_face，"
+                "要求有趣、活潑地說明時考慮 bright_talk，明確逗弄或得意時考慮 smug。"
+                "只有沒有這些差異化線索時才選 smile。"
+                "強烈模式必須有當輪明確證據，不可只因固定人格而選擇。"
+                "一致例：happy+bright_talk、shy+awkward、angry+tense_hold。"
+                "若沒有刻意反差的明確線索，避免 happy+meltdown、sad+bright_talk 等衝突組合。"
             ),
-            "criteria": {"none": "沒有明顯的第二層情緒", **EMOTION_CRITERIA},
-        },
-        "performance_mode": {
-            "type": "choice",
-            "instructions": (
-                "考量 `personality` 的固定角色設定與 `recent_dialogue` 的氣氛："
-                "角色應該用哪種表演方式呈現這個情緒？"
-                "注意 `previous_expression_carry_state` 若顯示上一輪已經做過某種表演，本輪傾向換一種。"
-            ),
-            "criteria": dict(MODE_CRITERIA),
+            "criteria": dict(INTERACTION_ATTITUDE_CRITERIA),
         },
         "arc": {
             "type": "choice",
@@ -192,7 +203,7 @@ def build_action_questions() -> dict:
             "type": "score",
             "instructions": (
                 "角色此刻情緒表達的強度應該多強？"
-                "參考 `current_emotion_state` 與 `current_user_input` 的語氣力度。"
+                "參考本次六欄情緒評分與 `current_user_input` 的語氣力度。"
             ),
             "criteria": list(INTENSITY_LEVELS),
         },
@@ -200,7 +211,7 @@ def build_action_questions() -> dict:
             "type": "score",
             "instructions": (
                 "角色此刻的整體精神能量應該多高？"
-                "參考 `current_user_input` 的節奏與 `personality` 的人格傾向。"
+                "參考 `current_user_input` 的節奏與 `interaction_personality` 的人格傾向。"
             ),
             "criteria": list(ENERGY_LEVELS),
         },
@@ -229,23 +240,28 @@ def build_action_questions() -> dict:
     }
 
 
-def build_action_context(
-    emotion_context: dict,
-    current_emotion_state: dict,
+def build_jev_questions() -> dict:
+    """一次 JEV 呼叫所需的完整 Emotion State 與表演問題。"""
+    return {**build_emotion_questions(), **build_action_questions()}
+
+
+def build_jev_context(
+    user_message: str,
+    chat_history: list[dict],
+    previous_emotion_state: dict | None,
     previous_expression_carry_state: dict | None,
+    relevant_memory: str = "",
+    current_action: dict | None = None,
 ) -> dict:
-    state = {
-        "personality": PERSONALITY,
-        "recent_dialogue": emotion_context["recent_dialogue"],
-        "current_user_input": emotion_context["current_user_input"],
-        "current_emotion_state": current_emotion_state,
-    }
+    """建立單次 JEV 共用 context，將情緒證據與互動人格分欄。"""
+    state = build_emotion_context(
+        user_message, chat_history, previous_emotion_state, relevant_memory,
+    )
+    state["interaction_personality"] = PERSONALITY
     if previous_expression_carry_state is not None:
         state["previous_expression_carry_state"] = previous_expression_carry_state
-    if emotion_context.get("relevant_memory"):
-        state["relevant_memory"] = emotion_context["relevant_memory"]
-    if emotion_context.get("current_action"):
-        state["current_action"] = emotion_context["current_action"]
+    if current_action is not None:
+        state["current_action"] = current_action
     return state
 
 
@@ -257,19 +273,17 @@ def map_answers_to_intent(answers: dict) -> dict:
     """
     intent: dict = {}
 
-    emotion = answers.get("emotion") or {}
-    if emotion.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
-        intent["emotion"] = emotion.get("choice")
+    base_emotion = answers.get("base_emotion") or {}
+    if base_emotion.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
+        choice = base_emotion.get("choice")
+        if choice in BASE_EMOTION_CRITERIA:
+            intent["emotion"] = choice
 
-    secondary = answers.get("secondary_emotion") or {}
-    if secondary.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
-        choice = secondary.get("choice")
-        if choice is not None:
-            intent["secondary_emotion"] = "" if choice == "none" else choice
-
-    mode = answers.get("performance_mode") or {}
-    if mode.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
-        intent["performance_mode"] = mode.get("choice")
+    attitude = answers.get("interaction_attitude") or {}
+    if attitude.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
+        choice = attitude.get("choice")
+        if choice in INTERACTION_ATTITUDE_CRITERIA:
+            intent["performance_mode"] = choice
 
     arc = answers.get("arc") or {}
     if arc.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
