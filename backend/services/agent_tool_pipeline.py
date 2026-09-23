@@ -6,9 +6,7 @@ from services.chat_service import parse_xml_tool_calls
 from services.tool_arg_parser import parse_tool_call_arguments
 
 
-EXPRESSION_AGENT_ALLOWED_TOOL_NAMES = {"set_ai_behavior", "blink_control"}
 MEMORY_AGENT_ALLOWED_TOOL_NAMES = {"update_user_profile", "save_memory_note"}
-BLINK_CONTROL_ALLOWED_ACTIONS = {"force_blink", "pause", "resume", "set_interval"}
 UPDATE_USER_PROFILE_ALLOWED_ACTIONS = {"add", "remove", "update"}
 UPDATE_USER_PROFILE_ALLOWED_FIELDS = {
     "core_traits",
@@ -76,43 +74,14 @@ def get_meaningful_memory_tool_arguments(tool_name: str, args: dict, model_name:
     return args
 
 
-def get_meaningful_expression_tool_arguments(tool_name: str, args: dict) -> dict | None:
-    if tool_name == "blink_control":
-        action = _clean_non_empty_string(args.get("action"))
-        if not action or action not in BLINK_CONTROL_ALLOWED_ACTIONS:
-            return None
-        if action == "set_interval":
-            interval_min = args.get("interval_min")
-            interval_max = args.get("interval_max")
-            if (
-                isinstance(interval_min, bool)
-                or not isinstance(interval_min, (int, float))
-                or isinstance(interval_max, bool)
-                or not isinstance(interval_max, (int, float))
-                or interval_min > interval_max
-            ):
-                return None
-        return args
-
-    return args
-
-
 def sanitize_agent_tool_call(tool_name: str, args: dict, label: str, model_name: str = "Hiyori") -> dict | None:
-    if tool_name in EXPRESSION_AGENT_ALLOWED_TOOL_NAMES:
-        meaningful_args = get_meaningful_expression_tool_arguments(tool_name, args)
-        if meaningful_args is None:
-            print(f"[{label}][SKIP_INCOMPLETE_TOOL_ARGS] name={tool_name}")
-            return None
-        args = meaningful_args
-
+    if tool_name not in MEMORY_AGENT_ALLOWED_TOOL_NAMES:
+        return None
     meaningful_args = get_meaningful_memory_tool_arguments(tool_name, args, model_name=model_name)
-    if tool_name in MEMORY_AGENT_ALLOWED_TOOL_NAMES and meaningful_args is None:
+    if meaningful_args is None:
         print(f"[{label}][SKIP_INCOMPLETE_TOOL_ARGS] name={tool_name}")
         return None
-    if meaningful_args is not None:
-        args = meaningful_args
-
-    return {"name": tool_name, "arguments": args}
+    return {"name": tool_name, "arguments": meaningful_args}
 
 
 def extract_agent_tool_calls(response: object, model_name: str, label: str) -> list[dict]:

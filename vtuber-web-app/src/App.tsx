@@ -18,7 +18,7 @@ import { AnimeDecoration } from '@components/AnimeDecoration';
 import { HitAreaOverlay } from '@components/HitAreaOverlay';
 import { ExpressionPlanDebugPanel } from '@components/ExpressionPlanDebugPanel';
 import { NativeParamPanel } from '@components/NativeParamPanel';
-import { JPAFSidebar } from '@components/JPAFSidebar';
+import { EmotionSidebar } from '@components/EmotionSidebar';
 import { useAppStore } from '@store/appStore';
 import './App.css';
 
@@ -46,9 +46,9 @@ function App() {
         <HitAreaOverlay />
       </main>
 
-      {/* ── JPAF 側邊欄 ── */}
-      <section className="app-layout__jpaf">
-        <JPAFSidebar />
+      {/* ── 情緒側邊欄 ── */}
+      <section className="app-layout__emotion">
+        <EmotionSidebar />
       </section>
 
       {/* ── 右側：AI 對話 ── */}

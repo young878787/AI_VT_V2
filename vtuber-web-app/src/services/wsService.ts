@@ -1,6 +1,7 @@
 import { useAppStore } from '../store/appStore';
 import { TTSPlayer } from '../audio/TTSPlayer';
 import { isBlinkAction, isExpressionPlanPayload } from '../types/expressionPlan';
+import { isEmotionUpdatePayload } from '../types/emotionState';
 
 class WSService {
     private ws: WebSocket | null = null;
@@ -54,6 +55,7 @@ class WSService {
         this.ws.onopen = () => {
             console.log('WebSocket connected');
             this.retryCount = 0; // 成功連線後重置重試計數
+            this.ws?.send(JSON.stringify({ type: 'sync', session_id: this.sessionId }));
         };
 
         this.ws.onmessage = (event) => {
@@ -136,14 +138,12 @@ class WSService {
                     store.setCompressing(true);
                 } else if (data.type === 'compress_done') {
                     store.setCompressing(false);
-                } else if (data.type === 'jpaf_update') {
-                    store.setJpafState({
-                        persona: data.persona,
-                        dominant: data.dominant,
-                        auxiliary: data.auxiliary ?? '',
-                        baseWeights: data.baseWeights ?? {},
-                        turnCount: data.turnCount,
-                    });
+                } else if (data.type === 'emotion_update') {
+                    if (isEmotionUpdatePayload(data)) {
+                        store.setEmotionState(data.state, data.source);
+                    } else {
+                        console.warn('Received invalid emotion_update payload:', data);
+                    }
                 } else if (data.type === 'error') {
                     store.appendChatMessage({ role: 'system', content: data.content });
                     store.setAiTyping(false);
@@ -229,13 +229,17 @@ class WSService {
     }
 
     /**
-     * 通知後端清空 in-memory 短期記憶並重置 JPAF session。
+     * 通知後端清空目前 session 的短期對話與情緒狀態。
      * 應在 REST /api/reset-memory 成功後呼叫。
      */
     public sendReset(): void {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ type: 'reset' }));
         }
+    }
+
+    public getSessionId(): string | null {
+        return this.chatPersistenceEnabled ? this.sessionId : null;
     }
 }
 

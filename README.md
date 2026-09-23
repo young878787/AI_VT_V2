@@ -104,7 +104,7 @@ npm run dev
 
 ## Headless Chat 測試（不開前端）
 
-`backend/tools/chat_test_cli.py` 可在不啟動前端的情況下，直接連 `/ws/chat` 進行真實 LLM 多輪對話測試，逐輪擷取回覆文字、情緒（behavior payload）、JPAF 人格狀態（persona / weights）與記憶檔變更（user_profile / memory.md / jpaf_state）。
+`backend/tools/chat_test_cli.py` 會自動啟動隔離的測試後端，不需要先開前端或正式後端。它逐輪擷取回覆、JEV 六欄位情緒、表情與記憶變更；測試記憶不會讀寫正式的 `backend/memory/`。
 
 ```bash
 cd backend
@@ -115,17 +115,21 @@ python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt
 # 互動模式：手動輸入對話
 python tools/chat_test_cli.py
 
-# 限制輪數 / 自訂連線位置
+# 限制輪數／逾時
 python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
-python tools/chat_test_cli.py --url ws://localhost:9000/ws/chat
+python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --turn-timeout 120
 ```
 
-每次執行一律先重置記憶（user_profile / memory.md / jpaf_state / 對話歷史），保證全新測試起點。輸出：
+每次執行在 `backend/log/chat_test_runs/<run-id>/` 建立全新的測試記憶與報告：
 
-- `backend/log/chat_test_report.jsonl` — 逐輪原始資料（append）
-- `backend/log/chat_test_reports/chat_test_YYYYMMDD_HHMMSS.md` — Markdown 報告（以時間命名，方便查閱舊結果），含逐輪摘要表、JPAF 演化與記憶時間線
+- `memory/` — 該次測試專用記憶
+- `turns.jsonl` — 該次測試的逐輪原始資料
+- `report.md` — 每輪更新的 Markdown 報告；中斷或失敗時保留部分結果與原因
+- `run.json`、`server.log` — 情境／模型設定與後端錯誤日誌
 
-以上 log 檔案皆已 gitignore。每輪失敗（API 錯誤 / 斷線）會自動重連並重試（`--retries`，預設 2 次），避免單一失敗卡死整場測試。
+JEV Emotion 與 Action 使用 OpenRouter System One，啟動前需設定 `OPENROUTER_API_KEY`。Chat 只輸出露西亞的純文字回覆；`EXPRESSION_DECIDER` 已不再使用。
+
+以上 log 檔案皆已 gitignore。單輪錯誤可沿用測試 session 重試（`--retries`，預設 2 次）；重試耗盡、已有回覆後失敗或逾時時會停止，不會把後續題目記成有效輪次。外部 `--url` 模式已移除，以免誤連正式服務。
 
 ## 作品展示
 

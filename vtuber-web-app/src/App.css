@@ -6,7 +6,7 @@
   width: 100vw;
   height: 100vh;
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr var(--jpaf-width) var(--right-width);
+  grid-template-columns: var(--sidebar-width) 1fr var(--emotion-width) var(--right-width);
   grid-template-rows: 1fr var(--bottom-height);
   gap: var(--gap);
   padding: var(--gap);
@@ -51,8 +51,8 @@
   z-index: 10;
 }
 
-/* ── JPAF 側邊欄 ── */
-.app-layout__jpaf {
+/* ── 情緒側邊欄 ── */
+.app-layout__emotion {
   grid-column: 3;
   grid-row: 1;
   min-height: 0;
@@ -106,7 +106,7 @@
   .app-layout__sidebar,
   .app-layout__center,
   .app-layout__chat,
-  .app-layout__jpaf,
+  .app-layout__emotion,
   .app-layout__bottom-center {
     grid-column: 1;
     grid-row: auto;

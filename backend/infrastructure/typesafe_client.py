@@ -48,7 +48,7 @@ async def call_jev(state: dict, questions: dict) -> dict | None:
         print(f"[Jev] 呼叫失敗: {e}")
         return None
 
-    answers = body.get("answers")
+    answers = body.get("answers") if isinstance(body, dict) else None
     if not isinstance(answers, dict):
         print(f"[Jev] 回應缺少 answers 欄位: {str(body)[:200]}")
         return None

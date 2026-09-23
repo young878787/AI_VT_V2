@@ -7,6 +7,7 @@
     "dev": "vite",
     "generate": "node scripts/generate-tools-ts.js",
     "check:expression-plan": "node scripts/check-expression-plan.mjs",
+    "check:emotion-state": "node scripts/check-emotion-state.mjs",
     "build": "npm run generate && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

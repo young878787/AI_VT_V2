@@ -1,7 +1,8 @@
 import asyncio
-import httpx
+import math
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -9,278 +10,144 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from domain.expression_intent_schema import normalize_expression_intent
+from domain.emotion_state import (
+    EMOTION_FIELDS,
+    NEUTRAL_EMOTION_STATE,
+    PERSONALITY,
+    resolve_emotion_state,
+    state_from_jev_answers,
+    validate_emotion_state,
+)
 from domain.jev_questions import (
-    build_jev_state,
-    build_questions,
+    build_action_context,
+    build_action_questions,
+    build_emotion_context,
+    build_emotion_questions,
     map_answers_to_intent,
 )
-from infrastructure.typesafe_client import call_jev
+from api.routes.memory_router import reset_memory
+from infrastructure.memory_store import (
+    load_session_emotion_state,
+    load_session_messages,
+    reset_session_emotion_state,
+    save_session_emotion_state,
+    save_session_messages,
+)
 
 
-def _full_answers() -> dict:
+def emotion_answers(score=0.6):
+    return {field: {"type": "noul", "noul": score} for field in EMOTION_FIELDS}
+
+
+def action_answers():
     return {
-        "emotion": {"type": "choice", "choice": "happy", "confidence": 0.91},
-        "secondary_emotion": {"type": "choice", "choice": "playful", "confidence": 0.72},
-        "performance_mode": {"type": "choice", "choice": "bright_talk", "confidence": 0.68},
-        "arc": {"type": "choice", "choice": "steady", "confidence": 0.85},
-        "intensity": {"type": "score", "score": 2.3, "confidence": 0.77},
-        "energy": {"type": "score", "score": 3.1, "confidence": 0.80},
-        "wants_goofy": {"type": "noul", "noul": 0.12},
-        "needs_special_blink": {"type": "noul", "noul": 0.05},
+        "emotion": {"type": "choice", "choice": "shy", "confidence": 0.9},
+        "secondary_emotion": {"type": "choice", "choice": "none", "confidence": 0.9},
+        "performance_mode": {"type": "choice", "choice": "awkward", "confidence": 0.9},
+        "arc": {"type": "choice", "choice": "steady", "confidence": 0.9},
+        "intensity": {"type": "score", "score": 2.4, "confidence": 0.9},
+        "energy": {"type": "score", "score": 2, "confidence": 0.9},
+        "wants_goofy": {"type": "noul", "noul": 0.1},
+        "needs_special_blink": {"type": "noul", "noul": 0.8},
     }
 
 
-class TestMapAnswersToIntent(unittest.TestCase):
-    def test_full_confidence_answers_map_to_intent(self):
-        intent = map_answers_to_intent(_full_answers())
-        self.assertEqual(intent["emotion"], "happy")
-        self.assertEqual(intent["secondary_emotion"], "playful")
-        self.assertEqual(intent["performance_mode"], "bright_talk")
-        self.assertEqual(intent["arc"], "steady")
-        self.assertEqual(intent["intensity"], 0.575)
-        self.assertEqual(intent["energy"], 0.775)
-        self.assertNotIn("must_include", intent)
-        self.assertNotIn("blink_style", intent)
+class EmotionContractTests(unittest.TestCase):
+    def test_six_independent_noul_questions(self):
+        questions = build_emotion_questions()
+        self.assertEqual(set(questions), set(EMOTION_FIELDS))
+        self.assertTrue(all(item["type"] == "noul" for item in questions.values()))
+        self.assertEqual(state_from_jev_answers(emotion_answers()), dict.fromkeys(EMOTION_FIELDS, 0.6))
 
-    def test_low_confidence_fields_are_dropped(self):
-        answers = {
-            "emotion": {"type": "choice", "choice": "angry", "confidence": 0.3},
-            "performance_mode": {"type": "choice", "choice": "meltdown", "confidence": 0.49},
-            "arc": {"type": "choice", "choice": "steady", "confidence": 0.49},
-            "intensity": {"type": "score", "score": 4.0, "confidence": 0.2},
-            "energy": {"type": "score", "score": 0.0, "confidence": 0.1},
-        }
-        intent = map_answers_to_intent(answers)
-        self.assertEqual(intent, {})
+    def test_rejects_partial_extra_invalid_and_nonfinite_states_atomically(self):
+        valid = dict(NEUTRAL_EMOTION_STATE)
+        invalid_cases = [
+            {key: value for key, value in valid.items() if key != "shy"},
+            {**valid, "extra": 0.1},
+            {**valid, "shy": True},
+            {**valid, "shy": "0.2"},
+            {**valid, "shy": math.nan},
+            {**valid, "shy": math.inf},
+            {**valid, "shy": 1.1},
+        ]
+        for state in invalid_cases:
+            with self.subTest(state=state):
+                self.assertIsNone(validate_emotion_state(state))
+        self.assertIsNone(state_from_jev_answers({**emotion_answers(), "extra": {"type": "noul", "noul": 0.2}}))
 
-    def test_secondary_none_maps_to_empty_string(self):
-        answers = _full_answers()
-        answers["secondary_emotion"] = {"type": "choice", "choice": "none", "confidence": 0.9}
-        intent = map_answers_to_intent(answers)
-        self.assertEqual(intent["secondary_emotion"], "")
+    def test_complete_previous_or_neutral_fallback(self):
+        previous = dict.fromkeys(EMOTION_FIELDS, 0.7)
+        invalid = emotion_answers()
+        invalid.pop("sad_or_hurt")
+        self.assertEqual(resolve_emotion_state(invalid, previous), (previous, "previous_fallback"))
+        self.assertEqual(resolve_emotion_state(None, None), (NEUTRAL_EMOTION_STATE, "neutral_fallback"))
 
-    def test_score_clamped_to_unit_range(self):
-        answers = _full_answers()
-        answers["intensity"] = {"type": "score", "score": 9.0, "confidence": 0.9}
-        answers["energy"] = {"type": "score", "score": -1.0, "confidence": 0.9}
-        intent = map_answers_to_intent(answers)
-        self.assertEqual(intent["intensity"], 1.0)
-        self.assertEqual(intent["energy"], 0.0)
+    def test_context_contains_only_fixed_personality_recent_dialogue_and_previous_state(self):
+        history = [{"role": "system", "content": "memory secret"}]
+        for index in range(10):
+            history.extend([
+                {"role": "user", "content": f"user {index}"},
+                {"role": "assistant", "content": f"reply {index}"},
+            ])
+        context = build_emotion_context("latest", history, NEUTRAL_EMOTION_STATE)
+        self.assertEqual(set(context), {"personality", "recent_dialogue", "current_user_input", "previous_emotion_state"})
+        self.assertEqual(context["personality"], PERSONALITY)
+        self.assertEqual(len(context["recent_dialogue"]), 16)
+        self.assertEqual(context["recent_dialogue"][0]["text"], "user 2")
+        self.assertNotIn("latest", str(context["recent_dialogue"]))
+        self.assertNotIn("memory secret", str(context))
 
-    def test_wants_goofy_above_threshold_adds_must_include(self):
-        answers = _full_answers()
-        answers["wants_goofy"] = {"type": "noul", "noul": 0.85}
-        intent = map_answers_to_intent(answers)
-        self.assertEqual(intent["must_include"], ["goofy_eye_cross_bias"])
-
-    def test_wants_goofy_below_threshold_no_effect(self):
-        answers = _full_answers()
-        answers["wants_goofy"] = {"type": "noul", "noul": 0.7}
-        intent = map_answers_to_intent(answers)
-        self.assertNotIn("must_include", intent)
-
-    def test_special_blink_maps_by_emotion(self):
-        answers = _full_answers()
-        answers["emotion"] = {"type": "choice", "choice": "shy", "confidence": 0.9}
-        answers["needs_special_blink"] = {"type": "noul", "noul": 0.9}
-        intent = map_answers_to_intent(answers)
+    def test_action_uses_same_state_and_maps_to_compiler_intent(self):
+        emotion = dict.fromkeys(EMOTION_FIELDS, 0.5)
+        context = build_emotion_context("hello", [], None)
+        action_context = build_action_context(context, emotion, {"emotion": "happy"})
+        self.assertIs(action_context["current_emotion_state"], emotion)
+        self.assertEqual(set(build_action_questions()), set(action_answers()))
+        intent = map_answers_to_intent(action_answers())
+        self.assertEqual(intent["emotion"], "shy")
+        self.assertEqual(intent["intensity"], 0.6)
         self.assertEqual(intent["blink_style"], "shy_fast")
 
-    def test_special_blink_without_emotion_uses_focused_pause(self):
-        answers = {"needs_special_blink": {"type": "noul", "noul": 0.9}}
+    def test_action_nonfinite_scores_cannot_reach_compiler(self):
+        answers = action_answers()
+        answers["intensity"]["score"] = math.nan
+        answers["energy"]["score"] = math.inf
         intent = map_answers_to_intent(answers)
-        self.assertEqual(intent["blink_style"], "focused_pause")
+        self.assertNotIn("intensity", intent)
+        self.assertNotIn("energy", intent)
 
-    def test_mapped_intent_passes_normalize(self):
-        intent = map_answers_to_intent(_full_answers())
-        normalized = normalize_expression_intent(intent, emotion_state=None)
-        self.assertEqual(normalized["emotion"], "happy")
-        self.assertEqual(normalized["performance_mode"], "bright_talk")
-        self.assertEqual(normalized["arc"], "steady")
-        self.assertEqual(normalized["intensity"], 0.575)
-        self.assertEqual(normalized["energy"], 0.775)
+    def test_session_state_is_isolated_validated_and_reset(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+            "infrastructure.memory_store.EMOTION_STATE_DIR", directory
+        ):
+            first = dict.fromkeys(EMOTION_FIELDS, 0.2)
+            second = dict.fromkeys(EMOTION_FIELDS, 0.8)
+            save_session_emotion_state("session_1", first)
+            save_session_emotion_state("session_2", second)
+            self.assertEqual(load_session_emotion_state("session_1"), first)
+            self.assertEqual(load_session_emotion_state("session_2"), second)
+            reset_session_emotion_state("session_1")
+            self.assertIsNone(load_session_emotion_state("session_1"))
+            self.assertEqual(load_session_emotion_state("session_2"), second)
+            with self.assertRaises(ValueError):
+                save_session_emotion_state("../unsafe", first)
 
-    def test_empty_intent_falls_back_to_default(self):
-        normalized = normalize_expression_intent({}, emotion_state={"primary_emotion": "angry", "intensity": 0.7})
-        self.assertEqual(normalized["emotion"], "angry")
-        self.assertEqual(normalized["intensity"], 0.7)
-        self.assertEqual(normalized["performance_mode"], "smile")
-
-
-class TestBuildJevState(unittest.TestCase):
-    def test_history_strips_tags_and_filters_roles(self):
-        history = [
-            {"role": "system", "content": "system prompt"},
-            {"role": "user", "content": "嗨<jpaf_state>{}</jpaf_state>"},
-            {"role": "assistant", "content": "你好呀<thinking>思考</thinking>"},
-            {"role": "system", "content": "[JPAF Turn 1] weights"},
-        ]
-        state = build_jev_state("今天天氣如何？", history)
-        self.assertEqual(
-            state["chat_history"],
-            [
-                {"role": "user", "text": "嗨"},
-                {"role": "assistant", "text": "你好呀"},
-            ],
-        )
-        self.assertEqual(state["user_message"], "今天天氣如何？")
-        self.assertNotIn("persona", state)
-        self.assertNotIn("last_emotion_state", state)
-        self.assertNotIn("last_expression", state)
-
-    def test_history_turns_limit(self):
-        history = [
-            {"role": "user", "content": f"訊息 {i}"} for i in range(10)
-        ]
-        state = build_jev_state("現在的訊息", history, history_turns=4)
-        self.assertEqual(len(state["chat_history"]), 4)
-        self.assertEqual(state["chat_history"][-1]["text"], "訊息 9")
-
-    def test_persona_and_last_state_included_when_present(self):
-        class FakeJpaf:
-            current_persona = "tsundere"
-            dominant = "Ti"
-            auxiliary = "Si"
-            turn_count = 14
-
-            def weights_inline(self):
-                return "Ti:0.42 | Si:0.38"
-
-        state = build_jev_state(
-            "原諒你！",
-            [{"role": "user", "content": "上一句"}],
-            jpaf_session=FakeJpaf(),
-            last_emotion_state={
-                "primary_emotion": "angry",
-                "secondary_emotion": "playful",
-                "energy": 0.6,
-                "intensity": 0.5,
-            },
-            last_expression={"summary": "嘴角明顯下壓", "emotion": "angry", "residue": 0.32},
-        )
-        self.assertEqual(state["persona"]["current_persona"], "tsundere")
-        self.assertEqual(state["last_emotion_state"]["primary_emotion"], "angry")
-        self.assertEqual(state["last_expression"]["residue"], 0.32)
-
-    def test_last_emotion_none_values_removed(self):
-        state = build_jev_state(
-            "嗨",
-            [],
-            last_emotion_state={"primary_emotion": "happy", "secondary_emotion": None},
-        )
-        self.assertEqual(state["last_emotion_state"], {"primary_emotion": "happy"})
-
-
-class TestBuildQuestions(unittest.TestCase):
-    def test_question_types_and_criteria(self):
-        questions = build_questions()
-        self.assertEqual(
-            sorted(questions.keys()),
-            [
-                "arc",
-                "emotion",
-                "energy",
-                "intensity",
-                "needs_special_blink",
-                "performance_mode",
-                "secondary_emotion",
-                "wants_goofy",
-            ],
-        )
-        self.assertEqual(questions["emotion"]["type"], "choice")
-        self.assertEqual(questions["intensity"]["type"], "score")
-        self.assertEqual(questions["wants_goofy"]["type"], "noul")
-        self.assertEqual(len(questions["emotion"]["criteria"]), 10)
-        self.assertEqual(len(questions["performance_mode"]["criteria"]), 12)
-        self.assertEqual(len(questions["arc"]["criteria"]), 6)
-        self.assertEqual(len(questions["intensity"]["criteria"]), 5)
-        self.assertEqual(len(questions["energy"]["criteria"]), 5)
-
-
-class _FakeResponse:
-    def __init__(self, payload, status_code=200):
-        self._payload = payload
-        self.status_code = status_code
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            request = mock.Mock()
-            response = mock.Mock(
-                status_code=self.status_code,
-                text=self._payload if isinstance(self._payload, str) else repr(self._payload),
-            )
-            raise httpx.HTTPStatusError(
-                f"error {self.status_code}", request=request, response=response
-            )
-
-    def json(self):
-        return self._payload
-
-
-class _FakeAsyncClient:
-    fake_response = _FakeResponse({})
-    raise_on_post: Exception | None = None
-    last_payload: dict | None = None
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        return False
-
-    async def post(self, url, headers=None, json=None):
-        _FakeAsyncClient.last_payload = {"url": url, "headers": headers, "json": json}
-        if _FakeAsyncClient.raise_on_post is not None:
-            raise _FakeAsyncClient.raise_on_post
-        return _FakeAsyncClient.fake_response
-
-
-class TestCallJev(unittest.TestCase):
-    def setUp(self):
-        _FakeAsyncClient.fake_response = _FakeResponse({})
-        _FakeAsyncClient.raise_on_post = None
-        _FakeAsyncClient.last_payload = None
-
-    def _patch_client(self):
-        return mock.patch("infrastructure.typesafe_client.httpx.AsyncClient", return_value=_FakeAsyncClient())
-
-    def test_success_returns_answers(self):
-        _FakeAsyncClient.fake_response = _FakeResponse(
-            {"model": "typesafe/jev-1.13", "answers": {"emotion": {"type": "choice", "choice": "happy"}}}
-        )
-        with self._patch_client():
-            answers = asyncio.run(call_jev({"user_message": "嗨"}, {"emotion": {"type": "choice", "instructions": "?"}}))
-        self.assertEqual(answers["emotion"]["choice"], "happy")
-        self.assertEqual(
-            _FakeAsyncClient.last_payload["url"],
-            "https://openrouter.ai/api/v1/systemone",
-        )
-        self.assertIn("Bearer ", _FakeAsyncClient.last_payload["headers"]["Authorization"])
-        self.assertEqual(_FakeAsyncClient.last_payload["json"]["model"], "jev-latest")
-
-    def test_timeout_returns_none(self):
-        _FakeAsyncClient.raise_on_post = httpx.TimeoutException("timeout")
-        with self._patch_client():
-            answers = asyncio.run(call_jev({}, {}))
-        self.assertIsNone(answers)
-
-    def test_http_error_returns_none(self):
-        _FakeAsyncClient.fake_response = _FakeResponse({"error": "rate limited"}, status_code=429)
-        with self._patch_client():
-            answers = asyncio.run(call_jev({}, {}))
-        self.assertIsNone(answers)
-
-    def test_missing_answers_returns_none(self):
-        _FakeAsyncClient.fake_response = _FakeResponse({"usage": {}})
-        with self._patch_client():
-            answers = asyncio.run(call_jev({}, {}))
-        self.assertIsNone(answers)
-
-    def test_missing_api_key_returns_none(self):
-        with mock.patch("infrastructure.typesafe_client.os.getenv", return_value=""):
-            answers = asyncio.run(call_jev({}, {}))
-        self.assertIsNone(answers)
+    def test_rest_reset_clears_only_selected_session_state_and_messages(self):
+        with tempfile.TemporaryDirectory() as directory, \
+            mock.patch("infrastructure.memory_store.EMOTION_STATE_DIR", directory + "/emotions"), \
+            mock.patch("infrastructure.memory_store.CHAT_SESSION_DIR", directory + "/sessions"), \
+            mock.patch("infrastructure.memory_store.MEMORY_DIR", directory), \
+            mock.patch("infrastructure.memory_store.USER_PROFILE_PATH", directory + "/profile.json"), \
+            mock.patch("infrastructure.memory_store.MEMORY_MD_PATH", directory + "/memory.md"):
+            state = dict(NEUTRAL_EMOTION_STATE)
+            for session_id in ("session_1", "session_2"):
+                save_session_emotion_state(session_id, state)
+                save_session_messages(session_id, [{"role": "user", "content": "hello"}])
+            asyncio.run(reset_memory("session_1"))
+            self.assertIsNone(load_session_emotion_state("session_1"))
+            self.assertEqual(load_session_messages("session_1"), [])
+            self.assertEqual(load_session_emotion_state("session_2"), state)
+            self.assertEqual(len(load_session_messages("session_2")), 1)
 
 
 if __name__ == "__main__":

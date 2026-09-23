@@ -1,11 +1,7 @@
-"""
-Jev（System One Model）表情決策：state 組裝、questions 定義、answers → intent 映射。
+"""JEV Emotion / Action questions 與 Action answers → expression intent。"""
+import math
 
-設計依據：docs/動作Agent提示詞彙總與Jev遷移分析.md §5.5
-- criteria 全部由 expression_intent_schema.py 白名單生成，避免兩處手寫漂移
-- question ID 不送給模型，語義全在中文 instructions
-- Noul 答案無 confidence 欄位（官方 API 規格），閾值直接用 noul 值
-"""
+from domain.emotion_state import EMOTION_FIELDS, PERSONALITY
 from domain.expression_intent_schema import (
     ALLOWED_ARCS,
     ALLOWED_EMOTIONS,
@@ -97,21 +93,66 @@ INTENSITY_LEVELS = list(_INTENSITY_LEVELS)
 ENERGY_LEVELS = list(_ENERGY_LEVELS)
 
 
-def build_questions() -> dict:
-    """組出一次 Jev 呼叫的全部 questions（平行評估，加題幾乎不增加延遲）。"""
+_EMOTION_QUESTIONS = {
+    "shy": "露西亞此刻是否明顯害羞或不好意思？",
+    "pleased": "露西亞是否因目前互動感到開心、滿足或被取悅？",
+    "genuinely_angry": "露西亞是否真的生氣，而非嘴硬、吐槽或假裝不耐煩？",
+    "sad_or_hurt": "露西亞是否難過、失落、受傷或感到被冷落？",
+    "masking_positive_feeling": "露西亞是否正在掩飾喜歡、開心或親近等正面感受？",
+    "wants_continue_interaction": "露西亞是否希望目前話題或親密互動繼續？",
+}
+
+
+def build_emotion_questions() -> dict:
+    assert set(_EMOTION_QUESTIONS) == set(EMOTION_FIELDS)
+    return {
+        field: {
+            "type": "noul",
+            "instructions": question + "結合 personality、recent_dialogue、previous_emotion_state 與 current_user_input 獨立判斷；不輸出理由。",
+            "criteria": {"true": "符合", "false": "不符合"},
+        }
+        for field, question in _EMOTION_QUESTIONS.items()
+    }
+
+
+def build_emotion_context(
+    user_message: str,
+    chat_history: list[dict],
+    previous_emotion_state: dict | None,
+) -> dict:
+    """只傳最近 8 輪已完成的真實對話，不含本輪 user 訊息。"""
+    dialogue = [
+        {"role": msg["role"], "text": msg["content"]}
+        for msg in chat_history
+        if isinstance(msg, dict)
+        and msg.get("role") in ("user", "assistant")
+        and isinstance(msg.get("content"), str)
+    ][-16:]
+    context = {
+        "personality": PERSONALITY,
+        "recent_dialogue": dialogue,
+        "current_user_input": user_message,
+    }
+    if previous_emotion_state is not None:
+        context["previous_emotion_state"] = previous_emotion_state
+    return context
+
+
+def build_action_questions() -> dict:
+    """Action 單獨決定表情演出，不輸出 Emotion State。"""
     return {
         "emotion": {
             "type": "choice",
             "instructions": (
-                "判斷 `user_message` 中的使用者情緒，結合 `chat_history` 對話脈絡："
-                "此刻角色最應該以什麼情緒回應？"
+                "將 `current_emotion_state` 映射成 Live2D compiler 的主表情 emotion label。"
+                "`current_user_input` 僅用來判斷是否為明確的表演請求；不要重新判斷角色內在情緒。"
             ),
             "criteria": dict(EMOTION_CRITERIA),
         },
         "secondary_emotion": {
             "type": "choice",
             "instructions": (
-                "除了主要情緒外，`user_message` 與 `chat_history` "
+                "除了主要情緒外，`current_emotion_state` 與 `recent_dialogue` "
                 "是否還帶有第二層情緒？若沒有選 none。"
             ),
             "criteria": {"none": "沒有明顯的第二層情緒", **EMOTION_CRITERIA},
@@ -119,16 +160,16 @@ def build_questions() -> dict:
         "performance_mode": {
             "type": "choice",
             "instructions": (
-                "考量 `persona` 的人格設定（如 tsundere 傲嬌）與 `chat_history` 的氣氛："
+                "考量 `personality` 的固定角色設定與 `recent_dialogue` 的氣氛："
                 "角色應該用哪種表演方式呈現這個情緒？"
-                "注意 `last_expression` 若顯示上一輪已經做過某種表演，本輪傾向換一種。"
+                "注意 `previous_expression_carry_state` 若顯示上一輪已經做過某種表演，本輪傾向換一種。"
             ),
             "criteria": dict(MODE_CRITERIA),
         },
         "arc": {
             "type": "choice",
             "instructions": (
-                "根據 `user_message` 語氣的轉折程度：這個表情在這一輪應該怎麼變化？"
+                "根據 `current_user_input` 語氣的轉折程度：這個表情在這一輪應該怎麼變化？"
                 "語氣單純就 steady，有戲劇轉折就選對應弧線。"
             ),
             "criteria": dict(ARC_CRITERIA),
@@ -137,7 +178,7 @@ def build_questions() -> dict:
             "type": "score",
             "instructions": (
                 "角色此刻情緒表達的強度應該多強？"
-                "參考 `user_message` 的語氣力度、`last_emotion_state` 的趨勢（延續或反彈）。"
+                "參考 `current_emotion_state` 與 `current_user_input` 的語氣力度。"
             ),
             "criteria": list(INTENSITY_LEVELS),
         },
@@ -145,7 +186,7 @@ def build_questions() -> dict:
             "type": "score",
             "instructions": (
                 "角色此刻的整體精神能量應該多高？"
-                "參考 `user_message` 的節奏與 `persona` 的人格傾向。"
+                "參考 `current_user_input` 的節奏與 `personality` 的人格傾向。"
             ),
             "criteria": list(ENERGY_LEVELS),
         },
@@ -174,71 +215,28 @@ def build_questions() -> dict:
     }
 
 
-def build_jev_state(
-    user_message: str,
-    chat_history: list[dict],
-    jpaf_session=None,
-    last_emotion_state: dict | None = None,
-    last_expression: dict | None = None,
-    history_turns: int = 6,
+def build_action_context(
+    emotion_context: dict,
+    current_emotion_state: dict,
+    previous_expression_carry_state: dict | None,
 ) -> dict:
-    """組裝 Jev state。
-
-    - chat_history: [{"role": "user"|"assistant", "content": str}, ...]，
-      取最後 history_turns 筆並以 strip_jpaf_tags 清潔
-    - jpaf_session: JPAFSession（可為 None，測試用）
-    - last_emotion_state / last_expression: 首輪為 None 時整個鍵省略
-      （不要給空物件，避免模型誤判為「無表情」）
-    """
-    from domain.jpaf import strip_jpaf_tags
-
-    cleaned_history = [
-        {
-            "role": msg.get("role"),
-            "text": strip_jpaf_tags(str(msg.get("content", ""))),
-        }
-        for msg in chat_history[-history_turns:]
-        if isinstance(msg, dict) and msg.get("role") in ("user", "assistant")
-    ]
-
-    state: dict = {
-        "chat_history": cleaned_history,
-        "user_message": user_message,
+    state = {
+        "personality": emotion_context["personality"],
+        "recent_dialogue": emotion_context["recent_dialogue"],
+        "current_user_input": emotion_context["current_user_input"],
+        "current_emotion_state": current_emotion_state,
     }
-
-    if jpaf_session is not None:
-        state["persona"] = {
-            "current_persona": jpaf_session.current_persona,
-            "dominant": jpaf_session.dominant,
-            "auxiliary": jpaf_session.auxiliary,
-            "weights": jpaf_session.weights_inline(),
-            "turn_count": jpaf_session.turn_count,
-        }
-
-    if last_emotion_state:
-        state["last_emotion_state"] = {
-            "primary_emotion": last_emotion_state.get("primary_emotion") or last_emotion_state.get("emotion"),
-            "secondary_emotion": last_emotion_state.get("secondary_emotion"),
-            "energy": last_emotion_state.get("energy"),
-            "intensity": last_emotion_state.get("intensity"),
-        }
-        state["last_emotion_state"] = {
-            k: v for k, v in state["last_emotion_state"].items() if v is not None
-        }
-
-    if last_expression:
-        state["last_expression"] = last_expression
-
+    if previous_expression_carry_state is not None:
+        state["previous_expression_carry_state"] = previous_expression_carry_state
     return state
 
 
-def map_answers_to_intent(answers: dict, last_emotion_state: dict | None = None) -> dict:
+def map_answers_to_intent(answers: dict) -> dict:
     """Jev answers → raw intent dict。
 
     低 confidence 欄位直接不填，交給 normalize_expression_intent()
-    用 DEFAULT_INTENT / emotion_state 兜底。
+    用 DEFAULT_INTENT 兜底；主表情無效時由呼叫端回退上一輪表情。
     """
-    del last_emotion_state  # 介面預留：兜底由 normalize_expression_intent 處理
     intent: dict = {}
 
     emotion = answers.get("emotion") or {}
@@ -263,13 +261,13 @@ def map_answers_to_intent(answers: dict, last_emotion_state: dict | None = None)
     intensity = answers.get("intensity") or {}
     if intensity.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
         score = intensity.get("score")
-        if isinstance(score, (int, float)) and not isinstance(score, bool):
+        if isinstance(score, (int, float)) and not isinstance(score, bool) and math.isfinite(score):
             intent["intensity"] = round(max(0.0, min(1.0, float(score) / 4.0)), 3)
 
     energy = answers.get("energy") or {}
     if energy.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
         score = energy.get("score")
-        if isinstance(score, (int, float)) and not isinstance(score, bool):
+        if isinstance(score, (int, float)) and not isinstance(score, bool) and math.isfinite(score):
             intent["energy"] = round(max(0.0, min(1.0, float(score) / 4.0)), 3)
 
     # Noul 觸發器：超過閾值才影響 intent（Noul 無 confidence 欄位）

@@ -26,12 +26,12 @@ def log_turn(
     """記錄單輪對話到 prompt.log（append 模式）。
 
     Args:
-        turn_count:      本輪的 JPAF turn 編號。
+        turn_count:      本輪的對話編號。
         system_prompt:   送給 Dialogue Agent 的完整系統提示詞。
         user_message:    使用者輸入。
         dialogue_agent_output: Dialogue Agent 清理後的輸出。
-        tool_names:      Expression Agent 與 Memory Agent 本輪呼叫的工具名稱清單。
-        output_tokens:   Dialogue Agent + Expression Agent + Memory Agent 輸出 token 數估算。
+        tool_names:      Memory Agent 本輪呼叫的工具名稱清單。
+        output_tokens:   Chat 輸出 token 數估算。
     """
     _ensure_dir()
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -47,7 +47,7 @@ def log_turn(
         f"{user_message}\n"
         f"\n[DIALOGUE AGENT OUTPUT]\n"
         f"{dialogue_agent_output}\n"
-        f"\n[EXPRESSION AGENT / MEMORY AGENT TOOL CALLS]  {tool_str}\n"
+        f"\n[MEMORY AGENT TOOL CALLS]  {tool_str}\n"
         f"[OUTPUT TOKENS (est.)]  {output_tokens}\n"
         f"{_SEP}\n"
     )

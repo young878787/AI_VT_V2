@@ -1,0 +1,148 @@
+import argparse
+import asyncio
+import json
+import pathlib
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+
+BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from tools import chat_test_cli as cli
+
+
+class FakeSocket:
+    def __init__(self):
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+def make_record(turn: int, error: str | None = None) -> dict:
+    return {
+        "turn": turn, "ts": "2026-09-23T12:00:00", "user": f"message {turn}",
+        "reply": "露西亞的回答" if not error else "",
+        "emotion_state": {"shy": 0.5}, "emotion_source": "jev",
+        "expression": "shy", "expression_debug": {}, "memory_changes": {},
+        "errors": [error] if error else [], "latency_first_text_sec": 1.0,
+        "duration_sec": 2.0,
+    }
+
+
+class ChatTestCliTests(unittest.TestCase):
+    def test_backend_uses_run_memory_not_formal_memory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = pathlib.Path(directory)
+            (run_dir / "memory").mkdir()
+            fake_process = mock.Mock()
+            with mock.patch("tools.chat_test_cli.subprocess.Popen", return_value=fake_process) as popen:
+                process, log_file = cli.start_backend(run_dir, 12345)
+            try:
+                self.assertIs(process, fake_process)
+                kwargs = popen.call_args.kwargs
+                self.assertEqual(kwargs["env"]["AI_VT_MEMORY_DIR"], str((run_dir / "memory").resolve()))
+                self.assertEqual(kwargs["env"]["AI_VT_TEST_MODE"], "true")
+                self.assertEqual(kwargs["cwd"], cli.BACKEND_ROOT)
+                self.assertIn("12345", popen.call_args.args[0])
+            finally:
+                log_file.close()
+
+    def test_failed_turn_stops_scenario_and_keeps_partial_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            scenario = root / "scenario.txt"
+            scenario.write_text("one\ntwo\nthree\n", encoding="utf-8")
+            socket = FakeSocket()
+            process = mock.Mock()
+            process.poll.return_value = None
+            log_file = mock.Mock()
+            args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
+                                      retries=0, startup_timeout=1, turn_timeout=1)
+            with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
+                mock.patch.object(cli, "start_backend", return_value=(process, log_file)), \
+                mock.patch.object(cli, "connect_backend", return_value=socket), \
+                mock.patch.object(cli, "stop_backend") as stop, \
+                mock.patch.object(cli, "run_turn", side_effect=[make_record(1), make_record(2, "overloaded")]) as turn:
+                run_dir, status = asyncio.run(cli.run(args))
+            self.assertEqual(status, "failed")
+            self.assertEqual(turn.call_count, 2)
+            self.assertTrue(socket.closed)
+            stop.assert_called_once_with(process, log_file)
+            records = [json.loads(line) for line in (run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([record["turn"] for record in records], [1, 2])
+            report = (run_dir / "report.md").read_text(encoding="utf-8")
+            self.assertIn("**failed**；已完成 1 / 3 輪", report)
+            self.assertIn("第 2 輪失敗：overloaded", report)
+            self.assertNotIn("message 3", report)
+            self.assertTrue((run_dir / "run.json").exists())
+
+    def test_interruption_preserves_first_turn_and_closes_backend(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            scenario = root / "scenario.txt"
+            scenario.write_text("one\ntwo\n", encoding="utf-8")
+            socket = FakeSocket()
+            process = mock.Mock()
+            log_file = mock.Mock()
+            args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
+                                      retries=0, startup_timeout=1, turn_timeout=1)
+            with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
+                mock.patch.object(cli, "start_backend", return_value=(process, log_file)), \
+                mock.patch.object(cli, "connect_backend", return_value=socket), \
+                mock.patch.object(cli, "stop_backend") as stop, \
+                mock.patch.object(cli, "run_turn", side_effect=[make_record(1), asyncio.CancelledError()]):
+                with self.assertRaises(asyncio.CancelledError):
+                    asyncio.run(cli.run(args))
+            run_dir = next((root / "runs").iterdir())
+            report = (run_dir / "report.md").read_text(encoding="utf-8")
+            self.assertIn("**interrupted**；已完成 1 / 2 輪", report)
+            self.assertEqual(len((run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()), 1)
+            self.assertTrue(socket.closed)
+            stop.assert_called_once_with(process, log_file)
+
+    def test_retry_keeps_one_final_turn_and_records_attempt_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            scenario = root / "scenario.txt"
+            scenario.write_text("one\n", encoding="utf-8")
+            sockets = [FakeSocket(), FakeSocket()]
+            args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
+                                      retries=1, startup_timeout=1, turn_timeout=1)
+            with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
+                mock.patch.object(cli, "start_backend", return_value=(mock.Mock(), mock.Mock())), \
+                mock.patch.object(cli, "connect_backend", side_effect=sockets) as connect, \
+                mock.patch.object(cli, "stop_backend"), \
+                mock.patch.object(cli, "run_turn", side_effect=[make_record(1, "overloaded"), make_record(1)]):
+                run_dir, status = asyncio.run(cli.run(args))
+            self.assertEqual(status, "completed")
+            self.assertEqual(connect.call_count, 2)
+            self.assertTrue(all(socket.closed for socket in sockets))
+            records = [json.loads(line) for line in (run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["attempts"], 2)
+            self.assertEqual(records[0]["attempt_errors"], ["overloaded"])
+
+    def test_turn_timeout_returns_error_without_writing_formal_memory(self):
+        class SlowSocket:
+            async def send(self, payload):
+                self.payload = json.loads(payload)
+
+            async def recv(self):
+                await asyncio.sleep(1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            socket = SlowSocket()
+            record = asyncio.run(cli.run_turn(socket, 1, "hi", "Hiyori", "test_session",
+                                               pathlib.Path(directory), 0.01))
+            self.assertIn("逾時", record["errors"][0])
+            self.assertEqual(socket.payload["session_id"], "test_session")
+            self.assertEqual(record["memory_changes"], {})
+
+
+if __name__ == "__main__":
+    unittest.main()

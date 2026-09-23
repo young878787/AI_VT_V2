@@ -4,6 +4,7 @@
 """
 import os
 import json
+import tempfile
 from datetime import datetime
 
 from core.config import (
@@ -12,16 +13,17 @@ from core.config import (
     CHAT_SESSION_DIR,
     MEMORY_DIR,
     CHAT_PERSISTENCE_MAX_MESSAGES,
-    JPAF_STATE_PATH,
+    EMOTION_STATE_DIR,
 )
 from core.utils import get_msg_field
+from core.utils import normalize_session_id
+from domain.emotion_state import validate_emotion_state
 
 # ============================================================
 # In-Memory Cache（減少每輪對話的磁碟 I/O）
 # ============================================================
 _profile_cache: dict | None = None
 _memory_cache: str | None = None
-_jpaf_state_cache: dict | None = None
 
 
 # ============================================================
@@ -96,28 +98,49 @@ def append_memory_note(note: str) -> None:
 
 
 # ============================================================
-# JPAF State（jpaf_state.json）
+# Session Emotion State
 # ============================================================
-def load_jpaf_state() -> dict | None:
-    """讀取 jpaf_state.json（優先從 cache）。回傳 None 表示尚未建立。"""
-    global _jpaf_state_cache
-    if _jpaf_state_cache is not None:
-        return _jpaf_state_cache
+def _emotion_state_path(session_id: str) -> str:
+    normalized = normalize_session_id(session_id)
+    if not normalized or normalized != session_id:
+        raise ValueError("無效的 session_id")
+    return os.path.join(EMOTION_STATE_DIR, f"{normalized}.json")
+
+
+def load_session_emotion_state(session_id: str) -> dict | None:
+    """缺檔或內容不符合契約時回 None，不載入舊版 JPAF 資料。"""
     try:
-        with open(JPAF_STATE_PATH, "r", encoding="utf-8") as f:
-            _jpaf_state_cache = json.load(f)
-            return _jpaf_state_cache
+        with open(_emotion_state_path(session_id), "r", encoding="utf-8") as f:
+            return validate_emotion_state(json.load(f))
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
 
-def save_jpaf_state(state: dict) -> None:
-    """寫入 jpaf_state.json，同步更新 cache。"""
-    global _jpaf_state_cache
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(JPAF_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    _jpaf_state_cache = state
+def save_session_emotion_state(session_id: str, state: dict) -> None:
+    """先驗證，再以同目錄暫存檔原子替換 session state。"""
+    validated = validate_emotion_state(state)
+    if validated is None:
+        raise ValueError("無效的 Emotion State")
+    path = _emotion_state_path(session_id)
+    os.makedirs(EMOTION_STATE_DIR, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=EMOTION_STATE_DIR, delete=False
+        ) as file:
+            temporary_path = file.name
+            json.dump(validated, file, ensure_ascii=False, indent=2)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+
+
+def reset_session_emotion_state(session_id: str) -> None:
+    try:
+        os.unlink(_emotion_state_path(session_id))
+    except FileNotFoundError:
+        pass
 
 
 # ============================================================
@@ -143,13 +166,6 @@ def reset_memory_notes() -> None:
     with open(MEMORY_MD_PATH, "w", encoding="utf-8") as f:
         f.write("# Memory Notes\n")
     _memory_cache = None
-
-
-def reset_jpaf_state() -> None:
-    """還原 jpaf_state.json 為預設值（預設 persona），同步清除 cache。"""
-    from domain.jpaf import JPAFSession
-    default_session = JPAFSession()
-    save_jpaf_state(default_session.to_dict())
 
 
 # ============================================================

@@ -122,7 +122,7 @@ python tools/chat_test_cli.py                                            # 互�
 python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-直接連 `/ws/chat` 進行真實 LLM 多輪對話測試，逐輪擷取回覆文字、情緒、JPAF 人格狀態與記憶檔變更。每次執行一律先重置記憶，保證全新測試起點。報告輸出至 `backend/log/chat_test_reports/`（以時間命名的 Markdown，已 gitignore）。
+CLI 會自動啟動隔離測試後端，逐輪擷取回覆、JEV 六欄位情緒、表情與記憶變更。每次執行在 `backend/log/chat_test_runs/<run-id>/` 建立獨立的 `memory/`、`turns.jsonl`、逐輪更新的 `report.md`、`run.json` 與 `server.log`（已 gitignore），不會讀寫正式記憶。錯誤重試耗盡或逾時即停止，並保留部分報告。JEV Emotion 與 Action 需設定 `OPENROUTER_API_KEY`；`EXPRESSION_DECIDER` 已不再使用。
 
 ---
 

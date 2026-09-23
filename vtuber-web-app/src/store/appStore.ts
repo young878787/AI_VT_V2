@@ -6,19 +6,12 @@ import { AvailableModels, type ModelConfig } from '../live2d/LAppDefine';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { fetchAvailableModels, type RemoteModelConfig } from '../services/modelService';
 import type { BlinkAction, ExpressionEyeMotionPlan, ExpressionIdlePlan, ExpressionMicroEvent, ExpressionMotionPlan, ExpressionPlanPayload } from '../types/expressionPlan';
+import type { EmotionSource, EmotionState } from '../types/emotionState';
 
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
-}
-
-export interface JPAFState {
-  persona: string;
-  dominant: string;
-  auxiliary: string;
-  baseWeights: Record<string, number>;
-  turnCount: number;
 }
 
 interface AiBehaviorBridgeModel {
@@ -120,9 +113,10 @@ interface AppState {
   setModelSwitching: (switching: boolean) => void;
   getCurrentModelConfig: () => ModelConfig | undefined;
 
-  // JPAF 狀態
-  jpafState: JPAFState | null;
-  setJpafState: (state: JPAFState) => void;
+  // JEV 情緒狀態
+  emotionState: EmotionState | null;
+  emotionSource: EmotionSource | null;
+  setEmotionState: (state: EmotionState, source: EmotionSource) => void;
   clearChatHistory: () => void;
 
   // 動態模型清單管理
@@ -169,8 +163,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   expressionPlan: null,
   expressionEvents: [],
 
-  // JPAF 初始狀態
-  jpafState: null,
+  // JEV 情緒初始狀態
+  emotionState: null,
+  emotionSource: null,
 
   // 模型管理初始狀態
   currentModelName: AvailableModels[0]?.name || 'Hiyori',
@@ -323,7 +318,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
-  setJpafState: (state) => set({ jpafState: state }),
+  setEmotionState: (state, source) => set({ emotionState: state, emotionSource: source }),
 
   clearChatHistory: () => set({
     chatHistory: [{

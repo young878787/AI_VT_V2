@@ -10,7 +10,6 @@ from core.config import AI_PROVIDER, MODEL_NAME, COMPRESS_KEEP_RECENT
 from core.utils import strip_thinking, get_msg_field
 from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY, NO_THINKING_EXTRA_BODY
 from infrastructure.memory_store import append_memory_note
-from domain.jpaf import extract_emotion_state, extract_jpaf_state, strip_jpaf_tags
 
 import tiktoken
 
@@ -127,117 +126,10 @@ async def stream_final_text(messages: list, websocket: WebSocket) -> str:
 
 
 # ============================================================
-# Agent A：JPAF 人格對話串流
+# AI Chat：純文字回覆
 # ============================================================
-async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dict | None, dict | None]:
-    """
-    Agent A 串流呼叫：產生角色對話 + JPAF 狀態。
-    回傳 (cleaned_text, jpaf_state_dict_or_None, emotion_state_dict_or_None)。
-    串流時即時過濾 <thinking>、<jpaf_state>、<emotion_state> 標籤，只送對話文字到前端。
-    """
-    stream = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        temperature=0.85,
-        extra_body=EXTRA_BODY,
-        stream=True,
-    )
-
-    all_chunks: list[str] = []       # 完整原始文字（含標籤）
-    visible_buffer: list[str] = []   # 可能需要送出的文字暫存
-    inside_hidden_tag: bool = False   # 是否在隱藏標籤內
-    hidden_tag_name: str = ""         # 當前隱藏標籤名稱
-
-    _HIDDEN_OPEN_TAGS = {"<thinking>", "<think>", "<thought>", "<jpaf_state>", "<emotion_state>"}
-    _HIDDEN_CLOSE_MAP = {
-        "thinking": "</thinking>",
-        "think": "</think>",
-        "thought": "</thought>",
-        "jpaf_state": "</jpaf_state>",
-        "emotion_state": "</emotion_state>",
-    }
-
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        piece = getattr(delta, "content", None)
-        if not piece:
-            continue
-
-        all_chunks.append(piece)
-
-        # 簡易狀態機：偵測隱藏標籤的開/關
-        if inside_hidden_tag:
-            # 在隱藏標籤內，檢查是否結束
-            close_tag = _HIDDEN_CLOSE_MAP.get(hidden_tag_name, "")
-            # 不送出任何內容
-            # 用累積的全文來檢查結束標籤
-            full_so_far = "".join(all_chunks)
-            if close_tag and close_tag in full_so_far.split(f"<{hidden_tag_name}>")[-1]:
-                inside_hidden_tag = False
-                hidden_tag_name = ""
-        else:
-            # 不在隱藏標籤內，檢查是否有開始標籤
-            combined = "".join(visible_buffer) + piece
-            tag_found = False
-            for open_tag in _HIDDEN_OPEN_TAGS:
-                if open_tag in combined:
-                    # 送出標籤之前的文字
-                    before = combined.split(open_tag)[0]
-                    if before.strip():
-                        await websocket.send_json(
-                            {"type": "text_stream", "content": before}
-                        )
-                    visible_buffer = []
-                    inside_hidden_tag = True
-                    hidden_tag_name = open_tag[1:-1]  # 去掉 < >
-                    tag_found = True
-                    break
-
-            if not tag_found:
-                # 檢查 piece 是否可能是標籤的開頭片段（如 "<thin"）
-                if "<" in piece and not piece.endswith(">"):
-                    visible_buffer.append(piece)
-                else:
-                    # 安全地送出
-                    if visible_buffer:
-                        buffered = "".join(visible_buffer)
-                        visible_buffer = []
-                        await websocket.send_json(
-                            {"type": "text_stream", "content": buffered + piece}
-                        )
-                    else:
-                        await websocket.send_json(
-                            {"type": "text_stream", "content": piece}
-                        )
-
-    # 送出 buffer 中剩餘的文字
-    if visible_buffer and not inside_hidden_tag:
-        remaining = "".join(visible_buffer)
-        if remaining.strip():
-            await websocket.send_json(
-                {"type": "text_stream", "content": remaining}
-            )
-
-    # 從完整原始文字提取 jpaf_state 和乾淨對話
-    raw_text = "".join(all_chunks).strip()
-    jpaf_state = extract_jpaf_state(raw_text)
-    emotion_state = extract_emotion_state(raw_text)
-    clean_text = strip_jpaf_tags(strip_thinking(raw_text))
-
-    return clean_text, jpaf_state, emotion_state
-
-
-# ============================================================
-# Agent A：JPAF Buffer 模式（不即時串流文字到前端）
-# ============================================================
-async def collect_agent_a(messages: list) -> tuple[str, dict | None, dict | None]:
-    """
-    Agent A buffer 模式：收集完整回覆後解析 JPAF 狀態，不即時送出文字到前端。
-    用於等 A+B 都完成後再一起送的同步模式。
-    回傳 (cleaned_text, jpaf_state_dict_or_None, emotion_state_dict_or_None)。
-    """
+async def collect_agent_a(messages: list) -> str:
+    """收集 Chat 回覆，僅回傳可唸出的純文字。"""
     stream = await chat_create_with_fallback(
         model=MODEL_NAME,
         messages=messages,
@@ -255,36 +147,9 @@ async def collect_agent_a(messages: list) -> tuple[str, dict | None, dict | None
         if piece:
             chunks.append(piece)
 
-    raw_text = "".join(chunks).strip()
-    jpaf_state = extract_jpaf_state(raw_text)
-    emotion_state = extract_emotion_state(raw_text)
-    clean_text = strip_jpaf_tags(strip_thinking(raw_text))
-
-    return clean_text, jpaf_state, emotion_state
-
-
-# ============================================================
-# Agent B-1：Expression Intent
-# ============================================================
-async def call_expression_agent(messages: list, model_name: str = "Hiyori") -> object:
-    """
-    Expression Agent 非串流呼叫：輸出 JSON intent。
-    第一版保留 model_name 介面，但暫時不做 model-specific tool 綁定。
-    """
-    del model_name
-    response = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        temperature=0.4,
-        extra_body=NO_THINKING_EXTRA_BODY,
-        max_tokens=600,
-    )
-    return response
-
-
-async def call_live2d_agent(messages: list, model_name: str = "Hiyori") -> object:
-    """已棄用，保留向後相容。請改用 call_expression_agent。"""
-    return await call_expression_agent(messages, model_name=model_name)
+    text = strip_thinking("".join(chunks).strip())
+    # 舊模型若仍回傳狀態標籤，只丟棄內容，不把它作為情緒來源。
+    return re.sub(r"<([a-z_]+_state)>.*?</\1>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
 
 
 # ============================================================
@@ -305,23 +170,6 @@ async def call_memory_agent(messages: list, model_name: str = "Hiyori") -> objec
         temperature=0.3,
         extra_body=NO_THINKING_EXTRA_BODY,
         max_tokens=400,
-    )
-    return response
-
-
-# 向後相容別名
-async def call_agent_b(messages: list) -> object:
-    """已棄用，保留向後相容。請改用 call_live2d_agent / call_memory_agent。"""
-    from domain.tools import tools
-
-    response = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto",
-        temperature=0.5,
-        extra_body=EXTRA_BODY,
-        max_tokens=512,
     )
     return response
 
