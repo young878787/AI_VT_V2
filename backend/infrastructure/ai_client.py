@@ -1,24 +1,17 @@
 """
 AI 客戶端：OpenAI 相容客戶端初始化、extra_body 組裝、含後備模型的呼叫包裝。
 """
-import os
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 from core.config import (
-    AI_PROVIDER, API_KEY, BASE_URL, MODEL_NAME, FALLBACK_MODEL,
+    FALLBACK_MODEL,
     CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_URL, MEMORY_PROVIDER, MEMORY_API_KEY, MEMORY_BASE_URL,
 )
-from core.utils import env_flag
 
-# 初始化 OpenAI 相容客戶端（OpenRouter / Nvidia / Google AI Studio / DashScope）
-client: AsyncOpenAI = AsyncOpenAI(
-    base_url=BASE_URL,
-    api_key=API_KEY,
-)
-
+# Chat／Memory 各自使用指定的 OpenAI 相容端點。
 _role_clients = {
-    "chat": client if (CHAT_PROVIDER, CHAT_BASE_URL) == (AI_PROVIDER, BASE_URL) else AsyncOpenAI(base_url=CHAT_BASE_URL, api_key=CHAT_API_KEY),
-    "memory": client if (MEMORY_PROVIDER, MEMORY_BASE_URL) == (AI_PROVIDER, BASE_URL) else AsyncOpenAI(base_url=MEMORY_BASE_URL, api_key=MEMORY_API_KEY),
+    "chat": AsyncOpenAI(base_url=CHAT_BASE_URL, api_key=CHAT_API_KEY),
+    "memory": AsyncOpenAI(base_url=MEMORY_BASE_URL, api_key=MEMORY_API_KEY),
 }
 
 
@@ -30,57 +23,42 @@ def no_thinking_extra_body(provider: str) -> dict:
     return {}
 
 
-def _build_extra_body() -> dict:
-    """
-    建構傳給 API 的額外參數（extra_body）。
-    - Nvidia Qwen3 系列需要 chat_template_kwargs: {enable_thinking: True}
-      才能啟用 Chain-of-Thought 推理模式。
-    - DashScope Qwen3 系列需要頂層 enable_thinking: True（欄位路徑不同於 Nvidia）。
-    - OpenRouter 與 Google AI Studio 不需要額外參數。
-    """
-    if AI_PROVIDER == "nvidia" and env_flag("AI_ENABLE_THINKING", False):
-        return {"chat_template_kwargs": {"enable_thinking": True}}
-    if AI_PROVIDER == "qwen" and env_flag("AI_ENABLE_THINKING", False):
-        extra: dict = {"enable_thinking": True}
-        effort = os.getenv("QWEN_REASONING_EFFORT")
-        if effort:
-            extra["reasoning_effort"] = effort.lower()
-        return extra
-    return {}
-
-
-def _build_no_thinking_extra_body() -> dict:
-    """
-    明確關閉 thinking 的 extra_body（供 Agent B 使用）。
-    Qwen3/Nvidia 系列 thinking 模型需要明確傳 False 才會關閉，
-    不傳（即 {}）不等於關閉，模型會預設維持 thinking 開啟。
-    """
-    if AI_PROVIDER == "nvidia":
-        return {"chat_template_kwargs": {"enable_thinking": False}}
-    if AI_PROVIDER == "qwen":
-        return {"enable_thinking": False}
-    return {}
-
-
-# 預先計算（啟動時固定，不需每次呼叫重建）
-EXTRA_BODY: dict = _build_extra_body()
-NO_THINKING_EXTRA_BODY: dict = _build_no_thinking_extra_body()
-
-
 async def chat_create_with_fallback(**kwargs) -> object:
     """
     包裝 client.chat.completions.create()。
-    若主模型呼叫失敗且設有後備模型（FALLBACK_MODEL），
-    自動切換 model= 重試一次。僅 qwen provider 有後備模型，
-    其他 provider 的 FALLBACK_MODEL 為 None，行為等同直接呼叫。
+    若主模型呼叫失敗且該 role 的 provider 有後備模型（FALLBACK_MODEL），
+    自動切換 model= 重試一次。三組獨立：只看呼叫 role 自己的 provider。
     """
-    role = kwargs.pop("role", None)
-    target = _role_clients.get(role, client)
+    role = kwargs.pop("role")
+    target = _role_clients[role]
+    role_provider = {"chat": CHAT_PROVIDER, "memory": MEMORY_PROVIDER}[role]
+    request_kwargs = dict(kwargs)
+    if role_provider == "openai" and "max_tokens" in request_kwargs:
+        request_kwargs.setdefault("max_completion_tokens", request_kwargs.pop("max_tokens"))
     try:
-        return await target.chat.completions.create(**kwargs)
+        for _ in range(3):
+            try:
+                return await target.chat.completions.create(**request_kwargs)
+            except BadRequestError as error:
+                if role_provider != "openai":
+                    raise
+                param = getattr(error, "param", None)
+                if param == "temperature" and "temperature" in request_kwargs:
+                    # Some OpenAI models only support the default temperature.
+                    request_kwargs.pop("temperature")
+                    continue
+                if (
+                    param == "reasoning_effort"
+                    and "tools" in request_kwargs
+                    and "set reasoning_effort to 'none'" in str(error)
+                ):
+                    request_kwargs["reasoning_effort"] = "none"
+                    continue
+                raise
+        raise RuntimeError("OpenAI 相容參數調整後仍無法送出請求")
     except Exception as e:
-        if (role is None or (role == "chat" and CHAT_PROVIDER == AI_PROVIDER) or (role == "memory" and MEMORY_PROVIDER == AI_PROVIDER)) and FALLBACK_MODEL and kwargs.get("model") != FALLBACK_MODEL:
+        if role_provider == "qwen" and FALLBACK_MODEL and kwargs.get("model") != FALLBACK_MODEL:
             print(f"[Fallback] 主模型失敗 ({e})，切換至後備模型: {FALLBACK_MODEL}")
-            fallback_kwargs = {**kwargs, "model": FALLBACK_MODEL}
+            fallback_kwargs = {**request_kwargs, "model": FALLBACK_MODEL}
             return await target.chat.completions.create(**fallback_kwargs)
         raise

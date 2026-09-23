@@ -7,8 +7,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from api.display_manager import broadcast_to_displays
 from core.config import (
-    AI_PROVIDER,
-    MODEL_NAME,
+    CHAT_PROVIDER,
+    CHAT_MODEL_NAME,
     CHAT_PERSISTENCE_ENABLED,
     COMPRESS_KEEP_RECENT,
 )
@@ -247,7 +247,7 @@ async def websocket_endpoint(websocket: WebSocket):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            print(f"[Chat error][{AI_PROVIDER.upper()}] Model={MODEL_NAME} | {exc}")
+            print(f"[Chat error][{CHAT_PROVIDER.upper()}] Model={CHAT_MODEL_NAME} | {exc}")
             if active_turn_id == turn_id:
                 await send({"type": "error", "content": f"API 錯誤: {exc}", "turn_id": turn_id})
         finally:

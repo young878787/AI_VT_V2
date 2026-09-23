@@ -20,7 +20,7 @@ from domain.emotion_state import EMOTION_FIELDS
 from backend.tests.test_emotion_chat_ws import action_answers
 from services import memory_consolidation
 from types import SimpleNamespace
-from core.config import role_model_config, AI_PROVIDER
+from core.config import role_model_config, provider_from_url
 from domain.input_event import normalize_chat_input
 
 
@@ -33,11 +33,21 @@ class ArchitectureIntegrationTests(unittest.TestCase):
         self.assertEqual(event["user_id"], "default_user")
         self.assertNotEqual(event["turn_id"], "bad/id")
 
-    def test_role_model_defaults_and_override(self):
-        with patch.dict("os.environ", {"CHAT_AI_PROVIDER": "", "CHAT_MODEL_NAME": "test-chat"}):
-            provider, _, _, model = role_model_config("CHAT")
-            self.assertEqual(provider, AI_PROVIDER)
-            self.assertEqual(model, "test-chat")
+    def test_role_model_uses_only_its_triplet(self):
+        with patch.dict("os.environ", {
+            "CHAT_AI_API_KEY": "chat-key",
+            "CHAT_AI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+            "CHAT_AI_MODEL": "test-chat",
+        }):
+            provider, key, url, model = role_model_config("CHAT")
+            self.assertEqual((provider, key, url, model), (
+                "nvidia", "chat-key", "https://integrate.api.nvidia.com/v1", "test-chat"
+            ))
+            with patch.dict("os.environ", {"CHAT_AI_API_KEY": ""}):
+                with self.assertRaisesRegex(RuntimeError, "CHAT_AI_API_KEY"):
+                    role_model_config("CHAT")
+        self.assertEqual(provider_from_url("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"), "qwen")
+        self.assertEqual(provider_from_url("https://gateway.example/v1"), "custom")
 
     def test_chat_context_has_fixed_budget_and_keeps_latest_input(self):
         history = [{"role": "user", "content": "很久以前" * 8000},

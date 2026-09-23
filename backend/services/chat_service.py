@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import WebSocket
 
-from core.config import MODEL_NAME, CHAT_MODEL_NAME, MEMORY_MODEL_NAME, CHAT_PROVIDER, MEMORY_PROVIDER, CHAT_CONTEXT_TOKEN_BUDGET, COMPRESS_KEEP_RECENT
+from core.config import CHAT_MODEL_NAME, MEMORY_MODEL_NAME, CHAT_PROVIDER, MEMORY_PROVIDER, CHAT_CONTEXT_TOKEN_BUDGET, COMPRESS_KEEP_RECENT
 from core.utils import strip_thinking, get_msg_field
 from infrastructure.ai_client import chat_create_with_fallback, no_thinking_extra_body
 from infrastructure.memory_store import save_session_summary
@@ -341,7 +341,8 @@ async def compress_context(messages: list, websocket: WebSocket, session_id: str
         )
 
         summary_response = await chat_create_with_fallback(
-            model=MODEL_NAME,
+            model=CHAT_MODEL_NAME,
+            role="chat",
             messages=[
                 {
                     "role": "system",

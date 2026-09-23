@@ -76,19 +76,21 @@ AI_VT_V2/
 - Python 3.10+
 - Node.js 18+
 - Cubism SDK for Web（放置於專案根目錄，命名為 `CubismSdkForWeb-5-r.5-beta.3/`）
-- 任一可用 provider 的 API 金鑰（[OpenRouter](https://openrouter.ai)、NVIDIA 或 Google AI Studio）
+- JEV 與 CHAT／MEMORY 路線所需的 API 金鑰（JEV 使用 [OpenRouter](https://openrouter.ai) SystemOne）
 
 ### 環境變數設定
 
 將 `.env.example` 複製為 `.env` 並填入金鑰：
 
 ```
-AI_PROVIDER=openrouter
-OPENROUTER_API_KEY=your_key_here
-# 或使用 Google
-# AI_PROVIDER=google
-# GOOGLE_API_KEY=your_key_here
-# 可選：CHAT_AI_PROVIDER / CHAT_MODEL_NAME、MEMORY_AI_PROVIDER / MEMORY_MODEL_NAME
+OPENROUTER_API_KEY=your_openrouter_key  # JEV_AI_API_KEY 留空時沿用
+CHAT_AI_API_KEY=your_chat_key
+CHAT_AI_BASE_URL=https://api.openai.com/v1
+CHAT_AI_MODEL=gpt-4o-mini
+MEMORY_AI_API_KEY=your_memory_key
+MEMORY_AI_BASE_URL=https://api.openai.com/v1
+MEMORY_AI_MODEL=gpt-4o-mini
+# JEV 使用 SystemOne；可用 JEV_AI_BASE_URL、JEV_AI_MODEL 覆寫預設。
 ```
 
 ### 後端啟動
@@ -122,7 +124,7 @@ python tools/chat_test_cli.py                                            # 互�
 python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-CLI 會自動啟動隔離測試後端，逐輪擷取回覆、JEV 六欄位情緒、表情與記憶變更。每次執行在 `backend/log/chat_test_runs/<run-id>/` 建立獨立的 `memory/`、`turns.jsonl`、逐輪更新的 `report.md`、`run.json` 與 `server.log`（已 gitignore），不會讀寫正式記憶。錯誤重試耗盡或逾時即停止，並保留部分報告。JEV Emotion 與 Action 需設定 `OPENROUTER_API_KEY`；`EXPRESSION_DECIDER` 已不再使用。
+CLI 會自動啟動隔離測試後端，逐輪擷取回覆、JEV 六欄位情緒、表情與記憶變更。每次執行在 `backend/log/chat_test_runs/<run-id>/` 建立獨立的 `memory/`、`turns.jsonl`、逐輪更新的 `report.md`、`run.json` 與 `server.log`（已 gitignore），不會讀寫正式記憶。錯誤重試耗盡或逾時即停止，並保留部分報告。JEV Emotion 與 Action 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`；`EXPRESSION_DECIDER` 已不再使用。
 
 ---
 

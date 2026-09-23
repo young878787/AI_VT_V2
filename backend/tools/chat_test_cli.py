@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import websockets
 from dotenv import dotenv_values
@@ -69,17 +70,10 @@ def create_run_dir() -> Path:
 
 def model_metadata() -> dict:
     values = dotenv_values(ENV_PATH)
-    provider = (values.get("AI_PROVIDER") or "").lower()
-    model_keys = {
-        "openrouter": "OPENROUTER_MODEL_NAME",
-        "nvidia": "NVIDIA_MODEL_NAME",
-        "google": "GOOGLE_MODEL_NAME",
-        "qwen": "QWEN_MODEL_NAME",
-    }
     return {
-        "ai_provider": provider,
-        "chat_model": values.get(model_keys.get(provider, "")) or "(default)",
-        "jev_model": values.get("JEV_MODEL_NAME") or "jev-latest",
+        "ai_provider": urlparse(values.get("CHAT_AI_BASE_URL") or "").hostname or "(unset)",
+        "chat_model": values.get("CHAT_AI_MODEL") or "(unset)",
+        "jev_model": values.get("JEV_AI_MODEL") or "jev-latest",
     }
 
 

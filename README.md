@@ -67,19 +67,23 @@ AI_VT_V2/
 ## 安裝與執行
 
 ```bash
-# 1. 前置需求：Python 3.10+、Node.js 18+、任一 LLM provider 的 API 金鑰
+# 1. 前置需求：Python 3.10+、Node.js 18+、JEV 與 CHAT／MEMORY 路線所需的 API 金鑰
 # 2. 將 Cubism SDK for Web 解壓縮至專案根目錄，命名為 CubismSdkForWeb-5-r.5-beta.3/
 #    （gitignored，需手動放置；另有 MotionSync plugin 目錄，同為 gitignored）
 
 # 3. 環境變數：複製 .env.example 為 .env 並填入金鑰
 cp .env.example .env
-# 至少填寫其一，例如：
-# AI_PROVIDER=openrouter
-# OPENROUTER_API_KEY=your_key_here
+# 三條路線各自填入所用端點的金鑰、URL、模型，例如：
+# OPENROUTER_API_KEY=your_openrouter_key  # JEV_AI_API_KEY 留空時沿用
+# CHAT_AI_API_KEY=your_chat_key
+# CHAT_AI_BASE_URL=https://api.openai.com/v1
+# CHAT_AI_MODEL=gpt-4o-mini
+# MEMORY_AI_API_KEY=your_memory_key
+# MEMORY_AI_BASE_URL=https://api.openai.com/v1
+# MEMORY_AI_MODEL=gpt-4o-mini
 # BACKEND_PORT=9000
 # FRONTEND_PORT=5287
-# Chat／背景 Memory 可選擇分開設定 CHAT_AI_PROVIDER、CHAT_MODEL_NAME、
-# MEMORY_AI_PROVIDER、MEMORY_MODEL_NAME；未設定時沿用 AI_PROVIDER 的模型。
+# JEV 固定使用 SystemOne 請求格式；可用 JEV_AI_BASE_URL、JEV_AI_MODEL 覆寫預設。
 
 # 4. 啟動後端（Windows PowerShell）
 cd backend
@@ -124,7 +128,7 @@ python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --turn-ti
 - `report.md` — 每輪更新的 Markdown 報告；中斷或失敗時保留部分結果與原因
 - `run.json`、`server.log` — 情境／模型設定與後端錯誤日誌
 
-JEV Emotion 與 Action 使用 OpenRouter System One，啟動前需設定 `OPENROUTER_API_KEY`。Chat 只輸出露西亞的純文字回覆；`EXPRESSION_DECIDER` 已不再使用。
+JEV Emotion 與 Action 使用 OpenRouter System One，啟動前需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。Chat 只輸出露西亞的純文字回覆；`EXPRESSION_DECIDER` 已不再使用。
 
 以上 log 檔案皆已 gitignore。單輪錯誤可沿用測試 session 重試（`--retries`，預設 2 次）；重試耗盡、已有回覆後失敗或逾時時會停止，不會把後續題目記成有效輪次。外部 `--url` 模式已移除，以免誤連正式服務。
 
@@ -157,10 +161,10 @@ JEV Emotion 與 Action 使用 OpenRouter System One，啟動前需設定 `OPENRO
 | Cubism SDK for Web 5（`CubismSdkForWeb-5-r.5-beta.3/`，根目錄，gitignored） | https://www.live2d.com/en/sdk/ | Live2D 專有授權，需自行下載，勿提交至 repo |
 | MotionSync Plugin（`CubismSdkMotionSyncPluginForWeb-5-r.2/`，gitignored） | https://www.live2d.com/en/sdk/ | 同上 |
 | Hiyori 範例模型（`vtuber-web-app/public/Resources/Hiyori/`） | 隨 Cubism SDK 附帶之範例 | 僅供展示／開發測試，請遵循 Live2D 範例素材規範 |
-| OpenRouter API | https://openrouter.ai | 需自備 `OPENROUTER_API_KEY`，金鑰勿提交 |
-| NVIDIA Build API | https://build.nvidia.com | 需自備 `NVIDIA_API_KEY` |
-| Google AI Studio（Gemini, OpenAI 相容端點） | https://ai.google.dev/gemini-api/docs/openai | 需自備 `GOOGLE_API_KEY` |
-| 阿里雲 Qwen（DashScope 相容模式） | https://www.alibabacloud.com/help/en/model-studio/ | 需自備 `QWEN_API_KEY` |
+| OpenRouter API | https://openrouter.ai | JEV 可使用 `OPENROUTER_API_KEY`；Chat／Memory 請填各路線的 `*_AI_API_KEY` |
+| NVIDIA Build API | https://build.nvidia.com | 使用時將金鑰與端點填入對應 CHAT／MEMORY 路線 |
+| Google AI Studio（Gemini, OpenAI 相容端點） | https://ai.google.dev/gemini-api/docs/openai | 使用時將金鑰與端點填入對應 CHAT／MEMORY 路線 |
+| 阿里雲 Qwen（DashScope 相容模式） | https://www.alibabacloud.com/help/en/model-studio/ | 使用時將金鑰與端點填入對應 CHAT／MEMORY 路線 |
 | Google Cloud Text-to-Speech（Chirp 3 HD） | https://cloud.google.com/text-to-speech | 需 GCP ADC 登入，`TTS_ENABLED=true` 才啟用 |
 | React / Vite (rolldown-vite) / Zustand / FastAPI / uvicorn 等開源套件 | 見 `vtuber-web-app/package.json`、`backend/requirements.txt` | 各自遵循 MIT / Apache-2.0 等開源授權 |
 

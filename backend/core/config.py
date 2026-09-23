@@ -1,8 +1,10 @@
 """
-全域設定：載入 .env、AI Provider 驗證、所有常數。
+全域設定：載入 .env、AI 路線驗證、所有常數。
 此模組在匯入時即執行驗證，啟動失敗時會立即 raise RuntimeError。
 """
 import os
+from urllib.parse import urlparse
+
 from dotenv import load_dotenv
 
 from core.utils import env_flag
@@ -17,119 +19,47 @@ load_dotenv(dotenv_path=ENV_PATH, override=True)
 print(f"[ENV] Loaded from: {ENV_PATH}")
 
 # ============================================================
-# AI Provider 設定（從 .env 讀取）
+# AI 路線設定（從 .env 讀取）
 # ============================================================
-AI_PROVIDER: str = os.getenv("AI_PROVIDER", "").lower().strip()
-
-_PROVIDER_CONFIG: dict = {
-    "openrouter": {
-        "api_key_env": "OPENROUTER_API_KEY",
-        "base_url_env": "OPENROUTER_BASE_URL",
-        "model_env": "OPENROUTER_MODEL_NAME",
-        "base_url_default": "https://openrouter.ai/api/v1",
-        "model_default": "nvidia/nemotron-3-super-120b-a12b:free",
-    },
-    "nvidia": {
-        "api_key_env": "NVIDIA_API_KEY",
-        "base_url_env": "NVIDIA_BASE_URL",
-        "model_env": "NVIDIA_MODEL_NAME",
-        "base_url_default": "https://integrate.api.nvidia.com/v1",
-        "model_default": "meta/llama-3.3-70b-instruct",
-    },
-    "google": {
-        "api_key_env": "GOOGLE_API_KEY",
-        "base_url_env": "GOOGLE_BASE_URL",
-        "model_env": "GOOGLE_MODEL_NAME",
-        "base_url_default": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "model_default": "gemini-2.0-flash",
-    },
-    "qwen": {
-        "api_key_env": "QWEN_API_KEY",
-        "base_url_env": "QWEN_BASE_URL",
-        "model_env": "QWEN_MODEL_NAME",
-        "base_url_default": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        "model_default": "qwen-plus",
-    },
-}
-
-if not AI_PROVIDER:
-    raise RuntimeError(
-        "AI_PROVIDER 未設定，請在 .env 設定 AI_PROVIDER=nvidia | openrouter | google | qwen"
-    )
-
-if AI_PROVIDER not in _PROVIDER_CONFIG:
-    raise RuntimeError(
-        f"未知的 AI_PROVIDER='{AI_PROVIDER}'。支援值: {', '.join(_PROVIDER_CONFIG.keys())}"
-    )
-
-_cfg = _PROVIDER_CONFIG[AI_PROVIDER]
-
-API_KEY: str = os.getenv(_cfg["api_key_env"], "")
-BASE_URL: str = os.getenv(_cfg["base_url_env"], _cfg["base_url_default"])
-MODEL_NAME: str = os.getenv(_cfg["model_env"], _cfg["model_default"])
+def provider_from_url(base_url: str) -> str:
+    """辨識已知端點需要的特殊請求參數；自訂端點使用標準格式。"""
+    host = (urlparse(base_url).hostname or "").lower()
+    if host == "integrate.api.nvidia.com":
+        return "nvidia"
+    if host in {
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com",
+    } or host.endswith(".dashscope.aliyuncs.com"):
+        return "qwen"
+    if host == "openrouter.ai":
+        return "openrouter"
+    if host == "generativelanguage.googleapis.com":
+        return "google"
+    if host == "api.openai.com":
+        return "openai"
+    return "custom"
 
 
 def role_model_config(role: str) -> tuple[str, str, str, str]:
-    """Chat／Memory 可獨立選 provider；未指定時沿用原設定。"""
-    provider = (os.getenv(f"{role}_AI_PROVIDER") or AI_PROVIDER).lower().strip()
-    if provider not in _PROVIDER_CONFIG:
-        raise RuntimeError(f"未知的 {role}_AI_PROVIDER='{provider}'")
-    cfg = _PROVIDER_CONFIG[provider]
-    api_key = os.getenv(cfg["api_key_env"], "")
-    if not api_key:
-        raise RuntimeError(f"{role}_AI_PROVIDER={provider} 需要 {cfg['api_key_env']}")
-    base_url = os.getenv(cfg["base_url_env"], cfg["base_url_default"])
-    model = os.getenv(f"{role}_MODEL_NAME") or os.getenv(cfg["model_env"], cfg["model_default"])
-    return provider, api_key, base_url, model
+    """各路線直接使用自己的 key、URL、model，缺少任一項即報錯。"""
+    api_key = (os.getenv(f"{role}_AI_API_KEY") or "").strip()
+    base_url = (os.getenv(f"{role}_AI_BASE_URL") or "").strip()
+    model = (os.getenv(f"{role}_AI_MODEL") or "").strip()
+    for name, value in (("API_KEY", api_key), ("BASE_URL", base_url), ("MODEL", model)):
+        if not value:
+            raise RuntimeError(f"{role}_AI_{name} 未設定，請檢查 .env 檔案")
+    parsed_url = urlparse(base_url)
+    if parsed_url.scheme not in ("http", "https") or not parsed_url.hostname:
+        raise RuntimeError(f"{role}_AI_BASE_URL 必須是有效的 HTTP URL")
+    return provider_from_url(base_url), api_key, base_url, model
 
 
 CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_URL, CHAT_MODEL_NAME = role_model_config("CHAT")
 MEMORY_PROVIDER, MEMORY_API_KEY, MEMORY_BASE_URL, MEMORY_MODEL_NAME = role_model_config("MEMORY")
 CHAT_CONTEXT_TOKEN_BUDGET: int = max(512, int(os.getenv("CHAT_CONTEXT_TOKEN_BUDGET", "8192")))
 
-# 後備模型（僅 qwen provider 使用；其他 provider 設為 None）
-FALLBACK_MODEL: str | None = None
-if AI_PROVIDER == "qwen":
-    FALLBACK_MODEL = os.getenv("QWEN_FALLBACK_MODEL_NAME") or None
-
-if not API_KEY:
-    raise RuntimeError(f"{_cfg['api_key_env']} 未設定，請檢查 .env 檔案")
-
-_base_url_lc = BASE_URL.lower()
-if AI_PROVIDER == "nvidia" and "openrouter.ai" in _base_url_lc:
-    raise RuntimeError(
-        "AI_PROVIDER=nvidia 但 BASE_URL 指向 OpenRouter，請檢查 NVIDIA_BASE_URL 設定"
-    )
-if AI_PROVIDER == "openrouter" and "nvidia.com" in _base_url_lc:
-    raise RuntimeError(
-        "AI_PROVIDER=openrouter 但 BASE_URL 指向 NVIDIA，請檢查 OPENROUTER_BASE_URL 設定"
-    )
-if AI_PROVIDER == "google" and (
-    "openrouter.ai" in _base_url_lc or "nvidia.com" in _base_url_lc
-):
-    raise RuntimeError(
-        "AI_PROVIDER=google 但 BASE_URL 指向 OpenRouter/NVIDIA，請檢查 GOOGLE_BASE_URL 設定"
-    )
-if AI_PROVIDER != "google" and "googleapis.com" in _base_url_lc:
-    raise RuntimeError(
-        f"AI_PROVIDER={AI_PROVIDER} 但 BASE_URL 指向 Google，請檢查 {_cfg['base_url_env']} 設定"
-    )
-if AI_PROVIDER == "qwen" and (
-    "openrouter.ai" in _base_url_lc
-    or "nvidia.com" in _base_url_lc
-    or "googleapis.com" in _base_url_lc
-):
-    raise RuntimeError(
-        "AI_PROVIDER=qwen 但 BASE_URL 指向非 DashScope 端點，請檢查 QWEN_BASE_URL 設定"
-    )
-if AI_PROVIDER != "qwen" and "dashscope" in _base_url_lc:
-    raise RuntimeError(
-        f"AI_PROVIDER={AI_PROVIDER} 但 BASE_URL 指向 DashScope，請檢查 {_cfg['base_url_env']} 設定"
-    )
-
-print(f"[AI Provider] {AI_PROVIDER.upper()} | Model: {MODEL_NAME} | URL: {BASE_URL}")
-if FALLBACK_MODEL:
-    print(f"[AI Provider] Fallback model: {FALLBACK_MODEL}")
+FALLBACK_MODEL: str | None = os.getenv("QWEN_FALLBACK_MODEL_NAME") or None
 
 # ============================================================
 # 記憶系統路徑常數
@@ -178,15 +108,22 @@ CHAT_PERSISTENCE_MAX_MESSAGES: int = int(os.getenv("CHAT_PERSISTENCE_MAX_MESSAGE
 
 # ============================================================
 # Jev（System One）情緒與表情決策設定
+# JEV_AI_API_KEY 留空時沿用 OPENROUTER_API_KEY
 # ============================================================
-JEV_MODEL_NAME: str = os.getenv("JEV_MODEL_NAME", "jev-latest").strip()
+OPENROUTER_SYSTEMONE_URL: str = "https://openrouter.ai/api/v1/systemone"
+
+JEV_AI_API_KEY: str = (os.getenv("JEV_AI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "").strip()
+JEV_AI_BASE_URL: str = (os.getenv("JEV_AI_BASE_URL") or OPENROUTER_SYSTEMONE_URL).strip()
+JEV_AI_MODEL: str = (os.getenv("JEV_AI_MODEL") or "jev-latest").strip() or "jev-latest"
 JEV_TIMEOUT_SEC: float = float(os.getenv("JEV_TIMEOUT_SEC", "2.0"))
-if not os.getenv("OPENROUTER_API_KEY", "").strip():
+if not JEV_AI_API_KEY.strip():
     raise RuntimeError(
-        "OPENROUTER_API_KEY 未設定，JEV Emotion / Action 需要 OpenRouter System One"
+        "JEV_AI_API_KEY（或 OPENROUTER_API_KEY）未設定，JEV Emotion / Action 需要 OpenRouter System One"
     )
 
-OPENROUTER_SYSTEMONE_URL: str = "https://openrouter.ai/api/v1/systemone"
+print(f"[AI Route] JEV Model: {JEV_AI_MODEL} | URL: {JEV_AI_BASE_URL}")
+print(f"[AI Route] CHAT({CHAT_PROVIDER.upper()}) Model: {CHAT_MODEL_NAME} | URL: {CHAT_BASE_URL}")
+print(f"[AI Route] MEMORY({MEMORY_PROVIDER.upper()}) Model: {MEMORY_MODEL_NAME} | URL: {MEMORY_BASE_URL}")
 
 # ============================================================
 # Context 壓縮閾值

@@ -7,29 +7,28 @@ TypeSafe System One（Jev）client：httpx 直打 OpenRouter /api/v1/systemone�
 
 呼叫失敗（網路/逾時/非 2xx/解析失敗）一律回 None，由呼叫端走 fallback。
 """
-import os
-
 import httpx
 
 from core.config import (
-    JEV_MODEL_NAME,
+    JEV_AI_API_KEY,
+    JEV_AI_BASE_URL,
+    JEV_AI_MODEL,
     JEV_TIMEOUT_SEC,
-    OPENROUTER_SYSTEMONE_URL,
 )
 
 
 async def call_jev(state: dict, questions: dict) -> dict | None:
     """送出 state + questions，回傳 answers dict；失敗回 None（交由呼叫端 fallback）。"""
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    api_key = JEV_AI_API_KEY.strip()
     if not api_key:
-        print("[Jev] OPENROUTER_API_KEY 未設定，跳過 Jev 呼叫")
+        print("[Jev] JEV_AI_API_KEY 未設定，跳過 Jev 呼叫")
         return None
 
-    payload = {"model": JEV_MODEL_NAME, "state": state, "questions": questions}
+    payload = {"model": JEV_AI_MODEL, "state": state, "questions": questions}
     try:
         async with httpx.AsyncClient(timeout=JEV_TIMEOUT_SEC) as client:
             resp = await client.post(
-                OPENROUTER_SYSTEMONE_URL,
+                JEV_AI_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",

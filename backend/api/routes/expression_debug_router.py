@@ -5,7 +5,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from core.config import MODEL_NAME
 from core.utils import env_flag
 from domain.expression_debug_fixtures import build_fake_expression_debug_case
 from services.expression_compiler import compile_expression_plan
@@ -30,7 +29,7 @@ async def compile_debug_expression_plan(payload: ExpressionPlanDebugRequest) -> 
     if not env_flag("EXPRESSION_DEBUG_API_ENABLED", True):
         raise HTTPException(status_code=404, detail="Expression debug API is disabled")
 
-    model_name = (payload.modelName or MODEL_NAME or "Hiyori").strip()
+    model_name = (payload.modelName or "Hiyori").strip()
     if not model_name:
         model_name = "Hiyori"
 
