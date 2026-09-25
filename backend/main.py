@@ -3,6 +3,7 @@
 所有業務邏輯已移至各層模組，此檔案只做組裝與啟動。
 """
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,13 +15,27 @@ from api.routes.expression_debug_router import router as expression_debug_router
 from api.routes.memory_router import router as memory_router
 from api.routes.voice_ws import router as voice_router
 from services.memory_jobs import start_worker
+from core.config import MEMORY_STORAGE_BACKEND
+from services.memory_runtime import MemoryRuntime
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    runtime = None
+    if MEMORY_STORAGE_BACKEND == "postgres":
+        runtime = await MemoryRuntime.create()
+        application.state.memory_runtime = runtime
+        runtime.start()
+    else:
+        start_worker()
+    try:
+        yield
+    finally:
+        if runtime is not None:
+            await runtime.close()
 
 
-@app.on_event("startup")
-async def start_background_memory() -> None:
-    start_worker()
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

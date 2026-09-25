@@ -61,6 +61,7 @@ from services.expression_compiler import compile_expression_plan
 from services.expression_legacy_renderer import render_legacy_behavior_payload
 from services.memory_jobs import enqueue_input
 from services.memory_jobs import reset_epoch
+from domain.memory_scope import message_id
 
 
 router = APIRouter()
@@ -239,6 +240,8 @@ async def _produce_and_send_action_plan(
 @router.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    app = getattr(websocket, "app", None)
+    memory_runtime = getattr(getattr(app, "state", None), "memory_runtime", None)
     messages: list[dict] = []
     session_id: str | None = None
     emotion_state: dict | None = None
@@ -267,7 +270,8 @@ async def websocket_endpoint(websocket: WebSocket):
             task.cancel()
         tts_tasks.clear()
 
-    async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool) -> None:
+    async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool,
+                       event_id=None) -> None:
         nonlocal messages, emotion_state, expression_state, version
         action_task: asyncio.Task | None = None
         try:
@@ -288,6 +292,8 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception as exc:
                 print(f"[JEV Decision] 呼叫失敗，使用 fallback: {exc}")
                 answers = None
+            if memory_runtime is not None and event_id is not None:
+                memory_runtime.route_background(event_id, text, answers, snapshot["messages"])
             emotion_answers = (
                 {field: answers.get(field) for field in EMOTION_FIELDS}
                 if isinstance(answers, dict) else None
@@ -379,7 +385,10 @@ async def websocket_endpoint(websocket: WebSocket):
             control_type = data.get("type")
             if control_type == "reset":
                 await cancel_active()
-                reset_epoch()
+                if memory_runtime is None:
+                    reset_epoch()
+                else:
+                    await memory_runtime.reset()
                 messages, emotion_state, expression_state = [], None, None
                 current_action = None
                 version += 1
@@ -419,23 +428,40 @@ async def websocket_endpoint(websocket: WebSocket):
             text = input_event["text"]
             model_name = input_event["model_name"]
             turn_id = input_event["turn_id"]
+            if memory_runtime is None:
+                profile = json.loads(json.dumps(load_user_profile(), ensure_ascii=False))
+                relevant_memory = search_relevant_records(text)
+            else:
+                profile, relevant_memory = await memory_runtime.retrieve(text)
             snapshot = {
                 "messages": list(messages), "emotion": emotion_state,
                 "expression": expression_state,
                 "action": current_action,
-                "profile": json.loads(json.dumps(load_user_profile(), ensure_ascii=False)),
-                "memory": search_relevant_records(text),
+                "profile": profile,
+                "memory": relevant_memory,
                 "summary": load_session_summary(session_id) if session_id else "",
             }
+            event_id = None
             try:
-                event_id = enqueue_input(session_id or "default_session", turn_id, text, model_name, snapshot["messages"], input_event["source"], input_event["timestamp"])
-                await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id})
+                if memory_runtime is None:
+                    event_id = enqueue_input(session_id or "default_session", turn_id, text, model_name, snapshot["messages"], input_event["source"], input_event["timestamp"])
+                else:
+                    event_id = await memory_runtime.accept(session_id or "default_session", turn_id)
+                await send({"type": "input_accepted", "turn_id": turn_id,
+                            "event_id": event_id.hex if hasattr(event_id, "hex") else event_id})
             except Exception as exc:
-                print(f"[Memory] 無法持久化輸入事件: {exc}")
+                print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
+                if memory_runtime is not None:
+                    event_id = message_id(session_id or "default_session", turn_id)
+                    await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
+                    event_id = None
                 await send({"type": "memory_enqueue_error", "turn_id": turn_id})
             await cancel_active()
             active_turn_id = turn_id
-            active_task = asyncio.create_task(run_turn(turn_id, text, model_name, snapshot, data.get("legacy_payloads") is True))
+            active_task = asyncio.create_task(run_turn(
+                turn_id, text, model_name, snapshot, data.get("legacy_payloads") is True,
+                event_id if memory_runtime is not None else None,
+            ))
     except WebSocketDisconnect:
         print("Client disconnected")
     finally:

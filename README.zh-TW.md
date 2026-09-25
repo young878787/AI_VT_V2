@@ -124,7 +124,7 @@ python tools/chat_test_cli.py                                            # 互�
 python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-CLI 會自動啟動隔離測試後端，逐輪擷取回覆、JEV 六欄位情緒、表情與記憶變更。每次執行在 `backend/log/chat_test_runs/<run-id>/` 建立獨立的 `memory/`、`turns.jsonl`、逐輪更新的 `report.md`、`run.json` 與 `server.log`（已 gitignore），不會讀寫正式記憶。錯誤重試耗盡或逾時即停止，並保留部分報告。JEV Emotion 與 Action 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`；`EXPRESSION_DECIDER` 已不再使用。
+CLI 會自動啟動隔離測試後端。執行前需在 `.env` 設定與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL`，以及獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL=Qwen/Qwen3-Embedding-0.6B`、`EMBEDDING_AI_DIMENSION=1024`。CLI 每次建立專用測試 schema、套用 Alembic migration，逐輪等待記憶 job 完成，並記錄 route、audit、記憶變更與對話結果；報告寫入後清理 schema。`backend/log/chat_test_runs/<run-id>/` 保留獨立的短期對話 `memory/`、`turns.jsonl`、逐輪更新的 `report.md`、`run.json` 與 `server.log`（已 gitignore）。缺少測試 DB 設定時，CLI 不會啟動後端。JEV Emotion 與 Action 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`；`EXPRESSION_DECIDER` 已不再使用。
 
 ---
 

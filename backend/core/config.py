@@ -15,7 +15,7 @@ from core.utils import env_flag
 # config.py 位於 backend/core/config.py，.env 在 backend/ 上一層
 _BACKEND_DIR: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_PATH: str = os.path.abspath(os.path.join(_BACKEND_DIR, "..", ".env"))
-load_dotenv(dotenv_path=ENV_PATH, override=True)
+load_dotenv(dotenv_path=ENV_PATH, override=False)
 print(f"[ENV] Loaded from: {ENV_PATH}")
 
 # ============================================================
@@ -105,6 +105,9 @@ PIPER_LENGTH_SCALE: float = float(os.getenv("PIPER_LENGTH_SCALE", "1.0"))
 # ============================================================
 CHAT_PERSISTENCE_ENABLED: bool = env_flag("AI_VT_TEST_MODE", False) or env_flag("CHAT_PERSISTENCE_ENABLED", False)
 CHAT_PERSISTENCE_MAX_MESSAGES: int = int(os.getenv("CHAT_PERSISTENCE_MAX_MESSAGES", "80"))
+MEMORY_STORAGE_BACKEND: str = os.getenv("MEMORY_STORAGE_BACKEND", "file").lower().strip()
+if MEMORY_STORAGE_BACKEND not in {"file", "postgres"}:
+    raise RuntimeError("MEMORY_STORAGE_BACKEND 必須是 file 或 postgres")
 
 # ============================================================
 # Jev（System One）情緒與表情決策設定

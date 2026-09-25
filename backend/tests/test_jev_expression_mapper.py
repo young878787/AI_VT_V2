@@ -25,6 +25,7 @@ from domain.jev_questions import (
     build_emotion_questions,
     build_jev_context,
     build_jev_questions,
+    build_memory_questions,
     map_answers_to_intent,
 )
 from api.routes.memory_router import reset_memory
@@ -118,7 +119,7 @@ class EmotionContractTests(unittest.TestCase):
         self.assertEqual(context["relevant_memory"], "memory")
         self.assertEqual(context["current_action"], {"status": "started"})
         self.assertEqual(set(build_action_questions()), set(action_answers()))
-        self.assertEqual(set(build_jev_questions()), set(combined_answers()))
+        self.assertEqual(set(build_jev_questions()), set(combined_answers()) | set(build_memory_questions()))
         primary_instructions = build_action_questions()["base_emotion"]["instructions"]
         self.assertIn("一般友善、輕微正向或想繼續互動仍選 neutral", primary_instructions)
         self.assertIn("聯合判斷", primary_instructions)

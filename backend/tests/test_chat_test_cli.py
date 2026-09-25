@@ -35,18 +35,27 @@ def make_record(turn: int, error: str | None = None) -> dict:
 
 
 class ChatTestCliTests(unittest.TestCase):
-    def test_backend_uses_run_memory_not_formal_memory(self):
+    def test_backend_uses_isolated_test_database_and_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = pathlib.Path(directory)
             (run_dir / "memory").mkdir()
             fake_process = mock.Mock()
+            user_id, character_id = cli.uuid.uuid4(), cli.uuid.uuid4()
+            schema = "test_" + cli.uuid.uuid4().hex
             with mock.patch("tools.chat_test_cli.subprocess.Popen", return_value=fake_process) as popen:
-                process, log_file = cli.start_backend(run_dir, 12345)
+                process, log_file = cli.start_backend(run_dir, 12345, "postgresql://test/db", schema,
+                                                       user_id, character_id)
             try:
                 self.assertIs(process, fake_process)
                 kwargs = popen.call_args.kwargs
                 self.assertEqual(kwargs["env"]["AI_VT_MEMORY_DIR"], str((run_dir / "memory").resolve()))
                 self.assertEqual(kwargs["env"]["AI_VT_TEST_MODE"], "true")
+                self.assertEqual(kwargs["env"]["MEMORY_STORAGE_BACKEND"], "postgres")
+                self.assertEqual(kwargs["env"]["MEMORY_DATABASE_URL"], "postgresql://test/db")
+                self.assertEqual(kwargs["env"]["MEMORY_TEST_DATABASE_URL"], "postgresql://test/db")
+                self.assertEqual(kwargs["env"]["MEMORY_DATABASE_SCHEMA"], schema)
+                self.assertEqual(kwargs["env"]["MEMORY_DEFAULT_USER_ID"], str(user_id))
+                self.assertEqual(kwargs["env"]["MEMORY_DEFAULT_CHARACTER_ID"], str(character_id))
                 self.assertEqual(kwargs["cwd"], cli.BACKEND_ROOT)
                 self.assertIn("12345", popen.call_args.args[0])
             finally:
@@ -71,6 +80,7 @@ class ChatTestCliTests(unittest.TestCase):
                 "run_id": "test", "planned_turns": 1, "started_at": "now",
                 "scenario": "test", "scenario_sha256": "hash",
                 "ai_provider": "test", "chat_model": "test", "jev_model": "test",
+                "memory_schema": "test_" + "a" * 32,
             }, "completed", None)
             report = path.read_text(encoding="utf-8")
             self.assertIn("## 統計摘要", report)
@@ -92,6 +102,9 @@ class ChatTestCliTests(unittest.TestCase):
             args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
                                       retries=0, startup_timeout=1, turn_timeout=1)
             with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
+                mock.patch.object(cli, "test_database_url", return_value="postgresql://test/db"), \
+                mock.patch.object(cli.MemoryRunStore, "open"), \
+                mock.patch.object(cli.MemoryRunStore, "close"), \
                 mock.patch.object(cli, "start_backend", return_value=(process, log_file)), \
                 mock.patch.object(cli, "connect_backend", return_value=socket), \
                 mock.patch.object(cli, "stop_backend") as stop, \
@@ -120,6 +133,9 @@ class ChatTestCliTests(unittest.TestCase):
             args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
                                       retries=0, startup_timeout=1, turn_timeout=1)
             with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
+                mock.patch.object(cli, "test_database_url", return_value="postgresql://test/db"), \
+                mock.patch.object(cli.MemoryRunStore, "open"), \
+                mock.patch.object(cli.MemoryRunStore, "close"), \
                 mock.patch.object(cli, "start_backend", return_value=(process, log_file)), \
                 mock.patch.object(cli, "connect_backend", return_value=socket), \
                 mock.patch.object(cli, "stop_backend") as stop, \
@@ -142,6 +158,9 @@ class ChatTestCliTests(unittest.TestCase):
             args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
                                       retries=1, startup_timeout=1, turn_timeout=1)
             with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
+                mock.patch.object(cli, "test_database_url", return_value="postgresql://test/db"), \
+                mock.patch.object(cli.MemoryRunStore, "open"), \
+                mock.patch.object(cli.MemoryRunStore, "close"), \
                 mock.patch.object(cli, "start_backend", return_value=(mock.Mock(), mock.Mock())), \
                 mock.patch.object(cli, "connect_backend", side_effect=sockets) as connect, \
                 mock.patch.object(cli, "stop_backend"), \
@@ -155,7 +174,7 @@ class ChatTestCliTests(unittest.TestCase):
             self.assertEqual(records[0]["attempts"], 2)
             self.assertEqual(records[0]["attempt_errors"], ["overloaded"])
 
-    def test_turn_timeout_returns_error_without_writing_formal_memory(self):
+    def test_turn_timeout_returns_error_without_memory_job(self):
         class SlowSocket:
             async def send(self, payload):
                 self.payload = json.loads(payload)
@@ -165,11 +184,35 @@ class ChatTestCliTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             socket = SlowSocket()
-            record = asyncio.run(cli.run_turn(socket, 1, "hi", "Hiyori", "test_session",
-                                               pathlib.Path(directory), 0.01))
+            store = mock.Mock()
+            store.snapshot.return_value = {}
+            record = asyncio.run(cli.run_turn(socket, 1, "hi", "Hiyori", "test_session", store, 0.01))
             self.assertIn("逾時", record["errors"][0])
             self.assertEqual(socket.payload["session_id"], "test_session")
             self.assertEqual(record["memory_changes"], {})
+
+    def test_missing_or_same_test_database_fails_before_backend(self):
+        with mock.patch.object(cli, "ENV_PATH", pathlib.Path("/nonexistent/.env")), \
+             mock.patch.dict(cli.os.environ, {"MEMORY_TEST_DATABASE_URL": "",
+                                              "MEMORY_DATABASE_URL": "postgresql://localhost/prod"}):
+            with self.assertRaisesRegex(RuntimeError, "MEMORY_TEST_DATABASE_URL"):
+                cli.test_database_url()
+        with mock.patch.object(cli, "ENV_PATH", pathlib.Path("/nonexistent/.env")), \
+             mock.patch.dict(cli.os.environ, {"MEMORY_TEST_DATABASE_URL": "postgresql://localhost/prod",
+                                              "MEMORY_DATABASE_URL": "postgresql://localhost/prod"}):
+            with self.assertRaisesRegex(RuntimeError, "不同"):
+                cli.test_database_url()
+
+    def test_wait_requires_finalized_route_even_if_initial_status_is_ignored(self):
+        store = mock.Mock()
+        store.job.side_effect = [
+            {"route_finalized": False, "status": "ignored"},
+            {"route_finalized": True, "status": "buffered"},
+        ]
+        with mock.patch.object(cli.asyncio, "sleep", new=mock.AsyncMock()):
+            job = asyncio.run(cli.wait_memory_job(store, "a" * 32, timeout=1))
+        self.assertEqual(job["status"], "buffered")
+        self.assertEqual(store.job.call_count, 2)
 
 
 if __name__ == "__main__":

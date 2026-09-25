@@ -1,0 +1,55 @@
+"""將 PostgreSQL 長期記憶投影成既有 Chat prompt 可使用的有界資料。"""
+
+import re
+
+from infrastructure.memory_embedding_client import MemoryEmbeddingClient
+from infrastructure.memory_repository import MemoryRepository
+
+
+_HISTORY = re.compile(r"以前|之前|曾經|過去|歷史|原本|before|previously|used to", re.I)
+_PROFILE_LIST_FIELDS = {"core_traits", "dislikes", "recent_interests", "custom_notes"}
+
+
+class MemoryRetriever:
+    def __init__(self, repository: MemoryRepository, embedding: MemoryEmbeddingClient) -> None:
+        self.repository = repository
+        self.embedding = embedding
+
+    async def retrieve(self, user_text: str) -> tuple[dict, str]:
+        mode = "history" if _HISTORY.search(user_text) else "current"
+        try:
+            query_embedding = await self.embedding.embed(user_text[:4000], query=True)
+        except Exception as exc:
+            print(f"[Memory] embedding query fallback: {type(exc).__name__}")
+            query_embedding = None
+        try:
+            profile_rows = await self.repository.profile_items()
+            rows = await self.repository.related_items(user_text, query_embedding, limit=20, mode=mode)
+        except Exception as exc:
+            print(f"[Memory] retrieval fallback: {type(exc).__name__}")
+            return {}, ""
+        profile: dict = {}
+        for row in profile_rows:
+            key = row.get("subject_key")
+            text = row.get("canonical_text")
+            if not isinstance(key, str) or not key.startswith("profile.") or not isinstance(text, str):
+                continue
+            field = key.removeprefix("profile.")
+            if field in _PROFILE_LIST_FIELDS:
+                profile.setdefault(field, []).append(text[:300])
+            elif field == "communication_style":
+                profile[field] = text[:300]
+        selected = []
+        seen_groups = set()
+        remaining = 800
+        for row in rows:
+            if row["memory_type"] == "profile" or (mode == "current" and row["group_id"] in seen_groups):
+                continue
+            if len(selected) >= 8 or remaining <= 0:
+                break
+            label = f"[{row['status']}] " if mode == "history" else ""
+            text = (label + row["canonical_text"])[:remaining]
+            selected.append(text)
+            remaining -= len(text)
+            seen_groups.add(row["group_id"])
+        return profile, "\n".join(selected)

@@ -4,7 +4,9 @@ import pathlib
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+from uuid import uuid4
 
 from fastapi import WebSocketDisconnect
 
@@ -144,6 +146,40 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(plan["debug"]["jevDecisionHistoryMessages"], 0)
         self.assertEqual(len(plan["debug"]["jevDecisionQuestionHash"]), 12)
         self.assertEqual(socket.payloads[-1]["type"], "stream_end")
+
+    def test_database_runtime_routes_without_file_memory_calls(self):
+        socket = FakeWebSocket([{"type": "chat", "content": "請記住我喜歡茶", "session_id": "test-session",
+                                 "turn_id": "test-turn"}])
+        event_id = uuid4()
+        runtime = SimpleNamespace(
+            retrieve=AsyncMock(return_value=({}, "")),
+            accept=AsyncMock(return_value=event_id),
+            route_background=Mock(),
+        )
+        socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
+
+        async def fake_chat(messages, send_chunk):
+            await send_chunk("知道了")
+            return "知道了"
+
+        async def run():
+            with patch("api.routes.chat_ws.call_jev", new=AsyncMock(return_value=jev_answers())), \
+                 patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
+                 patch("api.routes.chat_ws.broadcast_to_displays"), \
+                 patch("api.routes.chat_ws.synthesize_and_send_voice"), \
+                 patch("api.routes.chat_ws.log_turn"), \
+                 patch("api.routes.chat_ws.enqueue_input", side_effect=AssertionError("file queue used")), \
+                 patch("api.routes.chat_ws.load_user_profile", side_effect=AssertionError("file profile used")), \
+                 patch("api.routes.chat_ws.search_relevant_records", side_effect=AssertionError("file search used")):
+                await websocket_endpoint(socket)
+
+        asyncio.run(run())
+        runtime.retrieve.assert_awaited_once_with("請記住我喜歡茶")
+        runtime.accept.assert_awaited_once_with("test-session", "test-turn")
+        runtime.route_background.assert_called_once()
+        self.assertEqual(runtime.route_background.call_args.args[0], event_id)
+        accepted = next(item for item in socket.payloads if item["type"] == "input_accepted")
+        self.assertEqual(accepted["event_id"], event_id.hex)
 
     def test_emotion_failure_uses_previous_state_without_partial_merge(self):
         invalid = jev_answers(0.1)

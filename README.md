@@ -105,7 +105,7 @@ npm run dev
 
 ## Headless Chat 測試（不開前端）
 
-`backend/tools/chat_test_cli.py` 會自動啟動隔離的測試後端，不需要先開前端或正式後端。它逐輪擷取回覆、JEV 六欄位情緒、表情與記憶變更；測試記憶不會讀寫正式的 `backend/memory/`。
+`backend/tools/chat_test_cli.py` 會自動啟動隔離的測試後端，不需要先開前端或正式後端。執行前需在 `.env` 設定與 `MEMORY_DATABASE_URL` 不同的 `MEMORY_TEST_DATABASE_URL`，以及獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL=Qwen/Qwen3-Embedding-0.6B`、`EMBEDDING_AI_DIMENSION=1024`。CLI 會在專用測試 DB 建立每次執行獨立的 schema 並套用 Alembic migration；缺少測試 DB 設定時會在啟動後端前失敗。它逐輪等待記憶 job 完成，擷取回覆、JEV 決策、route、audit 與記憶變更；不讀寫正式長期記憶。
 
 ```bash
 cd backend
@@ -121,9 +121,9 @@ python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-tur
 python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --turn-timeout 120
 ```
 
-每次執行在 `backend/log/chat_test_runs/<run-id>/` 建立全新的測試記憶與報告：
+每次執行在 `backend/log/chat_test_runs/<run-id>/` 建立全新的短期記憶與報告；測試 DB schema 在報告寫入後清理：
 
-- `memory/` — 該次測試專用記憶
+- `memory/` — 該次測試專用短期對話記憶
 - `turns.jsonl` — 該次測試的逐輪原始資料
 - `report.md` — 每輪更新的 Markdown 報告；中斷或失敗時保留部分結果與原因
 - `run.json`、`server.log` — 情境／模型設定與後端錯誤日誌

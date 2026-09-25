@@ -1,6 +1,6 @@
 """Memory 管理 REST 端點。"""
 import os
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from core.utils import normalize_session_id
 from infrastructure.memory_store import (
     reset_user_profile,
@@ -17,16 +17,20 @@ router = APIRouter()
 
 
 @router.post("/api/reset-memory")
-async def reset_memory(session_id: str | None = None):
+async def reset_memory(session_id: str | None = None, request: Request = None):
     """還原使用者記憶與指定 chat session 的情緒狀態。"""
-    reset_epoch()
-    reset_user_profile()
-    reset_memory_notes()
-    reset_records()
-    try:
-        os.unlink(SUMMARY_PATH)
-    except FileNotFoundError:
-        pass
+    runtime = getattr(getattr(getattr(request, "app", None), "state", None), "memory_runtime", None)
+    if runtime is None:
+        reset_epoch()
+        reset_user_profile()
+        reset_memory_notes()
+        reset_records()
+        try:
+            os.unlink(SUMMARY_PATH)
+        except FileNotFoundError:
+            pass
+    else:
+        await runtime.reset()
     normalized = normalize_session_id(session_id)
     if normalized:
         reset_session_emotion_state(normalized)
