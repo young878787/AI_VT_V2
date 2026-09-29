@@ -8,6 +8,8 @@ import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { MotionController } from '../live2d/MotionController';
 import { Priority } from '../live2d/LAppDefine';
 import { LipSyncManager } from '../audio/LipSyncManager';
+import { MicrophoneManager } from '../audio/MicrophoneManager';
+import { voiceWsService } from '../services/voiceWsService';
 import { ModelImportButton } from './ModelImportButton';
 import './ControlPanel.css';
 
@@ -36,6 +38,7 @@ export const ControlPanel = () => {
   const {
     microphoneEnabled,
     microphonePermission,
+    voiceModeEnabled,
     eyeTrackingEnabled,
     autoPlayEnabled,
     modelLoaded,
@@ -60,6 +63,7 @@ export const ControlPanel = () => {
     setModelLoaded,
     setModelError,
     setMicrophonePermission,
+    setVoiceModeEnabled,
     removeModel,
   } = useAppStore();
 
@@ -183,6 +187,23 @@ export const ControlPanel = () => {
       if (model) model.setLipSyncValue(0);
     }
   }, [microphoneEnabled, toggleMicrophone, setMicrophonePermission]);
+
+  // 語音輸入（ASR）開關
+  const handleVoiceModeToggle = useCallback(async () => {
+    const mic = MicrophoneManager.getInstance();
+    if (!voiceModeEnabled) {
+      const ok = await mic.startVoiceStreaming(buf => voiceWsService.sendAudioFrame(buf));
+      if (!ok) { setMicrophonePermission('denied'); return; }
+      voiceWsService.connect();
+      voiceWsService.setGate(true);
+      setVoiceModeEnabled(true);
+    } else {
+      voiceWsService.setGate(false);
+      voiceWsService.disconnect();
+      mic.stopVoiceStreaming();
+      setVoiceModeEnabled(false);
+    }
+  }, [voiceModeEnabled, setVoiceModeEnabled, setMicrophonePermission]);
 
   // 模型切換
   const handleModelSwitch = useCallback(async (modelName: string) => {
@@ -406,6 +427,24 @@ export const ControlPanel = () => {
               )}
               {microphonePermission === 'denied' && (
                 <div className="cp-warn">請在瀏覽器允許麥克風權限</div>
+              )}
+
+              {/* 語音輸入（ASR） */}
+              <div className="cp-toggle-row">
+                <div className="cp-toggle-info">
+                  <span className="cp-toggle-icon">🎙️</span>
+                  <span className="cp-toggle-label">語音輸入（說話 → 文字）</span>
+                </div>
+                <button
+                  className={`cp-toggle ${voiceModeEnabled ? 'active' : ''}`}
+                  onClick={handleVoiceModeToggle}
+                  disabled={!modelLoaded || microphonePermission === 'denied'}
+                >
+                  <span className="cp-toggle__thumb" />
+                </button>
+              </div>
+              {voiceModeEnabled && (
+                <div className="cp-hint">語音模式開啟中，請直接說話（AI 回答期間暫停收音）</div>
               )}
 
               {/* 視線追蹤 */}

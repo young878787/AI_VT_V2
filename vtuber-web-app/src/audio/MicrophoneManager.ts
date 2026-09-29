@@ -37,6 +37,9 @@ export class MicrophoneManager {
   private _sourceNode: MediaStreamAudioSourceNode | null = null;
   private _analyserNode: AnalyserNode | null = null;
   private _dataArray: Uint8Array | null = null;
+  private _workletNode: AudioWorkletNode | null = null;
+  private _voiceSink: GainNode | null = null;
+  private _voiceModuleLoaded: boolean = false;
   
   private _isInitialized: boolean = false;
   private _isEnabled: boolean = false;
@@ -181,6 +184,62 @@ export class MicrophoneManager {
   }
 
   /**
+   * 啟動語音輸入串流：載入降採樣 worklet（48k→16k Int16），
+   * 每湊滿 100ms 幀回呼 onFrame。與嘴型同步（analyze()）共用同一組麥克風。
+   */
+  public async startVoiceStreaming(onFrame: (buf: ArrayBuffer) => void): Promise<boolean> {
+    if (!this._isInitialized) {
+      const ok = await this.initialize();
+      if (!ok) return false;
+    }
+    if (!this._audioContext || !this._sourceNode) return false;
+
+    if (this._audioContext.state === 'suspended') {
+      await this._audioContext.resume();
+    }
+
+    if (!this._workletNode) {
+      try {
+        if (!this._voiceModuleLoaded) {
+          const url = new URL('./pcm-downsampler-worklet.js', import.meta.url);
+          await this._audioContext.audioWorklet.addModule(url);
+          this._voiceModuleLoaded = true;
+        }
+        this._workletNode = new AudioWorkletNode(this._audioContext, 'pcm-downsampler');
+        this._workletNode.port.onmessage = (e) => onFrame(e.data as ArrayBuffer);
+        // worklet 未連 destination 不會被拉動，接一個靜音 GainNode 維持處理
+        this._voiceSink = this._audioContext.createGain();
+        this._voiceSink.gain.value = 0;
+        this._workletNode.connect(this._voiceSink);
+        this._voiceSink.connect(this._audioContext.destination);
+        this._sourceNode.connect(this._workletNode);
+      } catch (error) {
+        LAppPal.printError(`語音串流啟動失敗: ${error instanceof Error ? error.message : error}`);
+        this.stopVoiceStreaming();
+        return false;
+      }
+    }
+    LAppPal.printLog('語音輸入串流已啟動');
+    return true;
+  }
+
+  /**
+   * 停止語音輸入串流（麥克風保持，不影響嘴型同步模式）
+   */
+  public stopVoiceStreaming(): void {
+    if (this._workletNode) {
+      try { this._workletNode.disconnect(); } catch { /* 已斷開 */ }
+      this._workletNode.port.onmessage = null;
+      this._workletNode = null;
+    }
+    if (this._voiceSink) {
+      try { this._voiceSink.disconnect(); } catch { /* 已斷開 */ }
+      this._voiceSink = null;
+    }
+    LAppPal.printLog('語音輸入串流已停止');
+  }
+
+  /**
    * 分析當前音訊並返回結果
    */
   public analyze(): AudioAnalysisResult {
@@ -259,6 +318,7 @@ export class MicrophoneManager {
    */
   public release(): void {
     this.disable();
+    this.stopVoiceStreaming();
 
     if (this._sourceNode) {
       this._sourceNode.disconnect();

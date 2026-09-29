@@ -130,6 +130,28 @@ RESOURCES_DIR: str = os.path.abspath(
 MODEL_REGISTRY_PATH: str = os.path.join(_BACKEND_DIR, "model_registry.json")
 
 # ============================================================
+# 語音管線設定（ASR 輸入 / TTS 輸出；引擎 port 自 voice_txt）
+# ============================================================
+ASR_ENABLED: bool = env_flag("ASR_ENABLED", False)
+ASR_MODEL_DIR: str = os.getenv(
+    "ASR_MODEL_DIR", os.path.join(_BACKEND_DIR, "models", "x-asr-zh-tw-en-streaming-ft75m")
+)
+VAD_MODEL_DIR: str = os.getenv("VAD_MODEL_DIR", os.path.join(_BACKEND_DIR, "models", "silero-vad"))
+ASR_SAMPLE_RATE: int = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
+ASR_USE_AGC: bool = env_flag("ASR_USE_AGC", True)
+ASR_SILENCE_SEC: float = float(os.getenv("ASR_SILENCE_SEC", "1.2"))
+
+# TTS 輸出引擎：piper（本地串流）| google（既有整檔 Chirp3 路徑）
+TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "google").lower().strip()
+if TTS_PROVIDER not in ("piper", "google"):
+    raise RuntimeError(f"未知的 TTS_PROVIDER='{TTS_PROVIDER}'。支援值: piper | google")
+PIPER_MODEL_PATH: str = os.getenv(
+    "PIPER_MODEL_PATH", os.path.join(_BACKEND_DIR, "models", "zh_TW-multi-voice.onnx")
+)
+PIPER_SPEAKER_ID: int = int(os.getenv("PIPER_SPEAKER_ID", "1"))
+PIPER_LENGTH_SCALE: float = float(os.getenv("PIPER_LENGTH_SCALE", "1.0"))
+
+# ============================================================
 # 對話持久化設定
 # ============================================================
 CHAT_PERSISTENCE_ENABLED: bool = env_flag("CHAT_PERSISTENCE_ENABLED", False)
