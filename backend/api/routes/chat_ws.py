@@ -428,11 +428,22 @@ async def websocket_endpoint(websocket: WebSocket):
             text = input_event["text"]
             model_name = input_event["model_name"]
             turn_id = input_event["turn_id"]
+            event_id = None
+            if memory_runtime is not None:
+                try:
+                    event_id = await memory_runtime.accept(session_id or "default_session", turn_id)
+                    await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
+                except Exception as exc:
+                    print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
+                    fallback_event_id = message_id(session_id or "default_session", turn_id)
+                    await send({"type": "input_accepted", "turn_id": turn_id,
+                                "event_id": fallback_event_id.hex})
+                    await send({"type": "memory_enqueue_error", "turn_id": turn_id})
             if memory_runtime is None:
                 profile = json.loads(json.dumps(load_user_profile(), ensure_ascii=False))
                 relevant_memory = search_relevant_records(text)
             else:
-                profile, relevant_memory = await memory_runtime.retrieve(text)
+                profile, relevant_memory = await memory_runtime.retrieve(text, event_id=event_id)
             snapshot = {
                 "messages": list(messages), "emotion": emotion_state,
                 "expression": expression_state,
@@ -441,21 +452,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 "memory": relevant_memory,
                 "summary": load_session_summary(session_id) if session_id else "",
             }
-            event_id = None
-            try:
-                if memory_runtime is None:
+            if memory_runtime is None:
+                try:
                     event_id = enqueue_input(session_id or "default_session", turn_id, text, model_name, snapshot["messages"], input_event["source"], input_event["timestamp"])
-                else:
-                    event_id = await memory_runtime.accept(session_id or "default_session", turn_id)
-                await send({"type": "input_accepted", "turn_id": turn_id,
-                            "event_id": event_id.hex if hasattr(event_id, "hex") else event_id})
-            except Exception as exc:
-                print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
-                if memory_runtime is not None:
-                    event_id = message_id(session_id or "default_session", turn_id)
-                    await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
-                    event_id = None
-                await send({"type": "memory_enqueue_error", "turn_id": turn_id})
+                    await send({"type": "input_accepted", "turn_id": turn_id,
+                                "event_id": event_id.hex if hasattr(event_id, "hex") else event_id})
+                except Exception as exc:
+                    print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
+                    await send({"type": "memory_enqueue_error", "turn_id": turn_id})
             await cancel_active()
             active_turn_id = turn_id
             active_task = asyncio.create_task(run_turn(

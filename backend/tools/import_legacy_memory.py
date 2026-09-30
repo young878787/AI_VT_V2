@@ -44,7 +44,10 @@ async def apply_import(entries, memory_dir: Path, database: str, schema: str | N
                 with backup.open("xb") as destination, source.open("rb") as origin:
                     shutil.copyfileobj(origin, destination)
         vectors = {entry.id: await embedding.embed(entry.canonical_text) for entry in entries}
-        manager = MemoryDBManager(pool, scope, settings.memory_model)
+        manager = MemoryDBManager(
+            pool, scope, settings.memory_model, settings.embedding_model,
+            settings.embedding_contract,
+        )
         return await manager.import_legacy(entries, vectors)
     finally:
         await embedding.client.close()

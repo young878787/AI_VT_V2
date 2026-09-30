@@ -10,7 +10,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from domain.memory_decisions import validate_decisions
 from domain.memory_routing import route_memory
 from domain.memory_scope import MemoryScope, conversation_id, message_id
-from domain.memory_embedding import normalize_embedding, query_document
+from domain.memory_embedding import format_embedding_input, normalize_embedding, query_document
 from domain.memory_settings import load_memory_settings
 from domain.jev_questions import build_memory_questions
 
@@ -66,12 +66,37 @@ class MemoryContractTests(unittest.TestCase):
         vector = normalize_embedding([3.0, 4.0] + [0.0] * 1022)
         self.assertAlmostEqual(sum(item * item for item in vector), 1.0)
         self.assertTrue(query_document("hello").endswith("hello"))
+        self.assertEqual(format_embedding_input("hello", query=True, query_prefix="Query: ", document_prefix="Document: "), "Query: hello")
+        self.assertEqual(format_embedding_input("hello", query=False, query_prefix="Query: ", document_prefix="Document: "), "Document: hello")
         with self.assertRaises(ValueError):
             normalize_embedding([1.0])
         with self.assertRaises(ValueError):
             normalize_embedding([float("nan")] + [0.0] * 1023)
         with self.assertRaises(RuntimeError):
             load_memory_settings({})
+
+    def test_settings_accept_a_served_alias_and_keep_prefix_whitespace(self):
+        env = {
+            "MEMORY_DATABASE_URL": "postgresql://localhost/memory",
+            "MEMORY_DEFAULT_USER_ID": str(uuid4()),
+            "MEMORY_DEFAULT_CHARACTER_ID": str(uuid4()),
+            "MEMORY_DATABASE_SCHEMA": "ai_vt_memory",
+            "MEMORY_AI_API_KEY": "test-key",
+            "MEMORY_AI_BASE_URL": "https://memory.example/v1",
+            "MEMORY_AI_MODEL": "test-memory-model",
+            "EMBEDDING_AI_API_KEY": "local-vllm",
+            "EMBEDDING_AI_BASE_URL": "http://127.0.0.1:18000/v1",
+            "EMBEDDING_AI_MODEL": "jinaai/jina-embeddings-v5-text-small-retrieval",
+            "EMBEDDING_AI_SERVING_MODEL": "jina-retrieval",
+            "EMBEDDING_AI_DIMENSION": "1024",
+            "EMBEDDING_AI_QUERY_PREFIX": "Query: ",
+            "EMBEDDING_AI_DOCUMENT_PREFIX": "Document: ",
+        }
+        settings = load_memory_settings(env)
+        self.assertEqual(settings.embedding_model, "jinaai/jina-embeddings-v5-text-small-retrieval")
+        self.assertEqual(settings.embedding_serving_model, "jina-retrieval")
+        self.assertEqual(settings.embedding_query_prefix, "Query: ")
+        self.assertEqual(settings.embedding_document_prefix, "Document: ")
 
     def test_test_mode_rejects_wrong_database_or_schema(self):
         settings = {

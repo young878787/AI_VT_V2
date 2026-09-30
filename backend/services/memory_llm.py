@@ -4,7 +4,7 @@ import json
 import re
 from uuid import UUID
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 
 from domain.memory_decisions import SUBMIT_MEMORY_DECISIONS_TOOL, validate_decisions
 from domain.memory_settings import MemorySettings
@@ -47,13 +47,16 @@ class MemoryLLM:
             },
             "related_existing_memories": related_payload,
         }
-        response = await self.client.chat.completions.create(
+        request = dict(
             model=self.model,
             messages=[
                 {"role": "system", "content": (
                     "You manage long-term memory. Return only the submit_memory_decisions tool call. "
                     "Use only supplied source and candidate IDs. Do not invent target IDs. "
                     "Use FORGET only for an explicit user request to erase memory; changes of fact use SUPERSEDE or ARCHIVE. "
+                    "Use IGNORE for a question about recent dialogue when it adds no durable user fact. "
+                    "For new or changed facts include canonical_text, memory_type, importance, confidence, and retention_class. "
+                    "If retention_class is temporary, include expires_at as an ISO 8601 timestamp with a timezone. "
                     "Return zero or more atomic decisions."
                 )},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
@@ -61,6 +64,13 @@ class MemoryLLM:
             tools=[SUBMIT_MEMORY_DECISIONS_TOOL],
             tool_choice={"type": "function", "function": {"name": "submit_memory_decisions"}},
         )
+        try:
+            response = await self.client.chat.completions.create(**request)
+        except BadRequestError as error:
+            if (getattr(error, "param", None) != "reasoning_effort"
+                    or "set reasoning_effort to 'none'" not in str(error)):
+                raise
+            response = await self.client.chat.completions.create(**request, reasoning_effort="none")
         calls = response.choices[0].message.tool_calls if response.choices else None
         if not calls or len(calls) != 1 or calls[0].function.name != "submit_memory_decisions":
             raise ValueError("Memory LLM 未使用指定 tool")

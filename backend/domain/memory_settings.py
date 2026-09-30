@@ -1,5 +1,7 @@
 """長期記憶啟用時所需的固定設定。"""
 
+import hashlib
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -9,7 +11,6 @@ from uuid import UUID
 from domain.memory_scope import MemoryScope
 
 
-EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EMBEDDING_DIMENSION = 1024
 RETRIEVAL_INSTRUCTION = (
     "Given a user's current message, retrieve memories about the same person, preference, "
@@ -26,6 +27,20 @@ class MemorySettings:
     memory_model: str
     embedding_api_key: str
     embedding_base_url: str
+    embedding_model: str
+    embedding_serving_model: str
+    embedding_dimension: int
+    embedding_query_prefix: str
+    embedding_document_prefix: str
+
+    @property
+    def embedding_contract(self) -> str:
+        contract = json.dumps(
+            [self.embedding_model, self.embedding_dimension, self.embedding_query_prefix,
+             self.embedding_document_prefix, "l2-v1"],
+            ensure_ascii=False, separators=(",", ":"),
+        )
+        return hashlib.sha256(contract.encode("utf-8")).hexdigest()
 
 
 def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySettings:
@@ -53,8 +68,6 @@ def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySet
             raise RuntimeError("測試模式必須使用 test_<32 lowercase hex> schema")
         if database_url != required("MEMORY_TEST_DATABASE_URL"):
             raise RuntimeError("測試模式只能連接 MEMORY_TEST_DATABASE_URL")
-    if required("EMBEDDING_AI_MODEL") != EMBEDDING_MODEL:
-        raise RuntimeError("EMBEDDING_AI_MODEL 必須是 Qwen/Qwen3-Embedding-0.6B")
     try:
         dimension = int(required("EMBEDDING_AI_DIMENSION"))
     except ValueError as exc:
@@ -67,5 +80,9 @@ def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySet
     return MemorySettings(
         database_url, scope,
         required("MEMORY_AI_API_KEY"), urls[0], required("MEMORY_AI_MODEL"),
-        required("EMBEDDING_AI_API_KEY"), urls[1],
+        required("EMBEDDING_AI_API_KEY"), urls[1], required("EMBEDDING_AI_MODEL"),
+        env.get("EMBEDDING_AI_SERVING_MODEL", "").strip() or required("EMBEDDING_AI_MODEL"),
+        dimension,
+        env.get("EMBEDDING_AI_QUERY_PREFIX", RETRIEVAL_INSTRUCTION),
+        env.get("EMBEDDING_AI_DOCUMENT_PREFIX", ""),
     )

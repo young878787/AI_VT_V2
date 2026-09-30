@@ -31,10 +31,16 @@ class MemoryRuntime:
         try:
             await check_schema(pool, settings.scope)
             embedding = MemoryEmbeddingClient(settings)
+            repository = MemoryRepository(
+                pool, settings.scope, settings.embedding_model, settings.embedding_contract,
+            )
+            embedding.diagnostic_writer = repository.record_embedding_diagnostic
             await embedding.embed("memory startup dimension check")
-            repository = MemoryRepository(pool, settings.scope)
             llm = MemoryLLM(settings)
-            manager = MemoryDBManager(pool, settings.scope, settings.memory_model)
+            manager = MemoryDBManager(
+                pool, settings.scope, settings.memory_model, settings.embedding_model,
+                settings.embedding_contract,
+            )
             retriever = MemoryRetriever(repository, embedding)
             worker = MemoryWorker(repository, embedding, llm, manager)
             return cls(pool, repository, embedding, llm, retriever, worker)
@@ -63,11 +69,20 @@ class MemoryRuntime:
         async def save_route() -> None:
             try:
                 embedding = None
-                if routing.route in {"buffer", "process"}:
+                if routing.route == "process":
                     try:
-                        embedding = await self.embedding.embed(text, query=True)
+                        embedding = await self.embedding.embed(
+                            text, purpose="memory_match_query", event_id=event_id, stage="route",
+                        )
                     except Exception as exc:
                         print(f"[Memory] route embedding unavailable: {type(exc).__name__}")
+                elif routing.route == "buffer":
+                    try:
+                        embedding = await self.embedding.embed(
+                            text, purpose="buffer_document", event_id=event_id, stage="route",
+                        )
+                    except Exception as exc:
+                        print(f"[Memory] buffer embedding unavailable: {type(exc).__name__}")
                 await self.repository.route(event_id, routing, text, recent_dialogue, embedding)
             except Exception as exc:
                 print(f"[Memory] route persistence error: {type(exc).__name__}")
@@ -76,8 +91,8 @@ class MemoryRuntime:
         self._route_tasks.add(task)
         task.add_done_callback(self._route_tasks.discard)
 
-    async def retrieve(self, text: str) -> tuple[dict, str]:
-        return await self.retriever.retrieve(text)
+    async def retrieve(self, text: str, event_id: UUID | None = None) -> tuple[dict, str]:
+        return await self.retriever.retrieve(text, event_id=event_id)
 
     async def reset(self) -> None:
         await self.repository.reset()

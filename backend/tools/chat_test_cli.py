@@ -88,16 +88,19 @@ class MemoryRunStore:
     def snapshot(self) -> dict:
         with self.engine.connect() as connection:
             rows = connection.execute(text(
-                f'SELECT id, canonical_text, memory_type, status FROM "{self.schema}".memory_items '
+                f'SELECT id, canonical_text, memory_type, status, embedding IS NOT NULL AS has_embedding, '
+                f'embedding_model FROM "{self.schema}".memory_items '
                 'WHERE user_id = :user_id AND character_id = :character_id ORDER BY id'
             ), self.owner).mappings()
             return {str(row["id"]): {"text": row["canonical_text"], "type": row["memory_type"],
-                                      "status": row["status"]} for row in rows}
+                                      "status": row["status"], "has_embedding": row["has_embedding"],
+                                      "embedding_model": row["embedding_model"]} for row in rows}
 
     def job(self, event_id: str) -> dict | None:
         with self.engine.connect() as connection:
             row = connection.execute(text(
-                f'SELECT route, route_confidence, status, route_finalized, buffered_job_ids, decisions, error '
+                f'SELECT route, route_confidence, status, route_finalized, buffered_job_ids, decisions, error, '
+                f'embedding_diagnostics, embedding IS NOT NULL AS buffer_embedded '
                 f'FROM "{self.schema}".memory_jobs WHERE id = :event_id '
                 'AND user_id = :user_id AND character_id = :character_id'
             ), {**self.owner, "event_id": uuid.UUID(event_id)}).mappings().first()
@@ -106,7 +109,9 @@ class MemoryRunStore:
             return {"route": row["route"], "confidence": row["route_confidence"],
                     "status": row["status"], "route_finalized": row["route_finalized"],
                     "buffered_job_ids": [str(item) for item in row["buffered_job_ids"]],
-                    "decisions": row["decisions"] or [], "error": row["error"]}
+                    "decisions": row["decisions"] or [], "error": row["error"],
+                    "embedding_diagnostics": row["embedding_diagnostics"] or [],
+                    "buffer_embedded": row["buffer_embedded"]}
 
     def audit(self, event_id: str) -> list[dict]:
         with self.engine.connect() as connection:
@@ -159,6 +164,8 @@ def model_metadata() -> dict:
         "ai_provider": urlparse(configured("CHAT_AI_BASE_URL") or "").hostname or "(unset)",
         "chat_model": configured("CHAT_AI_MODEL") or "(unset)",
         "jev_model": configured("JEV_AI_MODEL") or "jev-latest",
+        "embedding_model": configured("EMBEDDING_AI_MODEL") or "(unset)",
+        "embedding_dimension": configured("EMBEDDING_AI_DIMENSION") or "(unset)",
     }
 
 
@@ -269,7 +276,7 @@ async def run_turn(
         errors.append(f"單輪逾時（>{timeout:g}s）")
     except (websockets.ConnectionClosed, OSError, ValueError) as exc:
         errors.append(f"連線或回應錯誤：{exc}")
-    job = await wait_memory_job(store, event_id, timeout=timeout) if not errors else None
+    job = await wait_memory_job(store, event_id, timeout=timeout) if event_id else None
     memory_status = job["status"] if job else None
     if job and memory_status in {"failed", "cancelled", "timeout", "missing"}:
         errors.append(job.get("error") or f"記憶工作狀態：{memory_status}")
@@ -291,6 +298,8 @@ async def run_turn(
         "memory_buffered_job_ids": job.get("buffered_job_ids", []) if job else [],
         "memory_decisions": job.get("decisions", []) if job else [],
         "memory_audit": await asyncio.to_thread(store.audit, event_id) if event_id else [],
+        "memory_embedding_diagnostics": job.get("embedding_diagnostics", []) if job else [],
+        "memory_buffer_embedded": job.get("buffer_embedded") if job else None,
         "memory_job_status": memory_status,
         "errors": errors,
         "latency_first_text_sec": first_text_sec,
@@ -320,8 +329,31 @@ def print_turn(record: dict) -> None:
         print(f"記憶變更: {', '.join(record['memory_changes'])}")
     if record.get("memory_job_status"):
         print(f"記憶: {record.get('memory_route') or '-'} / {record['memory_job_status']}")
+    if record.get("memory_embedding_diagnostics"):
+        print("Embedding: " + summarize_embedding_diagnostics(record["memory_embedding_diagnostics"]))
     if record["errors"]:
         print(f"錯誤: {record['errors']}")
+
+
+_EMBEDDING_PURPOSE_LABELS = {
+    "retrieval_query": "對話檢索 query",
+    "memory_match_query": "記憶比對 query",
+    "buffer_document": "候選文件 document",
+    "memory_document": "記憶文件 document",
+}
+
+
+def summarize_embedding_diagnostics(diagnostics: list[dict]) -> str:
+    summaries = []
+    for item in diagnostics:
+        purpose = _EMBEDDING_PURPOSE_LABELS.get(item.get("purpose"), item.get("purpose", "未知類別"))
+        status = "成功" if item.get("status") == "succeeded" else "失敗"
+        dimension = f"{item['dimension']} 維" if item.get("dimension") is not None else "維度未知"
+        duration = f"{item['duration_ms']} ms" if item.get("duration_ms") is not None else "耗時未知"
+        error = f"，錯誤 {item['error_class']}" if item.get("error_class") else ""
+        stage = f"（{item['stage']}）" if item.get("stage") else ""
+        summaries.append(f"{purpose}{stage} {status}／{dimension}／{duration}{error}")
+    return "；".join(summaries) if summaries else "無紀錄"
 
 
 def write_markdown_report(records: list[dict], path: Path, metadata: dict, status: str, error: str | None) -> None:
@@ -335,6 +367,8 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
         f"- 更新：{datetime.now().isoformat(timespec='seconds')}",
         f"- Scenario：`{metadata['scenario']}`（SHA-256：`{metadata['scenario_sha256']}`）",
         f"- AI：{metadata['ai_provider']} / `{metadata['chat_model']}`；JEV：`{metadata['jev_model']}`",
+        f"- Embedding：`{metadata.get('embedding_model', '(unset)')}`／"
+        f"{metadata.get('embedding_dimension', '(unset)')} 維／L2 normalization",
         f"- 測試 DB schema：`{metadata['memory_schema']}`（報告產出後清理）",
         f"- 測試短期記憶：`{path.parent / 'memory'}`",
         f"- 原始紀錄：`{path.parent / 'turns.jsonl'}`；後端日誌：`{path.parent / 'server.log'}`",
@@ -363,11 +397,24 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
     lines.extend([
         "", "## 統計摘要", "",
         f"- 基礎情緒：{counts_text(base_counts)}",
-        f"- 互動態度：{counts_text(attitude_counts)}",
+        f"- 互動態度（JEV 原始選擇）：{counts_text(attitude_counts)}",
         f"- 最終表情：{counts_text(expression_counts)}",
         f"- 需檢查輪次：{len(fallback_rows)} / {len(records)}",
+        "", "## 記憶與 Embedding 總覽", "",
+        "| # | Route／Job | Embedding 分類、狀態與耗時 |",
+        "|---|---|---|",
+    ])
+    for record in records:
+        route_status = f"{record.get('memory_route') or '-'} / {record.get('memory_job_status') or '-'}"
+        if record.get("memory_route") == "buffer":
+            buffer_state = "BUFFER 向量已寫入" if record.get("memory_buffer_embedded") else "BUFFER 向量未寫入"
+            route_status += f"（{buffer_state}）"
+        cells = [record["turn"], route_status,
+                 summarize_embedding_diagnostics(record.get("memory_embedding_diagnostics", []))]
+        lines.append("| " + " | ".join(str(cell).replace("|", "\\|").replace("\n", " ") for cell in cells) + " |")
+    lines.extend([
         "", "## 20 輪決策總覽", "",
-        "| # | 使用者 | AI 回覆 | 基礎情緒 | 互動態度 | 最終表情 | 最終態度 | 信心 | 狀態 |",
+        "| # | 使用者 | AI 回覆 | 基礎情緒 | 原始態度 | 最終表情 | 最終態度 | 信心 | 狀態 |",
         "|---|---|---|---|---|---|---|---|---|",
     ])
     for record in records:
@@ -380,6 +427,14 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
         status_text = "錯誤" if record.get("errors") else (
             "OK" if source == "jev" else "部分回退" if source == "partial_fallback" else "回退"
         )
+        if source == "partial_fallback" and not record.get("errors"):
+            reasons = []
+            if debug.get("jevBaseEmotionFallbackReason") not in (None, "none"):
+                reasons.append("情緒 " + str(debug["jevBaseEmotionFallbackReason"]))
+            if debug.get("jevInteractionAttitudeFallbackReason") not in (None, "none"):
+                reasons.append("態度 " + str(debug["jevInteractionAttitudeFallbackReason"]))
+            if reasons:
+                status_text += "（" + "、".join(reasons) + "）"
         cells = [
             record["turn"], record["user"], record.get("reply") or "-",
             diagnostic_value("jevBaseEmotionChoice"),
@@ -426,6 +481,8 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
             "memory_buffered_job_ids": record.get("memory_buffered_job_ids", []),
             "memory_decisions": record.get("memory_decisions", []),
             "memory_audit": record.get("memory_audit", []),
+            "memory_embedding_diagnostics": record.get("memory_embedding_diagnostics", []),
+            "memory_buffer_embedded": record.get("memory_buffer_embedded"),
             "memory_job_status": record.get("memory_job_status"),
             "latency_memory_completion_sec": record.get("latency_memory_completion_sec"),
             "errors": record.get("errors", []),

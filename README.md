@@ -105,7 +105,7 @@ npm run dev
 
 ## Headless Chat 測試（不開前端）
 
-`backend/tools/chat_test_cli.py` 會自動啟動隔離的測試後端，不需要先開前端或正式後端。執行前需在 `.env` 設定與 `MEMORY_DATABASE_URL` 不同的 `MEMORY_TEST_DATABASE_URL`，以及獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL=Qwen/Qwen3-Embedding-0.6B`、`EMBEDDING_AI_DIMENSION=1024`。CLI 會在專用測試 DB 建立每次執行獨立的 schema 並套用 Alembic migration；缺少測試 DB 設定時會在啟動後端前失敗。它逐輪等待記憶 job 完成，擷取回覆、JEV 決策、route、audit 與記憶變更；不讀寫正式長期記憶。
+`backend/tools/chat_test_cli.py` 會自動啟動隔離的測試後端，不需要先開前端或正式後端。執行前需在 `.env` 設定與 `MEMORY_DATABASE_URL` 不同的 `MEMORY_TEST_DATABASE_URL`，以及獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`。本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。CLI 會在專用測試 DB 建立每次執行獨立的 schema 並套用 Alembic migration；缺少測試 DB 設定時會在啟動後端前失敗。它逐輪等待記憶 job 完成，擷取回覆、JEV 決策、route、audit 與記憶變更；不讀寫正式長期記憶。
 
 ```bash
 cd backend

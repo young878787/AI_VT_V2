@@ -1,6 +1,7 @@
 """使用專用 DB 與每個測試獨立的 schema 驗證 Memory transaction。"""
 
 import asyncio
+import math
 import os
 import pathlib
 import sys
@@ -35,6 +36,8 @@ from tools.chat_test_cli import MemoryRunStore, wait_memory_job
 
 TEST_URL = os.getenv("MEMORY_TEST_DATABASE_URL", "")
 PRODUCTION_URL = os.getenv("MEMORY_DATABASE_URL", "")
+EMBEDDING_MODEL = "jinaai/jina-embeddings-v5-text-small-retrieval"
+EMBEDDING_CONTRACT = "jina-v5-test-contract"
 VALID_TEST_DATABASE = (
     bool(TEST_URL and PRODUCTION_URL)
     and make_url(TEST_URL).database != make_url(PRODUCTION_URL).database
@@ -53,8 +56,10 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
             command.upgrade(config, "head")
         self.pool = await make_pool(TEST_URL)
         await check_schema(self.pool, self.scope)
-        self.repo = MemoryRepository(self.pool, self.scope)
-        self.manager = MemoryDBManager(self.pool, self.scope, "test-model")
+        self.repo = MemoryRepository(self.pool, self.scope, EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+        self.manager = MemoryDBManager(
+            self.pool, self.scope, "test-model", EMBEDDING_MODEL, EMBEDDING_CONTRACT,
+        )
 
     async def asyncTearDown(self):
         await self.pool.close()
@@ -105,6 +110,68 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.manager.apply(job, [decision], set(), {}, (buffers[0]["id"],)))
         self.assertEqual(await self.repo.related_buffers("preference", VECTOR), [])
 
+    async def test_configured_embedding_model_is_saved(self):
+        item = await self._create()
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                model = await (await connection.execute(
+                    "SELECT embedding_model, embedding_contract FROM memory_items WHERE id = %s", (item["id"],),
+                )).fetchone()
+        self.assertEqual(model, (EMBEDDING_MODEL, EMBEDDING_CONTRACT))
+
+    async def test_vector_search_ignores_a_different_embedding_contract(self):
+        item = await self._create()
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                await connection.execute(
+                    "UPDATE memory_items SET embedding_contract = 'legacy-contract' WHERE id = %s",
+                    (item["id"],),
+                )
+        matches = await self.repo.related_items("unrelated terminology", VECTOR)
+        self.assertEqual(matches, [])
+
+    async def test_chat_retrieval_requires_similarity_or_specific_lexical_match(self):
+        item = await self._create()
+        unrelated = [0.0, 1.0] + [0.0] * 1022
+        below = [0.74, math.sqrt(1 - 0.74 ** 2)] + [0.0] * 1022
+        above = [0.76, math.sqrt(1 - 0.76 ** 2)] + [0.0] * 1022
+        self.assertEqual(await self.repo.related_items("無關主題", unrelated), [])
+        self.assertEqual(await self.repo.related_items("無關主題", below), [])
+        matches = await self.repo.related_items("無關主題", above)
+        self.assertEqual([row["id"] for row in matches], [item["id"]])
+        self.assertAlmostEqual(matches[0]["similarity"], 0.76, places=5)
+        self.assertFalse(matches[0]["exact_match"])
+        lexical = await self.repo.related_items("喜歡茶", None)
+        self.assertEqual([row["id"] for row in lexical], [item["id"]])
+        self.assertIsNone(lexical[0]["similarity"])
+
+    async def test_fresh_session_retrieval_evidence_comes_from_db_candidates(self):
+        item = await self._create()
+        fresh_event = await self.repo.accept("fresh-session-with-no-history", "turn-1")
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=VECTOR))
+        profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve(
+            "你還記得我喜歡什麼茶嗎", event_id=fresh_event,
+        )
+        self.assertEqual(profile, {})
+        self.assertIn(item["canonical_text"], relevant)
+        embedding.embed.assert_awaited_once()
+        self.assertEqual(embedding.embed.await_args.kwargs["event_id"], fresh_event)
+
+    async def test_unrelated_profile_is_not_injected(self):
+        item = await self._create()
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                await connection.execute(
+                    "UPDATE memory_items SET memory_type = 'profile', subject_key = 'profile.core_traits' "
+                    "WHERE id = %s", (item["id"],),
+                )
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=[0.0, 1.0] + [0.0] * 1022))
+        profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve("完全無關主題")
+        self.assertEqual((profile, relevant), ({}, ""))
+
     async def test_cli_store_waits_for_route_and_cleans_isolated_schema(self):
         run_scope = MemoryScope(uuid4(), uuid4(), "test_" + uuid4().hex)
         store = MemoryRunStore(TEST_URL, run_scope.schema_name, run_scope.user_id, run_scope.character_id)
@@ -154,9 +221,10 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         vectors = {entry.id: VECTOR for entry in entries}
         self.assertEqual(await self.manager.import_legacy(entries, vectors), 3)
         self.assertEqual(await self.manager.import_legacy(entries, vectors), 0)
-        self.assertEqual(len(await self.repo.profile_items()), 2)
+        self.assertEqual(len([row for row in await self.repo.related_items("天文", None)
+                              if row["memory_type"] == "profile"]), 1)
         other = MemoryRepository(self.pool, MemoryScope(uuid4(), self.scope.character_id, self.scope.schema_name))
-        self.assertEqual(await other.profile_items(), [])
+        self.assertEqual(await other.related_items("天文", None), [])
         async with self.pool.connection() as connection:
             async with connection.transaction():
                 await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))

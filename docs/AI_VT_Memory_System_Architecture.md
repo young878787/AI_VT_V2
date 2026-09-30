@@ -18,13 +18,13 @@ JEV 接收對話並分類
 
 目前正式記憶仍由 `memory_store.py`、`memory_records.py` 與 `memory_jobs.py` 的 JSON／Markdown 檔案支撐。PostgreSQL schema、DB-backed jobs、檢索與 Runtime 已在程式中提供，但正式資料尚未匯入，正式設定也尚未切換；本文的最終驗收項目不能視為已上線。
 
-2026-09-25 在專用測試 DB `ai_vt_memory_test` 驗證了 Alembic migration、pgvector 1024 維欄位、DB 操作與每次測試 schema 清理；正式 DB 未執行 migration。獨立 embedding endpoint 與固定正式 MemoryScope UUID 尚未設定。
+2026-09-25 曾在專用測試 DB `ai_vt_memory_test` 驗證既有 Alembic migrations、pgvector 1024 維欄位、DB 操作與測試 schema 清理；本次新增的 `0004_configurable_embedding_model` 尚未套用或以 DB 整合測試驗證，正式 DB 未執行 migration。本地 Jina embedding endpoint 已加入 `.env` 並完成 API 呼叫驗證；正式 MemoryScope UUID 尚未驗證。
 
-目前 Git 變更已包含 M1～M3 的程式路徑、隔離測試入口與 M4 的匯入工具；正式匯入、正式 DB migration、長期記憶 read／write 切換及舊檔案 runtime 退役仍未執行。沒有獨立 embedding endpoint 與測試 DB 設定時，也不能把真實 20 輪對話或端到端 AI 流程列為已驗收。
+目前 Git 變更已包含 M1～M3 的程式路徑、隔離測試入口與 M4 的匯入工具；正式匯入、正式 DB migration、長期記憶 read／write 切換及舊檔案 runtime 退役仍未執行。測試 DB 尚未設定時，不能把真實 20 輪對話或端到端 AI 流程列為已驗收。
 
 本計畫不重做目前的對話短期記憶。Session 對話、Session Summary、context compression、即時情緒、expression state 與既有 WebSocket payload 均維持原狀。長期記憶可以讀取其有界快照，但不得改變其生命週期或儲存格式。
 
-Embedding 定案使用 `Qwen/Qwen3-Embedding-0.6B`、完整 1024 維、cosine distance 與 L2-normalized vectors。第一版不使用 MRL 降維。
+Embedding 使用可設定的模型 ID 與 served model name；目前本地設定為 `jinaai/jina-embeddings-v5-text-small-retrieval`，served name 為 `jina-retrieval`。資料庫仍固定使用 1024 維、cosine distance 與 L2-normalized vectors。不同模型／維度／前綴／正規化契約的向量分開檢索；舊向量保留，重新產生後才會參與新契約的語意檢索。
 
 MVP 完成時，長期記憶、Profile 投影來源、證據、關係、audit 與背景工作以 PostgreSQL 為唯一真值。舊記憶檔只供一次性匯入與備份，不長期雙寫。
 
@@ -206,7 +206,7 @@ message_id      = UUIDv5(conversation_id, turn_id)
 | `memory_evidence` | memory 與 source 的 `origin`／`supports`／`contradicts` 關聯。 |
 | `memory_relations` | `supersedes`、`merged_into`、`contradicts` 等版本或語意關係。 |
 | `memory_audit` | owner、action、target、source event、reason、model、decision 與唯一 operation key。 |
-| `memory_jobs` | owner、scope generation、source、JEV route／hints、buffer 關聯、狀態、attempts、lease、LLM output 與 error；`NONE` record 不保存 source text。 |
+| `memory_jobs` | owner、scope generation、source、JEV route／hints、buffer 關聯、狀態、attempts、lease、LLM output、error 與不含原文／向量的 embedding diagnostics；`NONE` record 不保存 source text。 |
 | `memory_scope_state` | 每個 owner scope 的 generation；Reset 用來阻止舊 job 回填。 |
 | `alembic_version` | Alembic revision；Runtime 只檢查目前版本。 |
 
@@ -248,13 +248,16 @@ alembic -c alembic.ini -x database=production upgrade head
 本輪輸入（代名詞不明時才補極短近期對話）
   → CURRENT / HISTORY query mode
   → EMBEDDING_AI + subject／keyword exact match
-  → owner／status／expiry filter → pgvector Top 20 candidates
-  → group 版本解析、去重與排序 → Top 3～8
+  → owner／status／expiry／embedding contract filter
+  → 具體詞面命中或 cosine similarity ≥ 0.75 → 最多 20 candidates
+  → group 版本解析、去重與排序 → 最多 8 筆一般記憶
   → Profile Projection + Relevant Memory Projection
   → Chat
 ```
 
 CURRENT 只把 active 且未到期的記憶當成目前事實。HISTORY 才納入 superseded、expired、archived，依 group、relation 與有效期間還原時間線；conflict 不自動當成已確認事實。同一 group 的舊版與新版不得並列為同時有效。
+
+`0.75` 是尚待獨立樣本校準的保守起始門檻，不以 Top N 強制補滿。特定詞面的 canonical text、subject 或 keyword 命中可在低於門檻或 embedding 失敗時返回；一般性問句詞（例如「喜歡」、「記得」）不作詞面命中。Profile 也只從這批合格候選投影；沒有命中時，Chat 收到空 Profile 與空相關記憶。每輪的後端日誌只記錄 event ID、實際注入的記憶 ID、相似度及詞面命中狀態，不記錄查詢原文。驗證 DB 記憶是否參與回覆時，須用同 owner 的全新 session 與空對話歷史，核對候選日誌；同 session 回覆提及既有話題不能單獨當作證據。
 
 Embedding 暫時失敗時退化為 subject／keyword 查詢；DB 暫時失敗時以空長期記憶繼續 Chat 並記錄結構化錯誤。這些 fallback 不讀取舊 JSON 作為隱性第二真值。
 
@@ -278,17 +281,21 @@ Memory LLM 使用單一 `MEMORY_AI` 路線。Embedding 使用獨立 `EMBEDDING_A
 | `MEMORY_TEST_DATABASE_URL` | 專用測試 DB，必須與正式 DB 不同。 |
 | `MEMORY_AI_API_KEY`、`MEMORY_AI_BASE_URL`、`MEMORY_AI_MODEL` | 單一 Memory LLM 路線。 |
 | `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL` | 獨立的 OpenAI-compatible embedding endpoint。 |
-| `EMBEDDING_AI_MODEL` | 固定為 `Qwen/Qwen3-Embedding-0.6B`。 |
-| `EMBEDDING_AI_DIMENSION` | 固定為 `1024`，啟動時必須等於 API 輸出與 DB vector 維度。 |
+| `EMBEDDING_AI_MODEL` | 實際 embedding 模型 ID，寫入記憶 metadata。 |
+| `EMBEDDING_AI_SERVING_MODEL` | 可選的 API served name；未設定時使用模型 ID。 |
+| `EMBEDDING_AI_DIMENSION` | 固定為 `1024`，必須等於 API 輸出與 DB vector 維度。 |
+| `EMBEDDING_AI_QUERY_PREFIX`、`EMBEDDING_AI_DOCUMENT_PREFIX` | 分別加在 query 與 document 前；未設定時沿用舊 Qwen query instruction 與空 document prefix。 |
+| `LOCAL_VLLM_*` | 本地 vLLM pooling server 的啟動參數；vLLM host/port 與 embedding API URL 應指向同一服務。 |
 | `MEMORY_DEFAULT_USER_ID`、`MEMORY_DEFAULT_CHARACTER_ID` | 第一版固定 MemoryScope。 |
 
-查詢文字統一加上以下英文 instruction；資料庫中的 memory document 不加 instruction：
+目前 Jina 設定會在查詢及文件前分別加上：
 
-```text
-Given a user's current message, retrieve memories about the same person, preference, project, event, or correction that are relevant to answering the message.
+```dotenv
+EMBEDDING_AI_QUERY_PREFIX="Query: "
+EMBEDDING_AI_DOCUMENT_PREFIX="Document: "
 ```
 
-API 回傳向量由應用層驗證長度、有限值並做 L2 normalize，再寫入或計算 cosine similarity。模型名稱、1024 維、normalization 與 instruction 共同構成 embedding schema；其中任一項變更都需要 migration 與完整 re-embedding。
+API 回傳向量由應用層驗證長度、有限值並做 L2 normalize，再寫入或計算 cosine similarity。模型、1024 維、query/document prefix 與 normalization 組成 embedding contract。資料列記錄 contract hash，檢索只比較同一 contract 的向量；切換 contract 不會刪除舊向量，但要讓舊記憶參與新模型的語意檢索，仍須完整 re-embedding。
 
 啟動時檢查 DB、pgvector、Alembic revision、AI 設定及 embedding dimension。正式啟動不自動執行 migration。Process environment 優先於 `.env`；log／report 不得輸出 credential URL 或 key。
 
@@ -313,7 +320,7 @@ API 回傳向量由應用層驗證長度、有限值並做 L2 normalize，再寫
 
 沿用目前隔離式 20 輪對話的 CLI、scenario 與 report 流程。儲存層切換後使用獨立 `MEMORY_TEST_DATABASE_URL`，每次 run 建立符合 `test_<32 lowercase hex>` 的 schema，套用 migration，並固定該 run 的 session、user、character。缺少測試 DB、指向正式 DB 或 schema 名稱不合法時，CLI 必須在啟動後端前失敗，不得 fallback 到正式 DB。
 
-同一次 run 每輪等待 JEV route 完成，並等待對應 job 到 terminal status 再進下一輪；`NONE` 的初始 `ignored` 狀態不能誤認為分類完成。這由 Alembic `0002_job_route_finalized` 欄位明確標示。正式 Chat 仍維持非同步。報告從 audit／decision 產生逐輪 route、buffer、記憶變化、job status、latency 與 error。匯出後清理測試 schema；中斷時保留部分報告並盡力清理。
+同一次 run 每輪等待 JEV route 完成，並等待對應 job 到 terminal status 再進下一輪；`NONE` 的初始 `ignored` 狀態不能誤認為分類完成。這由 Alembic `0002_job_route_finalized` 欄位明確標示。正式 Chat 仍維持非同步。報告從 audit／decision 產生逐輪 route、buffer、記憶變化、job status、latency 與 error；embedding 另記錄對話檢索 query、記憶比對 query、BUFFER 文件及正式記憶文件的狀態、模型、維度、正規化、耗時與錯誤類別，不記錄向量或輸入原文。匯出後清理測試 schema；中斷時保留部分報告並盡力清理。
 
 隔離驗收包含：正式 sentinel 在測試中不可見且測試後不變、第二次 run 初始為空、平行 run 互不可見、同 run 前後輪連續、同 turn retry 不重複寫入、錯誤 DB 設定安全失敗。
 
@@ -341,7 +348,7 @@ Legacy ID 以固定 UUIDv5 映射，使重跑安全。Report 不輸出不必要�
 
 | 里程碑 | 交付內容 | 驗證關卡 |
 | --- | --- | --- |
-| M1 契約與 DB 基礎 | 固定 JEV classification、Routing Policy、Memory LLM schema、MemoryScope；以 `Qwen/Qwen3-Embedding-0.6B`／1024 維完成 Alembic migration、indexes、repository 與 startup checks。 | Schema／policy boundary tests；空 schema 可建且 migration 可重跑；owner、version、model、dimension 錯誤明確失敗。 |
+| M1 契約與 DB 基礎 | 固定 JEV classification、Routing Policy、Memory LLM schema、MemoryScope；以可設定 embedding contract／1024 維完成 Alembic migration、indexes、repository 與 startup checks。 | Schema／policy boundary tests；空 schema 可建且 migration 可重跑；owner、version、model、dimension 錯誤明確失敗。 |
 | M2 寫入垂直切片 | 擴充既有單次 JEV call；完成 NONE／BUFFER／PROCESS、DB-backed jobs、Matcher、Memory LLM、DB Manager、retry、generation 與 maintenance。 | 八種 action、buffer lifecycle、idempotency、restart、multi-worker 與 reset race 通過；Chat 不等待寫入。 |
 | M3 讀取與 Runtime 整合 | 完成 Retriever、Profile／Relevant Memory Projection，接上 Chat、lifespan、long-term reset 與 20 輪隔離測試。 | CURRENT／HISTORY、owner 隔離與 fallback 通過；既有短期記憶、JEV emotion／action、WebSocket regression tests 通過。 |
 | M4 匯入與切換 | 完成 importer、正式匯入、long-term read／write 切換、舊程式退役，更新 `.env.example`、README 與操作文件。 | 匯入數量、抽樣、owner 正確；正式 runtime 不再讀寫長期記憶 JSON；可用備份與 migration rollback 回復。 |

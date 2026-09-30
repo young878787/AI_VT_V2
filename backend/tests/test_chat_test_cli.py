@@ -72,7 +72,7 @@ class ChatTestCliTests(unittest.TestCase):
                 "jevDecisionSource": "jev",
                 "jevBaseEmotionFallbackReason": "none",
                 "jevInteractionAttitudeFallbackReason": "none",
-                "jevDecisionCriteriaVersion": "joint_two_axis_v3",
+                "jevDecisionCriteriaVersion": "joint_two_axis_v4",
                 "jevDecisionQuestionHash": "abc123abc123",
             }
             path = pathlib.Path(directory) / "report.md"
@@ -89,6 +89,31 @@ class ChatTestCliTests(unittest.TestCase):
             self.assertIn("<details>", report)
             self.assertIn("## 詳細資料", report)
             self.assertIn("問題指紋：`abc123abc123`", report)
+
+    def test_report_identifies_rejected_attitude_choice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            record = make_record(15)
+            record["expression"] = "neutral"
+            record["expression_debug"] = {
+                "jevBaseEmotionChoice": "neutral", "jevBaseEmotionConfidence": 0.82,
+                "jevInteractionAttitudeChoice": "smile",
+                "jevInteractionAttitudeConfidence": 0.33,
+                "jevResolvedEmotion": "neutral", "jevResolvedAttitude": "smile",
+                "jevDecisionSource": "partial_fallback",
+                "jevBaseEmotionFallbackReason": "none",
+                "jevInteractionAttitudeFallbackReason": "low_confidence",
+            }
+            path = pathlib.Path(directory) / "report.md"
+            cli.write_markdown_report([record], path, {
+                "run_id": "test", "planned_turns": 1, "started_at": "now",
+                "scenario": "test", "scenario_sha256": "hash",
+                "ai_provider": "test", "chat_model": "test", "jev_model": "test",
+                "memory_schema": "test_" + "a" * 32,
+            }, "completed", None)
+            report = path.read_text(encoding="utf-8")
+            self.assertIn("互動態度（JEV 原始選擇）", report)
+            self.assertIn("| 原始態度 |", report)
+            self.assertIn("| neutral | smile | neutral | smile | B 0.82 / A 0.33 | 部分回退（態度 low_confidence） |", report)
 
     def test_failed_turn_stops_scenario_and_keeps_partial_report(self):
         with tempfile.TemporaryDirectory() as directory:

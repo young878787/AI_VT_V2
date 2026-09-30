@@ -33,7 +33,8 @@ class MemoryWorker:
             return False
         try:
             query_embedding = job["embedding"].to_list() if job.get("embedding") is not None else await self.embedding.embed(
-                job["source_text"], query=True,
+                job["source_text"], purpose="memory_match_query", event_id=job["id"],
+                stage="worker_fallback", job_attempt=job["attempts"],
             )
             buffered = await self.repository.related_buffers(job["memory_type_hint"], query_embedding)
             related = await self.repository.related_items(job["source_text"], query_embedding)
@@ -41,7 +42,10 @@ class MemoryWorker:
             embeddings = {}
             for index, decision in enumerate(decisions):
                 if decision["action"] in {"CREATE", "SUPERSEDE", "CONTRADICT"}:
-                    embeddings[index] = await self.embedding.embed(decision["canonical_text"])
+                    embeddings[index] = await self.embedding.embed(
+                        decision["canonical_text"], purpose="memory_document", event_id=job["id"],
+                        stage="write", job_attempt=job["attempts"], decision_index=index,
+                    )
             await self.manager.apply(
                 job, decisions, {item["id"] for item in related}, embeddings,
                 tuple(item["id"] for item in buffered),
@@ -63,7 +67,10 @@ class MemoryWorker:
                     await self.repository.expire_temporary()
                     for buffer in await self.repository.unembedded_buffers():
                         try:
-                            vector = await self.embedding.embed(buffer["source_text"], query=True)
+                            vector = await self.embedding.embed(
+                                buffer["source_text"], purpose="buffer_document", event_id=buffer["id"],
+                                stage="maintenance",
+                            )
                             await self.repository.save_buffer_embedding(buffer, vector)
                         except Exception:
                             break

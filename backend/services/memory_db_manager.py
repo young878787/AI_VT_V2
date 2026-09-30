@@ -9,16 +9,19 @@ from psycopg.types.json import Jsonb
 
 from domain.memory_decisions import validate_decisions
 from domain.memory_scope import MemoryScope
-from domain.memory_settings import EMBEDDING_MODEL
 from services.memory_llm import _FORGET_REQUEST
 from services.memory_import import LegacyEntry
 
 
 class MemoryDBManager:
-    def __init__(self, pool, scope: MemoryScope, model: str) -> None:
+    def __init__(
+        self, pool, scope: MemoryScope, model: str, embedding_model: str, embedding_contract: str,
+    ) -> None:
         self.pool = pool
         self.scope = scope
         self.model = model
+        self.embedding_model = embedding_model
+        self.embedding_contract = embedding_contract
 
     async def import_legacy(self, entries: list[LegacyEntry], embeddings: dict[UUID, list[float]]) -> int:
         """舊檔匯入也由 DB Manager 寫入，固定 UUID 與 audit 使重跑安全。"""
@@ -43,13 +46,14 @@ class MemoryDBManager:
                         """INSERT INTO memory_items
                         (id, user_id, character_id, group_id, memory_type, canonical_text, subject_key,
                          keywords, status, importance, confidence, retention_class, embedding,
-                         embedding_model, observed_at, valid_from)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0.6, %s, %s, %s, %s, %s)
+                         embedding_model, embedding_contract, observed_at, valid_from)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0.6, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (id, user_id, character_id) DO NOTHING RETURNING id""",
                         (entry.id, *owner, entry.id, entry.memory_type, entry.canonical_text,
                          entry.subject_key, keywords, entry.status, entry.importance,
                          "important" if entry.memory_type == "special" else "normal",
-                         Vector(embeddings[entry.id]), EMBEDDING_MODEL, entry.observed_at, entry.observed_at),
+                         Vector(embeddings[entry.id]), self.embedding_model, self.embedding_contract,
+                         entry.observed_at, entry.observed_at),
                     )
                     if await cursor.fetchone() is None:
                         continue
@@ -158,13 +162,14 @@ class MemoryDBManager:
                             """INSERT INTO memory_items
                             (id, user_id, character_id, group_id, memory_type, canonical_text, subject_key,
                              keywords, status, importance, confidence, retention_class, embedding, embedding_model,
-                             observed_at, valid_from, valid_to, expires_at)
+                             embedding_contract, observed_at, valid_from, valid_to, expires_at)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                    now(), COALESCE(%s, now()), %s, %s)""",
+                                    %s, now(), COALESCE(%s, now()), %s, %s)""",
                             (new_id, *owner, group_id, decision.get("memory_type", "event"), canonical,
                              decision.get("subject_key"), keywords, status, decision.get("importance", 0.5),
                              decision.get("confidence", 0.5), decision.get("retention_class", "normal"),
-                             Vector(embeddings[index]), EMBEDDING_MODEL, decision.get("valid_from"),
+                             Vector(embeddings[index]), self.embedding_model, self.embedding_contract,
+                             decision.get("valid_from"),
                              decision.get("valid_to"), decision.get("expires_at")),
                         )
                         await connection.execute(

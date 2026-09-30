@@ -11,7 +11,7 @@ from domain.expression_intent_schema import (
 CONFIDENCE_THRESHOLD = 0.5
 NOUL_GOOFY_THRESHOLD = 0.7
 NOUL_BLINK_THRESHOLD = 0.6
-JEV_DECISION_CRITERIA_VERSION = "joint_two_axis_v3"
+JEV_DECISION_CRITERIA_VERSION = "joint_two_axis_v4"
 
 _EMOTION_DESC = {
     "neutral": "日常平靜、友善或只有輕微正向感受；當輪沒有足夠明確的其他主表情線索",
@@ -32,7 +32,7 @@ _BASE_EMOTION_DESC = {
 }
 
 _INTERACTION_ATTITUDE_DESC = {
-    "smile": "自然、友善地互動；沒有更明顯態度時使用",
+    "smile": "放鬆、友善地微笑互動；當輪沒有需要收起笑意的線索時使用",
     "bright_talk": "開朗熱情、主動帶動氣氛",
     "goofy_face": "刻意裝傻、搞怪或做鬼臉",
     "cheeky_wink": "調皮玩鬧，以眨眼逗對方",
@@ -41,8 +41,8 @@ _INTERACTION_ATTITUDE_DESC = {
     "gloomy": "消沉壓低、帶沉重氣氛互動",
     "volatile": "態度搖擺、情緒表現不穩定",
     "meltdown": "失控爆發；只在當輪有強烈爆發證據時使用",
-    "awkward": "彆扭、害羞或不知道如何回應",
-    "tense_hold": "壓著情緒、克制反應",
+    "awkward": "彆扭、害羞、不知道如何回應；或察覺自己沒理解對方時收起笑意、帶歉意地傾聽",
+    "tense_hold": "壓著不滿或強烈情緒、克制反應",
     "shock_recoil": "受到突然衝擊而明顯退縮或震驚",
 }
 
@@ -184,6 +184,10 @@ def build_action_questions() -> dict:
                 "態度不得取代或反轉基礎情緒。`current_user_input` 的明確表演請求是態度證據："
                 "要求開玩笑或調皮回應時優先考慮 cheeky_wink，要求搞怪或鬼臉時選 goofy_face，"
                 "要求有趣、活潑地說明時考慮 bright_talk，明確逗弄或得意時考慮 smug。"
+                "若使用者否定角色剛才的理解或安慰，且當輪尚未說明是玩笑，應先認真傾聽、"
+                "收起笑意；角色需要承認可能沒理解對方時優先考慮 awkward。"
+                "單獨的『哼』、嘴硬語氣或固定人格不足以把指責判成玩笑。"
+                "使用者當輪明確澄清是在開玩笑時，再依玩鬧線索考慮 cheeky_wink。"
                 "只有沒有這些差異化線索時才選 smile。"
                 "強烈模式必須有當輪明確證據，不可只因固定人格而選擇。"
                 "一致例：happy+bright_talk、shy+awkward、angry+tense_hold。"
