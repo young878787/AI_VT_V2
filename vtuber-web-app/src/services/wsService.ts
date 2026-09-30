@@ -7,6 +7,7 @@ import { actionScheduler } from './actionScheduler';
 class WSService {
     private ws: WebSocket | null = null;
     private currentAssistantMessageId: string | null = null;
+    private readonly assistantMessageIds = new Map<string, string>();
     private activeTurnId: string | null = null;
     private appliedPlanTurnId: string | null = null;
     private retryCount: number = 0;
@@ -71,11 +72,29 @@ class WSService {
             try {
                 const data = JSON.parse(event.data);
                 const store = useAppStore.getState();
+                if (data.type === 'turn_cancelled') {
+                    const cancelledTurnId = typeof data.turn_id === 'string' ? data.turn_id : null;
+                    if (cancelledTurnId) {
+                        const messageId = this.assistantMessageIds.get(cancelledTurnId);
+                        if (messageId && data.status === 'interrupted') {
+                            store.updateChatMessageStatus(messageId, 'interrupted');
+                        }
+                        this.assistantMessageIds.delete(cancelledTurnId);
+                        if (cancelledTurnId === this.activeTurnId) {
+                            this.currentAssistantMessageId = null;
+                            store.setAiTyping(false);
+                        }
+                    }
+                    return;
+                }
                 if (typeof data.turn_id === 'string' && data.turn_id !== this.activeTurnId) return;
 
                 if (data.type === 'text_stream') {
                     if (!this.currentAssistantMessageId) {
                         this.currentAssistantMessageId = store.appendChatMessage({ role: 'assistant', content: data.content });
+                        if (typeof data.turn_id === 'string') {
+                            this.assistantMessageIds.set(data.turn_id, this.currentAssistantMessageId);
+                        }
                     } else {
                         const currentMsg = useAppStore.getState().chatHistory.find(m => m.id === this.currentAssistantMessageId);
                         if (currentMsg) {
@@ -131,6 +150,9 @@ class WSService {
                     actionScheduler.submit(plan, 'chat', data.turn_id);
                     this.appliedPlanTurnId = this.activeTurnId;
                 } else if (data.type === 'stream_end') {
+                    if (typeof data.turn_id === 'string') {
+                        this.assistantMessageIds.delete(data.turn_id);
+                    }
                     this.currentAssistantMessageId = null;
                     store.setAiTyping(false);
                 } else if (data.type === 'voice') {
@@ -150,8 +172,6 @@ class WSService {
                     store.appendChatMessage({ role: 'system', content: data.content });
                     store.setAiTyping(false);
                     this.currentAssistantMessageId = null;
-                } else if (data.type === 'turn_cancelled') {
-                    this.currentAssistantMessageId = null;
                 }
             } catch (e) {
                 console.error('WebSocket message parsing error:', e);
@@ -163,6 +183,7 @@ class WSService {
             actionScheduler.setReporter(null);
             this.ws = null;
             this.currentAssistantMessageId = null;
+            this.assistantMessageIds.clear();
             this.activeTurnId = null;
             this.appliedPlanTurnId = null;
             const store = useAppStore.getState();
@@ -250,6 +271,7 @@ class WSService {
         actionScheduler.cancel();
         this.activeTurnId = null;
         this.currentAssistantMessageId = null;
+        this.assistantMessageIds.clear();
         this.appliedPlanTurnId = null;
         this.ttsPlayer.stop();
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {

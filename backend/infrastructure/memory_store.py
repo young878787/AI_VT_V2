@@ -104,7 +104,7 @@ def reset_session_summary(session_id: str) -> None:
 # Chat Sessions
 # ============================================================
 def to_persistable_messages(messages: list) -> list[dict]:
-    """只持久化 user/assistant 純文字，避免儲存動態 system prompt 與 tool 訊息。"""
+    """只持久化 user/assistant 純文字及中斷標記。"""
     persisted: list[dict] = []
     for m in messages:
         role = get_msg_field(m, "role", "")
@@ -112,7 +112,10 @@ def to_persistable_messages(messages: list) -> list[dict]:
             continue
         content = get_msg_field(m, "content", "")
         if isinstance(content, str) and content:
-            persisted.append({"role": role, "content": content})
+            item = {"role": role, "content": content}
+            if role == "assistant" and m.get("status") == "interrupted":
+                item["status"] = "interrupted"
+            persisted.append(item)
 
     if len(persisted) > CHAT_PERSISTENCE_MAX_MESSAGES:
         persisted = persisted[-CHAT_PERSISTENCE_MAX_MESSAGES:]
@@ -134,7 +137,10 @@ def load_session_messages(session_id: str) -> list[dict]:
             role = item.get("role")
             content = item.get("content")
             if role in {"user", "assistant"} and isinstance(content, str) and content:
-                restored.append({"role": role, "content": content})
+                restored_item = {"role": role, "content": content}
+                if role == "assistant" and item.get("status") == "interrupted":
+                    restored_item["status"] = "interrupted"
+                restored.append(restored_item)
         return restored
     except FileNotFoundError:
         return []

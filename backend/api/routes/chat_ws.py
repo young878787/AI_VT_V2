@@ -211,6 +211,11 @@ async def websocket_endpoint(websocket: WebSocket):
     version = 0
     active_turn_id: str | None = None
     active_task: asyncio.Task | None = None
+    active_turn_text: str | None = None
+    active_turn_partial: str = ""
+    active_turn_committed = False
+    active_event_id = None
+    active_memory_routed = False
     tts_tasks: set[asyncio.Task] = set()
     send_lock = asyncio.Lock()
 
@@ -218,22 +223,52 @@ async def websocket_endpoint(websocket: WebSocket):
         async with send_lock:
             await websocket.send_json(payload)
 
-    async def cancel_active() -> None:
-        nonlocal active_task, active_turn_id
+    async def cancel_active(finalize_memory: bool = True) -> None:
+        nonlocal active_task, active_turn_id, active_turn_text, active_turn_partial
+        nonlocal active_turn_committed, active_event_id, active_memory_routed, messages
         if active_task is not None and not active_task.done():
+            interrupted_turn_id = active_turn_id
+            interrupted_text = active_turn_text
+            was_committed = active_turn_committed
+            interrupted_event_id = active_event_id
+            memory_routed = active_memory_routed
             active_task.cancel()
             await asyncio.gather(active_task, return_exceptions=True)
-            if active_turn_id:
-                await send({"type": "turn_cancelled", "turn_id": active_turn_id})
+            if interrupted_turn_id:
+                partial = active_turn_partial if not was_committed else ""
+                if interrupted_text and not was_committed:
+                    messages.append({"role": "user", "content": interrupted_text})
+                if partial:
+                    messages.append({
+                        "role": "assistant", "content": partial, "status": "interrupted",
+                    })
+                if CHAT_PERSISTENCE_ENABLED and session_id and interrupted_text and not was_committed:
+                    save_session_messages(session_id, messages)
+                if finalize_memory and interrupted_event_id and not memory_routed and interrupted_text:
+                    memory_runtime.route_background(
+                        interrupted_event_id, interrupted_text, None, list(messages),
+                    )
+                await send({
+                    "type": "turn_cancelled",
+                    "turn_id": interrupted_turn_id,
+                    "status": "cancelled" if was_committed else "interrupted",
+                    "partial_text": partial,
+                })
         active_task = None
         active_turn_id = None
+        active_turn_text = None
+        active_turn_partial = ""
+        active_turn_committed = False
+        active_event_id = None
+        active_memory_routed = False
         for task in tts_tasks:
             task.cancel()
         tts_tasks.clear()
 
     async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool,
                        event_id=None) -> None:
-        nonlocal messages, emotion_state, expression_state, version
+        nonlocal messages, emotion_state, expression_state, version, active_turn_partial
+        nonlocal active_turn_committed, active_memory_routed
         action_task: asyncio.Task | None = None
         try:
             context = build_jev_context(
@@ -255,6 +290,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 answers = None
             if event_id is not None:
                 memory_runtime.route_background(event_id, text, answers, snapshot["messages"])
+                active_memory_routed = True
             emotion_answers = (
                 {field: answers.get(field) for field in EMOTION_FIELDS}
                 if isinstance(answers, dict) else None
@@ -286,8 +322,11 @@ async def websocket_endpoint(websocket: WebSocket):
             ))
 
             async def send_chunk(piece: str) -> None:
+                nonlocal active_turn_partial
                 if active_turn_id == turn_id:
                     await send({"type": "text_stream", "content": piece, "turn_id": turn_id})
+                    if active_turn_id == turn_id:
+                        active_turn_partial += piece
 
             reply = await stream_agent_a(chat_messages, send_chunk)
             if not reply:
@@ -296,6 +335,7 @@ async def websocket_endpoint(websocket: WebSocket):
             if active_turn_id != turn_id:
                 return
             messages.extend([{"role": "user", "content": text}, {"role": "assistant", "content": reply}])
+            active_turn_committed = True
             if CHAT_PERSISTENCE_ENABLED and session_id:
                 save_session_messages(session_id, messages)
             log_turn(turn_count=sum(item.get("role") == "user" for item in messages),
@@ -324,6 +364,32 @@ async def websocket_endpoint(websocket: WebSocket):
                 action_task.cancel()
                 await asyncio.gather(action_task, return_exceptions=True)
 
+    async def prepare_and_run_turn(
+        turn_id: str, text: str, model_name: str, legacy: bool,
+    ) -> None:
+        """將記憶接收／檢索與生成放在同一個可取消的回合 task。"""
+        nonlocal active_event_id
+        event_id = None
+        try:
+            event_id = await memory_runtime.accept(session_id or "default_session", turn_id)
+            active_event_id = event_id
+            await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
+            await send({"type": "memory_enqueue_error", "turn_id": turn_id})
+        profile, relevant_memory = await memory_runtime.retrieve(text, event_id=event_id)
+        snapshot = {
+            "messages": list(messages), "emotion": emotion_state,
+            "expression": expression_state,
+            "action": current_action,
+            "profile": profile,
+            "memory": relevant_memory,
+            "summary": load_session_summary(session_id) if session_id else "",
+        }
+        await run_turn(turn_id, text, model_name, snapshot, legacy, event_id)
+
     try:
         while True:
             data = json.loads(await websocket.receive_text())
@@ -345,7 +411,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             control_type = data.get("type")
             if control_type == "reset":
-                await cancel_active()
+                await cancel_active(finalize_memory=False)
                 await memory_runtime.reset()
                 messages, emotion_state, expression_state = [], None, None
                 current_action = None
@@ -386,27 +452,16 @@ async def websocket_endpoint(websocket: WebSocket):
             text = input_event["text"]
             model_name = input_event["model_name"]
             turn_id = input_event["turn_id"]
-            event_id = None
-            try:
-                event_id = await memory_runtime.accept(session_id or "default_session", turn_id)
-                await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
-            except Exception as exc:
-                print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
-                await send({"type": "memory_enqueue_error", "turn_id": turn_id})
-            profile, relevant_memory = await memory_runtime.retrieve(text, event_id=event_id)
-            snapshot = {
-                "messages": list(messages), "emotion": emotion_state,
-                "expression": expression_state,
-                "action": current_action,
-                "profile": profile,
-                "memory": relevant_memory,
-                "summary": load_session_summary(session_id) if session_id else "",
-            }
+            # 先切換回合，讓新輸入可以立即打斷生成中的舊回合；記憶檢索不能阻塞取消。
             await cancel_active()
             active_turn_id = turn_id
-            active_task = asyncio.create_task(run_turn(
-                turn_id, text, model_name, snapshot, data.get("legacy_payloads") is True,
-                event_id,
+            active_turn_text = text
+            active_turn_partial = ""
+            active_turn_committed = False
+            active_event_id = None
+            active_memory_routed = False
+            active_task = asyncio.create_task(prepare_and_run_turn(
+                turn_id, text, model_name, data.get("legacy_payloads") is True,
             ))
     except WebSocketDisconnect:
         print("Client disconnected")

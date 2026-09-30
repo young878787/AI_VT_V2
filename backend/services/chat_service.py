@@ -72,9 +72,10 @@ def build_chat_context(prompt: str, history: list[dict], user_text: str, budget:
     for item in reversed(history[-16:]):
         if item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
             continue
-        if estimate_token_count([system, item, *selected, user]) > budget:
+        dialogue_item = {"role": item["role"], "content": item["content"]}
+        if estimate_token_count([system, dialogue_item, *selected, user]) > budget:
             break
-        selected.insert(0, item)
+        selected.insert(0, dialogue_item)
     return [system, *selected, user]
 
 

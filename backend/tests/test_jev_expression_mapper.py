@@ -36,6 +36,7 @@ from infrastructure.memory_store import (
     reset_session_emotion_state,
     save_session_emotion_state,
     save_session_messages,
+    to_persistable_messages,
 )
 
 
@@ -186,6 +187,21 @@ class EmotionContractTests(unittest.TestCase):
             self.assertEqual(load_session_messages("session_1"), [])
             self.assertEqual(load_session_emotion_state("session_2"), state)
             self.assertEqual(len(load_session_messages("session_2")), 1)
+
+    def test_interrupted_assistant_message_preserves_status(self):
+        messages = [
+            {"role": "user", "content": "第一句"},
+            {"role": "assistant", "content": "只送出的半句", "status": "interrupted"},
+            {"role": "assistant", "content": "不應保存的未知狀態", "status": "unexpected"},
+        ]
+        self.assertEqual(
+            to_persistable_messages(messages),
+            [
+                {"role": "user", "content": "第一句"},
+                {"role": "assistant", "content": "只送出的半句", "status": "interrupted"},
+                {"role": "assistant", "content": "不應保存的未知狀態"},
+            ],
+        )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  status?: 'interrupted';
 }
 
 interface AiBehaviorBridgeModel {
@@ -90,6 +91,7 @@ interface AppState {
   // 聊天與情緒控制
   appendChatMessage: (message: Omit<ChatMessage, 'id'>) => string;
   updateChatMessage: (id: string, content: string) => void;
+  updateChatMessageStatus: (id: string, status: ChatMessage['status']) => void;
   setAiTyping: (isTyping: boolean) => void;
   setCompressing: (isCompressing: boolean) => void;
   setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number, eyeBallX?: number, eyeBallY?: number) => void;
@@ -341,6 +343,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       chatHistory: state.chatHistory.map((msg) =>
         msg.id === id ? { ...msg, content } : msg
+      )
+    }));
+  },
+
+  updateChatMessageStatus: (id, status) => {
+    set((state) => ({
+      chatHistory: state.chatHistory.map((msg) =>
+        msg.id === id ? { ...msg, status } : msg
       )
     }));
   },

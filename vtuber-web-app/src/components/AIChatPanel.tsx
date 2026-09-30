@@ -19,7 +19,7 @@ export const AIChatPanel = () => {
     }, [chatHistory, isAiTyping]);
 
     const handleSend = () => {
-        if (!inputValue.trim() || isAiTyping) return;
+        if (!inputValue.trim()) return;
         wsService.sendMessage(inputValue);
         setInputValue('');
     };
@@ -42,6 +42,7 @@ export const AIChatPanel = () => {
                             {msg.role === 'system' && <span className="icon">🤖</span>}
                             <div className="message-content">
                                 {msg.content}
+                                {msg.status === 'interrupted' && <span className="message-status">（已中斷）</span>}
                             </div>
                         </div>
                     ))}
@@ -73,13 +74,12 @@ export const AIChatPanel = () => {
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
                         onKeyDown={handleKeyDown}
-                        disabled={isAiTyping}
                         className="chat-input"
                     />
                     <button
                         className="send-button"
                         onClick={handleSend}
-                        disabled={!inputValue.trim() || isAiTyping}
+                        disabled={!inputValue.trim()}
                     >
                         發送
                     </button>
