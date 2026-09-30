@@ -22,6 +22,13 @@ BUILTIN_MODELS: list[dict] = [
         "displayName": "Haru（春）",
         "description": "元氣少女，活潑開朗",
     },
+    {
+        "name": "Rushia",
+        "directory": "Rushia",
+        "fileName": "RushiaHD.model3.json",
+        "displayName": "Rushia",
+        "description": "Rushia HD Live2D 模型",
+    },
 ]
 
 

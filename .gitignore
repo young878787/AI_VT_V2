@@ -44,6 +44,10 @@ vtuber-web-app/node_modules/
 vtuber-web-app/dist/
 vtuber-web-app/.vite/
 vtuber-web-app/public/resources/
+!vtuber-web-app/public/Resources/
+vtuber-web-app/public/Resources/*
+!vtuber-web-app/public/Resources/Rushia/
+!vtuber-web-app/public/Resources/Rushia/**
 # ============================================================
 # Cubism SDK (large binary SDK, should not be committed)
 # ============================================================
@@ -84,3 +88,5 @@ yarn-error.log*
 # ============================================================
 docs/
 .env_copy
+vtuber-web-app/public/Resources/
+Rushia.zip

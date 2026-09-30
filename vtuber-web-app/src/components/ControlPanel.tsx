@@ -368,7 +368,9 @@ export const ControlPanel = () => {
               {/* 模型下拉 + 刪除按鈕 */}
               <div className="cp-row">
                 <select
+                  id="model-selector"
                   className="cp-select"
+                  aria-label="選擇 Live2D 模型"
                   value={currentModelName}
                   onChange={e => handleModelSwitch(e.target.value)}
                   disabled={modelSwitching || modelLoading}

@@ -88,16 +88,15 @@ export const AvailableModels: ModelConfig[] = [
     scale: 1.0,
     position: { x: 0.0, y: 0.0 }
   },
-  // 未來可以添加更多模型範例：
-  // {
-  //   name: 'Mao',
-  //   directory: 'Mao',
-  //   fileName: 'Mao.model3.json',
-  //   displayName: 'Mao（貓）',
-  //   description: '貓耳少女',
-  //   scale: 1.0,
-  //   position: { x: 0.0, y: 0.0 }
-  // },
+  {
+    name: 'Rushia',
+    directory: 'Rushia',
+    fileName: 'RushiaHD.model3.json',
+    displayName: 'Rushia',
+    description: 'Rushia HD Live2D 模型',
+    scale: 1.0,
+    position: { x: 0.0, y: 0.0 }
+  },
 ];
 
 /**
