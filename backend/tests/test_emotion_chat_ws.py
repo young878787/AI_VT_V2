@@ -75,6 +75,13 @@ class FakeWebSocket:
 class EmotionWebSocketTests(unittest.TestCase):
     def _run(self, frames, jev_responses, persistence=False, storage=None):
         socket = FakeWebSocket(frames)
+        runtime = SimpleNamespace(
+            retrieve=AsyncMock(return_value=({}, "")),
+            accept=AsyncMock(return_value=uuid4()),
+            route_background=Mock(),
+            reset=AsyncMock(),
+        )
+        socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
         captured = {"jev_states": [], "chat_states": [], "prompts": []}
         responses = iter(jev_responses)
 
@@ -98,11 +105,8 @@ class EmotionWebSocketTests(unittest.TestCase):
                 patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
                 patch("api.routes.chat_ws.build_agent_a_prompt", side_effect=fake_prompt), \
                 patch("api.routes.chat_ws.broadcast_to_displays"), \
-                patch("api.routes.chat_ws.load_user_profile", return_value={}), \
-                patch("api.routes.chat_ws.search_relevant_records", return_value=""), \
                 patch("api.routes.chat_ws.log_turn"), \
                 patch("api.routes.chat_ws.synthesize_and_send_voice"), \
-                patch("api.routes.chat_ws.enqueue_input"), \
                 patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", persistence):
                 if storage is None:
                     await websocket_endpoint(socket)
@@ -167,10 +171,7 @@ class EmotionWebSocketTests(unittest.TestCase):
                  patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
                  patch("api.routes.chat_ws.broadcast_to_displays"), \
                  patch("api.routes.chat_ws.synthesize_and_send_voice"), \
-                 patch("api.routes.chat_ws.log_turn"), \
-                 patch("api.routes.chat_ws.enqueue_input", side_effect=AssertionError("file queue used")), \
-                 patch("api.routes.chat_ws.load_user_profile", side_effect=AssertionError("file profile used")), \
-                 patch("api.routes.chat_ws.search_relevant_records", side_effect=AssertionError("file search used")):
+                 patch("api.routes.chat_ws.log_turn"):
                 await websocket_endpoint(socket)
 
         asyncio.run(run())

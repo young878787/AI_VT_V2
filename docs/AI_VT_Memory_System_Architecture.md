@@ -1,7 +1,7 @@
 # AI_VT 後端長期記憶實作計畫
 
 > 版本：v2.0（定案版）
-> 狀態：DB runtime 與隔離測試入口已實作；正式資料尚未遷移或切換
+> 狀態：PostgreSQL runtime 已收斂為唯一長期記憶路線；正式 legacy 檔案資料仍須由 importer 明確遷移
 > 上位決策：[AI_VT_V2_Memory_Architecture.md](./AI_VT_V2_Memory_Architecture.md)
 > 實作順序：以第 10 章為準；其餘章節是共同契約
 
@@ -16,11 +16,11 @@ JEV 接收對話並分類
   → DB Manager 維護 PostgreSQL
 ```
 
-目前正式記憶仍由 `memory_store.py`、`memory_records.py` 與 `memory_jobs.py` 的 JSON／Markdown 檔案支撐。PostgreSQL schema、DB-backed jobs、檢索與 Runtime 已在程式中提供，但正式資料尚未匯入，正式設定也尚未切換；本文的最終驗收項目不能視為已上線。
+目前正式與測試 runtime 都由 PostgreSQL schema、DB-backed jobs、檢索與 `MemoryRuntime` 支撐。舊 JSON／Markdown 不再由後端 runtime 讀寫；若正式資料仍在舊檔案，必須透過 legacy importer 明確匯入，本文不把尚未執行的正式匯入視為完成。
 
-2026-09-25 曾在專用測試 DB `ai_vt_memory_test` 驗證既有 Alembic migrations、pgvector 1024 維欄位、DB 操作與測試 schema 清理；本次新增的 `0004_configurable_embedding_model` 尚未套用或以 DB 整合測試驗證，正式 DB 未執行 migration。本地 Jina embedding endpoint 已加入 `.env` 並完成 API 呼叫驗證；正式 MemoryScope UUID 尚未驗證。
+本次對照已在正式 DB 以唯讀查詢確認 Alembic revision `0004_embedding_model`、pgvector extension 與 `memory_items.embedding` 的 `vector(1024)`；隔離 DB 連線、每次 run 的 schema migration／清理與 backend integration tests 均通過。修正報告 audit event UUID 正規化後，真實 AI 20 輪 run `20260930_103618_c497cb61` 已完成 20／20，結果為 NONE 14、BUFFER 3、PROCESS 3，建立 1 筆帶 embedding 的 preference 記憶，20 輪 embedding 全部成功，CREATE audit 可在報告中追蹤；本次測試 schema 已在報告產出後清理。
 
-目前 Git 變更已包含 M1～M3 的程式路徑、隔離測試入口與 M4 的匯入工具；正式匯入、正式 DB migration、長期記憶 read／write 切換及舊檔案 runtime 退役仍未執行。測試 DB 尚未設定時，不能把真實 20 輪對話或端到端 AI 流程列為已驗收。
+目前程式已包含 PostgreSQL runtime、隔離測試入口與 legacy importer；一般與隔離 instance 都固定建立 `MemoryRuntime`，不再有 file long-term runtime 或 backend 開關。真實 AI 20 輪對話、embedding、記憶建立、DB recall、JEV fallback 與測試 schema 清理均已完成對照；正式 legacy 檔案資料是否需要匯入仍須以 importer dry-run、抽樣與正式備份流程另行驗證，這不影響 runtime 已停止讀寫舊檔案。
 
 本計畫不重做目前的對話短期記憶。Session 對話、Session Summary、context compression、即時情緒、expression state 與既有 WebSocket payload 均維持原狀。長期記憶可以讀取其有界快照，但不得改變其生命週期或儲存格式。
 
@@ -222,6 +222,16 @@ DB access 採 Psycopg 3 async connection pool 與 pgvector adapter；migration �
 
 Migration 從 `backend/` 執行，預設指向 `MEMORY_TEST_DATABASE_URL`，且測試 schema 須為 `test_<32 lowercase hex>`；正式 DB 必須明確指定 `database=production`。`MEMORY_DATABASE_SCHEMA` 可供正式 schema 使用。執行前應先備份正式 DB；Runtime 只檢查 Alembic revision，不自動升級。
 
+正式與測試使用同一份後端程式及同一套 PostgreSQL MemoryRuntime，但以不同 instance 與不同 database 隔離：
+
+```text
+同一份後端程式
+├─ 一般執行 instance → MEMORY_DATABASE_URL／固定正式 schema
+└─ 隔離測試 instance → MEMORY_TEST_DATABASE_URL／每次 run 的獨立 test_* schema
+```
+
+PostgreSQL database 由管理者一次建立，Alembic 不建立 database。正式 schema 由 Alembic 建立及逐版升級並長期保留；隔離 CLI 每次產生隨機測試 schema、執行 `upgrade head`，測試結束後以 `DROP SCHEMA ... CASCADE` 清理。每個 schema 內各自保存 `alembic_version`，因此正式與每次測試的結構版本可獨立驗證。測試設定缺少、測試與正式 database 名稱相同，或 schema 名稱不合法時，必須在啟動測試後端前失敗。
+
 ```bash
 cd backend
 alembic -c alembic.ini -x database=test -x schema=test_0123456789abcdef0123456789abcdef upgrade head
@@ -339,7 +349,7 @@ Legacy ID 以固定 UUIDv5 映射，使重跑安全。Report 不輸出不必要�
 → 正式 schema 匯入
 → 一次切換長期 memory read／write
 → 觀察
-→ 退役舊 file-memory runtime
+→ 保留舊檔案作備份，必要時明確執行 legacy importer
 ```
 
 原始檔成功後仍先保留供回復與核對。Runtime 不長期雙寫，也不在 DB 失敗時 fallback 到舊檔案。
@@ -351,9 +361,9 @@ Legacy ID 以固定 UUIDv5 映射，使重跑安全。Report 不輸出不必要�
 | M1 契約與 DB 基礎 | 固定 JEV classification、Routing Policy、Memory LLM schema、MemoryScope；以可設定 embedding contract／1024 維完成 Alembic migration、indexes、repository 與 startup checks。 | Schema／policy boundary tests；空 schema 可建且 migration 可重跑；owner、version、model、dimension 錯誤明確失敗。 |
 | M2 寫入垂直切片 | 擴充既有單次 JEV call；完成 NONE／BUFFER／PROCESS、DB-backed jobs、Matcher、Memory LLM、DB Manager、retry、generation 與 maintenance。 | 八種 action、buffer lifecycle、idempotency、restart、multi-worker 與 reset race 通過；Chat 不等待寫入。 |
 | M3 讀取與 Runtime 整合 | 完成 Retriever、Profile／Relevant Memory Projection，接上 Chat、lifespan、long-term reset 與 20 輪隔離測試。 | CURRENT／HISTORY、owner 隔離與 fallback 通過；既有短期記憶、JEV emotion／action、WebSocket regression tests 通過。 |
-| M4 匯入與切換 | 完成 importer、正式匯入、long-term read／write 切換、舊程式退役，更新 `.env.example`、README 與操作文件。 | 匯入數量、抽樣、owner 正確；正式 runtime 不再讀寫長期記憶 JSON；可用備份與 migration rollback 回復。 |
+| M4 匯入與切換 | 完成 importer、PostgreSQL-only long-term read／write 切換、舊 runtime 與 backend 開關退役，更新 `.env.example`、README 與操作文件。 | 正式 runtime 不再讀寫長期記憶 JSON；legacy importer 的匯入數量、抽樣與 owner 驗證另行執行；可用備份與 migration rollback 回復。 |
 
-MVP 只在四個關卡全部通過後完成。Hebbian association、全資料 graph spreading、episodic summary、LLM 定期全庫 consolidation、複雜 importance decay、跨裝置登入與多租戶 UI 均不在本次範圍。現有 `memory_consolidation.py` 的摘要不作為長期記憶真值。
+MVP 只在四個關卡全部通過後完成。Hebbian association、全資料 graph spreading、episodic summary、LLM 定期全庫 consolidation、複雜 importance decay、跨裝置登入與多租戶 UI 均不在本次範圍。Session Summary 仍屬短期對話資料，不作為長期記憶真值。
 
 ## 11. 最終驗收清單
 

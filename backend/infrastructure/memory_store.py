@@ -1,33 +1,17 @@
 """
-記憶持久化：user_profile.json、memory.md、sessions/ 的 File I/O。
-包含 In-Memory Cache 以減少磁碟讀取次數。
+短期 Chat session、Session Summary 與 Emotion State 的檔案持久化。
+長期記憶統一由 PostgreSQL MemoryRuntime 管理。
 """
 import os
 import json
 import tempfile
-import threading
-from datetime import datetime
 
-from core.config import (
-    USER_PROFILE_PATH,
-    MEMORY_MD_PATH,
-    CHAT_SESSION_DIR,
-    MEMORY_DIR,
-    CHAT_PERSISTENCE_MAX_MESSAGES,
-    EMOTION_STATE_DIR,
-)
+from core.config import CHAT_SESSION_DIR, CHAT_PERSISTENCE_MAX_MESSAGES, EMOTION_STATE_DIR
 from core.utils import get_msg_field
 from core.utils import normalize_session_id
 from domain.emotion_state import validate_emotion_state
 
 # ============================================================
-# In-Memory Cache（減少每輪對話的磁碟 I/O）
-# ============================================================
-_profile_cache: dict | None = None
-_memory_cache: str | None = None
-_write_lock = threading.RLock()
-
-
 def _atomic_write(path: str, content: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     temporary_path = None
@@ -41,73 +25,6 @@ def _atomic_write(path: str, content: str) -> None:
     finally:
         if temporary_path and os.path.exists(temporary_path):
             os.unlink(temporary_path)
-
-
-# ============================================================
-# User Profile
-# ============================================================
-def load_user_profile() -> dict:
-    """讀取 user_profile.json（優先從 cache，減少磁碟 I/O）"""
-    global _profile_cache
-    if _profile_cache is not None:
-        return _profile_cache
-    try:
-        with open(USER_PROFILE_PATH, "r", encoding="utf-8") as f:
-            _profile_cache = json.load(f)
-            return _profile_cache
-    except (FileNotFoundError, json.JSONDecodeError):
-        _profile_cache = {
-            "updated_at": "",
-            "core_traits": [],
-            "communication_style": "",
-            "dislikes": [],
-            "recent_interests": [],
-            "custom_notes": [],
-        }
-        return _profile_cache
-
-
-def save_user_profile(profile: dict) -> None:
-    """寫入 user_profile.json，同步更新 cache"""
-    global _profile_cache
-    profile["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _atomic_write(USER_PROFILE_PATH, json.dumps(profile, ensure_ascii=False, indent=2))
-    _profile_cache = profile
-
-
-# ============================================================
-# Memory Notes（memory.md）
-# ============================================================
-def load_memory_notes(max_lines: int = 50) -> str:
-    """讀取 memory.md 最後 N 行（優先從 cache，減少磁碟 I/O）"""
-    global _memory_cache
-    if _memory_cache is not None:
-        return _memory_cache
-    try:
-        with open(MEMORY_MD_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        content_lines = [
-            l.strip() for l in lines if l.strip() and not l.strip().startswith("# ")
-        ]
-        _memory_cache = "\n".join(content_lines[-max_lines:])
-        return _memory_cache
-    except FileNotFoundError:
-        _memory_cache = ""
-        return _memory_cache
-
-
-def append_memory_note(note: str) -> None:
-    """追加一條記憶到 memory.md，並使 cache 失效（下次重新讀取）"""
-    global _memory_cache
-    with _write_lock:
-        try:
-            with open(MEMORY_MD_PATH, "r", encoding="utf-8") as file:
-                existing = file.read()
-        except FileNotFoundError:
-            existing = "# Memory Notes\n"
-        date_prefix = datetime.now().strftime("[%m/%d %H:%M]")
-        _atomic_write(MEMORY_MD_PATH, existing + f"\n- {date_prefix} {note}")
-        _memory_cache = None
 
 
 # ============================================================
@@ -154,31 +71,6 @@ def reset_session_emotion_state(session_id: str) -> None:
         os.unlink(_emotion_state_path(session_id))
     except FileNotFoundError:
         pass
-
-
-# ============================================================
-# 還原（Reset）
-# ============================================================
-def reset_user_profile() -> None:
-    """還原 user_profile.json 為預設值，同步清除 cache。"""
-    default_profile = {
-        "updated_at": "",
-        "core_traits": [],
-        "communication_style": "",
-        "dislikes": [],
-        "recent_interests": [],
-        "custom_notes": [],
-    }
-    save_user_profile(default_profile)
-
-
-def reset_memory_notes() -> None:
-    """清空 memory.md，同步清除 cache。"""
-    global _memory_cache
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(MEMORY_MD_PATH, "w", encoding="utf-8") as f:
-        f.write("# Memory Notes\n")
-    _memory_cache = None
 
 
 def _session_summary_path(session_id: str) -> str:

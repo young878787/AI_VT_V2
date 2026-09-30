@@ -13,8 +13,8 @@
 - AI 生成心情對應（核心差異）：每次回覆都由 LLM 依語境即時生成心情與表情參數，而非播放固定動作；同樣的話在開心、害羞、生氣時表情不同，每次皆有隨機性與多元變化。
 - 即時表情驅動：JEV 決定結構化表演意圖，Chat 模型獨立輸出對白；`expression_plan` 控制眼睛、眉毛、嘴、臉紅與頭部參數（眼睛、眉毛、嘴、臉紅、頭部角度、呼吸）。
 - 獨特表情編譯：後端 `compile_expression_plan()` 將 AI 意圖轉為前端可播放的 expression plan，含平滑插值過渡。
-- 持久化記憶：`backend/memory/` 下以 `user_profile.json` 存使用者特徵偏好，以 `memory_records.json` 保存重要事件，`memory.md` 提供舊資料匯入與相容檢視，跨 session 有效。
-- 背景記憶整理：Memory Agent 分類並保存事件；已採納紀錄的長期摘要保存來源 ID，不覆蓋原紀錄。
+- 持久化記憶：PostgreSQL／pgvector `MemoryRuntime` 保存跨 session 的使用者特徵、偏好與事件；舊 JSON／Markdown 只供一次性匯入。
+- 背景記憶整理：JEV 負責分類，Memory LLM 產生受驗證的記憶決策，DB Manager 交易寫入 PostgreSQL。
 - 上下文自動壓縮：Chat 只取最近對話與有界相關記憶；手動壓縮的摘要存於 session 專用檔，維持 context window 可用。
 - 可選 TTS 語音：支援 Google Cloud TTS（Chirp 3 HD），可開關（`TTS_ENABLED`）。
 - 手動除錯面板：ControlPanel / ModelParamPanel 可手動調參、即時檢視 Live2D 參數。
@@ -22,14 +22,14 @@
 ## 系統架構
 
 ```text
-使用者文字／語音 → /ws/chat → 輸入正規化與 Memory 持久待辦
+使用者文字／語音 → /ws/chat → PostgreSQL MemoryRuntime 接收事件與檢索
                             ↓
                         JEV Emotion → Runtime Emotion
                             ├── Chat 逐段文字 → TTS
                             └── JEV Action → expression compiler → expression_plan
                                                         ↓
                                   前端 Action Scheduler → Live2D adapter → LAppModel
-背景 Memory worker → user_profile.json／memory_records.json
+Memory worker → Memory LLM → DB Manager → PostgreSQL
 ```
 
 目錄結構（重點）：
@@ -39,10 +39,7 @@ AI_VT_V2/
 ├── backend/                   # Python FastAPI 後端
 │   ├── main.py                # WebSocket server 進入點
 │   ├── requirements.txt       # Python 相依套件
-│   └── memory/                # 持久化記憶（gitignored，執行時自動建立）
-│       ├── user_profile.json  # 使用者個性與喜好
-│       ├── memory_records.json # 長期記憶真值
-│       └── memory_jobs/      # 可重跑的背景待辦
+│   └── memory/                # 短期 session／summary／emotion state（gitignored）
 └── vtuber-web-app/            # React + TypeScript + Vite 前端
     └── src/
         ├── components/        # AIChatPanel / ControlPanel / Live2DCanvas 等
@@ -51,7 +48,7 @@ AI_VT_V2/
         └── store/appStore.ts  # Zustand 全域狀態
 ```
 
-前端送出 `turn_id`；後端固定本輪對話、profile 與相關記憶快照。JEV 更新六欄情緒後，Chat 逐段回覆，Action 獨立產生 `expression_plan`。前端 Scheduler 統一仲裁對話與手動操作；背景 Memory worker 依持久待辦判斷、去重並寫入記憶。`stream_end` 只表示文字完成，Action 與 Memory 可稍後完成。
+前端送出 `turn_id`；後端固定本輪對話與 PostgreSQL 記憶快照。JEV 更新六欄情緒並分類長期記憶後，Chat 逐段回覆，Action 獨立產生 `expression_plan`。前端 Scheduler 統一仲裁對話與手動操作；Memory worker 非同步完成記憶決策與 DB 寫入。`stream_end` 只表示文字完成，Action 與 Memory 可稍後完成。
 
 ## 使用技術
 
@@ -105,7 +102,7 @@ npm run dev
 
 ## Headless Chat 測試（不開前端）
 
-`backend/tools/chat_test_cli.py` 會自動啟動隔離的測試後端，不需要先開前端或正式後端。執行前需在 `.env` 設定與 `MEMORY_DATABASE_URL` 不同的 `MEMORY_TEST_DATABASE_URL`，以及獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`。本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。CLI 會在專用測試 DB 建立每次執行獨立的 schema 並套用 Alembic migration；缺少測試 DB 設定時會在啟動後端前失敗。它逐輪等待記憶 job 完成，擷取回覆、JEV 決策、route、audit 與記憶變更；不讀寫正式長期記憶。
+長期記憶固定使用 PostgreSQL／pgvector `MemoryRuntime`。一般後端使用 `MEMORY_DATABASE_URL` 與固定 `MEMORY_DATABASE_SCHEMA`；`backend/tools/chat_test_cli.py` 會自動啟動同一份後端程式的隔離 instance，使用與正式資料庫不同的 `MEMORY_TEST_DATABASE_URL`，每次建立獨立 schema 並套用 Alembic migration。執行前需設定獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`。本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。缺少測試 DB、測試 DB 指向正式 database 或 schema 不合法時，CLI 會在啟動後端前失敗；測試完成後清理該 schema。CLI 逐輪等待記憶 job 完成，擷取回覆、JEV 決策、route、audit 與記憶變更，不讀寫正式長期記憶。
 
 ```bash
 cd backend

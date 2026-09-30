@@ -1,17 +1,13 @@
 """
-AI 客戶端：OpenAI 相容客戶端初始化、extra_body 組裝、含後備模型的呼叫包裝。
+AI 客戶端：Chat 的 OpenAI 相容客戶端初始化、extra_body 組裝與後備模型呼叫包裝。
 """
 from openai import AsyncOpenAI, BadRequestError
 
-from core.config import (
-    FALLBACK_MODEL,
-    CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_URL, MEMORY_PROVIDER, MEMORY_API_KEY, MEMORY_BASE_URL,
-)
+from core.config import FALLBACK_MODEL, CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_URL
 
-# Chat／Memory 各自使用指定的 OpenAI 相容端點。
+# Chat 使用指定的 OpenAI 相容端點；長期記憶由 MemoryLLM 經 MemorySettings 自行管理。
 _role_clients = {
     "chat": AsyncOpenAI(base_url=CHAT_BASE_URL, api_key=CHAT_API_KEY),
-    "memory": AsyncOpenAI(base_url=MEMORY_BASE_URL, api_key=MEMORY_API_KEY),
 }
 
 
@@ -26,12 +22,12 @@ def no_thinking_extra_body(provider: str) -> dict:
 async def chat_create_with_fallback(**kwargs) -> object:
     """
     包裝 client.chat.completions.create()。
-    若主模型呼叫失敗且該 role 的 provider 有後備模型（FALLBACK_MODEL），
-    自動切換 model= 重試一次。三組獨立：只看呼叫 role 自己的 provider。
+    若 Chat 主模型呼叫失敗且 provider 有後備模型（FALLBACK_MODEL），
+    自動切換 model= 重試一次。
     """
     role = kwargs.pop("role")
     target = _role_clients[role]
-    role_provider = {"chat": CHAT_PROVIDER, "memory": MEMORY_PROVIDER}[role]
+    role_provider = CHAT_PROVIDER
     request_kwargs = dict(kwargs)
     if role_provider == "openai" and "max_tokens" in request_kwargs:
         request_kwargs.setdefault("max_completion_tokens", request_kwargs.pop("max_tokens"))

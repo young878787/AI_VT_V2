@@ -1,7 +1,7 @@
 """露西亞純對話 Prompt；情緒決策由 JEV Emotion 提供。"""
 
 from domain.emotion_state import EMOTION_FIELDS, PERSONALITY
-from domain.tools.schema_loader import DEFAULT_MODEL, load_schema
+from domain.tools.schema_loader import DEFAULT_MODEL
 
 
 def build_agent_a_prompt(
@@ -27,34 +27,6 @@ Live2D 表情由獨立系統控制。只輸出使用者會聽見的純文字回�
 {scores}"""
 
 
-def _build_custom_profile_lines(profile: dict, model_name: str) -> list[str]:
-    built_in_fields = {
-        "core_traits", "communication_style", "dislikes", "recent_interests", "custom_notes",
-    }
-    lines: list[str] = []
-    schema = load_schema(model_name)
-    field_guide = (
-        schema.get("prompt_config", {})
-        .get("memory", {})
-        .get("update_user_profile", {})
-        .get("field_guide", [])
-    )
-    for item in field_guide:
-        if not isinstance(item, dict):
-            continue
-        field_name = item.get("field")
-        if not isinstance(field_name, str) or field_name in built_in_fields:
-            continue
-        value = profile.get(field_name)
-        if not value:
-            continue
-        label = item.get("description") if isinstance(item.get("description"), str) else field_name
-        rendered_value = ", ".join(str(entry) for entry in value if entry) if isinstance(value, list) else str(value).strip()
-        if rendered_value:
-            lines.append(f"- {label}：{rendered_value}")
-    return lines
-
-
 def _build_profile_section(profile: dict, model_name: str = DEFAULT_MODEL) -> str:
     parts = []
     if profile.get("core_traits"):
@@ -67,7 +39,6 @@ def _build_profile_section(profile: dict, model_name: str = DEFAULT_MODEL) -> st
         parts.append(f"- 最近感興趣：{', '.join(profile['recent_interests'])}")
     if profile.get("custom_notes"):
         parts.extend(f"- {note}" for note in profile["custom_notes"])
-    parts.extend(_build_custom_profile_lines(profile, model_name))
     return "\n".join(parts) if parts else "還不太了解使用者。"
 
 

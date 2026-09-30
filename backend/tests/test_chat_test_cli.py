@@ -50,8 +50,6 @@ class ChatTestCliTests(unittest.TestCase):
                 kwargs = popen.call_args.kwargs
                 self.assertEqual(kwargs["env"]["AI_VT_MEMORY_DIR"], str((run_dir / "memory").resolve()))
                 self.assertEqual(kwargs["env"]["AI_VT_TEST_MODE"], "true")
-                self.assertEqual(kwargs["env"]["MEMORY_STORAGE_BACKEND"], "postgres")
-                self.assertEqual(kwargs["env"]["MEMORY_DATABASE_URL"], "postgresql://test/db")
                 self.assertEqual(kwargs["env"]["MEMORY_TEST_DATABASE_URL"], "postgresql://test/db")
                 self.assertEqual(kwargs["env"]["MEMORY_DATABASE_SCHEMA"], schema)
                 self.assertEqual(kwargs["env"]["MEMORY_DEFAULT_USER_ID"], str(user_id))

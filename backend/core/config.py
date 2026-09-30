@@ -56,7 +56,6 @@ def role_model_config(role: str) -> tuple[str, str, str, str]:
 
 
 CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_URL, CHAT_MODEL_NAME = role_model_config("CHAT")
-MEMORY_PROVIDER, MEMORY_API_KEY, MEMORY_BASE_URL, MEMORY_MODEL_NAME = role_model_config("MEMORY")
 CHAT_CONTEXT_TOKEN_BUDGET: int = max(512, int(os.getenv("CHAT_CONTEXT_TOKEN_BUDGET", "8192")))
 
 FALLBACK_MODEL: str | None = os.getenv("QWEN_FALLBACK_MODEL_NAME") or None
@@ -65,8 +64,6 @@ FALLBACK_MODEL: str | None = os.getenv("QWEN_FALLBACK_MODEL_NAME") or None
 # 記憶系統路徑常數
 # ============================================================
 MEMORY_DIR: str = os.path.abspath(os.getenv("AI_VT_MEMORY_DIR") or os.path.join(_BACKEND_DIR, "memory"))
-USER_PROFILE_PATH: str = os.path.join(MEMORY_DIR, "user_profile.json")
-MEMORY_MD_PATH: str = os.path.join(MEMORY_DIR, "memory.md")
 CHAT_SESSION_DIR: str = os.path.join(MEMORY_DIR, "sessions")
 EMOTION_STATE_DIR: str = os.path.join(MEMORY_DIR, "emotion_states")
 
@@ -105,9 +102,6 @@ PIPER_LENGTH_SCALE: float = float(os.getenv("PIPER_LENGTH_SCALE", "1.0"))
 # ============================================================
 CHAT_PERSISTENCE_ENABLED: bool = env_flag("AI_VT_TEST_MODE", False) or env_flag("CHAT_PERSISTENCE_ENABLED", False)
 CHAT_PERSISTENCE_MAX_MESSAGES: int = int(os.getenv("CHAT_PERSISTENCE_MAX_MESSAGES", "80"))
-MEMORY_STORAGE_BACKEND: str = os.getenv("MEMORY_STORAGE_BACKEND", "file").lower().strip()
-if MEMORY_STORAGE_BACKEND not in {"file", "postgres"}:
-    raise RuntimeError("MEMORY_STORAGE_BACKEND 必須是 file 或 postgres")
 
 # ============================================================
 # Jev（System One）情緒與表情決策設定
@@ -126,7 +120,6 @@ if not JEV_AI_API_KEY.strip():
 
 print(f"[AI Route] JEV Model: {JEV_AI_MODEL} | URL: {JEV_AI_BASE_URL}")
 print(f"[AI Route] CHAT({CHAT_PROVIDER.upper()}) Model: {CHAT_MODEL_NAME} | URL: {CHAT_BASE_URL}")
-print(f"[AI Route] MEMORY({MEMORY_PROVIDER.upper()}) Model: {MEMORY_MODEL_NAME} | URL: {MEMORY_BASE_URL}")
 
 # ============================================================
 # Context 壓縮閾值

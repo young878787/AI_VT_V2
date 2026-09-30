@@ -1,5 +1,5 @@
 """
-Chat 服務：LLM 串流、Context 壓縮、XML Tool Call 解析、Token 計數、TTS 合成轉發。
+Chat 服務：LLM 串流、Context 壓縮、Token 計數、TTS 合成轉發。
 """
 import re
 import json
@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import WebSocket
 
-from core.config import CHAT_MODEL_NAME, MEMORY_MODEL_NAME, CHAT_PROVIDER, MEMORY_PROVIDER, CHAT_CONTEXT_TOKEN_BUDGET, COMPRESS_KEEP_RECENT
+from core.config import CHAT_MODEL_NAME, CHAT_PROVIDER, CHAT_CONTEXT_TOKEN_BUDGET, COMPRESS_KEEP_RECENT
 from core.utils import strip_thinking, get_msg_field
 from infrastructure.ai_client import chat_create_with_fallback, no_thinking_extra_body
 from infrastructure.memory_store import save_session_summary
@@ -19,16 +19,6 @@ try:
     _encoding = tiktoken.get_encoding("cl100k_base")
 except Exception:
     _encoding = None
-
-# XML tool call regex
-_RE_XML_TOOL_BLOCK = re.compile(
-    r"<tool_call>(.*?)</tool_call>", re.DOTALL | re.IGNORECASE
-)
-_RE_XML_FUNC_NAME = re.compile(r"<function=([^>]+)>")
-_RE_XML_PARAM = re.compile(
-    r"<parameter=([^>]+)>(.*?)</parameter>", re.DOTALL | re.IGNORECASE
-)
-
 
 # ============================================================
 # Token 計數
@@ -86,52 +76,6 @@ def build_chat_context(prompt: str, history: list[dict], user_text: str, budget:
             break
         selected.insert(0, item)
     return [system, *selected, user]
-
-
-# ============================================================
-# XML Tool Call 解析
-# ============================================================
-def parse_xml_tool_calls(content_text: str) -> tuple[list[dict], str]:
-    """
-    解析 content_text 中的 XML 格式 tool_call 區塊。
-    回傳 (tool_calls_list, cleaned_text)。
-    針對不支援原生 function calling 的模型。
-    """
-    if "<tool_call>" not in content_text.lower():
-        return [], content_text
-
-    xml_tool_calls: list[dict] = []
-    for block_match in _RE_XML_TOOL_BLOCK.finditer(content_text):
-        block = block_match.group(1)
-        func_match = _RE_XML_FUNC_NAME.search(block)
-        if not func_match:
-            continue
-        func_name = func_match.group(1).strip()
-        args: dict = {}
-        for p in _RE_XML_PARAM.finditer(block):
-            p_name = p.group(1).strip()
-            p_val: str | bool | float = p.group(2).strip()
-            if isinstance(p_val, str) and p_val.lower() == "true":
-                p_val = True
-            elif isinstance(p_val, str) and p_val.lower() == "false":
-                p_val = False
-            else:
-                try:
-                    p_val = float(p_val)  # type: ignore[assignment]
-                except (ValueError, TypeError):
-                    pass
-            args[p_name] = p_val
-        xml_tool_calls.append({"name": func_name, "arguments": args})
-
-    # 移除 XML 區塊，留下純文字作為回覆
-    cleaned = re.sub(
-        r"<tool_call>.*?</tool_call>",
-        "",
-        content_text,
-        flags=re.DOTALL | re.IGNORECASE,
-    ).strip()
-
-    return xml_tool_calls, cleaned
 
 
 # ============================================================
@@ -248,29 +192,6 @@ async def collect_agent_a(messages: list) -> str:
 
 
 # ============================================================
-# Agent B-2：記憶管理
-# ============================================================
-async def call_memory_agent(messages: list, model_name: str = "Hiyori") -> object:
-    """
-    Memory Agent 非串流呼叫：判斷是否需要記憶操作。
-    回傳原始 API response。
-    """
-    from domain.tools import get_memory_tools
-
-    response = await chat_create_with_fallback(
-        model=MEMORY_MODEL_NAME,
-        role="memory",
-        messages=messages,
-        tools=get_memory_tools(model_name),
-        tool_choice="auto",
-        temperature=0.3,
-        extra_body=no_thinking_extra_body(MEMORY_PROVIDER),
-        max_tokens=400,
-    )
-    return response
-
-
-# ============================================================
 # TTS 合成轉發
 # ============================================================
 async def synthesize_and_send_voice(
@@ -308,7 +229,7 @@ async def compress_context(messages: list, websocket: WebSocket, session_id: str
     """
     壓縮對話上下文。
     保留最近 COMPRESS_KEEP_RECENT 條 messages，
-    將較舊的部分呼叫 LLM 產生摘要，寫入 memory.md。
+    將較舊的部分呼叫 Chat LLM 產生摘要，寫入短期 session summary。
     """
     # 通知前端：壓縮開始
     send = send_func or websocket.send_json

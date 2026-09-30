@@ -18,12 +18,10 @@ class Live2DContractTests(unittest.TestCase):
         )
         self.assertEqual(behavior["function"]["parameters"].get("required", []), [])
 
-    def test_memory_schema_remains_available_without_expression_agent_prompt(self):
+    def test_memory_tools_are_removed_from_live2d_schema(self):
         schema = load_schema("Hiyori")
-        self.assertIn("memory", schema["prompt_config"])
-        from domain import agent_b_prompts
-        self.assertTrue(callable(agent_b_prompts.build_memory_prompt))
-        self.assertFalse(hasattr(agent_b_prompts, "build_live2d_prompt"))
+        self.assertNotIn("memory", schema["openai_tools"])
+        self.assertNotIn("memory", schema["prompt_config"])
 
 
 if __name__ == "__main__":

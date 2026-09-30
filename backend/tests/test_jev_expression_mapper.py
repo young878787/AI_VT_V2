@@ -4,6 +4,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -172,19 +173,15 @@ class EmotionContractTests(unittest.TestCase):
     def test_rest_reset_clears_only_selected_session_state_and_messages(self):
         with tempfile.TemporaryDirectory() as directory, \
             mock.patch("infrastructure.memory_store.EMOTION_STATE_DIR", directory + "/emotions"), \
-            mock.patch("infrastructure.memory_store.CHAT_SESSION_DIR", directory + "/sessions"), \
-            mock.patch("infrastructure.memory_store.MEMORY_DIR", directory), \
-            mock.patch("infrastructure.memory_store.USER_PROFILE_PATH", directory + "/profile.json"), \
-            mock.patch("infrastructure.memory_store.MEMORY_MD_PATH", directory + "/memory.md"), \
-            mock.patch("infrastructure.memory_records.MEMORY_MD_PATH", directory + "/memory.md"), \
-            mock.patch("infrastructure.memory_records.RECORDS_PATH", directory + "/records.json"), \
-            mock.patch("services.memory_jobs.JOB_DIR", directory + "/jobs"), \
-            mock.patch("services.memory_jobs.EPOCH_PATH", directory + "/jobs/epoch.json"):
+            mock.patch("infrastructure.memory_store.CHAT_SESSION_DIR", directory + "/sessions"):
             state = dict(NEUTRAL_EMOTION_STATE)
             for session_id in ("session_1", "session_2"):
                 save_session_emotion_state(session_id, state)
                 save_session_messages(session_id, [{"role": "user", "content": "hello"}])
-            asyncio.run(reset_memory("session_1"))
+            runtime = SimpleNamespace(reset=mock.AsyncMock())
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime)))
+            asyncio.run(reset_memory("session_1", request=request))
+            runtime.reset.assert_awaited_once_with()
             self.assertIsNone(load_session_emotion_state("session_1"))
             self.assertEqual(load_session_messages("session_1"), [])
             self.assertEqual(load_session_emotion_state("session_2"), state)

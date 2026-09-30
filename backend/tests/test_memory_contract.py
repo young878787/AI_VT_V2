@@ -106,10 +106,20 @@ class MemoryContractTests(unittest.TestCase):
             "MEMORY_DEFAULT_CHARACTER_ID": str(uuid4()),
             "MEMORY_DATABASE_SCHEMA": "test_" + uuid4().hex,
             "AI_VT_TEST_MODE": "true",
+            "MEMORY_AI_API_KEY": "memory-key",
+            "MEMORY_AI_BASE_URL": "https://memory.example/v1",
+            "MEMORY_AI_MODEL": "memory-model",
+            "EMBEDDING_AI_API_KEY": "embedding-key",
+            "EMBEDDING_AI_BASE_URL": "http://embedding.example/v1",
+            "EMBEDDING_AI_MODEL": "embedding-model",
+            "EMBEDDING_AI_DIMENSION": "1024",
         }
-        with self.assertRaisesRegex(RuntimeError, "只能連接"):
-            load_memory_settings(settings)
+        loaded = load_memory_settings(settings)
+        self.assertEqual(loaded.database_url, settings["MEMORY_TEST_DATABASE_URL"])
         settings["MEMORY_TEST_DATABASE_URL"] = settings["MEMORY_DATABASE_URL"]
+        with self.assertRaisesRegex(RuntimeError, "不同"):
+            load_memory_settings(settings)
+        settings["MEMORY_TEST_DATABASE_URL"] = "postgresql://localhost/other_db"
         settings["MEMORY_DATABASE_SCHEMA"] = "public"
         with self.assertRaisesRegex(RuntimeError, "測試模式"):
             load_memory_settings(settings)

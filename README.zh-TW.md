@@ -10,7 +10,7 @@
 
 - AI 根據對話內容即時驅動 Live2D 模型的表情參數（眼睛、眉毛、嘴角、臉紅、頭部動作）。
 - JEV 決定情緒與表演意圖，後端編譯 expression plan，前端 Scheduler 控制播放。
-- 持久化記憶系統能跨對話記住使用者的個性特徵、喜好及重要事件。
+- PostgreSQL／pgvector `MemoryRuntime` 能跨對話記住使用者的個性特徵、喜好及重要事件；舊 JSON／Markdown 只供一次性匯入。
 - Chat 使用有界近期對話與相關記憶；對話摘要保存在 session 專用檔。
 
 ---
@@ -22,10 +22,7 @@ AI_VT_V2/
 ├── backend/                   # Python FastAPI 後端
 │   ├── main.py                # WebSocket 伺服器、LLM 協調、記憶系統
 │   ├── requirements.txt       # Python 相依套件
-│   └── memory/                # 持久化記憶（已 gitignore，執行時自動建立）
-│       ├── user_profile.json  # 使用者個性與喜好資料
-│       ├── memory_records.json # 長期記憶紀錄
-│       └── memory_jobs/      # 背景記憶待辦
+│   └── memory/                # 短期 session／summary／emotion state（已 gitignore）
 │
 └── vtuber-web-app/            # React + TypeScript + Vite 前端
     └── src/
@@ -56,7 +53,7 @@ AI_VT_V2/
 | Live2D | Cubism SDK for Web 5 |
 | 後端 | Python、FastAPI、WebSocket |
 | LLM | OpenRouter / NVIDIA / Google AI Studio（模型可設定） |
-| 記憶 | JSON + Markdown 純文字檔 |
+| 記憶 | PostgreSQL、pgvector、Alembic |
 
 ---
 
@@ -124,20 +121,15 @@ python tools/chat_test_cli.py                                            # 互�
 python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-CLI 會自動啟動隔離測試後端。執行前需在 `.env` 設定與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL`，以及獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`。本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。CLI 每次建立專用測試 schema、套用 Alembic migration，逐輪等待記憶 job 完成，並記錄 route、audit、記憶變更與對話結果；報告寫入後清理 schema。`backend/log/chat_test_runs/<run-id>/` 保留獨立的短期對話 `memory/`、`turns.jsonl`、逐輪更新的 `report.md`、`run.json` 與 `server.log`（已 gitignore）。缺少測試 DB 設定時，CLI 不會啟動後端。JEV Emotion 與 Action 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`；`EXPRESSION_DECIDER` 已不再使用。
+長期記憶固定使用 PostgreSQL／pgvector `MemoryRuntime`。一般後端使用 `MEMORY_DATABASE_URL` 與固定正式 schema；CLI 會自動啟動同一份後端程式的隔離測試 instance，使用與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL`，每次建立專用測試 schema、套用 Alembic migration，逐輪等待記憶 job 完成，並記錄 route、audit、記憶變更與對話結果；報告寫入後清理 schema。執行前需設定獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`；本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。缺少測試 DB、測試 DB 指向正式 database 或 schema 不合法時，CLI 不會啟動後端。`backend/log/chat_test_runs/<run-id>/` 保留獨立的短期對話 `memory/`、`turns.jsonl`、逐輪更新的 `report.md`、`run.json` 與 `server.log`（已 gitignore）。JEV Emotion 與 Action 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`；`EXPRESSION_DECIDER` 已不再使用。
 
 ---
 
 ## 記憶系統說明
 
-AI 在 `backend/memory/`（已排除版本控制）維護持久化資料：
+長期記憶的唯一真值是 PostgreSQL／pgvector schema，由 Alembic 管理版本。JEV 產生 NONE／BUFFER／PROCESS 分類，PROCESS 由 Memory LLM 產生決策，再由 DB Manager 寫入 owner-scoped tables。`backend/memory/` 只保留短期 session、summary 與 emotion state；`user_profile.json`、`memory_records.json`、`memory.md` 只作明確執行的 legacy importer 輸入。
 
-- `user_profile.json` — 記錄使用者的核心特徵、溝通風格、興趣與討厭的事物。
-- `memory_records.json` — 結構化長期記憶；舊 `memory.md` 匯入前會備份，之後保留相容檢視。
-- `memory_jobs/` — 可追蹤、可重跑的背景記憶待辦。
-- `long_term_summary.json` — 由已採納紀錄生成、附來源 ID 的長期摘要。
-
-Chat 每輪使用最近 8 輪與有界相關記憶。手動壓縮的對話摘要存入對應 session 的摘要檔，不混入長期記憶。
+Chat 每輪使用最近 8 輪與 PostgreSQL 中的有界相關記憶。手動壓縮的對話摘要存入對應 session 的摘要檔，不混入長期記憶。
 
 ---
 

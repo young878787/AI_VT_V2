@@ -30,7 +30,7 @@ def log_turn(
         system_prompt:   送給 Dialogue Agent 的完整系統提示詞。
         user_message:    使用者輸入。
         dialogue_agent_output: Dialogue Agent 清理後的輸出。
-        tool_names:      Memory Agent 本輪呼叫的工具名稱清單。
+        tool_names:      本輪記憶流程診斷標籤。
         output_tokens:   Chat 輸出 token 數估算。
     """
     _ensure_dir()
@@ -47,7 +47,7 @@ def log_turn(
         f"{user_message}\n"
         f"\n[DIALOGUE AGENT OUTPUT]\n"
         f"{dialogue_agent_output}\n"
-        f"\n[MEMORY AGENT TOOL CALLS]  {tool_str}\n"
+        f"\n[MEMORY ROUTE]  {tool_str}\n"
         f"[OUTPUT TOKENS (est.)]  {output_tokens}\n"
         f"{_SEP}\n"
     )

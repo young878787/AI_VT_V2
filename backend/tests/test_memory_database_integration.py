@@ -186,6 +186,20 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
             job = await wait_memory_job(store, str(event_id), timeout=2)
             self.assertEqual((job["route"], job["status"]), ("buffer", "buffered"))
             self.assertEqual(await asyncio.to_thread(store.audit, str(event_id)), [])
+            async with self.pool.connection() as connection:
+                async with connection.transaction():
+                    await connection.execute(
+                        sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(run_scope.schema_name))
+                    )
+                    await connection.execute(
+                        "INSERT INTO memory_audit (id, user_id, character_id, operation_key, action, reason_class) "
+                        "VALUES (%s, %s, %s, %s, 'CREATE', 'test')",
+                        (uuid4(), run_scope.user_id, run_scope.character_id, f"{event_id}:0"),
+                    )
+            self.assertEqual(
+                await asyncio.to_thread(store.audit, event_id.hex),
+                [{"action": "CREATE", "target_id": None, "reason": "test", "deleted_count": None}],
+            )
             self.assertEqual(await self.repo.related_items("茶", VECTOR), [])
         finally:
             await asyncio.to_thread(store.close)

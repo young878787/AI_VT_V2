@@ -14,25 +14,18 @@ from api.routes.display_ws import router as display_router
 from api.routes.expression_debug_router import router as expression_debug_router
 from api.routes.memory_router import router as memory_router
 from api.routes.voice_ws import router as voice_router
-from services.memory_jobs import start_worker
-from core.config import MEMORY_STORAGE_BACKEND
 from services.memory_runtime import MemoryRuntime
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    runtime = None
-    if MEMORY_STORAGE_BACKEND == "postgres":
-        runtime = await MemoryRuntime.create()
-        application.state.memory_runtime = runtime
-        runtime.start()
-    else:
-        start_worker()
+    runtime = await MemoryRuntime.create()
+    application.state.memory_runtime = runtime
+    runtime.start()
     try:
         yield
     finally:
-        if runtime is not None:
-            await runtime.close()
+        await runtime.close()
 
 
 app = FastAPI(lifespan=lifespan)

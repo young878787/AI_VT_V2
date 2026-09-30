@@ -52,9 +52,18 @@ def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySet
             raise RuntimeError(f"{name} 未設定")
         return value
 
-    database_url = required("MEMORY_DATABASE_URL")
-    if urlparse(database_url).scheme not in {"postgres", "postgresql"}:
+    production_url = required("MEMORY_DATABASE_URL")
+    if urlparse(production_url).scheme not in {"postgres", "postgresql"}:
         raise RuntimeError("MEMORY_DATABASE_URL 必須是 PostgreSQL URL")
+    test_mode = env.get("AI_VT_TEST_MODE", "").lower() in {"1", "true", "yes", "on"}
+    if test_mode:
+        database_url = required("MEMORY_TEST_DATABASE_URL")
+        if urlparse(database_url).scheme not in {"postgres", "postgresql"}:
+            raise RuntimeError("MEMORY_TEST_DATABASE_URL 必須是 PostgreSQL URL")
+        if _database_identity(database_url) == _database_identity(production_url):
+            raise RuntimeError("測試 DB 必須與正式 DB 不同")
+    else:
+        database_url = production_url
     try:
         scope = MemoryScope(
             UUID(required("MEMORY_DEFAULT_USER_ID")),
@@ -63,11 +72,11 @@ def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySet
         )
     except ValueError as exc:
         raise RuntimeError("MemoryScope 設定無效") from exc
-    if env.get("AI_VT_TEST_MODE", "").lower() in {"1", "true", "yes", "on"}:
+    if test_mode:
         if not re.fullmatch(r"test_[0-9a-f]{32}", scope.schema_name):
             raise RuntimeError("測試模式必須使用 test_<32 lowercase hex> schema")
-        if database_url != required("MEMORY_TEST_DATABASE_URL"):
-            raise RuntimeError("測試模式只能連接 MEMORY_TEST_DATABASE_URL")
+    elif scope.schema_name.startswith("test_"):
+        raise RuntimeError("正式模式不得使用 test_* schema")
     try:
         dimension = int(required("EMBEDDING_AI_DIMENSION"))
     except ValueError as exc:
@@ -85,4 +94,13 @@ def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySet
         dimension,
         env.get("EMBEDDING_AI_QUERY_PREFIX", RETRIEVAL_INSTRUCTION),
         env.get("EMBEDDING_AI_DOCUMENT_PREFIX", ""),
+    )
+
+
+def _database_identity(value: str) -> tuple[str | None, int, str]:
+    parsed = urlparse(value)
+    return (
+        parsed.hostname.lower() if parsed.hostname else None,
+        parsed.port or 5432,
+        parsed.path.lstrip("/"),
     )

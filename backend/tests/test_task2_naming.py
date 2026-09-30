@@ -11,14 +11,6 @@ from core import prompt_logger
 
 
 class Task2NamingTests(unittest.TestCase):
-    def test_agent_b_prompts_only_contains_memory_agent(self):
-        source = (BACKEND_ROOT / "domain" / "agent_b_prompts.py").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("【AI 角色的回覆】", source)
-        self.assertNotIn("build_live2d_prompt", source)
-
     def test_chat_ws_only_uses_jev_decision_path(self):
         source = (BACKEND_ROOT / "api" / "routes" / "chat_ws.py").read_text(
             encoding="utf-8"
@@ -44,7 +36,7 @@ class Task2NamingTests(unittest.TestCase):
                     system_prompt="system",
                     user_message="hello",
                     dialogue_agent_output="reply",
-                    tool_names=["save_memory_note"],
+                    tool_names=["process"],
                     output_tokens=12,
                 )
             finally:
@@ -54,9 +46,9 @@ class Task2NamingTests(unittest.TestCase):
             content = (temp_dir / "prompt.log").read_text(encoding="utf-8")
 
         self.assertIn("[DIALOGUE AGENT OUTPUT]", content)
-        self.assertIn("[MEMORY AGENT TOOL CALLS]", content)
+        self.assertIn("[MEMORY ROUTE]", content)
         self.assertNotIn("[TOOL CALLS]", content)
-        self.assertIn("save_memory_note", content)
+        self.assertIn("process", content)
         self.assertIn("reply", content)
 
 
