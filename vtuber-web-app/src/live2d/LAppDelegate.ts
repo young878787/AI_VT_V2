@@ -209,9 +209,8 @@ export class LAppDelegate {
       }
     } catch (error) {
       LAppPal.printError(`預設模型載入失敗：${error}`);
-      // 即使模型載入失敗，也標記為已初始化（允許稍後重試載入模型）
-      this._isInitialized = true;
-      return false;
+      this._isInitialized = false;
+      throw error;
     }
 
     this._isInitialized = true;
@@ -228,8 +227,9 @@ export class LAppDelegate {
   public resizeCanvas(): void {
     if (!this._canvas || !this._view) return;
 
-    const displayWidth = this._canvas.clientWidth;
-    const displayHeight = this._canvas.clientHeight;
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const displayWidth = Math.round(this._canvas.clientWidth * pixelRatio);
+    const displayHeight = Math.round(this._canvas.clientHeight * pixelRatio);
 
     LAppPal.printLog(`Canvas 客戶端尺寸：${displayWidth}x${displayHeight}`);
 
@@ -303,29 +303,6 @@ export class LAppDelegate {
   }
 
   /**
-   * 載入模型（透過名稱）
-   */
-  public async loadModel(modelName: string): Promise<boolean> {
-    try {
-      const modelManager = LAppLive2DManager.getInstance();
-      await modelManager.loadModelByName(modelName);
-      LAppPal.printLog(`模型載入成功：${modelName}`);
-      return true;
-    } catch (error) {
-      LAppPal.printError(`模型載入失敗：${error}`);
-      return false;
-    }
-  }
-
-  /**
-   * 切換模型
-   */
-  public switchModel(modelName: string): boolean {
-    const modelManager = LAppLive2DManager.getInstance();
-    return modelManager.switchModel(modelName);
-  }
-
-  /**
    * 取得當前模型
    */
   public getActiveModel() {
@@ -371,11 +348,7 @@ export class LAppDelegate {
 
     // 1. Aspect Ratio Projection
     if (rect.width > 0 && rect.height > 0) {
-      if (model.getModel().getCanvasWidth() > 1.0 && rect.width < rect.height) {
-        projection.scale(1.0, rect.width / rect.height);
-      } else {
-        projection.scale(rect.height / rect.width, 1.0);
-      }
+      projection.scale(rect.height / rect.width, 1.0);
     }
 
     // 2. View Matrix

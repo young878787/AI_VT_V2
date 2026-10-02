@@ -9,6 +9,11 @@ from typing import Any
 
 
 DEBUG_EXPRESSION_KINDS = (
+    "calm",
+    "listening",
+    "thinking",
+    "soft_smile",
+    "closed_smile",
     "happy",
     "playful",
     "teasing",
@@ -179,6 +184,18 @@ DEBUG_EXPRESSION_RULES: dict[str, dict[str, Any]] = {
     },
 }
 
+for _family, _label in {
+    "calm": "平靜", "listening": "專注聆聽", "thinking": "思考",
+    "soft_smile": "柔和微笑", "closed_smile": "閉眼笑",
+}.items():
+    DEBUG_EXPRESSION_RULES[_family] = {
+        **DEBUG_EXPRESSION_RULES["happy" if _family in {"soft_smile", "closed_smile"} else "neutral"],
+        "label": _label,
+        "expression_family": _family,
+        "energy": 0.3,
+    }
+
+
 DEBUG_MOTION_RULES: dict[str, dict[str, str]] = {
     "buoyant_bounce": {
         "label": "上浮彈跳",
@@ -229,9 +246,9 @@ def _resolve_intensity(intensity: str | None) -> str:
     return "normal"
 
 
-def _resolve_expression_kind(kind: str | None, randomize: bool) -> str:
+def _resolve_expression_kind(kind: str | None, randomize: bool, rng) -> str:
     if randomize or not kind or kind == "random":
-        return random.choice(DEBUG_EXPRESSION_KINDS)
+        return rng.choice(DEBUG_EXPRESSION_KINDS)
     if kind not in DEBUG_EXPRESSION_RULES:
         raise ValueError(f"Unknown debug expression kind: {kind}")
     return kind
@@ -244,12 +261,13 @@ def build_fake_expression_debug_case(
     intensity: str | None = None,
     randomize: bool = False,
     scenario: str | None = None,
+    seed: int | None = None,
 ) -> dict[str, Any]:
     """Build a fake Expression Agent JSON reply plus fake spoken text."""
 
     selected_intensity = _resolve_intensity(intensity)
     selected_motion = DEBUG_MOTION_RULES.get(motion_kind or "")
-    selected_kind = selected_motion["expression"] if selected_motion else _resolve_expression_kind(kind, randomize)
+    selected_kind = selected_motion["expression"] if selected_motion else _resolve_expression_kind(kind, randomize, random.Random(seed))
     rule = deepcopy(DEBUG_EXPRESSION_RULES[selected_kind])
     scale = DEBUG_INTENSITY_SCALE[selected_intensity]
 
@@ -280,6 +298,9 @@ def build_fake_expression_debug_case(
         intent["motion_variant"] = selected_motion["motion_variant"]
         label = str(selected_motion["label"])
         spoken_text = f"後端假 AI 回覆：正在測試 {label} motionPlan，請保留主要表情並讓動作連續。"
+
+    if scenario in {"speaking_micro", "brow_eye_micro"}:
+        intent.pop("expression_family", None)
 
     if scenario == "speaking_micro":
         intent.update(
@@ -323,6 +344,7 @@ def build_fake_expression_debug_case(
         "spokenText": spoken_text,
         "label": label,
         "kind": selected_kind,
+        "expressionFamily": intent.get("expression_family"),
         "motionKind": motion_kind or "",
         "scenario": scenario or "",
         "intensity": selected_intensity,

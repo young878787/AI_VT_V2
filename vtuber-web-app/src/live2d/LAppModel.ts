@@ -41,6 +41,7 @@ import {
 } from './expression/expressionParams';
 import { applyActiveExpressionEvents } from './expression/expressionEventRuntime';
 import { createNeutralTargetParams } from './expression/expressionState';
+import { resolveHalfBodyFraming } from './modelFraming';
 
 const DEFAULT_BODY_MOTION_PROFILE: BodyMotionProfile = {
   style: 'calm_sway',
@@ -123,7 +124,6 @@ export class LAppModel extends CubismUserModel {
   private _lipSyncValue: number = 0;
 
   // 表情參數 ID (AI 控制)
-  private _idParamTere: CubismIdHandle;   // Haru 等舊模型用
   private _idParamCheek: CubismIdHandle;  // Hiyori / huohuo 等新模型用（自動偵測）
   private _idParamEyeLOpen: CubismIdHandle;
   private _idParamEyeROpen: CubismIdHandle;
@@ -138,8 +138,6 @@ export class LAppModel extends CubismUserModel {
   private _idParamBrowRForm: CubismIdHandle;
 
   // 笑眼與眉毛水平位移參數 ID (AI 控制)
-  private _idParamEyeLSmile: CubismIdHandle;  // 左眼笑眼（三個模型均有）
-  private _idParamEyeRSmile: CubismIdHandle;  // 右眼笑眼（三個模型均有）
   private _idParamBrowLX: CubismIdHandle;     // 左眉水平（Hiyori/Haru 有，huohuo no-op）
   private _idParamBrowRX: CubismIdHandle;     // 右眉水平（Hiyori/Haru 有，huohuo no-op）
 
@@ -178,6 +176,10 @@ export class LAppModel extends CubismUserModel {
   private _aiEyeBaseLOpen: number = 1.0;
   private _aiEyeBaseROpen: number = 1.0;
   private _aiMouthForm: number = 0.0;
+  private _aiMouthOpenBias = 0;
+  private _currentMouthOpenBias = 0;
+  private _speaking = false;
+  private _thinking = false;
   private _aiBrowLY: number = 0.0;
   private _aiBrowRY: number = 0.0;
   private _aiBrowLAngle: number = 0.0;
@@ -262,7 +264,6 @@ export class LAppModel extends CubismUserModel {
     this._idParamEyeBallY = idManager.getId(CubismDefaultParameterId.ParamEyeBallY);
 
     // 表情與眼睛參數 ID
-    this._idParamTere = idManager.getId('ParamTere');    // Haru 等舊模型
     this._idParamCheek = idManager.getId('ParamCheek');  // Hiyori / huohuo 新模型
     this._idParamEyeLOpen = idManager.getId(CubismDefaultParameterId.ParamEyeLOpen);
     this._idParamEyeROpen = idManager.getId(CubismDefaultParameterId.ParamEyeROpen);
@@ -277,8 +278,6 @@ export class LAppModel extends CubismUserModel {
     this._idParamBrowRForm = idManager.getId('ParamBrowRForm');
 
     // 笑眼與眉毛水平位移（三個模型均有笑眼；BrowLX/RX Hiyori/Haru 有，huohuo no-op）
-    this._idParamEyeLSmile = idManager.getId('ParamEyeLSmile');
-    this._idParamEyeRSmile = idManager.getId('ParamEyeRSmile');
     this._idParamBrowLX = idManager.getId('ParamBrowLX');
     this._idParamBrowRX = idManager.getId('ParamBrowRX');
 
@@ -634,8 +633,7 @@ export class LAppModel extends CubismUserModel {
    * 設置模型縮放
    */
   public setModelScale(scale: number): void {
-    // 限制縮放範圍在 0.1 到 500.0 之間
-    this._modelScale = Math.max(0.1, Math.min(500.0, scale));
+    this._modelScale = Math.max(0.75, Math.min(1.25, scale));
     this.updateModelMatrix();
   }
 
@@ -650,27 +648,11 @@ export class LAppModel extends CubismUserModel {
    * 更新模型矩陣（統一管理位置和縮放）
    */
   private updateModelMatrix(): void {
-    // 1. 先重置矩陣，避免每次移動時重複疊加（這會導致模型飛出畫面）
+    const framing = resolveHalfBodyFraming(this._canvasWidth, this._canvasHeight, this._modelScale);
     this._modelMatrix.loadIdentity();
-
-    // 2. 設定基本大小（這會確保 _tr[0] 和 _tr[5] 被正確初始化並維持模型比例）
-    // 避免 setWidth 和 setHeight 互相覆蓋
-    if (this._modelMatrix.getScaleX() === 0 || this._modelMatrix.getScaleY() === 0) {
-      this._modelMatrix.setHeight(2.0);
-    } else {
-      // 由於 CubismModelMatrix 設計，這裡直接固定使用邏輯高度 2.0 是最穩定的 Live2D 標準
-      this._modelMatrix.setHeight(2.0);
-    }
-
-    // 3. 應用的位置（由於沒有 translateRelative 的疊加，直接 translate 設定絕對位置即可確保平移）
-    if (this._modelPositionX !== 0 || this._modelPositionY !== 0) {
-      this._modelMatrix.translate(this._modelPositionX, this._modelPositionY);
-    }
-
-    // 4. 應用縮放（相對基本尺寸再做縮放，避免覆蓋掉維持比例的 scale）
-    if (this._modelScale !== 1.0) {
-      this._modelMatrix.scaleRelative(this._modelScale, this._modelScale);
-    }
+    this._modelMatrix.setHeight(2.0);
+    this._modelMatrix.translate(this._modelPositionX, framing.y + this._modelPositionY);
+    this._modelMatrix.scaleRelative(framing.scale, framing.scale);
   }
 
   /**
@@ -842,6 +824,14 @@ export class LAppModel extends CubismUserModel {
     this._lipSyncValue = Math.max(0, Math.min(1, value));
   }
 
+  public setSpeaking(speaking: boolean): void {
+    this._speaking = speaking;
+  }
+
+  public setThinking(thinking: boolean): void {
+    this._thinking = thinking;
+  }
+
   /**
    * 取得當前 LipSync 值
    */
@@ -909,11 +899,12 @@ export class LAppModel extends CubismUserModel {
     this._aiBreathLevel = Math.max(0, Math.min(1, breathLevel));
     this._aiPhysicsImpulse = Math.max(0, Math.min(1, physicsImpulse));
     this._aiBlushLevel = Math.max(-1, Math.min(1, blushLevel));    // -1=蒼白(Hiyori), 0=自然, 1=臉紅
-    this._aiEyeLOpen = Math.max(0, Math.min(2, eyeLOpen));          // 1.0=預設, 2.0=瞪大
-    this._aiEyeROpen = Math.max(0, Math.min(2, eyeROpen));          // 1.0=預設, 2.0=瞪大
+    this._aiEyeLOpen = Math.max(0, Math.min(1, eyeLOpen));
+    this._aiEyeROpen = Math.max(0, Math.min(1, eyeROpen));
     this._aiEyeBaseLOpen = this._aiEyeLOpen;
     this._aiEyeBaseROpen = this._aiEyeROpen;
-    this._aiMouthForm = Math.max(-2, Math.min(1, mouthForm));        // -2=Hiyori極悲傷, -1=悲傷, 0=中性, 1=大笑
+    this._aiMouthForm = Math.max(-1, Math.min(1, mouthForm));
+    this._aiMouthOpenBias = 0;
     this._aiBrowLY = Math.max(-1, Math.min(1, browLY));
     this._aiBrowRY = Math.max(-1, Math.min(1, browRY));
     this._aiBrowLAngle = Math.max(-1, Math.min(1, browLAngle));
@@ -970,6 +961,7 @@ export class LAppModel extends CubismUserModel {
       basePose.params.eyeBallX ?? 0,
       basePose.params.eyeBallY ?? 0,
     );
+    this._aiMouthOpenBias = Math.max(0, Math.min(1, basePose.params.mouthOpenBias ?? 0));
   }
 
   public cancelExpressionAction(): void {
@@ -1380,11 +1372,12 @@ export class LAppModel extends CubismUserModel {
       return;
     }
 
-    this._model.setParameterValueById(this._idParamEyeLOpen, this._aiEyeBaseLOpen);
-    this._model.setParameterValueById(this._idParamEyeROpen, this._aiEyeBaseROpen);
+    // 眨眼從 1 計算，再乘表情開合；暫停眨眼時也不會將半閉眼平方。
+    this._model.setParameterValueById(this._idParamEyeLOpen, 1);
+    this._model.setParameterValueById(this._idParamEyeROpen, 1);
     this._eyeBlink.updateParameters(this._model, deltaTimeSeconds);
 
-    if (this._aiEyeBaseLOpen < 0.99 || this._aiEyeBaseROpen < 0.99) {
+    {
       const blinkL = this._model.getParameterValueById(this._idParamEyeLOpen);
       const blinkR = this._model.getParameterValueById(this._idParamEyeROpen);
       this._model.setParameterValueById(this._idParamEyeLOpen, blinkL * this._aiEyeBaseLOpen);
@@ -1403,12 +1396,12 @@ export class LAppModel extends CubismUserModel {
       return;
     }
 
-    this._model.addParameterValueById(this._idParamAngleX, this._dragX * 45);
-    this._model.addParameterValueById(this._idParamAngleY, this._dragY * 45);
-    this._model.addParameterValueById(this._idParamAngleZ, this._dragX * this._dragY * -45);
-    this._model.addParameterValueById(this._idParamBodyAngleX, this._dragX * 15);
-    this._model.addParameterValueById(this._idParamEyeBallX, this._dragX * 1.5);
-    this._model.addParameterValueById(this._idParamEyeBallY, this._dragY * 1.5);
+    const weight = this._activeIdlePlan || this._aiBehaviorTimer > 0 ? 0.35 : 1;
+    this._model.addParameterValueById(this._idParamAngleX, this._dragX * 6 * weight);
+    this._model.addParameterValueById(this._idParamAngleY, this._dragY * 4 * weight);
+    this._model.addParameterValueById(this._idParamAngleZ, this._dragX * this._dragY * -2 * weight);
+    this._model.addParameterValueById(this._idParamEyeBallX, this._dragX * 0.18 * weight);
+    this._model.addParameterValueById(this._idParamEyeBallY, this._dragY * 0.12 * weight);
   }
 
   private resolveEyeMotionBlend(nowMs: number): number {
@@ -1493,9 +1486,9 @@ export class LAppModel extends CubismUserModel {
   }
 
   private applyLipSync(): void {
-    if (this._lipSyncValue > 0) {
-      this._model.addParameterValueById(this._idParamMouthOpenY, this._lipSyncValue);
-    }
+    const opening = this._speaking || this._lipSyncValue > 0.01
+      ? this._lipSyncValue : this._currentMouthOpenBias;
+    this._model.setParameterValueById(this._idParamMouthOpenY, opening);
   }
 
   private resolveMotionPlanBlend(nowMs: number = performance.now()): number {
@@ -1622,7 +1615,6 @@ export class LAppModel extends CubismUserModel {
       return;
     }
 
-    this._model.setParameterValueById(this._idParamTere, this._currentBlushLevel);
     this._model.setParameterValueById(this._idParamCheek, this._currentBlushLevel);
     this._model.setParameterValueById(this._idParamMouthForm, this._currentMouthForm);
     this._model.setParameterValueById(this._idParamBrowLY, this._currentBrowLY);
@@ -1631,8 +1623,6 @@ export class LAppModel extends CubismUserModel {
     this._model.setParameterValueById(this._idParamBrowRAngle, this._currentBrowRAngle);
     this._model.setParameterValueById(this._idParamBrowLForm, this._currentBrowLForm);
     this._model.setParameterValueById(this._idParamBrowRForm, this._currentBrowRForm);
-    this._model.setParameterValueById(this._idParamEyeLSmile, this._currentEyeLSmile);
-    this._model.setParameterValueById(this._idParamEyeRSmile, this._currentEyeRSmile);
     this._model.setParameterValueById(this._idParamBrowLX, this._currentBrowLX);
     this._model.setParameterValueById(this._idParamBrowRX, this._currentBrowRX);
   }
@@ -1650,6 +1640,7 @@ export class LAppModel extends CubismUserModel {
       eyeLOpen: this._aiEyeLOpen,
       eyeROpen: this._aiEyeROpen,
       mouthForm: this._aiMouthForm,
+      mouthOpenBias: this._aiMouthOpenBias,
       browLY: this._aiBrowLY,
       browRY: this._aiBrowRY,
       browLAngle: this._aiBrowLAngle,
@@ -1666,7 +1657,15 @@ export class LAppModel extends CubismUserModel {
   }
 
   private getNeutralTargetParams(): BasePoseParams {
-    return createNeutralTargetParams();
+    const params = createNeutralTargetParams();
+    if (this._thinking) {
+      params.eyeSync = false;
+      params.eyeBallX = 0.12;
+      params.eyeBallY = 0.08;
+      params.browLY = 0.12;
+      params.browRY = 0.22;
+    }
+    return params;
   }
 
   private updateAiHeadMotion(deltaTimeSeconds: number): void {
@@ -1730,7 +1729,8 @@ export class LAppModel extends CubismUserModel {
     if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
       this._activeMotionPlan = null;
       this._motionPlanStartedAtMs = 0;
-      this._activeBodyMotionProfile = IDLE_BODY_MOTION_PROFILES[this._activeIdlePlan.name];
+      this._activeBodyMotionProfile = this._activeIdlePlan.settlePose.bodyMotionProfile
+        ?? IDLE_BODY_MOTION_PROFILES[this._activeIdlePlan.name];
       const ambientPlan = this._activeIdlePlan.ambientPlan;
       const ambientReady = !!ambientPlan?.states?.length && nowMs >= this._ambientIdleStartAtMs;
 
@@ -1775,7 +1775,7 @@ export class LAppModel extends CubismUserModel {
   }
 
   private smoothExpressionTargets(targets: BasePoseParams, deltaTimeSeconds: number): void {
-    const lerpFactor = Math.min(1.0, 5.0 * deltaTimeSeconds);
+    const lerpFactor = 1 - Math.exp(-8 * Math.min(0.1, deltaTimeSeconds));
     this._aiEyeSync = targets.eyeSync;
     this._currentBlushLevel += (targets.blushLevel - this._currentBlushLevel) * lerpFactor;
     this._currentBodyAngleX += (targets.bodyAngleX - this._currentBodyAngleX) * lerpFactor;
@@ -1786,6 +1786,7 @@ export class LAppModel extends CubismUserModel {
     this._currentEyeLOpen += (targets.eyeLOpen - this._currentEyeLOpen) * lerpFactor;
     this._currentEyeROpen += (targets.eyeROpen - this._currentEyeROpen) * lerpFactor;
     this._currentMouthForm += (targets.mouthForm - this._currentMouthForm) * lerpFactor;
+    this._currentMouthOpenBias += ((targets.mouthOpenBias ?? 0) - this._currentMouthOpenBias) * lerpFactor;
     this._currentBrowLY += (targets.browLY - this._currentBrowLY) * lerpFactor;
     this._currentBrowRY += (targets.browRY - this._currentBrowRY) * lerpFactor;
     this._currentBrowLAngle += (targets.browLAngle - this._currentBrowLAngle) * lerpFactor;
@@ -1987,6 +1988,7 @@ export class LAppModel extends CubismUserModel {
   public setCanvasSize(width: number, height: number): void {
     this._canvasWidth = width;
     this._canvasHeight = height;
+    this.updateModelMatrix();
   }
 
   /**

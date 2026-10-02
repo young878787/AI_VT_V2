@@ -1,28 +1,37 @@
-"""JEV 長期記憶分類的確定性後端政策。"""
+"""JEV 只排除確定雜訊；接收 agent 才決定記憶語意路由。"""
 
 import math
 import re
 from dataclasses import dataclass
 
+POLICY_VERSION = "memory_intake_v2"
+MEMORY_TYPES = frozenset({"profile", "preference", "project", "event", "none"})
+ROUTES = frozenset({"none", "needs_context", "candidate"})
+_NO_STORE = re.compile(r"不要(?:保存|記住|記錄)|別(?:保存|記住|記錄)|do not (?:save|remember)|don't (?:save|remember)", re.I)
+_NEGATED_FORGET = re.compile(r"不要忘|別忘|不用刪|不要刪|don't forget|do not forget", re.I)
+_FORGET = re.compile(r"^(?:請|幫我|麻煩)?(?:把|將)?.{0,40}?(?:忘記我|忘掉|刪除.*記憶)|\b(?:please )?forget (?:my|about)|delete my memory", re.I)
+_REQUEST = re.compile(r"(?:幫我|請|麻煩).{0,20}(?:記住|記得|更正|更新|修改)|^(?:記住|更正|更新記憶|修改記憶)|不要忘|別忘|\bremember\b", re.I)
 
-POLICY_VERSION = "memory_route_v1"
-MEMORY_TYPES = frozenset({"profile", "preference", "project", "event", "special", "correction", "none"})
-ROUTES = frozenset({"none", "buffer", "process"})
-_EXPLICIT = re.compile(
-    r"(?:請|幫我|麻煩)?(?:記住|記得|忘記|刪除記憶|更新記憶|修改記憶)"
-    r"|\b(?:remember|forget|update my memory|delete my memory)\b",
-    re.IGNORECASE,
-)
+
+def instruction_policy(text: str) -> str:
+    if _NO_STORE.search(text):
+        return "no_store"
+    if not _NEGATED_FORGET.search(text) and _FORGET.search(text):
+        return "forget"
+    if _REQUEST.search(text):
+        return "remember"
+    return "observe"
 
 
 @dataclass(frozen=True)
 class MemoryRouting:
-    route: str
+    route: str | None
     memory_type: str = "none"
     importance: float = 0.0
     explicit_memory: float = 0.0
     confidence: float = 0.0
     explicit_request: bool = False
+    error: str | None = None
 
 
 def _number(value: object, maximum: float = 1.0) -> float:
@@ -34,35 +43,18 @@ def _number(value: object, maximum: float = 1.0) -> float:
     return number
 
 
-def _choice(answers: dict, key: str, allowed: frozenset[str]) -> tuple[str, float]:
-    value = answers[key]
-    if not isinstance(value, dict) or value.get("choice") not in allowed:
-        raise ValueError(f"JEV {key} 無效")
-    return value["choice"], _number(value["confidence"])
-
-
 def route_memory(user_input: str, answers: object) -> MemoryRouting:
-    """欄位必須完整有效；失敗時只有明確 user 指令可進 PROCESS。"""
-    explicit_request = bool(_EXPLICIT.search(user_input))
-    fallback = MemoryRouting("process" if explicit_request else "none", explicit_request=explicit_request)
-    if not isinstance(answers, dict):
-        return fallback
+    policy = instruction_policy(user_input)
+    if policy == "no_store":
+        return MemoryRouting("none")
+    if policy != "observe":
+        return MemoryRouting(None, explicit_request=True)
     try:
-        route, confidence = _choice(answers, "memory_route", ROUTES)
-        memory_type, _ = _choice(answers, "memory_type", MEMORY_TYPES)
-        explicit = answers["explicit_memory"]
-        importance = answers["importance"]
-        if not isinstance(explicit, dict) or not isinstance(importance, dict):
-            raise ValueError("JEV 欄位無效")
-        explicit_score = _number(explicit["noul"])
-        importance_score = _number(importance["score"], 4.0)
-        _number(importance["confidence"])
+        answer = answers["memory_noise"]
+        if answer["choice"] not in {"noise", "review"}:
+            raise ValueError("invalid noise choice")
+        confidence = _number(answer["confidence"])
+        return MemoryRouting("none" if answer["choice"] == "noise" and confidence >= 0.85 else None,
+                             confidence=confidence)
     except (KeyError, TypeError, ValueError):
-        return fallback
-    if explicit_request or explicit_score >= 0.80 or (route == "process" and confidence >= 0.65):
-        resolved = "process"
-    elif route == "buffer" or importance_score >= 2.5:
-        resolved = "buffer"
-    else:
-        resolved = "none"
-    return MemoryRouting(resolved, memory_type, importance_score, explicit_score, confidence, explicit_request)
+        return MemoryRouting(None, error="jev_invalid")

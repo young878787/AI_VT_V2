@@ -245,38 +245,18 @@ def build_action_questions() -> dict:
 
 
 def build_memory_questions() -> dict:
-    """分類只以當輪輸入與有界近期對話為證據。"""
-    evidence = (
-        "只能使用 current_user_input 與 recent_dialogue 作為記憶分類證據。"
-        "persona、即時情緒、expression state 與 relevant_memory 不得單獨構成證據。"
-        "只判斷是否交給長期記憶流程，不決定資料庫動作。"
-    )
-    return {
-        "memory_route": {
-            "type": "choice", "instructions": evidence + "選擇 none、buffer 或 process。",
-            "criteria": {
-                "none": "寒暄、一般問答或沒有長期價值",
-                "buffer": "可能有價值但片面、未確認或缺少上下文",
-                "process": "足以形成候選，或使用者明確要求記住、修改、忘記",
-            },
-        },
-        "memory_type": {
-            "type": "choice", "instructions": evidence + "選擇最合適的候選類型。",
-            "criteria": {
-                "profile": "使用者的穩定資料", "preference": "偏好", "project": "進行中的專案",
-                "event": "事件", "special": "特殊且重要的資訊", "correction": "對先前資訊的更正",
-                "none": "沒有可分類的資訊",
-            },
-        },
-        "explicit_memory": {
-            "type": "noul", "instructions": evidence + "使用者是否明確要求記住、修改或忘記記憶？",
-            "criteria": {"true": "明確要求", "false": "沒有明確要求"},
-        },
-        "importance": {
-            "type": "score", "instructions": evidence + "評估長期保存價值，0 無、1 短暫、2 普通、3 未來有用、4 重要。",
-            "criteria": ["無長期價值", "短暫資訊", "普通資訊", "未來很可能有用", "重要且應長期保存"],
-        },
-    }
+    """記憶只做確定雜訊粗篩；不分類、不決定保存價值。"""
+    return {"memory_noise": {
+        "type": "choice",
+        "instructions": (
+            "只能使用 current_user_input 與 recent_dialogue 作為證據。"
+            "persona、情緒與 relevant_memory 不得單獨構成記憶證據。"
+            "只有確定整輪都是無持久資訊的即時反應或已知遊戲報位才選 noise。"
+            "遊戲詞彙、粗話、要死了不是黑名單；混有偏好、生活事實、事件、"
+            "指代、更正、記住、遺忘或禁止保存請求，或不確定時，一律選 review。"
+        ),
+        "criteria": {"noise": "確定只有即時雜訊", "review": "其餘或不確定，交由接收 agent"},
+    }}
 
 
 def build_jev_questions() -> dict:

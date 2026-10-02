@@ -2,9 +2,8 @@
  * 應用程式狀態管理 - 使用 Zustand
  */
 import { create } from 'zustand';
-import { AvailableModels, type ModelConfig } from '../live2d/LAppDefine';
+import { FixedModel } from '../live2d/LAppDefine';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
-import { fetchAvailableModels, type RemoteModelConfig } from '../services/modelService';
 import type { BlinkAction, ExpressionEyeMotionPlan, ExpressionIdlePlan, ExpressionMicroEvent, ExpressionMotionPlan, ExpressionPlanPayload } from '../types/expressionPlan';
 import type { EmotionSource, EmotionState } from '../types/emotionState';
 
@@ -43,10 +42,8 @@ interface AppState {
   modelLoaded: boolean;
   modelError: string | null;
 
-  // 模型管理狀態
-  currentModelName: string;               // 當前選中的模型名稱
-  availableModels: ModelConfig[];         // 可用的模型列表
-  modelSwitching: boolean;                // 是否正在切換模型
+  // 固定角色名稱，供聊天與表情除錯識別模型。
+  readonly currentModelName: string;
 
   // 視線追蹤狀態
   eyeTrackingEnabled: boolean;
@@ -67,6 +64,7 @@ interface AppState {
   // AI 聊天室與動作控制狀態
   chatHistory: ChatMessage[];
   isAiTyping: boolean;
+  isSpeaking: boolean;
   isCompressing: boolean;
   aiBehavior: {
     headIntensity: number;
@@ -93,6 +91,7 @@ interface AppState {
   updateChatMessage: (id: string, content: string) => void;
   updateChatMessageStatus: (id: string, status: ChatMessage['status']) => void;
   setAiTyping: (isTyping: boolean) => void;
+  setSpeaking: (isSpeaking: boolean) => void;
   setCompressing: (isCompressing: boolean) => void;
   setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number, eyeBallX?: number, eyeBallY?: number) => void;
   setBlinkControl: (action: BlinkAction, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
@@ -110,21 +109,11 @@ interface AppState {
   // Hit Area 調試
   toggleHitAreaDebug: () => void;
 
-  // 模型管理動作
-  setCurrentModelName: (name: string) => void;
-  setModelSwitching: (switching: boolean) => void;
-  getCurrentModelConfig: () => ModelConfig | undefined;
-
   // JEV 情緒狀態
   emotionState: EmotionState | null;
   emotionSource: EmotionSource | null;
   setEmotionState: (state: EmotionState, source: EmotionSource) => void;
   clearChatHistory: () => void;
-
-  // 動態模型清單管理
-  loadAvailableModels: () => Promise<void>;
-  addImportedModel: (model: RemoteModelConfig) => void;
-  removeModel: (name: string) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -151,10 +140,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     {
       id: "system-init",
       role: 'system',
-      content: '系統：AI 對話模組準備就緒。請確保 Python 後端已經啟動。(uvicorn main:app)'
+      content: '露西亞在這裡。今天想聊些什麼？'
     }
   ],
   isAiTyping: false,
+  isSpeaking: false,
   isCompressing: false,
   aiBehavior: {
     headIntensity: 0,
@@ -169,10 +159,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   emotionState: null,
   emotionSource: null,
 
-  // 模型管理初始狀態
-  currentModelName: AvailableModels[0]?.name || 'Hiyori',
-  availableModels: AvailableModels,
-  modelSwitching: false,
+  currentModelName: FixedModel.name,
 
   // 動作實作
   toggleMicrophone: () =>
@@ -226,8 +213,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     })),
 
   setModelScale: (scale: number) => {
-    // 限制縮放範圍從 0.1 到 500 倍
-    const clampedScale = Math.max(0.1, Math.min(500.0, scale));
+    if (!Number.isFinite(scale)) return;
+    // 半身構圖的相對倍率，避免誤操作讓角色消失。
+    const clampedScale = Math.max(0.75, Math.min(1.25, scale));
     set({ modelScale: clampedScale });
 
     // 同步到模型
@@ -238,18 +226,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  scaleModelUp: () => {
-    const currentScale = get().modelScale;
-    // 使用乘法來實現平滑且能快速抵達 500 的縮放
-    const delta = currentScale < 1.0 ? 0.1 : (currentScale * 0.1);
-    get().setModelScale(currentScale + delta);
-  },
+  scaleModelUp: () => get().setModelScale(get().modelScale + 0.05),
 
-  scaleModelDown: () => {
-    const currentScale = get().modelScale;
-    const delta = currentScale <= 1.0 ? 0.1 : (currentScale * 0.1);
-    get().setModelScale(currentScale - delta);
-  },
+  scaleModelDown: () => get().setModelScale(get().modelScale - 0.05),
 
   resetModelTransform: () => {
     set({ modelScale: 1.0 });
@@ -266,59 +245,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({
       hitAreaDebug: !state.hitAreaDebug
     })),
-
-  // 模型管理動作實作
-  setCurrentModelName: (name) =>
-    set({ currentModelName: name }),
-
-  setModelSwitching: (switching) =>
-    set({ modelSwitching: switching }),
-
-  getCurrentModelConfig: () => {
-    const state = get();
-    return state.availableModels.find(m => m.name === state.currentModelName);
-  },
-
-  // 動態模型清單管理
-  loadAvailableModels: async () => {
-    try {
-      const remoteModels = await fetchAvailableModels();
-      set({ availableModels: remoteModels as unknown as ModelConfig[] });
-      // 若當前模型不在清單中，切換至第一個
-      const current = get().currentModelName;
-      if (!remoteModels.find(m => m.name === current) && remoteModels.length > 0) {
-        set({ currentModelName: remoteModels[0].name });
-      }
-    } catch (e) {
-      console.warn('[appStore] loadAvailableModels 失敗，使用內建清單:', e);
-    }
-  },
-
-  addImportedModel: (model: RemoteModelConfig) => {
-    set((state) => {
-      const exists = state.availableModels.find(m => m.name === model.name);
-      if (exists) {
-        return {
-          availableModels: state.availableModels.map(m =>
-            m.name === model.name ? { ...m, ...model } as unknown as ModelConfig : m
-          ),
-        };
-      }
-      return {
-        availableModels: [...state.availableModels, model as unknown as ModelConfig],
-      };
-    });
-  },
-
-  removeModel: (name: string) => {
-    set((state) => ({
-      availableModels: state.availableModels.filter(m => m.name !== name),
-      currentModelName:
-        state.currentModelName === name
-          ? (state.availableModels.find(m => m.name !== name)?.name ?? '')
-          : state.currentModelName,
-    }));
-  },
 
   setEmotionState: (state, source) => set({ emotionState: state, emotionSource: source }),
 
@@ -356,6 +282,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setAiTyping: (isTyping) => set({ isAiTyping: isTyping }),
+
+  setSpeaking: (isSpeaking) => set({ isSpeaking }),
 
   setCompressing: (isCompressing) => set({ isCompressing }),
 

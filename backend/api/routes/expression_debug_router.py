@@ -22,6 +22,7 @@ class ExpressionPlanDebugRequest(BaseModel):
     intensity: str | None = "normal"
     random: bool = False
     scenario: str | None = None
+    seed: int | None = Field(default=None, ge=0, le=2147483647)
 
 
 @router.post("/api/debug/expression-plan")
@@ -29,9 +30,7 @@ async def compile_debug_expression_plan(payload: ExpressionPlanDebugRequest) -> 
     if not env_flag("EXPRESSION_DEBUG_API_ENABLED", True):
         raise HTTPException(status_code=404, detail="Expression debug API is disabled")
 
-    model_name = (payload.modelName or "Hiyori").strip()
-    if not model_name:
-        model_name = "Hiyori"
+    model_name = "Rushia"
 
     debug_case: dict[str, Any] | None = None
     if payload.intent:
@@ -45,6 +44,7 @@ async def compile_debug_expression_plan(payload: ExpressionPlanDebugRequest) -> 
                 intensity=payload.intensity,
                 randomize=payload.random,
                 scenario=payload.scenario,
+                seed=payload.seed,
             )
             expression_intent = parse_expression_intent(
                 debug_case["rawReply"],
@@ -53,6 +53,8 @@ async def compile_debug_expression_plan(payload: ExpressionPlanDebugRequest) -> 
                 user_message=debug_case["spokenText"],
             )
             expression_intent["spoken_text"] = debug_case["spokenText"]
+            if debug_case.get("expressionFamily"):
+                expression_intent["expression_family"] = debug_case["expressionFamily"]
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -61,6 +63,7 @@ async def compile_debug_expression_plan(payload: ExpressionPlanDebugRequest) -> 
             expression_intent,
             model_name=model_name,
             previous_state=payload.previousState,
+            seed=payload.seed,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to compile expression plan: {exc}") from exc
@@ -77,5 +80,8 @@ async def compile_debug_expression_plan(payload: ExpressionPlanDebugRequest) -> 
             "rawReply": debug_case.get("rawReply") if debug_case else None,
             "spokenText": debug_case.get("spokenText") if debug_case else expression_intent.get("spoken_text"),
             "motionKind": debug_case.get("motionKind") if debug_case else expression_intent.get("motion_variant"),
+            "expressionFamily": plan.get("debug", {}).get("expressionFamily"),
+            "expressionVariant": plan.get("debug", {}).get("expressionVariant"),
+            "seed": payload.seed,
         },
     }

@@ -6,28 +6,24 @@
   overflow: hidden;
   z-index: 1;
   border-radius: inherit;
-  /* 預設透明時的棋盤格背景（表示透明） */
+  /* 預覽底色不寫入輸出畫布，透明輸出仍保持透明。 */
   background-image:
-    linear-gradient(45deg, #e8eef5 25%, transparent 25%),
-    linear-gradient(-45deg, #e8eef5 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #e8eef5 75%),
-    linear-gradient(-45deg, transparent 75%, #e8eef5 75%);
-  background-size: 20px 20px;
-  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
-  background-color: #f0f4f8;
+    radial-gradient(ellipse at 52% 42%, #ffffff 0%, #f1f8f3 42%, transparent 72%),
+    linear-gradient(135deg, #e8f3ee, #e4efee);
+  background-color: #edf5ef;
   transition: background-color 0.3s, background-image 0.3s;
 }
 
 /* 背景類型標籤 */
 .live2d-bg-badge {
   position: absolute;
-  top: 12px;
-  left: 12px;
+  top: 23px;
+  right: 20px;
   padding: 4px 10px;
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(8px);
   border: 1px solid var(--border);
-  border-radius: 0px;
+  border-radius: 12px;
   font-size: 11px;
   font-weight: 500;
   color: var(--text-secondary);
@@ -49,3 +45,23 @@
   background: transparent;
   z-index: 1;
 }
+
+.live2d-status {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  width: min(340px, calc(100% - 40px));
+  padding: 18px 20px;
+  text-align: center;
+  color: #658572;
+  background: #fcfffae8;
+  border: 1px solid #d7e6d9;
+  border-radius: 16px;
+  font-size: 13px;
+  line-height: 1.7;
+  backdrop-filter: blur(12px);
+}
+
+.live2d-status[role="alert"] { color: var(--error); background: #fff7f2eb; border-color: #f0d8cc; }

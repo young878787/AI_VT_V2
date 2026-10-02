@@ -8,6 +8,7 @@ type Action = {
   id: string;
   turnId?: string;
   plan: ExpressionPlanPayload;
+  source: Source;
   priority: number;
   interruptible: boolean;
   durationMs: number;
@@ -39,14 +40,11 @@ export class ActionScheduler {
   private readonly lastStartByKind = new Map<string, number>();
   private report: ((status: Status, action: Action) => void) | null = null;
   private manualUntil = 0;
+  private awaitingSpeechEnd = false;
 
   constructor() {
-    let modelName = useAppStore.getState().currentModelName;
-    useAppStore.subscribe((state) => {
-      if (state.currentModelName !== modelName) {
-        modelName = state.currentModelName;
-        this.cancel();
-      }
+    useAppStore.subscribe((state, previous) => {
+      if (previous.isSpeaking && !state.isSpeaking && this.awaitingSpeechEnd) this.finishCurrent();
     });
   }
 
@@ -55,19 +53,31 @@ export class ActionScheduler {
   }
 
   submit(plan: ExpressionPlanPayload, source: Source, turnId?: string): void {
+    this.pending = null;
+    if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
+    this.cooldownTimer = null;
     const emergency = source === 'chat' && (
       plan.basePose.preset === 'shock_recoil' || plan.debug?.intentEmotion === 'surprised'
     );
+    let sequenceStart = 0;
+    let sequenceEnd = 0;
+    plan.sequence.forEach((event, index) => {
+      sequenceEnd = Math.max(sequenceEnd, sequenceStart + event.durationMs);
+      const overlap = Math.min(event.fadeOutMs ?? 0, plan.sequence[index + 1]?.fadeInMs ?? 0);
+      sequenceStart += Math.max(1, event.durationMs - overlap);
+    });
     const action: Action = {
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `action_${Date.now()}`,
-      plan, turnId,
+      plan, turnId, source,
       priority: source === 'debug' ? 100 : emergency ? 80 : 50,
       interruptible: !emergency,
-      durationMs: Math.max(emergency ? 500 : 200, Math.min(10000, Math.max(
+      durationMs: Math.max(emergency ? 500 : 200,
         plan.basePose.durationSec * 1000,
-        plan.sequence.reduce((duration, event) => duration + event.durationMs, 0),
+        sequenceEnd,
+        ...plan.microEvents.map(event => event.durationMs),
         plan.motionPlan?.durationMs ?? 0,
-      ))),
+        plan.idlePlan?.enterAfterMs ?? 0,
+      ),
     };
     if (source === 'chat' && performance.now() < this.manualUntil) {
       this.pending = action;
@@ -108,6 +118,7 @@ export class ActionScheduler {
   }
 
   manualControl(durationMs = 3000): void {
+    this.pending = null;
     if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
     this.cooldownTimer = null;
     this.cancelCurrent();
@@ -123,6 +134,7 @@ export class ActionScheduler {
   }
 
   private cancelCurrent(): void {
+    this.awaitingSpeechEnd = false;
     if (this.timer) clearTimeout(this.timer);
     if (this.unlockTimer) clearTimeout(this.unlockTimer);
     this.timer = null;
@@ -166,13 +178,23 @@ export class ActionScheduler {
     }
     this.timer = setTimeout(() => {
       if (this.current?.id !== action.id) return;
-      this.current = null;
       this.timer = null;
-      this.report?.('finished', action);
-      const pending = this.pending;
-      this.pending = null;
-      if (pending) this.start(pending);
+      if (action.source === 'chat' && useAppStore.getState().isSpeaking) {
+        this.awaitingSpeechEnd = true;
+        return;
+      }
+      this.finishCurrent();
     }, action.durationMs);
+  }
+
+  private finishCurrent(): void {
+    this.awaitingSpeechEnd = false;
+    const action = this.current;
+    this.current = null;
+    if (action) this.report?.('finished', action);
+    const pending = this.pending;
+    this.pending = null;
+    if (pending) this.start(pending);
   }
 }
 

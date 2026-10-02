@@ -1,383 +1,172 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useRef, useState, type CSSProperties } from 'react';
+import { EXPRESSION_DEBUG_PRESETS, MOTION_DEBUG_PRESETS, type DebugExpressionIntensity } from '../dev/expressionPlanDebugFixtures';
 import {
-  DEFAULT_DEBUG_EXPRESSION_OPTIONS,
-  EXPRESSION_DEBUG_PRESETS,
-  MOTION_DEBUG_PRESETS,
-  type DebugMotionKind,
-  type DebugExpressionIntensity,
-  type DebugExpressionKind,
-  type DebugExpressionOptions,
-} from '../dev/expressionPlanDebugFixtures';
-import { compileDebugExpressionPlan } from '../services/expressionDebugService';
+  compileDebugExpressionPlan,
+  type CompileExpressionPlanRequest,
+  type StudioExpressionKind,
+  type StudioExpressionPlan,
+} from '../services/expressionDebugService';
 import { actionScheduler } from '../services/actionScheduler';
 import { useAppStore } from '../store/appStore';
-import type { ExpressionPlanPayload } from '../types/expressionPlan';
 import { isExpressionPlanPayload } from '../types/expressionPlan';
 import './ExpressionPlanDebugPanel.css';
 
-interface AppliedSummary {
+const EVERYDAY_PRESETS: Array<{ kind: StudioExpressionKind; label: string; description: string }> = [
+  { kind: 'calm', label: '平靜', description: '放鬆地陪在身邊' },
+  { kind: 'listening', label: '專注聆聽', description: '眼神與輕微點頭' },
+  { kind: 'thinking', label: '思考', description: '短暫移開視線' },
+  { kind: 'soft_smile', label: '柔和微笑', description: '低強度的溫柔回應' },
+  { kind: 'closed_smile', label: '閉眼笑', description: '短暫笑眼再自然睜開' },
+];
+
+type PreviewRequest = Omit<CompileExpressionPlanRequest, 'modelName' | 'intensity' | 'seed' | 'previousState'>;
+interface Preview {
   label: string;
-  preset: string;
-  motionStyle: string;
-  motionVariant: string;
-  idlePlan: string;
-  physicsImpulse: number;
-  durationSec: number;
-  sequenceEvents: number;
-  sequencePreview: string;
-}
-
-type DebugPlanSource = 'backend' | 'reset';
-
-function summarizePlan(label: string, plan: ExpressionPlanPayload): AppliedSummary {
-  return {
-    label,
-    preset: plan.basePose.preset,
-    motionStyle: String(plan.basePose.bodyMotionProfile?.style ?? 'calm_sway'),
-    motionVariant: plan.motionPlan ? `${plan.motionPlan.theme}:${plan.motionPlan.variant}` : 'none',
-    idlePlan: plan.idlePlan?.name ?? 'none',
-    physicsImpulse: plan.basePose.params.physicsImpulse,
-    durationSec: plan.basePose.durationSec,
-    sequenceEvents: plan.sequence.filter((event) => (
-      !event.kind.startsWith('debug_brow_eye_gap_') &&
-      !event.kind.startsWith('debug_speaking_micro_gap_')
-    )).length,
-    sequencePreview: plan.sequence
-      .filter((event) => !event.kind.startsWith('debug_brow_eye_gap_') && !event.kind.startsWith('debug_speaking_micro_gap_'))
-      .slice(0, 4)
-      .map((event) => event.kind)
-      .join(',') || 'none',
-  };
+  plan: StudioExpressionPlan;
+  request: PreviewRequest;
+  seed: number;
+  intensity: DebugExpressionIntensity;
 }
 
 export const ExpressionPlanDebugPanel = () => {
-  const currentModelName = useAppStore((state) => state.currentModelName);
-  const [options, setOptions] = useState<DebugExpressionOptions>(DEFAULT_DEBUG_EXPRESSION_OPTIONS);
-  const [summary, setSummary] = useState<AppliedSummary | null>(null);
+  const modelLoaded = useAppStore(state => state.modelLoaded);
+  const currentModelName = useAppStore(state => state.currentModelName);
+  const [intensity, setIntensity] = useState<DebugExpressionIntensity>('normal');
+  const [seed, setSeed] = useState(7);
+  const [preview, setPreview] = useState<Preview | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [isCompiling, setIsCompiling] = useState(false);
+  const inFlight = useRef(false);
 
-  const presetByKind = useMemo(
-    () => new Map(EXPRESSION_DEBUG_PRESETS.map((preset) => [preset.kind, preset])),
-    [],
-  );
-  const motionPresetGroups = useMemo(
-    () => EXPRESSION_DEBUG_PRESETS.map((expressionPreset) => ({
-      kind: expressionPreset.kind,
-      label: expressionPreset.label,
-      motions: MOTION_DEBUG_PRESETS.filter((motionPreset) => motionPreset.expressionKind === expressionPreset.kind),
-    })).filter((group) => group.motions.length > 0),
-    [],
-  );
-
-  const applyPlan = (label: string, plan: ExpressionPlanPayload, planSource: DebugPlanSource) => {
-    if (!isExpressionPlanPayload(plan)) {
-      setLastError('backend expression_plan 格式未通過前端 validator');
-      console.warn('[ExpressionPlanDebug] invalid expression_plan:', plan);
-      return;
-    }
-
-    actionScheduler.submit(plan, 'debug');
-
-    setSummary(summarizePlan(label, plan));
-    setLastError(null);
-    console.log('[ExpressionPlanDebug] applied expression_plan', {
-      source: planSource,
-      label,
-      preset: plan.basePose.preset,
-      motionStyle: plan.basePose.bodyMotionProfile?.style,
-      motionPlan: plan.motionPlan ? `${plan.motionPlan.theme}:${plan.motionPlan.variant}` : 'none',
-      idlePlan: plan.idlePlan?.name ?? 'none',
-      physicsImpulse: plan.basePose.params.physicsImpulse,
-      durationSec: plan.basePose.durationSec,
-    });
-  };
-
-  const compileBackendPlan = async (
-    kind: DebugExpressionKind,
-  ): Promise<{ plan: ExpressionPlanPayload; label?: string }> => {
-    const response = await compileDebugExpressionPlan({
-      modelName: currentModelName || 'Hiyori',
-      kind,
-      intensity: options.intensity,
-    });
-    return { plan: response.plan, label: response.summary?.label };
-  };
-
-  const compileBackendRandomPlan = async (): Promise<{ plan: ExpressionPlanPayload; label?: string }> => {
-    const response = await compileDebugExpressionPlan({
-      modelName: currentModelName || 'Hiyori',
-      random: true,
-      intensity: options.intensity,
-    });
-    return { plan: response.plan, label: response.summary?.label };
-  };
-
-  const compileBackendMotionPlan = async (
-    kind: DebugMotionKind,
-  ): Promise<{ plan: ExpressionPlanPayload; label?: string }> => {
-    const response = await compileDebugExpressionPlan({
-      modelName: currentModelName || 'Hiyori',
-      motionKind: kind,
-      intensity: options.intensity,
-    });
-    return { plan: response.plan, label: response.summary?.label };
-  };
-
-  const compileBackendScenarioPlan = async (
-    scenario: 'speaking_micro' | 'brow_eye_micro',
-  ): Promise<{ plan: ExpressionPlanPayload; label?: string }> => {
-    const response = await compileDebugExpressionPlan({
-      modelName: currentModelName || 'Hiyori',
-      scenario,
-      intensity: options.intensity,
-    });
-    return { plan: response.plan, label: response.summary?.label };
-  };
-
-  const applyPreset = async (kind: DebugExpressionKind) => {
-    const preset = presetByKind.get(kind);
-    setIsCompiling(true);
-    setLastError(null);
-    try {
-      const response = await compileBackendPlan(kind);
-      applyPlan(response.label ?? preset?.label ?? kind, response.plan, 'backend');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '後端 expression_plan 編譯失敗';
-      setLastError(message);
-      console.warn('[ExpressionPlanDebug] backend compile failed:', error);
-    } finally {
-      setIsCompiling(false);
-    }
-  };
-
-  const applyRandom = async () => {
-    setIsCompiling(true);
-    setLastError(null);
-    try {
-      const response = await compileBackendRandomPlan();
-      applyPlan(response.label ? `隨機:${response.label}` : '隨機', response.plan, 'backend');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '後端 expression_plan 編譯失敗';
-      setLastError(message);
-      console.warn('[ExpressionPlanDebug] backend random compile failed:', error);
-    } finally {
-      setIsCompiling(false);
-    }
-  };
-
-  const applyBrowEyeRandom = async () => {
-    setIsCompiling(true);
-    setLastError(null);
-    try {
-      const response = await compileBackendScenarioPlan('brow_eye_micro');
-      applyPlan(response.label ?? '眉毛:隨機微動', response.plan, 'backend');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '後端 brow/eye micro 編譯失敗';
-      setLastError(message);
-      console.warn('[ExpressionPlanDebug] backend brow/eye micro compile failed:', error);
-    } finally {
-      setIsCompiling(false);
-    }
-  };
-
-  const applySpeakingMicroTest = async () => {
-    setIsCompiling(true);
-    setLastError(null);
-    try {
-      const response = await compileBackendScenarioPlan('speaking_micro');
-      applyPlan(response.label ?? '說話:微表情', response.plan, 'backend');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '後端 speaking micro 編譯失敗';
-      setLastError(message);
-      console.warn('[ExpressionPlanDebug] backend speaking micro compile failed:', error);
-    } finally {
-      setIsCompiling(false);
-    }
-  };
-
-  const applyMotionPreset = async (kind: DebugMotionKind) => {
-    const preset = MOTION_DEBUG_PRESETS.find((item) => item.kind === kind);
-    setIsCompiling(true);
-    setLastError(null);
-    try {
-      const response = await compileBackendMotionPlan(kind);
-      applyPlan(response.label ? `動作:${response.label}` : preset ? `動作:${preset.label}` : `動作:${kind}`, response.plan, 'backend');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '後端 motionPlan 編譯失敗';
-      setLastError(message);
-      console.warn('[ExpressionPlanDebug] backend motion compile failed:', error);
-    } finally {
-      setIsCompiling(false);
-    }
-  };
-
-  const resetNeutral = async () => {
+  const compile = async (request: PreviewRequest, label: string, nextSeed = seed, vary = false) => {
+    if (inFlight.current || !modelLoaded) return;
+    inFlight.current = true;
     setIsCompiling(true);
     setLastError(null);
     try {
       const response = await compileDebugExpressionPlan({
-        modelName: currentModelName || 'Hiyori',
-        kind: 'neutral',
-        intensity: 'normal',
+        modelName: currentModelName,
+        ...request,
+        intensity,
+        seed: nextSeed,
+        ...(vary && preview?.plan.carryState ? { previousState: preview.plan.carryState } : {}),
       });
-      applyPlan(response.summary?.label ?? '中性復原', response.plan, 'reset');
+      if (!isExpressionPlanPayload(response.plan)) throw new Error('表情資料格式不完整，請檢查後端與前端版本。');
+      const next = { label, plan: response.plan, request, seed: nextSeed, intensity };
+      setPreview(next);
+      setSeed(nextSeed);
+      actionScheduler.submit(structuredClone(response.plan), 'debug');
     } catch (error) {
-      const message = error instanceof Error ? error.message : '後端 neutral 編譯失敗';
-      setLastError(message);
-      console.warn('[ExpressionPlanDebug] backend neutral compile failed:', error);
+      setLastError(error instanceof Error ? error.message : '目前無法產生表情，請稍後重試。');
     } finally {
+      inFlight.current = false;
       setIsCompiling(false);
     }
   };
 
-  const setIntensity = (intensity: DebugExpressionIntensity) => {
-    setOptions((current) => ({ ...current, intensity }));
+  const replay = () => {
+    if (!preview || !modelLoaded) return;
+    actionScheduler.submit(structuredClone(preview.plan), 'debug');
+    setLastError(null);
   };
+
+  const disabled = isCompiling || !modelLoaded;
+  const params = preview?.plan.basePose.params;
+  const variant = preview?.plan.debug?.expressionVariant ?? preview?.plan.motionPlan?.variant;
+  const family = preview?.plan.debug?.expressionFamily ?? preview?.plan.basePose.preset;
+  const events = preview?.plan.sequence.filter(event => !event.kind.includes('_gap_')) ?? [];
 
   return (
     <div className="expression-debug-panel">
-      <div className="expression-debug-panel__header">
-        <div className="expression-debug-panel__header-left">
-          <span className="expression-debug-panel__title">Expression Plan 動作測試</span>
-          <span className="expression-debug-panel__badge">
-            Backend fake AI
-          </span>
-        </div>
-        <div className="expression-debug-panel__header-actions">
-          <button type="button" className="expression-debug-panel__action-btn" onClick={applyRandom} disabled={isCompiling}>
-            {isCompiling ? '編譯中' : '隨機測試'}
-          </button>
-          <button type="button" className="expression-debug-panel__action-btn" onClick={applyBrowEyeRandom} disabled={isCompiling}>
-            眉毛
-          </button>
-          <button type="button" className="expression-debug-panel__action-btn" onClick={applySpeakingMicroTest} disabled={isCompiling}>
-            說話
-          </button>
-          <button type="button" className="expression-debug-panel__reset-btn" onClick={resetNeutral} disabled={isCompiling}>
-            中性復原
-          </button>
-        </div>
+      <div className="expression-debug-panel__intro">
+        <p>選一個心情，看她如何回應。</p>
+        <span>同一演出可重播；換個演法，再比較細微差別。</span>
       </div>
-
       <div className="expression-debug-panel__body">
-        <div className="expression-debug-panel__main">
-          <div className="expression-debug-panel__section">
-            <div className="expression-debug-panel__section-title">表情主題</div>
-            <div className="expression-debug-panel__preset-grid">
-              {EXPRESSION_DEBUG_PRESETS.map((preset) => (
-                <button
-                  key={preset.kind}
-                  type="button"
-                  className="expression-debug-panel__preset-btn"
-                  style={{ '--preset-accent': preset.accent } as CSSProperties}
-                  onClick={() => applyPreset(preset.kind)}
-                  disabled={isCompiling}
-                  title={`${preset.preset} / ${preset.motionStyle} / ${preset.idleName}`}
-                >
-                  <span className="expression-debug-panel__preset-label">{preset.label}</span>
-                  <span className="expression-debug-panel__preset-meta">{preset.motionStyle}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="expression-debug-panel__section">
-            <div className="expression-debug-panel__section-title">分支動作</div>
-            {motionPresetGroups.map((group) => (
-              <div key={group.kind} className="expression-debug-panel__motion-group">
-                <div className="expression-debug-panel__motion-group-title">{group.label}</div>
-                <div className="expression-debug-panel__motion-grid">
-                  {group.motions.map((preset) => (
-                    <button
-                      key={preset.kind}
-                      type="button"
-                      className="expression-debug-panel__motion-btn"
-                      style={{ '--preset-accent': preset.accent } as CSSProperties}
-                      onClick={() => applyMotionPreset(preset.kind)}
-                      disabled={isCompiling}
-                      title={`${preset.theme} / ${preset.variant}`}
-                    >
-                      <span className="expression-debug-panel__preset-label">{preset.label}</span>
-                      <span className="expression-debug-panel__preset-meta">{preset.variant}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+        <div className="expression-debug-panel__controls">
+          <span>表現強度</span>
+          <div className="expression-debug-panel__segmented" role="group" aria-label="表現強度">
+            {(['soft', 'normal', 'strong'] as const).map(value => (
+              <button key={value} type="button" aria-pressed={intensity === value}
+                className={`expression-debug-panel__segment ${intensity === value ? 'expression-debug-panel__segment--active' : ''}`}
+                disabled={isCompiling} onClick={() => setIntensity(value)}>
+                {value === 'soft' ? '輕柔' : value === 'normal' ? '自然' : '鮮明'}
+              </button>
             ))}
           </div>
         </div>
 
-        <div className="expression-debug-panel__side">
-          <div className="expression-debug-panel__controls">
-            <div className="expression-debug-panel__segmented" aria-label="動作強度">
-              {(['soft', 'normal', 'strong'] as DebugExpressionIntensity[]).map((intensity) => (
-                <button
-                  key={intensity}
-                  type="button"
-                  className={
-                    options.intensity === intensity
-                      ? 'expression-debug-panel__segment expression-debug-panel__segment--active'
-                      : 'expression-debug-panel__segment'
-                  }
-                  onClick={() => setIntensity(intensity)}
-                  disabled={isCompiling}
-                >
-                  {intensity === 'soft' ? '柔' : intensity === 'normal' ? '中' : '強'}
-                </button>
-              ))}
-            </div>
+        <section className="expression-debug-panel__section" aria-label="日常互動表情">
+          <h3>日常互動</h3>
+          <div className="expression-debug-panel__everyday-grid">
+            {EVERYDAY_PRESETS.map(preset => (
+              <button key={preset.kind} type="button" aria-pressed={preview?.request.kind === preset.kind}
+                className={`expression-debug-panel__preset-btn ${preview?.request.kind === preset.kind ? 'expression-debug-panel__preset-btn--active' : ''}`}
+                onClick={() => void compile({ kind: preset.kind }, preset.label)} disabled={disabled}>
+                <span className="expression-debug-panel__preset-label">{preset.label}</span>
+                <span className="expression-debug-panel__preset-description">{preset.description}</span>
+              </button>
+            ))}
           </div>
+        </section>
 
-          <div className="expression-debug-panel__summary">
-            {summary ? (
-              <>
-                <div className="expression-debug-panel__summary-title">{summary.label}</div>
-                <div className="expression-debug-panel__summary-row">
-                  <span>preset</span>
-                  <strong>{summary.preset}</strong>
-                </div>
-                <div className="expression-debug-panel__summary-row">
-                  <span>motion</span>
-                  <strong>{summary.motionStyle}</strong>
-                </div>
-                <div className="expression-debug-panel__summary-row">
-                  <span>variant</span>
-                  <strong>{summary.motionVariant}</strong>
-                </div>
-                <div className="expression-debug-panel__summary-row">
-                  <span>idle</span>
-                  <strong>{summary.idlePlan}</strong>
-                </div>
-                <div className="expression-debug-panel__summary-row">
-                  <span>impulse</span>
-                  <strong>{summary.physicsImpulse.toFixed(2)}</strong>
-                </div>
-                <div className="expression-debug-panel__summary-row">
-                  <span>duration</span>
-                  <strong>{summary.durationSec.toFixed(1)}s</strong>
-                </div>
-                <div className="expression-debug-panel__summary-row">
-                  <span>sequence</span>
-                  <strong>{summary.sequenceEvents}</strong>
-                </div>
-                <div className="expression-debug-panel__summary-row">
-                  <span>events</span>
-                  <strong>{summary.sequencePreview}</strong>
-                </div>
-              </>
-            ) : (
-              <div className="expression-debug-panel__empty">選一個動作開始測試</div>
-            )}
+        <section className="expression-debug-panel__section" aria-label="情緒表情">
+          <h3>情緒變化</h3>
+          <div className="expression-debug-panel__preset-grid">
+            {EXPRESSION_DEBUG_PRESETS.map(preset => (
+              <button key={preset.kind} type="button" aria-pressed={preview?.request.kind === preset.kind}
+                className={`expression-debug-panel__emotion-btn ${preview?.request.kind === preset.kind ? 'expression-debug-panel__emotion-btn--active' : ''}`}
+                style={{ '--preset-accent': preset.accent } as CSSProperties}
+                disabled={disabled} onClick={() => void compile({ kind: preset.kind }, preset.label)}>
+                {preset.label}
+              </button>
+            ))}
           </div>
+        </section>
+
+        <div className="expression-debug-panel__playback" aria-label="表情重播控制">
+          <button type="button" className="expression-debug-panel__action-btn expression-debug-panel__action-btn--primary"
+            disabled={disabled || !preview} onClick={replay}>重播這次表情</button>
+          <button type="button" className="expression-debug-panel__action-btn" disabled={disabled || !preview}
+            onClick={() => preview && void compile(preview.request, preview.label, seed + 1, true)}>換個演法</button>
+          <button type="button" className="expression-debug-panel__reset-btn" disabled={disabled}
+            onClick={() => void compile({ kind: 'calm' }, '平靜')}>回到平靜</button>
         </div>
+        <div className="expression-debug-panel__playback-status" role="status">
+          {!modelLoaded ? '等待角色載入' : isCompiling ? '準備表情中…' : preview
+            ? `${preview.label} · 演出 #${preview.seed} · ${preview.intensity === 'soft' ? '輕柔' : preview.intensity === 'normal' ? '自然' : '鮮明'}`
+            : '選擇表情後，可反覆重播與比較。'}
+        </div>
+
+        {preview && params && (
+          <section className="expression-debug-panel__summary" aria-label="目前表情摘要">
+            <div className="expression-debug-panel__summary-heading"><h3>這次演出</h3><span>{preview.plan.basePose.durationSec.toFixed(1)} 秒</span></div>
+            <div className="expression-debug-panel__summary-row"><span>家族</span><strong>{String(family)}</strong></div>
+            <div className="expression-debug-panel__summary-row"><span>變體</span><strong>{String(variant ?? '—')}</strong></div>
+            <div className="expression-debug-panel__summary-row"><span>眼睛開合（左／右）</span><strong>{params.eyeLOpen.toFixed(2)} / {params.eyeROpen.toFixed(2)}</strong></div>
+            <div className="expression-debug-panel__summary-row"><span>眉毛高度（左／右）</span><strong>{params.browLY.toFixed(2)} / {params.browRY.toFixed(2)}</strong></div>
+            <div className="expression-debug-panel__summary-row"><span>嘴形／臉紅</span><strong>{params.mouthForm.toFixed(2)} / {params.blushLevel.toFixed(2)}</strong></div>
+            <div className="expression-debug-panel__summary-row"><span>視線（X／Y）</span><strong>{params.eyeBallX.toFixed(2)} / {params.eyeBallY.toFixed(2)}</strong></div>
+            <p className="expression-debug-panel__summary-note">上方為基準姿態；短暫閉眼、點頭等變化接續播放。</p>
+            {events.length > 0 && <details className="expression-debug-panel__details"><summary>演出序列 · {events.length} 個片段</summary>
+              <ol>{events.map((event, index) => <li key={`${event.kind}-${index}`}><span>{event.kind}</span><span>{event.durationMs} ms</span></li>)}</ol>
+            </details>}
+          </section>
+        )}
+
+        <details className="expression-debug-panel__details">
+          <summary>更多動作與組合</summary>
+          <div className="expression-debug-panel__motion-grid">
+            {MOTION_DEBUG_PRESETS.map(preset => <button key={preset.kind} type="button" className="expression-debug-panel__motion-btn"
+              disabled={disabled} onClick={() => void compile({ motionKind: preset.kind }, preset.label)}>{preset.label}</button>)}
+            <button type="button" className="expression-debug-panel__motion-btn" disabled={disabled}
+              onClick={() => void compile({ scenario: 'brow_eye_micro' }, '眉眼微動')}>眉眼微動</button>
+            <button type="button" className="expression-debug-panel__motion-btn" disabled={disabled}
+              onClick={() => void compile({ scenario: 'speaking_micro' }, '說話微表情')}>說話微表情</button>
+          </div>
+        </details>
       </div>
-
-      {lastError && (
-        <div className="expression-debug-panel__error">
-          {lastError}
-        </div>
-      )}
+      {lastError && <div className="expression-debug-panel__error" role="alert">{lastError}</div>}
     </div>
   );
 };

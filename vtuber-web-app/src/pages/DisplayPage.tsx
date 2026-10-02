@@ -61,6 +61,9 @@ export const DisplayPage = () => {
         bitmap.close();
         return;
       }
+      // bitmaprenderer 不會更新 HTML 尺寸；保持來源比例供 object-fit 使用。
+      if (canvas.width !== bitmap.width) canvas.width = bitmap.width;
+      if (canvas.height !== bitmap.height) canvas.height = bitmap.height;
       // transferFromImageBitmap：零拷貝提交，bitmap 在此後被消耗（自動釋放）
       ctx.transferFromImageBitmap(bitmap);
     });

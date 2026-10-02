@@ -81,6 +81,8 @@ class WSService {
                         }
                         this.assistantMessageIds.delete(cancelledTurnId);
                         if (cancelledTurnId === this.activeTurnId) {
+                            actionScheduler.cancel();
+                            this.ttsPlayer.stop();
                             this.currentAssistantMessageId = null;
                             store.setAiTyping(false);
                         }
@@ -180,6 +182,7 @@ class WSService {
 
         this.ws.onclose = () => {
             actionScheduler.cancel();
+            this.ttsPlayer.stop();
             actionScheduler.setReporter(null);
             this.ws = null;
             this.currentAssistantMessageId = null;

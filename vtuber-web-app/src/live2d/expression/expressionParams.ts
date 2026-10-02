@@ -20,6 +20,7 @@ export function clampExpressionOverlayValue(key: ExpressionOverlayKey, value: nu
       return Math.max(0, Math.min(0.95, value));
     case 'breathLevel':
     case 'physicsImpulse':
+    case 'mouthOpenBias':
       return Math.max(0, Math.min(1, value));
     case 'bodyAngleX':
     case 'bodyAngleY':
@@ -29,9 +30,9 @@ export function clampExpressionOverlayValue(key: ExpressionOverlayKey, value: nu
       return Math.max(-1, Math.min(1, value));
     case 'eyeLOpen':
     case 'eyeROpen':
-      return Math.max(0, Math.min(2, value));
+      return Math.max(0, Math.min(1, value));
     case 'mouthForm':
-      return Math.max(-2, Math.min(1, value));
+      return Math.max(-1, Math.min(1, value));
     case 'browLY':
     case 'browRY':
     case 'browLAngle':

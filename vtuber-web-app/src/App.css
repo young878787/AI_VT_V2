@@ -1,114 +1,102 @@
-/* =============================================
-   App Layout — CSS Grid 四欄佈局
-   ============================================= */
-
 .app-layout {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100dvh;
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr var(--emotion-width) var(--right-width);
-  grid-template-rows: 1fr var(--bottom-height);
-  gap: var(--gap);
-  padding: var(--gap);
-  background: var(--bg-base);
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 29vw, 420px);
+  grid-template-rows: 66px minmax(0, 1fr);
+  gap: 18px;
+  padding: 0 24px 24px;
+  background: radial-gradient(ellipse at 18% 15%, #e3f1e9 0, transparent 52%), var(--bg-base);
   overflow: hidden;
   position: relative;
 }
 
-/* ── 左側：控制面板（跨兩行） ── */
-.app-layout__sidebar {
-  grid-column: 1;
-  grid-row: 1 / -1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  z-index: 10;
-}
+.room-header { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.room-brand, .room-header__actions { display: flex; align-items: center; gap: 12px; }
+.room-brand__mark { color: #75a68f; font-size: 32px; }
+.room-brand__name { display: block; font-size: 23px; font-weight: 600; letter-spacing: 1px; }
+.room-brand__caption { display: block; color: var(--text-secondary); font-size: 10px; letter-spacing: 2px; margin-top: 1px; }
+.room-status { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 11px; margin-right: 8px; }
+.room-status--error { color: var(--error); }
+.room-status__dot { width: 6px; height: 6px; border-radius: 50%; background: #b3bfc2; }
+.room-status__dot--ready { background: #76a68a; box-shadow: 0 0 0 4px #76a68a12; }
+.room-button { min-height: 38px; padding: 0 17px; border: 1px solid #c8ddd2; border-radius: 12px; background: #ffffffa8; color: #47765f; font-size: 12px; font-weight: 600; }
+.room-button:hover, .room-button--active { background: #e2eee6; border-color: #9abcaa; }
+.room-button--subtle { background: transparent; border-color: transparent; color: var(--text-secondary); }
 
-/* ── 中央：Live2D 即時預覽 ── */
-.app-layout__center {
-  grid-column: 2;
-  grid-row: 1;
-  min-height: 0;
-  min-width: 0;
-  border-radius: var(--border-radius-lg);
-  overflow: hidden;
-  position: relative;
-  background: var(--bg-card);
-  backdrop-filter: blur(12px);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-md);
-  z-index: 1;
-}
+.app-layout__center { grid-column: 1; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; position: relative; border: 1px solid #ffffffdf; border-radius: 26px; background: #eef6f2; box-shadow: 0 12px 48px #597a6b0b; }
+.app-layout__chat { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; }
+.stage-caption { position: absolute; top: 28px; left: 28px; z-index: 2; pointer-events: none; display: flex; flex-direction: column; gap: 5px; color: #628c7899; }
+.stage-caption span:first-child { font-size: 12px; letter-spacing: 5px; font-weight: 500; }
+.stage-caption span:last-child { font-size: 7px; letter-spacing: 2px; }
+.stage-footer { position: absolute; bottom: 18px; left: 22px; right: 22px; display: flex; align-items: center; justify-content: space-between; gap: 10px; z-index: 4; pointer-events: none; }
+.stage-footer__state { font-size: 11px; letter-spacing: 1px; color: #486457; padding: 8px 12px; background: #f8fcf7c7; backdrop-filter: blur(12px); border-radius: 20px; }
+.stage-reset { pointer-events: auto; font-size: 11px; color: #586f65; background: #f8fcf7de; border: 1px solid #d4e1d8; border-radius: 20px; padding: 8px 12px; }
+.stage-reset:disabled { opacity: .4; cursor: default; }
 
-/* ── 底部：參數面板（橫向延伸） ── */
-.app-layout__bottom-center {
-  grid-column: 2 / -1;
-  grid-row: 2;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  z-index: 10;
-}
+.app-layout__chat .ai-chat-panel { border-radius: 22px; box-shadow: 0 10px 40px #57746b08; border-color: #dce7e0; background: #ffffffb8; }
+.app-layout__chat .ai-chat-panel__header { padding: 20px 20px 16px; background: transparent; }
+.app-layout__chat .ai-chat-panel__header::before, .app-layout__chat .ai-chat-panel__header::after { display: none; }
+.app-layout__chat .ai-chat-panel__header h3 { font-size: 15px; }
+.app-layout__chat .ai-chat-panel__content { padding: 20px 16px; }
+.app-layout__chat .chat-history { gap: 15px; }
+.app-layout__chat .chat-message.system > .icon { display: none; }
+.app-layout__chat .chat-message .message-content { border-radius: 14px; line-height: 1.8; }
+.app-layout__chat .chat-message.user .message-content { background: #779d8c; box-shadow: none; }
+.app-layout__chat .chat-message.system .message-content { background: #edf3ee; color: #60756a; border-color: #dbe6df; font-size: 11px; }
+.app-layout__chat .chat-message.assistant .message-content { box-shadow: none; border-color: #e5eae6; }
+.app-layout__chat .ai-chat-panel__footer { padding: 16px; background: #f7faf7; }
+.app-layout__chat .chat-input { min-width: 0; min-height: 44px; border-radius: 12px; }
+.app-layout__chat .send-button { min-height: 44px; border-radius: 12px; padding: 8px 14px; }
+.app-layout__chat .send-button:not(:disabled) { background: #779d8c; box-shadow: none; }
 
-/* ── 情緒側邊欄 ── */
-.app-layout__emotion {
-  grid-column: 3;
-  grid-row: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  z-index: 10;
-}
+.room-drawer { position: absolute; z-index: 30; top: 84px; right: 24px; bottom: 24px; width: min(460px, calc(100% - 48px)); display: flex; flex-direction: column; background: #fbfdfbfa; border: 1px solid #dce7e0; border-radius: 22px; box-shadow: -14px 16px 56px #3a615d1f; overflow: hidden; }
+.room-drawer [hidden], .room-drawer[hidden] { display: none; }
+.room-drawer__header { display: flex; justify-content: space-between; align-items: center; padding: 21px 22px 17px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.room-drawer__eyebrow { font-size: 9px; letter-spacing: 2px; color: #87a296; }
+.room-drawer__header h2 { font-size: 18px; font-weight: 600; margin: 5px 0 0; }
+.room-drawer__close { width: 36px; height: 36px; border-radius: 50%; color: #788b82; background: #eef3ee; font-size: 23px; }
+.room-drawer__close:hover { color: #2c5540; background: #e3ece4; }
+.room-drawer__studio, .room-drawer__settings { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.room-tabs { display: flex; gap: 4px; padding: 12px 18px; border-bottom: 1px solid var(--border); }
+.room-tabs__tab { flex: 1; padding: 9px 4px; font-size: 11px; color: var(--text-secondary); background: transparent; border-radius: 8px; }
+.room-tabs__tab--active { color: #476c59; background: #e7f0e8; }
+.room-drawer__panel { flex: 1; min-height: 0; overflow: auto; }
+.room-drawer__panel > .ctrl-panel, .room-drawer__panel > .native-panel { border: none; border-radius: 0; box-shadow: none; }
+.room-drawer__parameters .native-panel { height: 100%; }
+.room-drawer__parameters .native-panel__grid { grid-template-columns: 1fr; }
+.room-drawer__parameters .native-row__left { width: 154px; }
+.room-drawer__parameters .native-row { padding: 7px 4px; }
+.room-drawer__parameters .native-panel__header { flex-wrap: wrap; padding: 10px; }
+.room-drawer__parameters .native-panel__filter-chips { order: 3; flex-basis: 100%; }
+.room-drawer__emotion { padding: 20px; }
+.room-drawer__emotion .emotion-sidebar { height: auto; border: 0; box-shadow: none; background: transparent; }
 
-/* ── 右側：AI 對話 ── */
-.app-layout__chat {
-  grid-column: 4;
-  grid-row: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  z-index: 10;
-}
-
-/* ── 底部橫向排列 ── */
-.app-layout__bottom-row {
-  display: flex;
-  gap: var(--gap);
-  height: 100%;
-  min-height: 0;
-}
-
-.app-layout__bottom-row > *:first-child {
-  flex: 2;
-  min-width: 0;
-}
-
-.app-layout__bottom-row > *:last-child {
-  flex: 1;
-  min-width: 0;
-}
-
-/* ── 響應式 ── */
 @media (max-width: 1024px) {
-  .app-layout {
-    grid-template-columns: 260px 1fr 140px 320px;
-  }
+  .app-layout { padding: 0 16px 16px; gap: 14px; grid-template-columns: minmax(0, 1fr) 320px; }
+  .room-drawer { top: 80px; right: 16px; bottom: 16px; }
 }
 
-@media (max-width: 768px) {
-  .app-layout {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto auto auto;
-    overflow-y: auto;
-  }
-
-  .app-layout__sidebar,
-  .app-layout__center,
-  .app-layout__chat,
-  .app-layout__emotion,
-  .app-layout__bottom-center {
-    grid-column: 1;
-    grid-row: auto;
-  }
+@media (max-width: 820px) {
+  .app-layout { grid-template-columns: 1fr; grid-template-rows: 56px minmax(240px, 47dvh) minmax(220px, 1fr); gap: 10px; padding: 0 10px 10px; overflow-y: auto; }
+  .room-header { gap: 6px; }
+  .room-brand { gap: 6px; }
+  .room-brand__mark { font-size: 23px; }
+  .room-brand__name { font-size: 19px; }
+  .room-brand__caption { display: none; }
+  .room-header__actions { gap: 3px; }
+  .room-status { display: none; }
+  .room-button { padding: 0 11px; min-height: 34px; font-size: 11px; }
+  .app-layout__center { grid-column: 1; grid-row: 2; border-radius: 20px; }
+  .app-layout__chat { grid-column: 1; grid-row: 3; min-height: 220px; }
+  .stage-caption { top: 19px; left: 18px; }
+  .stage-footer { left: 12px; right: 12px; bottom: 12px; }
+  .stage-footer__state { font-size: 10px; padding: 6px 9px; }
+  .stage-reset { padding: 6px 9px; font-size: 10px; }
+  .app-layout__chat .ai-chat-panel__header { padding: 13px 15px; }
+  .app-layout__chat .ai-chat-panel__content { padding: 12px; }
+  .app-layout__chat .ai-chat-panel__footer { padding: 10px; }
+  .room-drawer { position: fixed; inset: auto 10px 10px; width: auto; height: min(56dvh, 590px); border-radius: 20px; box-shadow: 0 -8px 40px #3a615d26; }
+  .room-drawer__header { padding: 13px 17px 11px; }
+  .room-drawer__header h2 { font-size: 16px; }
 }

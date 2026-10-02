@@ -1,5 +1,5 @@
 /**
- * 控制面板元件 — 可折疊手風琴式暗色開發控制台
+ * 舞台設定 — 保留互動、構圖與輸出控制
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppStore } from '@store/appStore';
@@ -11,14 +11,12 @@ import { LipSyncManager } from '../audio/LipSyncManager';
 import { MicrophoneManager } from '../audio/MicrophoneManager';
 import { voiceWsService } from '../services/voiceWsService';
 import { actionScheduler } from '../services/actionScheduler';
-import { ModelImportButton } from './ModelImportButton';
 import './ControlPanel.css';
 
 /** 可折疊區塊 key */
-type SectionKey = 'model' | 'controls' | 'blink' | 'transform' | 'background' | 'motion';
+type SectionKey = 'controls' | 'blink' | 'transform' | 'background' | 'motion';
 
 const SECTION_LABELS: Record<SectionKey, string> = {
-  model:      '角色模型',
   controls:   '功能控制',
   blink:      '眨眼控制',
   transform:  '模型調整',
@@ -27,7 +25,6 @@ const SECTION_LABELS: Record<SectionKey, string> = {
 };
 
 const SECTION_ICONS: Record<SectionKey, string> = {
-  model:      '🎭',
   controls:   '⚡',
   blink:      '👁',
   transform:  '🔧',
@@ -45,10 +42,9 @@ export const ControlPanel = () => {
     modelLoaded,
     modelLoading,
     modelError,
-    modelSwitching,
-    currentModelName,
-    availableModels,
     modelScale,
+    modelDragEnabled,
+    toggleModelDrag,
     hitAreaDebug,
     toggleMicrophone,
     toggleEyeTracking,
@@ -57,22 +53,14 @@ export const ControlPanel = () => {
     scaleModelUp,
     scaleModelDown,
     resetModelTransform,
-    showControls,
-    setCurrentModelName,
-    setModelSwitching,
-    setModelLoading,
-    setModelLoaded,
-    setModelError,
     setMicrophonePermission,
     setVoiceModeEnabled,
-    removeModel,
   } = useAppStore();
 
-  // 折疊狀態：預設展開 model、controls、blink
+  // 折疊狀態：預設展開互動控制
   const [collapsed, setCollapsed] = useState<Record<SectionKey, boolean>>({
-    model:      false,
     controls:   false,
-    blink:      false,
+    blink:      true,
     transform:  true,
     background: true,
     motion:     true,
@@ -82,8 +70,10 @@ export const ControlPanel = () => {
     setCollapsed(prev => ({ ...prev, [key]: !prev[key] }));
 
   // 動作測試狀態
-  const [motionGroups, setMotionGroups] = useState<string[]>([]);
-  const [selectedMotionGroup, setSelectedMotionGroup] = useState<string>('Idle');
+  const [preferredMotionGroup, setSelectedMotionGroup] = useState('Idle');
+  const model = modelLoaded ? LAppLive2DManager.getInstance().getActiveModel() : null;
+  const motionGroups = model?.getMotionGroupNames() ?? [];
+  const selectedMotionGroup = motionGroups.includes(preferredMotionGroup) ? preferredMotionGroup : (motionGroups[0] ?? 'Idle');
   const [lipSyncVolume, setLipSyncVolume] = useState<number>(0);
 
   // 眨眼控制狀態
@@ -126,20 +116,6 @@ export const ControlPanel = () => {
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lipSyncLoopRef = useRef<number | null>(null);
-
-  // 初始化動作群組
-  useEffect(() => {
-    if (modelLoaded) {
-      const manager = LAppLive2DManager.getInstance();
-      const model = manager.getActiveModel();
-      if (model) {
-        const groups = model.getMotionGroupNames();
-        setMotionGroups(groups);
-        if (groups.length > 0 && !groups.includes(selectedMotionGroup))
-          setSelectedMotionGroup(groups[0]);
-      }
-    }
-  }, [modelLoaded, currentModelName]);
 
   // 自動播放控制
   useEffect(() => {
@@ -206,51 +182,31 @@ export const ControlPanel = () => {
     }
   }, [voiceModeEnabled, setVoiceModeEnabled, setMicrophonePermission]);
 
-  // 模型切換
-  const handleModelSwitch = useCallback(async (modelName: string) => {
-    if (modelName === currentModelName || modelSwitching || modelLoading) return;
-    const config = availableModels.find(m => m.name === modelName);
-    if (!config) { setModelError(`找不到模型：${modelName}`); return; }
-    try {
-      setModelSwitching(true); setModelLoading(true);
-      setModelLoaded(false); setModelError(null);
-      await LAppLive2DManager.getInstance().loadModel(config, true);
-      setCurrentModelName(modelName); setModelLoaded(true);
-    } catch (e) {
-      setModelError(e instanceof Error ? e.message : '切換失敗');
-    } finally {
-      setModelSwitching(false); setModelLoading(false);
-    }
-  }, [currentModelName, modelSwitching, modelLoading,
-      setCurrentModelName, setModelSwitching, setModelLoading, setModelLoaded, setModelError]);
-
   // 動作播放
-  const handlePlayMotion = useCallback((index: number) => {
+  const handlePlayMotion = (index: number) => {
     actionScheduler.manualControl();
     const model = LAppLive2DManager.getInstance().getActiveModel();
     if (model) model.startMotion(selectedMotionGroup, index, Priority.Force);
-  }, [selectedMotionGroup]);
+  };
 
-  const handlePlayRandomMotion = useCallback(() => {
+  const handlePlayRandomMotion = () => {
     actionScheduler.manualControl();
     const model = LAppLive2DManager.getInstance().getActiveModel();
     if (model) model.startRandomMotion(selectedMotionGroup, Priority.Force);
-  }, [selectedMotionGroup]);
+  };
 
   // 眨眼控制
   const handleForceBlink = useCallback(() => {
     const model = LAppLive2DManager.getInstance().getActiveModel();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (model && typeof (model as any).forceBlink === 'function') {
-      (model as any).forceBlink(1.5);
+    if (model) {
+      model.forceBlink(1.5);
     }
   }, []);
 
   const handlePauseBlink = useCallback(() => {
     const model = LAppLive2DManager.getInstance().getActiveModel();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (model && typeof (model as any).pauseAutoBlink === 'function') {
-      (model as any).pauseAutoBlink(3.0);
+    if (model) {
+      model.pauseAutoBlink(3.0);
       setBlinkPaused(true);
       setTimeout(() => setBlinkPaused(false), 3000);
     }
@@ -258,34 +214,19 @@ export const ControlPanel = () => {
 
   const handleResumeBlink = useCallback(() => {
     const model = LAppLive2DManager.getInstance().getActiveModel();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (model && typeof (model as any).resumeAutoBlink === 'function') {
-      (model as any).resumeAutoBlink();
+    if (model) {
+      model.resumeAutoBlink();
       setBlinkPaused(false);
     }
   }, []);
 
   const handleSetBlinkInterval = useCallback((min: number, max: number) => {
     const model = LAppLive2DManager.getInstance().getActiveModel();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if (model && typeof (model as any).setBlinkInterval === 'function') {
-      (model as any).setBlinkInterval(min, max);
+    if (model) {
+      model.setBlinkInterval(min, max);
       setBlinkInterval({ min, max });
     }
   }, []);
-
-  // 刪除匯入模型
-  const handleDeleteModel = useCallback(async (name: string) => {
-    if (!confirm(`確定要刪除模型「${name}」？此操作不可恢復，資料夾也會被刪除。`)) return;
-    try {
-      const { deleteImportedModel } = await import('../services/modelService');
-      await deleteImportedModel(name);
-      removeModel(name);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      alert(e.message ?? '刪除失敗');
-    }
-  }, [removeModel]);
 
   // 圖片上傳
   const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -308,15 +249,10 @@ export const ControlPanel = () => {
     }
   }, [imageUrlInput, setBackgroundImageUrl, setBackgroundType]);
 
-  if (!showControls) return null;
-
-  const currentModelConfig = availableModels.find(m => m.name === currentModelName);
-  const manager = LAppLive2DManager.getInstance();
-  const model = manager.getActiveModel();
   const motionCount = model ? model.getMotionCount(selectedMotionGroup) : 0;
 
   /** 區塊標題 */
-  const SectionHeader = ({ id, extra }: { id: SectionKey; extra?: React.ReactNode }) => (
+  const sectionHeader = (id: SectionKey, extra?: React.ReactNode) => (
     <button
       className={`section-header ${collapsed[id] ? 'collapsed' : ''}`}
       onClick={() => toggleSection(id)}
@@ -334,10 +270,7 @@ export const ControlPanel = () => {
       {/* ── 頂部品牌列 ── */}
       <div className="ctrl-panel__topbar">
         <div className="ctrl-panel__brand">
-          <span className="ctrl-panel__brand-dot" />
-          <span className="ctrl-panel__brand-dot ctrl-panel__brand-dot--2" />
-          <span className="ctrl-panel__brand-dot ctrl-panel__brand-dot--3" />
-          <span className="ctrl-panel__brand-title">VTuber Studio</span>
+          <span className="ctrl-panel__brand-title">Rushia · 半身舞台</span>
         </div>
         {/* 模型狀態指示器 */}
         <div className={`ctrl-panel__status-chip ${
@@ -360,50 +293,9 @@ export const ControlPanel = () => {
       {/* ── 可滾動內容 ── */}
       <div className="ctrl-panel__body">
 
-        {/* ━━ 角色模型 ━━ */}
-        <div className="ctrl-section">
-          <SectionHeader id="model" />
-          {!collapsed.model && (
-            <div className="ctrl-section__content">
-              {/* 模型下拉 + 刪除按鈕 */}
-              <div className="cp-row">
-                <select
-                  id="model-selector"
-                  className="cp-select"
-                  aria-label="選擇 Live2D 模型"
-                  value={currentModelName}
-                  onChange={e => handleModelSwitch(e.target.value)}
-                  disabled={modelSwitching || modelLoading}
-                >
-                  {availableModels.map(m => (
-                    <option key={m.name} value={m.name}>{m.displayName}</option>
-                  ))}
-                </select>
-                {/* 匯入模型才顯示刪除按鈕 */}
-                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                {(availableModels.find(m => m.name === currentModelName) as any)?.imported && (
-                  <button
-                    className="cp-btn cp-btn--danger cp-btn--sm"
-                    title="刪除此匯入模型"
-                    onClick={() => handleDeleteModel(currentModelName)}
-                    disabled={modelSwitching || modelLoading}
-                    id="model-delete-btn"
-                  >🗑️</button>
-                )}
-              </div>
-              {modelSwitching && <div className="cp-hint cp-hint--loading">⏳ 切換中...</div>}
-              {currentModelConfig?.description && (
-                <div className="cp-hint">{currentModelConfig.description}</div>
-              )}
-              {/* 匯入模型按鈕 */}
-              <ModelImportButton />
-            </div>
-          )}
-        </div>
-
         {/* ━━ 功能控制 ━━ */}
         <div className="ctrl-section">
-          <SectionHeader id="controls" />
+          {sectionHeader('controls')}
           {!collapsed.controls && (
             <div className="ctrl-section__content">
 
@@ -415,6 +307,7 @@ export const ControlPanel = () => {
                 </div>
                 <button
                   className={`cp-toggle ${microphoneEnabled ? 'active' : ''}`}
+                  role="switch" aria-label="麥克風嘴型同步" aria-checked={microphoneEnabled}
                   onClick={handleMicrophoneToggle}
                   disabled={!modelLoaded || microphonePermission === 'denied'}
                 >
@@ -442,6 +335,7 @@ export const ControlPanel = () => {
                 </div>
                 <button
                   className={`cp-toggle ${voiceModeEnabled ? 'active' : ''}`}
+                  role="switch" aria-label="語音輸入" aria-checked={voiceModeEnabled}
                   onClick={handleVoiceModeToggle}
                   disabled={!modelLoaded || microphonePermission === 'denied'}
                 >
@@ -460,6 +354,7 @@ export const ControlPanel = () => {
                 </div>
                 <button
                   className={`cp-toggle ${eyeTrackingEnabled ? 'active' : ''}`}
+                  role="switch" aria-label="滑鼠視線追蹤" aria-checked={eyeTrackingEnabled}
                   onClick={toggleEyeTracking}
                   disabled={!modelLoaded}
                 >
@@ -475,6 +370,7 @@ export const ControlPanel = () => {
                 </div>
                 <button
                   className={`cp-toggle ${autoPlayEnabled ? 'active' : ''}`}
+                  role="switch" aria-label="自動播放動作" aria-checked={autoPlayEnabled}
                   onClick={toggleAutoPlay}
                   disabled={!modelLoaded}
                 >
@@ -488,7 +384,7 @@ export const ControlPanel = () => {
 
         {/* ━━ 眨眼控制 ━━ */}
         <div className="ctrl-section">
-          <SectionHeader id="blink" />
+          {sectionHeader('blink')}
           {!collapsed.blink && (
             <div className="ctrl-section__content">
               {/* 狀態指示 */}
@@ -530,7 +426,7 @@ export const ControlPanel = () => {
 
         {/* ━━ 模型調整 ━━ */}
         <div className="ctrl-section">
-          <SectionHeader id="transform" />
+          {sectionHeader('transform')}
           {!collapsed.transform && (
             <div className="ctrl-section__content">
 
@@ -542,6 +438,7 @@ export const ControlPanel = () => {
                 </div>
                 <button
                   className={`cp-toggle ${hitAreaDebug ? 'active' : ''}`}
+                  role="switch" aria-label="點擊區域顯示" aria-checked={hitAreaDebug}
                   onClick={toggleHitAreaDebug}
                   disabled={!modelLoaded}
                 >
@@ -549,7 +446,15 @@ export const ControlPanel = () => {
                 </button>
               </div>
 
-              <div className="cp-hint cp-hint--info">按住模型頭部可拖動位置</div>
+              <div className="cp-toggle-row">
+                <span className="cp-toggle-label">允許拖動構圖</span>
+                <button className={`cp-toggle ${modelDragEnabled ? 'active' : ''}`}
+                  onClick={toggleModelDrag} disabled={!modelLoaded}
+                  role="switch" aria-label="允許拖動構圖" aria-checked={modelDragEnabled}>
+                  <span className="cp-toggle__thumb" />
+                </button>
+              </div>
+              <div className="cp-hint cp-hint--info">{modelDragEnabled ? '拖動模型調整位置；重置可回到半身構圖。' : '構圖已鎖定，對話時保持穩定。'}</div>
 
               {/* 縮放 */}
               <div className="cp-scale-row">
@@ -558,13 +463,13 @@ export const ControlPanel = () => {
                   <button
                     className="cp-scale-btn"
                     onClick={scaleModelDown}
-                    disabled={!modelLoaded || modelScale <= 0.1}
+                    disabled={!modelLoaded || modelScale <= 0.75}
                   >−</button>
                   <span className="cp-scale-row__val">{Math.round(modelScale * 100)}%</span>
                   <button
                     className="cp-scale-btn"
                     onClick={scaleModelUp}
-                    disabled={!modelLoaded || modelScale >= 500.0}
+                    disabled={!modelLoaded || modelScale >= 1.25}
                   >+</button>
                   <button
                     className="cp-scale-btn cp-scale-btn--reset"
@@ -580,7 +485,7 @@ export const ControlPanel = () => {
 
         {/* ━━ OBS 設定 ━━ */}
         <div className="ctrl-section">
-          <SectionHeader id="background" />
+          {sectionHeader('background')}
           {!collapsed.background && (
             <div className="ctrl-section__content">
 
@@ -703,9 +608,7 @@ export const ControlPanel = () => {
 
         {/* ━━ 動作測試 ━━ */}
         <div className="ctrl-section">
-          <SectionHeader id="motion" extra={
-            motionCount > 0 ? <span className="cp-badge">{motionCount}</span> : undefined
-          } />
+          {sectionHeader('motion', motionCount > 0 ? <span className="cp-badge">{motionCount}</span> : undefined)}
           {!collapsed.motion && (
             <div className="ctrl-section__content">
               <div className="cp-row">

@@ -147,7 +147,7 @@ def resolve_motion_theme(emotion: str, performance_mode: str, intent: dict) -> s
     return "happy_bright_talk"
 
 
-def _choose_variant(theme: str, intent: dict, previous_state: dict | None) -> dict:
+def _choose_variant(theme: str, intent: dict, previous_state: dict | None, rng=None) -> dict:
     branches = MOTION_BRANCH_LIBRARY[theme]
     requested = intent.get("motion_variant")
     if isinstance(requested, str):
@@ -157,7 +157,7 @@ def _choose_variant(theme: str, intent: dict, previous_state: dict | None) -> di
 
     previous_variant = previous_state.get("motionVariant") if isinstance(previous_state, dict) else None
     available = [branch for branch in branches if branch["variant"] != previous_variant] or branches
-    return random.choice(available)
+    return (rng or random).choice(available)
 
 
 def build_motion_plan(
@@ -168,15 +168,17 @@ def build_motion_plan(
     playfulness: float,
     intent: dict,
     previous_state: dict | None,
+    rng=None,
 ) -> dict:
+    rng = rng or random
     theme = resolve_motion_theme(emotion, performance_mode, intent)
-    branch = deepcopy(_choose_variant(theme, intent, previous_state))
+    branch = deepcopy(_choose_variant(theme, intent, previous_state, rng))
 
     energy_scale = 0.92 + (energy * 0.16)
     intensity_scale = 0.94 + (intensity * 0.12)
     playfulness_scale = 0.96 + (playfulness * 0.10)
     branch["durationMs"] = int(branch["durationMs"] * (0.96 + (intensity * 0.08)))
-    branch["phaseSeed"] = round(random.uniform(0.0, 6.283), 3)
+    branch["phaseSeed"] = round(rng.uniform(0.0, 6.283), 3)
     branch["theme"] = theme
     branch["body"] = {
         "sway": round(branch["body"]["sway"] * playfulness_scale, 3),

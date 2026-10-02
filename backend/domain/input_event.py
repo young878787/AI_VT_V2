@@ -4,7 +4,6 @@ import time
 from uuid import uuid4
 
 from core.utils import normalize_session_id
-from domain.tools.schema_loader import normalize_model_name
 
 _TURN_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -23,7 +22,7 @@ def normalize_chat_input(data: dict, fallback_session_id: str | None = None) -> 
     turn_id = raw_turn_id if isinstance(raw_turn_id, str) and _TURN_ID.fullmatch(raw_turn_id) else uuid4().hex
     return {
         "text": text.strip(), "session_id": session_id, "turn_id": turn_id,
-        "model_name": normalize_model_name(data.get("model_name", "Hiyori")),
+        "model_name": "Rushia",
         "source": "voice" if data.get("source") == "voice" else "text",
         "timestamp": time.time(), "user_id": "default_user",
     }

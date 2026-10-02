@@ -25,6 +25,7 @@ from domain.expression_intent_schema import DEFAULT_INTENT
 from domain.expression_eye_motion_library import build_eye_motion_plan
 from domain.expression_motion_library import build_motion_plan
 from domain.expression_presets import BASE_POSE_PRESETS, PRESET_VARIATION_RULES
+from domain.rushia_expression_profile import build_rushia_expression_plan
 from domain.expression_sequence_library import (
     MICRO_EVENT_LIBRARY,
     MICRO_EXPRESSION_THEME_POOLS,
@@ -1437,7 +1438,10 @@ def build_model_hints(intent: dict, preset_name: str, model_name: str) -> dict:
     }
 
 
-def compile_expression_plan(intent: dict, model_name: str, previous_state: dict | None) -> dict:
+def compile_expression_plan(intent: dict, model_name: str, previous_state: dict | None, *, seed: int | None = None) -> dict:
+    if model_name == "Rushia":
+        return build_rushia_expression_plan(intent, previous_state, seed=seed)
+
     emotion = intent.get("emotion", intent.get("primary_emotion", DEFAULT_INTENT["emotion"]))
     if emotion not in {
         "neutral",

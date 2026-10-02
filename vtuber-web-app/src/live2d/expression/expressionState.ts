@@ -13,6 +13,7 @@ export function createNeutralTargetParams(): BasePoseParams {
     eyeLOpen: 1,
     eyeROpen: 1,
     mouthForm: 0,
+    mouthOpenBias: 0,
     browLY: 0,
     browRY: 0,
     browLAngle: 0,

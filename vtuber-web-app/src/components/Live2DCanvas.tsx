@@ -18,6 +18,12 @@ export const Live2DCanvas = () => {
     setModelLoaded,
     setModelError,
     eyeTrackingEnabled,
+    modelDragEnabled,
+    modelLoaded,
+    modelLoading,
+    modelError,
+    isAiTyping,
+    isSpeaking,
     modelScale,
     setModelScale,
   } = useAppStore();
@@ -36,6 +42,8 @@ export const Live2DCanvas = () => {
 
     const canvas = canvasRef.current;
     setModelLoading(true);
+    setModelLoaded(false);
+    setModelError(null);
 
     // 等待 Core 腳本載入
     const initializeLive2D = async () => {
@@ -119,6 +127,7 @@ export const Live2DCanvas = () => {
         delegateRef.current.stop();
         LAppDelegate.releaseInstance();
         delegateRef.current = null;
+        setModelLoaded(false);
         console.log('Live2D 資源已清理');
       }
     };
@@ -133,12 +142,21 @@ export const Live2DCanvas = () => {
     };
 
     handleResize();
+    const observer = new ResizeObserver(handleResize);
+    if (canvasRef.current) observer.observe(canvasRef.current);
     window.addEventListener('resize', handleResize);
     
     return () => {
+      observer.disconnect();
       window.removeEventListener('resize', handleResize);
     };
   }, []);
+
+  useEffect(() => {
+    const model = delegateRef.current?.getActiveModel();
+    model?.setThinking(isAiTyping && !isSpeaking);
+    model?.setSpeaking(isSpeaking);
+  }, [modelLoaded, isAiTyping, isSpeaking]);
 
   // 處理滑鼠移動（視線追蹤和拖移）
   useEffect(() => {
@@ -171,11 +189,11 @@ export const Live2DCanvas = () => {
 
   // 處理滑鼠按下（檢測是否點擊在模型上）
   const handleMouseDown = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (delegateRef.current) {
+    if (modelDragEnabled && delegateRef.current) {
       // 使用 onTapped 來檢測點擊區域
       delegateRef.current.onTapped(event.clientX, event.clientY);
     }
-  }, []);
+  }, [modelDragEnabled]);
 
   // 處理點擊事件（雙擊等其他互動）
   const handleCanvasClick = useCallback((_event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -184,6 +202,7 @@ export const Live2DCanvas = () => {
 
   // 處理滾輪事件（縮放模型）
   const handleWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
+    if (!modelDragEnabled) return;
     // 阻止預設的網頁滾動
     // event.preventDefault(); // Note: cannot call on passive event in react synthetic event sometimes, but best effort
 
@@ -194,7 +213,7 @@ export const Live2DCanvas = () => {
     const newScale = modelScale * factor;
     
     setModelScale(newScale);
-  }, [modelScale, setModelScale]);
+  }, [modelDragEnabled, modelScale, setModelScale]);
 
   // 背景即時預覽樣式 — 與 DisplayPage 共用相同邏輯
   const bgStyle: CSSProperties = (() => {
@@ -221,6 +240,11 @@ export const Live2DCanvas = () => {
          backgroundType === 'color' ? `🎨 ${backgroundColor}` :
          '🖼️ 圖片背景'}
       </div>
+      {(modelLoading || modelError) && (
+        <div className="live2d-status" role={modelError ? 'alert' : 'status'}>
+          {modelError || '正在準備 Rushia…'}
+        </div>
+      )}
       <canvas 
         ref={canvasRef}
         className="live2d-canvas"
@@ -228,7 +252,8 @@ export const Live2DCanvas = () => {
         onMouseDown={handleMouseDown}
         onClick={handleCanvasClick}
         onWheel={handleWheel}
-        style={{ cursor: 'pointer' }}
+        aria-label="Rushia 半身 Live2D 舞台"
+        style={{ cursor: modelDragEnabled ? 'grab' : 'default' }}
       />
     </div>
   );

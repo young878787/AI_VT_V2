@@ -33,7 +33,7 @@ export const AIChatPanel = () => {
     return (
         <div className="ai-chat-panel">
             <div className="ai-chat-panel__header">
-                <h3>AI 助理對話</h3>
+                <h3>與露西亞對話</h3>
             </div>
             <div className="ai-chat-panel__content">
                 <div className="chat-history">
@@ -70,7 +70,7 @@ export const AIChatPanel = () => {
                 <div className="input-area">
                     <input
                         type="text"
-                        placeholder="與 AI 助理對話..."
+                        placeholder="想對露西亞說些什麼…"
                         value={inputValue}
                         onChange={(e) => setInputValue(e.target.value)}
                         onKeyDown={handleKeyDown}
