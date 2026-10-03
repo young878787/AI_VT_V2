@@ -708,6 +708,33 @@ def write_memory_report(records: list[dict], path: Path, metadata: dict, status:
             ]) + " |")
             if record.get("errors"):
                 lines.append(f"|  |  | 錯誤：{markdown_cell(', '.join(record['errors']))} |  |  |  |  |  |  |")
+        probes = [record for record in case_records if record.get("phase") == "probe" and record.get("action") != "compress"]
+        if probes:
+            lines.extend(["", "召回與實際注入：", "",
+                "| Turn | 記憶 ID／狀態 | 對應記憶 | cosine／詞面 | 實際注入 |",
+                "|---:|---|---|---|---|"])
+            for record in probes:
+                retrieval = next((item for item in record.get("trace", []) if item.get("stage") == "retrieval"), {})
+                context = next((item for item in record.get("trace", []) if item.get("stage") == "chat_context"), {})
+                for candidate in retrieval.get("candidates", []):
+                    similarity = candidate.get("similarity")
+                    score = f"{similarity:.4f}" if similarity is not None else "未提供"
+                    lines.append("| " + " | ".join([
+                        str(record["turn"]), markdown_cell(f"{candidate['id']} / {candidate.get('status')}"),
+                        markdown_cell(candidate.get("canonical_text")),
+                        f"{score} / {candidate.get('exact_match')}",
+                        "是" if str(candidate["id"]) in context.get("injected_memory_ids", []) else "否",
+                    ]) + " |")
+                if not retrieval.get("candidates"):
+                    lines.append(f"| {record['turn']} | - | 無合格候選 | - | 否 |")
+                excluded = next((item.get("excluded_candidates", []) for item in record.get("trace", [])
+                    if item.get("stage") == "retrieval_filter" and item.get("mode") == retrieval.get("mode")), [])
+                for candidate in excluded:
+                    similarity = candidate.get("similarity")
+                    score = f"{similarity:.4f}" if similarity is not None else "未提供"
+                    lines.append(f"| {record['turn']} | {markdown_cell(candidate['id'])} / 未通過 | "
+                        f"{markdown_cell(candidate.get('canonical_text'))} | {score} / "
+                        f"{candidate.get('exact_match')} | 否：{candidate.get('rejection_reason')} |")
         if not case_records:
             lines.append("| - | - | 尚未執行 | - | - | - | 0 | - | pending |")
         lines.append("")

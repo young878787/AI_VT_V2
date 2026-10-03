@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -173,6 +173,51 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["id"] for row in lexical], [item["id"]])
         self.assertIsNone(lexical[0]["similarity"])
 
+    async def test_rejected_retrieval_trace_keeps_gate_contract_and_owner(self):
+        import json
+        from core.prompt_logger import trace_event
+        item = await self._create()
+        below = [.5, math.sqrt(.75)] + [0.0] * 1022
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            "AI_VT_TEST_MODE": "true", "AI_VT_MEMORY_DIR": directory,
+        }):
+            token = trace_event.set(uuid4())
+            try:
+                self.assertEqual(await self.repo.related_items("無關主題", below), [])
+                await self._query("UPDATE memory_items SET embedding_contract = 'old-contract' WHERE id = %s", (item["id"],))
+                self.assertEqual(await self.repo.related_items("無關主題", VECTOR), [])
+                other = MemoryRepository(self.pool, MemoryScope(uuid4(), self.scope.character_id,
+                    self.scope.schema_name), EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+                self.assertEqual(await other.related_items("無關主題", VECTOR), [])
+            finally:
+                trace_event.reset(token)
+            traces = [json.loads(line) for line in (pathlib.Path(directory) / "trace.jsonl").read_text().splitlines()]
+        rejected = traces[0]["excluded_candidates"]
+        self.assertEqual([row["id"] for row in rejected], [str(item["id"])])
+        self.assertAlmostEqual(rejected[0]["similarity"], .5)
+        self.assertFalse(rejected[0]["exact_match"])
+        self.assertEqual(rejected[0]["rejection_reason"], "below_similarity_threshold")
+        self.assertEqual(traces[0]["min_similarity"], .75)
+        self.assertEqual(traces[1]["excluded_candidates"][0]["rejection_reason"], "embedding_contract_mismatch")
+        self.assertIsNone(traces[1]["excluded_candidates"][0]["similarity"])
+        self.assertEqual(traces[2]["excluded_candidates"], [])
+
+    async def test_chinese_category_query_matches_ascii_subject_and_rejects_unrelated_facts(self):
+        for turn, canonical, subject in (
+            ("diet", "飲食計畫以高蛋白質為主", "health.diet_plan"),
+            ("fitness", "重量訓練作為健身計畫的主軸", "health.fitness_plan"),
+            ("computer", "電腦自動進入睡眠模式", "project.computer.sleep"),
+        ):
+            job = await self._job(turn, canonical)
+            self.assertTrue(await self._apply(job, [{"action": "CREATE", "canonical_text": canonical,
+                "memory_type": "project", "subject_key": subject, "target_memory_ids": [],
+                "reason": "user statement"}], set(), {0: VECTOR}))
+        orthogonal = [0.0, 1.0] + [0.0] * 1022
+        rows = await self.repo.related_items("我們的健康管理方案包含什麼？", orthogonal)
+        self.assertEqual({row["subject_key"] for row in rows}, {"health.diet_plan", "health.fitness_plan"})
+        self.assertTrue(all(row["exact_match"] and row["similarity"] == 0 for row in rows))
+        self.assertEqual(await self.repo.related_items("我最喜歡哪部電影？", orthogonal), [])
+
     async def test_fresh_session_retrieval_evidence_comes_from_db_candidates(self):
         item = await self._create()
         fresh_event = await self.repo.accept("fresh-session-with-no-history", "turn-1")
@@ -316,6 +361,31 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 )).fetchone())[0]
                 audit_count = (await (await connection.execute("SELECT count(*) FROM memory_audit")).fetchone())[0]
         self.assertEqual((job_status, audit_count), ("done", 1))
+
+    async def test_worker_matches_replaced_entity_from_user_source(self):
+        original = await self._job("latte", "請記住我最喜歡的飲料是拿鐵")
+        self.assertTrue(await self._apply(original, [{"action": "CREATE", "canonical_text": "最喜歡的飲料是拿鐵",
+            "memory_type": "preference", "subject_key": "preference.drink", "target_memory_ids": [],
+            "reason": "user statement"}], set(), {0: VECTOR}))
+        old = (await self.repo.related_items("拿鐵", None))[0]
+        job = await self._job("coffee-change", "更正：我不喝拿鐵了，現在只喝美式咖啡")
+        candidate = {"canonical_text": "使用者現在只喝美式咖啡", "memory_type": "preference",
+            "subject_key": "preference.coffee", "intent": "correction", "importance": .7, "confidence": .9,
+            "retention_class": "normal", "reason": "explicit replacement", "source_ids": [str(job["id"])]}
+        sources = await self.repo.intake_sources(job, [])
+        await self.repo.complete_intake(job, {"route": "candidate", "candidates": [candidate]}, sources, [], {})
+        decision = {key: value for key, value in candidate.items() if key != "intent"}
+        decision.update(action="SUPERSEDE", target_memory_ids=[str(old["id"])], candidate_index=0)
+        llm = SimpleNamespace(decide=AsyncMock(return_value=([decision], {})))
+        orthogonal = [0.0, 1.0] + [0.0] * 1022
+        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=orthogonal)),
+            llm, self.manager, None)
+        self.assertTrue(await worker.process_one())
+        self.assertEqual([row["id"] for row in llm.decide.call_args.args[1]], [old["id"]])
+        current = await self.repo.related_items("咖啡", None)
+        self.assertEqual([row["canonical_text"] for row in current], [candidate["canonical_text"]])
+        self.assertEqual(current[0]["group_id"], old["group_id"])
+        self.assertEqual((await self._query("SELECT status FROM memory_items WHERE id = %s", (old["id"],)))[0][0], "superseded")
 
     async def test_forget_scrubs_source_job_and_audit(self):
         item = await self._create()
@@ -477,6 +547,33 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         row = (await self._query("SELECT status, (SELECT raw_text FROM memory_sources WHERE id = memory_jobs.id), agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
         self.assertEqual(row[:2], ("failed", "我喜歡茶"))
         self.assertEqual(len([item for item in row[2] if item["role"] == "intake"]), 3)
+
+    async def test_validation_retry_receives_error_and_commits_corrected_result(self):
+        from services.memory_intake import MemoryIntake
+        event = await self.repo.accept("session", "invalid-subject-key")
+        await self.repo.route(event, MemoryRouting(None), "我的飲食計畫以高蛋白質為主", [])
+        candidate = {"canonical_text": "健康管理：飲食計畫以高蛋白質為主", "memory_type": "project",
+            "subject_key": "health.diet_plan", "intent": "fact", "importance": .7, "confidence": .9,
+            "retention_class": "normal", "reason": "user statement", "source_ids": [str(event)]}
+        intake = object.__new__(MemoryIntake)
+        intake.call = AsyncMock(side_effect=[
+            ([("accept_candidates", {"candidates": [{**candidate, "subject_key": "健康管理.飲食計畫"}]})], {}),
+            ([("accept_candidates", {"candidates": [candidate]})], {}),
+        ])
+        decision = {key: value for key, value in candidate.items() if key != "intent"}
+        decision.update(action="CREATE", target_memory_ids=[], candidate_index=0)
+        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=VECTOR)),
+            SimpleNamespace(decide=AsyncMock(return_value=([decision], {}))), self.manager, intake)
+        self.assertTrue(await worker.process_one())
+        self.assertEqual(await self.repo.related_items("健康管理", None), [])
+        self.assertTrue(await worker.process_one())
+        self.assertTrue(await worker.process_one())
+        feedback = intake.call.call_args_list[1].args[1]["previous_validation_error"]
+        self.assertIn("subject_key", feedback)
+        self.assertEqual(len(await self.repo.related_items("健康管理", None)), 1)
+        row = (await self._query("SELECT status, intake_attempts, agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
+        self.assertEqual(row[:2], ("done", 2))
+        self.assertTrue(any(item.get("validation_error") == feedback for item in row[2]))
 
     async def test_jev_interruption_recovers_after_deadline(self):
         event = await self.repo.accept("session", "interrupted")

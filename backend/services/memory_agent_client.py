@@ -30,6 +30,8 @@ class MemoryAgentClient:
         extra_body = no_thinking_extra_body(self.provider)
         if extra_body:
             request["extra_body"] = extra_body
+        trace("memory_agent_request", {"role": self.role, "input_token_estimate": input_tokens,
+                                       "request": request})
         try:
             response = await self.client.chat.completions.create(**request)
         except BadRequestError as error:

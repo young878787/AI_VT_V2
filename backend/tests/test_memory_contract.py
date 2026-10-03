@@ -11,7 +11,7 @@ from domain.memory_decisions import validate_decisions
 from domain.memory_routing import route_memory
 from domain.memory_scope import MemoryScope, conversation_id, message_id
 from domain.memory_embedding import format_embedding_input, normalize_embedding, query_document
-from domain.memory_settings import load_memory_settings
+from domain.memory_settings import load_memory_settings, RETRIEVAL_INSTRUCTION
 from domain.jev_questions import build_memory_questions
 
 
@@ -94,6 +94,18 @@ class MemoryContractTests(unittest.TestCase):
         self.assertEqual(settings.embedding_serving_model, "jina-retrieval")
         self.assertEqual(settings.embedding_query_prefix, "Query: ")
         self.assertEqual(settings.embedding_document_prefix, "Document: ")
+        del env["EMBEDDING_AI_QUERY_PREFIX"]
+        del env["EMBEDDING_AI_DOCUMENT_PREFIX"]
+        self.assertEqual(load_memory_settings(env).embedding_contract, settings.embedding_contract)
+        env["EMBEDDING_AI_QUERY_PREFIX"] = RETRIEVAL_INSTRUCTION
+        env["EMBEDDING_AI_DOCUMENT_PREFIX"] = ""
+        self.assertNotEqual(load_memory_settings(env).embedding_contract, settings.embedding_contract)
+        del env["EMBEDDING_AI_QUERY_PREFIX"]
+        del env["EMBEDDING_AI_DOCUMENT_PREFIX"]
+        env["EMBEDDING_AI_MODEL"] = "other-embedding-model"
+        other = load_memory_settings(env)
+        self.assertEqual(other.embedding_query_prefix, RETRIEVAL_INSTRUCTION)
+        self.assertEqual(other.embedding_document_prefix, "")
 
     def test_test_mode_rejects_wrong_database_or_schema(self):
         settings = {

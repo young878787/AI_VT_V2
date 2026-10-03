@@ -86,14 +86,16 @@ def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySet
     urls = (required("MEMORY_AI_BASE_URL"), required("EMBEDDING_AI_BASE_URL"))
     if any(urlparse(url).scheme not in {"http", "https"} or not urlparse(url).hostname for url in urls):
         raise RuntimeError("Memory AI URL 必須是 HTTP URL")
+    embedding_model = required("EMBEDDING_AI_MODEL")
+    jina_retrieval = embedding_model == "jinaai/jina-embeddings-v5-text-small-retrieval"
     return MemorySettings(
         database_url, scope,
         required("MEMORY_AI_API_KEY"), urls[0], required("MEMORY_AI_MODEL"),
-        required("EMBEDDING_AI_API_KEY"), urls[1], required("EMBEDDING_AI_MODEL"),
-        env.get("EMBEDDING_AI_SERVING_MODEL", "").strip() or required("EMBEDDING_AI_MODEL"),
+        required("EMBEDDING_AI_API_KEY"), urls[1], embedding_model,
+        env.get("EMBEDDING_AI_SERVING_MODEL", "").strip() or embedding_model,
         dimension,
-        env.get("EMBEDDING_AI_QUERY_PREFIX", RETRIEVAL_INSTRUCTION),
-        env.get("EMBEDDING_AI_DOCUMENT_PREFIX", ""),
+        env.get("EMBEDDING_AI_QUERY_PREFIX", "Query: " if jina_retrieval else RETRIEVAL_INSTRUCTION),
+        env.get("EMBEDDING_AI_DOCUMENT_PREFIX", "Document: " if jina_retrieval else ""),
     )
 
 

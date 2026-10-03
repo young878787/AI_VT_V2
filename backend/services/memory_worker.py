@@ -33,14 +33,17 @@ class MemoryWorker:
         job = await self.repository.claim()
         if job is None:
             return False
+        job["previous_validation_error"] = next((item["validation_error"]
+            for item in reversed(job.get("agent_diagnostics") or [])
+            if item.get("role") == job["stage"] and item.get("validation_error")), None)
         started = time.monotonic()
         trace_token = trace_event.set(job["id"])
         outcome = "completed"
         error_detail = None
         try:
             async with asyncio.timeout(100):
-                query_text = job["source_text"] if job["stage"] == "intake" else "\n".join(
-                    candidate["canonical_text"] for candidate in job["reviewed_candidates"])
+                query_text = (job["source_text"] if job["stage"] == "intake" else "\n".join(
+                    [job["source_text"], *(candidate["canonical_text"] for candidate in job["reviewed_candidates"])]))[:4000]
                 query = await self.embedding.embed(query_text, purpose="memory_match_query",
                                                    event_id=job["id"], stage=job["stage"], job_attempt=job["attempts"])
                 if job["stage"] == "intake":
@@ -87,7 +90,8 @@ class MemoryWorker:
             outcome = type(exc).__name__
             error_detail = str(exc) if isinstance(exc, ValueError) else None
             attempts = job[f"{job['stage']}_attempts"]
-            await self.repository.finish(job, "failed" if attempts >= 3 else "retry", error=type(exc).__name__)
+            await self.repository.finish(job, "failed" if attempts >= 3 else "retry", error=type(exc).__name__,
+                                         validation_error=error_detail)
         finally:
             trace("memory_stage", {"role": job["stage"], "attempt": job["attempts"],
                 "duration_sec": round(time.monotonic() - started, 4), "outcome": outcome,

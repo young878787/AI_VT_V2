@@ -10,10 +10,13 @@ from psycopg_pool import AsyncConnectionPool
 
 from domain.memory_routing import MemoryRouting, instruction_policy
 from domain.memory_scope import MemoryScope, conversation_id, message_id
+from core.prompt_logger import test_log_dir, trace, trace_event
 
 
 MIN_RETRIEVAL_SIMILARITY = 0.75
 _GENERIC_QUERY_WORDS = {"喜歡", "記得", "以前", "之前", "曾經", "過去", "使用者", "什麼", "知道", "我的", "你的", "使用", "用者", "現在", "平常", "最近", "幫我", "記住", "記憶", "這件", "件事", "更正", "只有", "相關", "的人"}
+_QUERY_CATEGORY_ALIASES = {"健康": "health", "甜點": "dessert", "甜食": "sweet",
+                           "咖啡": "coffee", "飲料": "drink", "遊戲": "game"}
 
 
 class MemoryRepository:
@@ -182,7 +185,8 @@ class MemoryRepository:
                     job["source_text"] = source[0] if source else None
                     return job
 
-    async def finish(self, job: dict, status: str, decisions: object = None, error: str | None = None) -> bool:
+    async def finish(self, job: dict, status: str, decisions: object = None, error: str | None = None,
+                     validation_error: str | None = None) -> bool:
         if status not in {"done", "ignored", "retry", "failed", "cancelled"}:
             raise ValueError("無效的 job terminal status")
         owner = (self.scope.user_id, self.scope.character_id)
@@ -200,7 +204,9 @@ class MemoryRepository:
                     AND state.user_id = job.user_id AND state.character_id = job.character_id
                     AND state.generation = job.generation""",
                     (status, Jsonb(decisions) if decisions is not None else None,
-                     error[:300] if error else None, Jsonb([{"role": job["stage"], "attempt": job["attempts"], "result": status, "error": error}]), job["id"], *owner, job["generation"], job["attempts"]),
+                     error[:300] if error else None, Jsonb([{"role": job["stage"], "attempt": job["attempts"],
+                         "result": status, "error": error, "validation_error": validation_error[:1000] if validation_error else None}]),
+                     job["id"], *owner, job["generation"], job["attempts"]),
                 )
                 return cursor.rowcount == 1
 
@@ -286,7 +292,8 @@ class MemoryRepository:
             for word in parts:
                 if word not in _GENERIC_QUERY_WORDS and word not in words:
                     words.append(word)
-        words = words[:24]
+        aliases = {word: alias for word, alias in _QUERY_CATEGORY_ALIASES.items() if word in text}
+        words = list(dict.fromkeys([*aliases.values(), *words]))[:24]
         term_sql = sql.SQL(" OR ").join(
             sql.SQL("canonical_text ILIKE %s OR COALESCE(subject_key, '') ILIKE %s") for _ in words
         )
@@ -318,10 +325,10 @@ class MemoryRepository:
             "history": sql.SQL("status IN ('active', 'conflict', 'superseded', 'expired', 'archived')"),
             "management": sql.SQL("status IN ('active', 'conflict', 'superseded', 'expired', 'archived')"),
         }[mode]
-        query = sql.SQL(
+        query_template = sql.SQL(
             """SELECT id, group_id, memory_type, canonical_text, subject_key, keywords,
             status, importance, confidence, retention_class, valid_from, valid_to, expires_at,
-            exact_match, 1 - distance AS similarity,
+            exact_match, 1 - distance AS similarity, embedding IS NOT NULL AS embedding_present, embedding_contract,
             EXISTS (SELECT 1 FROM memory_items c WHERE c.user_id = ranked.user_id
                 AND c.character_id = ranked.character_id AND c.group_id = ranked.group_id
                 AND c.status = 'conflict') AS has_conflict,
@@ -331,9 +338,11 @@ class MemoryRepository:
             FROM (
                 SELECT *, {} AS exact_match, {} AS distance FROM memory_items
                 WHERE user_id = %s AND character_id = %s AND {}
-            ) AS ranked WHERE exact_match OR ({} AND distance <= %s)
+            ) AS ranked WHERE {}
             ORDER BY exact_match DESC, distance ASC NULLS LAST, importance DESC LIMIT %s"""
-        ).format(exact_sql, ranking, status_sql, vector_sql)
+        )
+        query = query_template.format(exact_sql, ranking, status_sql,
+            sql.SQL("exact_match OR ({} AND distance <= %s)").format(vector_sql))
         args = (*exact_args, *ranking_args, *owner, *vector_args,
                 1 - MIN_RETRIEVAL_SIMILARITY, min(max(limit, 1), 20))
         async with self.pool.connection() as connection:
@@ -341,7 +350,26 @@ class MemoryRepository:
                 await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
                 async with await connection.execute(query, args) as cursor:
                     rows = await cursor.fetchall()
-                    return [dict(zip([col.name for col in cursor.description], row)) for row in rows]
+                    selected = [dict(zip([col.name for col in cursor.description], row)) for row in rows]
+                if test_log_dir() is not None and trace_event.get() is not None:
+                    excluded_query = query_template.format(exact_sql, ranking, status_sql,
+                        sql.SQL("NOT (exact_match OR COALESCE(({} AND distance <= %s), FALSE))").format(vector_sql))
+                    async with await connection.execute(excluded_query, args) as cursor:
+                        excluded = [dict(zip([col.name for col in cursor.description], row))
+                                    for row in await cursor.fetchall()]
+                    for row in excluded:
+                        row["rejection_reason"] = (
+                            "query_embedding_unavailable" if embedding is None else
+                            "memory_embedding_missing" if not row["embedding_present"] else
+                            "embedding_contract_mismatch" if self.embedding_contract is not None
+                                and row["embedding_contract"] != self.embedding_contract else
+                            "below_similarity_threshold"
+                        )
+                    trace("retrieval_filter", {"query": text, "mode": mode, "query_terms": words,
+                        "category_aliases": aliases,
+                        "min_similarity": MIN_RETRIEVAL_SIMILARITY, "excluded_limit": min(max(limit, 1), 20),
+                        "excluded_candidates": excluded})
+                return selected
 
     async def related_context(self, job: dict, embedding: list[float]) -> list[dict]:
         owner = (self.scope.user_id, self.scope.character_id)

@@ -15,7 +15,8 @@ TEXT = {"type": "string", "minLength": 1, "maxLength": 1000}
 SOURCE_IDS = {"type": "array", "minItems": 1, "maxItems": 16,
               "items": {"type": "string", "format": "uuid"}}
 FACT = {"type": "object", "additionalProperties": False, "properties": {
-    "canonical_text": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "canonical_text": {"type": "string", "minLength": 1, "maxLength": 2000,
+                       "description": "Self-contained atomic fact in the user's language and writing system; preserve entity names, established topic and ordinary category nouns."},
     "source_ids": SOURCE_IDS,
     "memory_type": {"type": "string", "enum": ["profile", "preference", "project", "event"]},
     "subject_key": {"type": "string", "minLength": 1, "maxLength": 160,
