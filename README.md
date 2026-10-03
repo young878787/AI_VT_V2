@@ -105,29 +105,37 @@ npm run dev
 長期記憶固定使用 PostgreSQL／pgvector `MemoryRuntime`。一般後端使用 `MEMORY_DATABASE_URL` 與固定 `MEMORY_DATABASE_SCHEMA`；`backend/tools/chat_test_cli.py` 會自動啟動同一份後端程式的隔離 instance，使用與正式資料庫不同的 `MEMORY_TEST_DATABASE_URL`，每次建立獨立 schema 並套用 Alembic migration。執行前需設定獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`。本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。缺少測試 DB、測試 DB 指向正式 database 或 schema 不合法時，CLI 會在啟動後端前失敗；測試完成後清理該 schema。CLI 逐輪等待記憶 job 完成，擷取回覆、JEV 決策、route、audit 與記憶變更，不讀寫正式長期記憶。
 
 ```bash
-cd backend
+# 從 repository 根目錄執行：20 個固定 cases ＋ 5 個既有 Chat LLM 新生成案例
+backend/.venv/bin/python backend/tools/chat_test_cli.py
 
-# 腳本模式：使用對話表逐輪發送（backend/tools/chat_test_scenarios.txt 為 20 輪範例）
-python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt
+# 原樣重播 25-case 快照，不再次生成
+backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
 
-# 互動模式：手動輸入對話
-python tools/chat_test_cli.py
-
-# 限制輪數／逾時
-python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
-python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --turn-timeout 120
+# 保留既有 TXT 表情回歸；max-turns 僅用於 TXT
+backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-每次執行在 `backend/log/chat_test_runs/<run-id>/` 建立全新的短期記憶與報告；測試 DB schema 在報告寫入後清理：
+CLI 固定 Rushia。案例的 setup 與 probe 都走 `/ws/chat`；每案 reset 隔離 owner，長期 probe 使用新 session／連線，背景工作結案後再前進。案例數與對話輪數分開記錄，語意品質不自動判定。
 
-- `memory/` — 該次測試專用短期對話記憶
-- `turns.jsonl` — 該次測試的逐輪原始資料
-- `report.md` — 每輪更新的 Markdown 報告；中斷或失敗時保留部分結果與原因
-- `run.json`、`server.log` — 情境／模型設定與後端錯誤日誌
+每次建立 `backend/log/chat_test_runs/YYYYMMDD_HHMMSS/`（已 gitignore），`latest/` 指向最新一次結果：
 
-JEV Emotion 與 Action 使用 OpenRouter System One，啟動前需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。Chat 只輸出露西亞的純文字回覆；`EXPRESSION_DECIDER` 已不再使用。
+- `cases.json` — 接受的完整案例，供精確重播。
+- `turns.jsonl` — 唯一逐輪詳細資料；每行一筆，含完整表情、原始／resolved JEV、記憶交易、召回與裁切後實際 Chat messages。
+- `case_states.jsonl` — 每案一筆的結案 DB sources、evidence、relations、jobs 與 memory items，不混入逐輪資料。
+- `memory_report.md`、`expression_report.md` — 從 JSONL 衍生的精簡閱讀視圖，不內嵌完整 JSON；需要細查時以 `case_id`＋`turn` 查詢 `turns.jsonl`。
+- `run.json`、`server.log` — 案例指紋、生成診斷、執行狀態與清理結果、隔離後端日誌。
 
-以上 log 檔案皆已 gitignore。單輪錯誤可沿用測試 session 重試（`--retries`，預設 2 次）；重試耗盡、已有回覆後失敗或逾時時會停止，不會把後續題目記成有效輪次。外部 `--url` 模式已移除，以免誤連正式服務。
+獨立六情境 memory-agent 評估使用 `backend/log/memory_agent_runs/<timestamp>/`，包含 `run.json`、`memory_agents.json` 與 `memory_agents_report.md`，不會切換 Chat 測試的 `latest`。
+
+摘要先讀兩份 Markdown；需要完整 evidence 時再查逐輪 JSON：
+
+```bash
+jq 'select(.case_id == "case_014" and .turn == 7)' backend/log/chat_test_runs/latest/turns.jsonl
+```
+
+JEV 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。生成沿用 `CHAT_AI_*`，記憶 agent 使用 `MEMORY_AI_*`。測試 schema 與短期／prompt 暫存在結束時清理；失敗保存部分結果。成功送出的輸入不得盲目重送，只有尚未送出時可安全重試（`--retries`，預設 2）。背景 terminal failed 仍保留診斷並繼續獨立觀察，run 不會因此記成成功。
+
+詳見 [記憶測試集設計與實作](docs/AI_VT_Memory_Testset_Design.md)。
 
 ## 作品展示
 

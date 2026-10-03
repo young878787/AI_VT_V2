@@ -2,10 +2,13 @@
 
 import json
 import re
+import time
 from uuid import UUID
 
 from infrastructure.memory_embedding_client import MemoryEmbeddingClient
 from infrastructure.memory_repository import MemoryRepository
+from infrastructure.memory_repository import MIN_RETRIEVAL_SIMILARITY
+from core.prompt_logger import trace
 
 
 _HISTORY = re.compile(r"以前|之前|曾經|過去|歷史|原本|before|previously|used to", re.I)
@@ -19,7 +22,9 @@ class MemoryRetriever:
         self.embedding = embedding
 
     async def retrieve(self, user_text: str, event_id: UUID | None = None) -> tuple[dict, str]:
+        started = time.monotonic()
         mode = "history" if _HISTORY.search(user_text) else "future" if _FUTURE.search(user_text) else "current"
+        errors = []
         try:
             query_embedding = await self.embedding.embed(
                 user_text[:4000], query=True,
@@ -27,15 +32,21 @@ class MemoryRetriever:
                 event_id=event_id, stage="chat_retrieval",
             )
         except Exception as exc:
+            errors.append({"stage": "embedding", "error": type(exc).__name__})
             print(f"[Memory] embedding query fallback: {type(exc).__name__}")
             query_embedding = None
         try:
             rows = await self.repository.related_items(user_text, query_embedding, limit=20, mode=mode)
         except Exception as exc:
             print(f"[Memory] retrieval fallback: {type(exc).__name__}")
+            trace("retrieval", {"query": user_text, "mode": mode, "limit": 20,
+                "min_similarity": MIN_RETRIEVAL_SIMILARITY, "candidates": [], "projections": [],
+                "errors": [*errors, {"stage": "repository", "error": type(exc).__name__}],
+                "duration_sec": round(time.monotonic() - started, 4)}, event_id)
             return {}, ""
         profile: dict = {}
         injected = []
+        projections = []
         for row in rows:
             if row["memory_type"] != "profile" or row["status"] != "active" or row.get("has_conflict") or row.get("pending_change"):
                 continue
@@ -51,8 +62,11 @@ class MemoryRetriever:
             else:
                 continue
             injected.append(row)
+            if field == "communication_style":
+                projections = [item for item in projections if item.get("field") != field]
+            projections.append({"id": str(row["id"]), "destination": "profile", "field": field,
+                                "text": text[:300]})
         selected = []
-        seen_groups = set()
         remaining = 800
         for row in rows:
             if row in injected:
@@ -69,8 +83,19 @@ class MemoryRetriever:
             text = (label + row["canonical_text"])[:remaining]
             selected.append(text)
             remaining -= len(text)
-            seen_groups.add(row["group_id"])
             injected.append(row)
+            projections.append({"id": str(row["id"]), "destination": "memory", "text": text})
+        trace("retrieval", {"query": user_text, "mode": mode, "limit": 20,
+            "min_similarity": MIN_RETRIEVAL_SIMILARITY, "memory_limit": 8, "memory_char_budget": 800,
+            "profile_char_limit": 300, "embedding_available": query_embedding is not None,
+            "candidates": [{"rank": index + 1,
+                **{key: row.get(key) for key in ("id", "group_id", "canonical_text", "memory_type",
+                    "subject_key", "similarity", "exact_match", "status", "valid_from", "valid_to",
+                    "expires_at", "has_conflict", "pending_change")},
+                "projection": ("selected" if any(item["id"] == str(row["id"]) for item in projections)
+                               else "profile_overwritten" if row in injected else "memory_budget_exhausted")}
+                for index, row in enumerate(rows)], "projections": projections,
+            "errors": errors, "duration_sec": round(time.monotonic() - started, 4)}, event_id)
         if event_id is not None:
             print("[Memory] retrieval candidates: " + json.dumps({
                 "event_id": str(event_id),

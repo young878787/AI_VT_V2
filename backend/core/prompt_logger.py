@@ -1,18 +1,43 @@
 """
 Prompt 日誌工具：每輪對話後記錄輸入/輸出提示詞、工具調用、Token 數。
-日誌路徑：backend/log/prompt.log
+一般聊天日誌：backend/log/runtime/prompt.log；測試使用隔離短期目錄。
 """
 import datetime
+import json
+import os
+from contextvars import ContextVar
 from pathlib import Path
 
-# backend/log/prompt.log
-_LOG_DIR = Path(__file__).resolve().parent.parent / "log"
+_LOG_DIR = Path(__file__).resolve().parent.parent / "log" / "runtime"
 _LOG_FILE = _LOG_DIR / "prompt.log"
 _SEP = "=" * 72
+trace_event = ContextVar("memory_test_event", default=None)
+
+
+def test_log_dir() -> Path | None:
+    if os.getenv("AI_VT_TEST_MODE", "").lower() == "true" and os.getenv("AI_VT_MEMORY_DIR"):
+        return Path(os.environ["AI_VT_MEMORY_DIR"])
+    return None
+
+
+def trace(stage: str, data: dict, event_id=None) -> None:
+    """只在隔離測試記錄結構化證據；不改 WS 或 DB 契約。"""
+    directory = test_log_dir()
+    event_id = event_id or trace_event.get()
+    if directory is None or event_id is None:
+        return
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / "trace.jsonl").open("a", encoding="utf-8") as file:
+            file.write(json.dumps({"event_id": str(event_id), "stage": stage,
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                **data}, ensure_ascii=False, default=str) + "\n")
+    except OSError as exc:
+        print(f"[Test trace] 寫入失敗: {type(exc).__name__}")
 
 
 def _ensure_dir() -> None:
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (test_log_dir() or _LOG_DIR).mkdir(parents=True, exist_ok=True)
 
 
 def log_turn(
@@ -53,7 +78,7 @@ def log_turn(
     )
 
     try:
-        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+        with open((test_log_dir() / "prompt.log") if test_log_dir() else _LOG_FILE, "a", encoding="utf-8") as f:
             f.write(block)
     except Exception as e:
         print(f"[PromptLogger] 寫入失敗: {e}")
@@ -62,6 +87,8 @@ def log_turn(
 def reset_log() -> None:
     """清空 prompt.log，寫入重置時間戳（還原記憶時呼叫）。"""
     _ensure_dir()
+    if test_log_dir() is not None:
+        return  # 每案 reset 不抹除本輪隔離診斷。
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with open(_LOG_FILE, "w", encoding="utf-8") as f:

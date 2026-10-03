@@ -222,10 +222,13 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         "VALUES (%s, %s, %s, %s, 'CREATE', 'test')",
                         (uuid4(), run_scope.user_id, run_scope.character_id, f"{event_id}:0"),
                     )
-            self.assertEqual(
-                await asyncio.to_thread(store.audit, event_id.hex),
-                [{"action": "CREATE", "target_id": None, "reason": "test", "deleted_count": None}],
-            )
+            audit = await asyncio.to_thread(store.audit, event_id.hex)
+            self.assertEqual(len(audit), 1)
+            self.assertEqual({key: audit[0][key] for key in ("action", "target_id", "reason", "deleted_count")},
+                             {"action": "CREATE", "target_id": None, "reason": "test", "deleted_count": None})
+            self.assertEqual(audit[0]["operation_key"], f"{event_id}:0")
+            self.assertIsNone(audit[0]["decision"])
+            self.assertIsNotNone(audit[0]["created_at"])
             self.assertEqual(await self.repo.related_items("茶", VECTOR), [])
         finally:
             await asyncio.to_thread(store.close)
@@ -580,6 +583,29 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self._apply(job, [decision], {first["id"]}, {0: VECTOR})
         self.assertEqual([row["id"] for row in await self.repo.related_items("飲料", VECTOR)], [first["id"]])
         self.assertEqual(len(await self.repo.related_items("飲料", VECTOR, mode="future")), 1)
+
+    async def test_temporary_expiry_removes_current_projection_but_preserves_history(self):
+        item = await self._create()
+        await self._query("UPDATE memory_items SET retention_class = 'temporary', "
+                          "expires_at = now() - interval '1 second' WHERE id = %s", (item["id"],))
+        self.assertEqual(await self.repo.related_items("茶", VECTOR), [])
+        await self.repo.expire_temporary()
+        rows = await self.repo.related_items("茶", VECTOR, mode="history")
+        self.assertEqual([(row["id"], row["status"]) for row in rows], [(item["id"], "expired")])
+
+    async def test_expired_lease_reclaimed_after_pool_restart_rejects_old_attempt(self):
+        job, decision = await self._reviewed("restart-lease")
+        await self._query("UPDATE memory_jobs SET lease_until = now() - interval '1 second' WHERE id = %s", (job["id"],))
+        await self.pool.close()
+        self.pool = await make_pool(TEST_URL)
+        self.repo = MemoryRepository(self.pool, self.scope, EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+        self.manager = MemoryDBManager(self.pool, self.scope, "test-model", EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+        recovered = await self.repo.claim()
+        self.assertEqual(recovered["id"], job["id"])
+        self.assertGreater(recovered["attempts"], job["attempts"])
+        self.assertFalse(await self.manager.apply(job, [decision], set(), {0: VECTOR}))
+        self.assertTrue(await self.manager.apply(recovered, [decision], set(), {0: VECTOR}))
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 1)
 
     async def test_forget_cancels_older_uncommitted_duplicate(self):
         job, decision = await self._reviewed("old-pending", "使用者喜歡茶", "preference.tea")

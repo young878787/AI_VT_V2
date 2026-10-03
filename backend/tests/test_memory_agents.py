@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from domain.memory_intake import validate_intake
+from domain.memory_intake import validate_intake, FACT
 from domain.memory_routing import instruction_policy
 from services.memory_llm import MemoryLLM, librarian_tools
 
@@ -45,6 +45,18 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
                     validate_intake("accept_candidates", {
                         "candidates": [{**self.fact, field: value}],
                     }, [self.source], "我喜歡茶")
+
+    def test_intake_schema_exposes_existing_subject_key_constraint(self):
+        import re
+        pattern = FACT["properties"]["subject_key"]["pattern"]
+        for key, valid in (("project.ai_vt.live2d_control", True), ("AI VT", False), ("", False)):
+            self.assertEqual(bool(re.fullmatch(pattern, key)), valid)
+            candidate = {**self.fact, "subject_key": key}
+            if valid:
+                validate_intake("accept_candidates", {"candidates": [candidate]}, [self.source], "我喜歡茶")
+            else:
+                with self.assertRaisesRegex(ValueError, "subject_key"):
+                    validate_intake("accept_candidates", {"candidates": [candidate]}, [self.source], "我喜歡茶")
 
     async def test_librarian_requires_every_candidate_and_keeps_sources(self):
         llm = object.__new__(MemoryLLM)

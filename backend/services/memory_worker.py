@@ -3,6 +3,7 @@ import asyncio
 import time
 
 from services.memory_events import publish_memory_event
+from core.prompt_logger import trace, trace_event
 
 
 class MemoryWorker:
@@ -32,6 +33,10 @@ class MemoryWorker:
         job = await self.repository.claim()
         if job is None:
             return False
+        started = time.monotonic()
+        trace_token = trace_event.set(job["id"])
+        outcome = "completed"
+        error_detail = None
         try:
             async with asyncio.timeout(100):
                 query_text = job["source_text"] if job["stage"] == "intake" else "\n".join(
@@ -76,10 +81,18 @@ class MemoryWorker:
                         publish_memory_event("memory_committed", str(job["id"]), str(job["message_id"]),
                                              stage="librarian", status="done")
         except asyncio.CancelledError:
+            outcome = "cancelled"
             raise
         except Exception as exc:
+            outcome = type(exc).__name__
+            error_detail = str(exc) if isinstance(exc, ValueError) else None
             attempts = job[f"{job['stage']}_attempts"]
             await self.repository.finish(job, "failed" if attempts >= 3 else "retry", error=type(exc).__name__)
+        finally:
+            trace("memory_stage", {"role": job["stage"], "attempt": job["attempts"],
+                "duration_sec": round(time.monotonic() - started, 4), "outcome": outcome,
+                "validation_error": error_detail}, job["id"])
+            trace_event.reset(trace_token)
         return True
 
     async def run(self):

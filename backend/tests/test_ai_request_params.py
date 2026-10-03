@@ -59,6 +59,8 @@ class AIRequestParamsTests(unittest.IsolatedAsyncioTestCase):
                     results, diagnostic = await agent.call("test", {"text": "synthetic"}, tools)
                 self.assertEqual(results, [("result", {"ok": True})])
                 self.assertEqual(diagnostic["role"], role)
+                self.assertIsNone(diagnostic["actual_model"])
+                self.assertIsNone(diagnostic["finish_reason"])
                 request = create.call_args.kwargs
                 self.assertEqual(request["extra_body"], no_thinking_extra_body("custom"))
                 self.assertEqual(request["tool_choice"], "required")

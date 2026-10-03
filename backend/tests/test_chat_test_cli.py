@@ -35,6 +35,38 @@ def make_record(turn: int, error: str | None = None) -> dict:
 
 
 class ChatTestCliTests(unittest.TestCase):
+    def test_run_directories_use_taipei_time_and_preserve_previous_artifacts(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(cli, "RUNS_DIR", pathlib.Path(directory)), \
+             mock.patch.object(cli, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 10, 3, 13, 5, 7, tzinfo=ZoneInfo("Asia/Taipei"))
+            first = cli.create_run_dir()
+            (first / "turns.jsonl").write_text("existing evidence", encoding="utf-8")
+            self.assertIsNone(cli.update_latest(first))
+            latest = pathlib.Path(directory) / "latest"
+            self.assertEqual(latest.resolve(), first)
+            self.assertEqual((latest / "turns.jsonl").read_text(encoding="utf-8"), "existing evidence")
+            second = cli.create_run_dir()
+            self.assertEqual(first.name, "20261003_130507")
+            self.assertEqual(second.name, "20261003_130507_2")
+            self.assertEqual((first / "turns.jsonl").read_text(encoding="utf-8"), "existing evidence")
+            self.assertEqual(cli.update_latest(second), first.name)
+            self.assertTrue(latest.is_symlink())
+            self.assertEqual(latest.resolve(), second)
+            self.assertEqual(len(list(pathlib.Path(directory).glob(".latest-*.tmp"))), 0)
+
+    def test_latest_does_not_overwrite_existing_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            latest = root / "latest"
+            latest.mkdir()
+            (latest / "turns.jsonl").write_text("previous evidence", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "非連結資料"):
+                cli.update_latest(root / "20261003_130507")
+            self.assertEqual((latest / "turns.jsonl").read_text(encoding="utf-8"), "previous evidence")
+
     def test_backend_uses_isolated_test_database_and_scope(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = pathlib.Path(directory)
@@ -73,7 +105,7 @@ class ChatTestCliTests(unittest.TestCase):
                 "jevDecisionCriteriaVersion": "joint_two_axis_v4",
                 "jevDecisionQuestionHash": "abc123abc123",
             }
-            path = pathlib.Path(directory) / "report.md"
+            path = pathlib.Path(directory) / "memory_report.md"
             cli.write_markdown_report([record], path, {
                 "run_id": "test", "planned_turns": 1, "started_at": "now",
                 "scenario": "test", "scenario_sha256": "hash",
@@ -82,10 +114,12 @@ class ChatTestCliTests(unittest.TestCase):
             }, "completed", None)
             report = path.read_text(encoding="utf-8")
             self.assertIn("## 統計摘要", report)
-            self.assertIn("## 20 輪決策總覽", report)
-            self.assertIn("| 1 | message 1 | 露西亞的回答 | shy | awkward | shy | awkward | B 0.80 / A 0.75 | OK |", report)
-            self.assertIn("<details>", report)
-            self.assertIn("## 詳細資料", report)
+            self.assertIn("## 全部輪次決策總覽", report)
+            self.assertIn("| 1 | message 1 | 露西亞的回答 | shy 0.50、pleased 未提供、genuinely_angry 未提供、sad_or_hurt 未提供、masking_positive_feeling 未提供、wants_continue_interaction 未提供 | shy | awkward | shy | awkward | B 0.80 / A 0.75 | OK |", report)
+            self.assertIn("## 詳細紀錄", report)
+            self.assertIn("turns.jsonl", report)
+            self.assertNotIn("```json", report)
+            self.assertNotIn("## 詳細資料", report)
             self.assertIn("問題指紋：`abc123abc123`", report)
 
     def test_report_identifies_rejected_attitude_choice(self):
@@ -101,7 +135,7 @@ class ChatTestCliTests(unittest.TestCase):
                 "jevBaseEmotionFallbackReason": "none",
                 "jevInteractionAttitudeFallbackReason": "low_confidence",
             }
-            path = pathlib.Path(directory) / "report.md"
+            path = pathlib.Path(directory) / "memory_report.md"
             cli.write_markdown_report([record], path, {
                 "run_id": "test", "planned_turns": 1, "started_at": "now",
                 "scenario": "test", "scenario_sha256": "hash",
@@ -139,11 +173,12 @@ class ChatTestCliTests(unittest.TestCase):
             stop.assert_called_once_with(process, log_file)
             records = [json.loads(line) for line in (run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual([record["turn"] for record in records], [1, 2])
-            report = (run_dir / "report.md").read_text(encoding="utf-8")
+            report = (run_dir / "expression_report.md").read_text(encoding="utf-8")
             self.assertIn("**failed**；已完成 1 / 3 輪", report)
             self.assertIn("第 2 輪失敗：overloaded", report)
             self.assertNotIn("message 3", report)
             self.assertTrue((run_dir / "run.json").exists())
+            self.assertTrue((run_dir / "case_states.jsonl").exists())
 
     def test_interruption_preserves_first_turn_and_closes_backend(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -165,8 +200,8 @@ class ChatTestCliTests(unittest.TestCase):
                 mock.patch.object(cli, "run_turn", side_effect=[make_record(1), asyncio.CancelledError()]):
                 with self.assertRaises(asyncio.CancelledError):
                     asyncio.run(cli.run(args))
-            run_dir = next((root / "runs").iterdir())
-            report = (run_dir / "report.md").read_text(encoding="utf-8")
+            run_dir = (root / "runs" / "latest").resolve()
+            report = (run_dir / "expression_report.md").read_text(encoding="utf-8")
             self.assertIn("**interrupted**；已完成 1 / 2 輪", report)
             self.assertEqual(len((run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()), 1)
             self.assertTrue(socket.closed)

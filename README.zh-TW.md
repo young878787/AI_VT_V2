@@ -115,13 +115,29 @@ npm run dev
 ### Headless Chat 測試（不開前端）
 
 ```bash
-cd backend
-python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt   # 腳本模式（20 輪範例對話表）
-python tools/chat_test_cli.py                                            # 互動模式
-python tools/chat_test_cli.py --scenario tools/chat_test_scenarios.txt --max-turns 5
+# 從 repository 根目錄執行完整 20＋5 cases
+backend/.venv/bin/python backend/tools/chat_test_cli.py
+
+# 精確重播已接受的案例快照
+backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
+
+# 既有 TXT 表情回歸素材
+backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-長期記憶固定使用 PostgreSQL／pgvector `MemoryRuntime`。一般後端使用 `MEMORY_DATABASE_URL` 與固定正式 schema；CLI 會自動啟動同一份後端程式的隔離測試 instance，使用與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL`，每次建立專用測試 schema、套用 Alembic migration，逐輪等待記憶 job 完成，並記錄 route、audit、記憶變更與對話結果；報告寫入後清理 schema。執行前需設定獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`；本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。缺少測試 DB、測試 DB 指向正式 database 或 schema 不合法時，CLI 不會啟動後端。`backend/log/chat_test_runs/<run-id>/` 保留獨立的短期對話 `memory/`、`turns.jsonl`、逐輪更新的 `report.md`、`run.json` 與 `server.log`（已 gitignore）。JEV Emotion 與 Action 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`；`EXPRESSION_DECIDER` 已不再使用。
+CLI 固定 Rushia，沿用同一 `main:app`／PostgreSQL `MemoryRuntime`，使用與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL` 及專用 `test_<32 lowercase hex>` schema。每案 reset 隔離 owner，setup 結案後執行新 session／連線的長期 probe；不直接灌入記憶。五筆延伸案例沿用 `CHAT_AI_*` 生成，重播不重新生成。
+
+每次建立 `backend/log/chat_test_runs/YYYYMMDD_HHMMSS/`，`latest/` 以連結指向最新完整 Chat 執行結果。資料夾包含 `cases.json`、`turns.jsonl`、`case_states.jsonl`、`run.json`、`memory_report.md`、`expression_report.md` 與 `server.log`。`turns.jsonl` 保存完整逐輪 JEV／表情、提出／提交操作、DB 來源、召回及裁切後 Chat messages；兩份 Markdown 只保留摘要與查詢入口。語意品質由人工查閱；背景工作錯誤會保存並反映在執行狀態。結束清理測試 schema 與短期／prompt 暫存，不讀寫正式長期記憶。
+
+獨立六情境 memory-agent 評估使用 `backend/log/memory_agent_runs/<timestamp>/`，保存 `run.json`、`memory_agents.json` 與 `memory_agents_report.md`，不會切換 Chat 測試的 `latest`。
+
+先讀兩份摘要 Markdown；需要完整 evidence 時再用 `case_id`＋`turn` 查逐輪 JSON：
+
+```bash
+jq 'select(.case_id == "case_014" and .turn == 7)' backend/log/chat_test_runs/latest/turns.jsonl
+```
+
+需設定獨立的 `MEMORY_AI_*`、`EMBEDDING_AI_*`（1024 維）及 JEV key；缺少測試 DB 或測試 DB 指向正式 database 時停止。詳見 [記憶測試集設計與實作](docs/AI_VT_Memory_Testset_Design.md)。
 
 ---
 

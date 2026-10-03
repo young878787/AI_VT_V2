@@ -7,6 +7,7 @@ import tiktoken
 from openai import AsyncOpenAI, BadRequestError
 
 from core.ai_request_params import no_thinking_extra_body, provider_from_url
+from core.prompt_logger import trace
 
 
 class MemoryAgentClient:
@@ -49,5 +50,10 @@ class MemoryAgentClient:
                       "latency_ms": round((time.monotonic() - started) * 1000),
                       "input_token_estimate": input_tokens,
                       "tokens": response.usage.total_tokens if response.usage else None,
-                      "tools": [name for name, _ in results]}
+                      "actual_model": getattr(response, "model", None),
+                      "usage": response.usage.model_dump() if response.usage else None,
+                      "finish_reason": getattr(response.choices[0], "finish_reason", None) if response.choices else None,
+                      "tools": [name for name, _ in results],
+                      "tool_results": [{"name": name, "arguments": args} for name, args in results]}
+        trace("memory_agent", diagnostic)
         return results, diagnostic

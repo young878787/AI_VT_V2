@@ -11,6 +11,8 @@ class MemoryIntake(MemoryAgentClient):
         calls, diagnostic = await self.call(
             "You are the memory intake reviewer. Use exactly one intake tool. "
             "Extract multiple atomic durable user facts, classify and cite supplied user source IDs. "
+            "Write canonical_text in the user's source language and preserve concrete entity names; "
+            "do not translate Chinese facts or names into English. Keep subject_key lowercase ASCII. "
             "importance and confidence must be numbers between 0 and 1 inclusive, never a 1-to-5 rating. "
             "Never treat assistant guesses, recalled memory or hypothetical statements as user facts. "
             "Review related held inputs when new evidence resolves them. If referents or targets are unclear, "

@@ -3,6 +3,7 @@ Chat 服務：LLM 串流、Context 壓縮、Token 計數、TTS 合成轉發。
 """
 import re
 import json
+import time
 from collections.abc import Awaitable, Callable
 
 from fastapi import WebSocket
@@ -11,6 +12,7 @@ from core.config import CHAT_MODEL_NAME, CHAT_PROVIDER, CHAT_CONTEXT_TOKEN_BUDGE
 from core.utils import strip_thinking, get_msg_field
 from infrastructure.ai_client import chat_create_with_fallback, no_thinking_extra_body
 from infrastructure.memory_store import save_session_summary
+from core.prompt_logger import trace
 
 import tiktoken
 
@@ -77,6 +79,19 @@ def build_chat_context(prompt: str, history: list[dict], user_text: str, budget:
             break
         selected.insert(0, dialogue_item)
     return [system, *selected, user]
+
+
+def retained_prompt_ranges(original: str, actual: str) -> list[list[int]]:
+    """對應 build_chat_context 的裁切，保留原始 system 字元來源區間。"""
+    if original == actual:
+        return [[0, len(original)]]
+    if not actual:
+        return []
+    marker = "\n…\n"
+    size = (len(actual) - len(marker)) // 2
+    if size > 0 and actual == original[:size] + marker + original[-size:]:
+        return [[0, size], [len(original) - size, len(original)]]
+    return []
 
 
 # ============================================================
@@ -154,34 +169,48 @@ class _VisibleTextFilter:
 
 async def stream_agent_a(messages: list, send_chunk: Callable[[str], Awaitable[None]]) -> str:
     """安全地逐段轉送 Chat 可見文字，完整結果供歷史與 TTS 使用。"""
-    stream = await chat_create_with_fallback(
-        model=CHAT_MODEL_NAME,
-        role="chat",
-        messages=messages,
-        temperature=0.85,
-        extra_body=no_thinking_extra_body(CHAT_PROVIDER),
-        max_tokens=400,
-        stream=True,
-    )
-
+    started = time.monotonic()
+    diagnostic = {"configured_model": CHAT_MODEL_NAME, "model": None, "usage": None,
+                  "finish_reason": None, "error": None}
+    stream = None
     chunks: list[str] = []
     visible_filter = _VisibleTextFilter()
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        piece = getattr(delta, "content", None)
-        if piece:
-            visible = visible_filter.feed(piece)
-            if visible:
-                chunks.append(visible)
-                await send_chunk(visible)
-
-    tail = visible_filter.finish()
-    if tail:
-        chunks.append(tail)
-        await send_chunk(tail)
-    return "".join(chunks).strip()
+    try:
+        stream = await chat_create_with_fallback(
+            model=CHAT_MODEL_NAME, role="chat", messages=messages,
+            temperature=0.85, extra_body=no_thinking_extra_body(CHAT_PROVIDER),
+            max_tokens=400, stream=True,
+        )
+        async for chunk in stream:
+            diagnostic["model"] = getattr(chunk, "model", None) or diagnostic["model"]
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                diagnostic["usage"] = usage.model_dump()
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            diagnostic["finish_reason"] = getattr(choice, "finish_reason", None) or diagnostic["finish_reason"]
+            piece = getattr(choice.delta, "content", None)
+            if piece:
+                visible = visible_filter.feed(piece)
+                if visible:
+                    chunks.append(visible)
+                    await send_chunk(visible)
+        tail = visible_filter.finish()
+        if tail:
+            chunks.append(tail)
+            await send_chunk(tail)
+        return "".join(chunks).strip()
+    except BaseException as exc:
+        diagnostic["error"] = type(exc).__name__
+        raise
+    finally:
+        diagnostic["duration_sec"] = round(time.monotonic() - started, 4)
+        diagnostic["output_token_estimate"] = estimate_token_count([
+            {"role": "assistant", "content": "".join(chunks)}])
+        trace("chat", diagnostic)
+        if stream is not None and hasattr(stream, "close"):
+            await stream.close()
 
 
 async def collect_agent_a(messages: list) -> str:

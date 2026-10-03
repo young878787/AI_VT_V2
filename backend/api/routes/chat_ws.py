@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import math
+import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -13,8 +14,9 @@ from core.config import (
     CHAT_MODEL_NAME,
     CHAT_PERSISTENCE_ENABLED,
     COMPRESS_KEEP_RECENT,
+    CHAT_CONTEXT_TOKEN_BUDGET,
 )
-from core.prompt_logger import log_turn, reset_log
+from core.prompt_logger import log_turn, reset_log, trace, trace_event
 from core.utils import normalize_session_id
 from domain.agent_a_prompts import build_agent_a_prompt
 from domain.emotion_state import EMOTION_FIELDS, resolve_emotion_state, NEUTRAL_EMOTION_STATE
@@ -24,6 +26,7 @@ from domain.expression_intent_schema import (
     normalize_expression_intent,
 )
 from domain.input_event import normalize_chat_input
+from domain.memory_routing import instruction_policy, POLICY_VERSION
 from domain.jev_questions import (
     BASE_EMOTION_CRITERIA,
     CONFIDENCE_THRESHOLD,
@@ -46,6 +49,7 @@ from infrastructure.typesafe_client import call_jev
 from services.chat_service import (
     stream_agent_a,
     build_chat_context,
+    retained_prompt_ranges,
     compress_context,
     estimate_token_count,
     synthesize_and_send_voice,
@@ -284,10 +288,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 json.dumps(questions, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest()[:12]
             try:
+                jev_started = time.monotonic()
                 answers = await call_jev(context, questions)
             except Exception as exc:
                 print(f"[JEV Decision] 呼叫失敗，使用 fallback: {exc}")
                 answers = None
+            trace("jev", {"answers": answers, "duration_sec": round(time.monotonic() - jev_started, 4),
+                "policy": instruction_policy(text), "policy_version": POLICY_VERSION,
+                "question_hash": question_hash, "error": "jev_call_failed" if answers is None else None})
             if event_id is not None:
                 memory_runtime.route_background(event_id, text, answers, snapshot["messages"])
                 active_memory_routed = True
@@ -309,6 +317,16 @@ async def websocket_endpoint(websocket: WebSocket):
             if snapshot["summary"]:
                 prompt += "\n\n本 session 已完成的對話摘要：\n" + snapshot["summary"][:4000]
             chat_messages = build_chat_context(prompt, snapshot["messages"], text)
+            trace("chat_context", {"messages": chat_messages, "session_id": session_id,
+                "token_budget": CHAT_CONTEXT_TOKEN_BUDGET, "history_limit": 16,
+                "history_count": len(snapshot["messages"]), "history": snapshot["messages"],
+                "summary": snapshot["summary"], "system_prompt_original_chars": len(prompt),
+                "system_prompt_trimmed": chat_messages[0]["content"] != prompt,
+                "system_retained_ranges": retained_prompt_ranges(prompt, chat_messages[0]["content"]),
+                "memory_section_start": prompt.find(snapshot["memory"]) if snapshot["memory"] else None,
+                "profile_section_start": prompt.find("使用者資料：\n") + len("使用者資料：\n"),
+                "profile": snapshot["profile"], "projected_memory": snapshot["memory"],
+                "token_estimate": estimate_token_count(chat_messages)})
             action_task = asyncio.create_task(_produce_and_send_action_plan(
                 websocket,
                 model_name,
@@ -373,6 +391,7 @@ async def websocket_endpoint(websocket: WebSocket):
         try:
             event_id = await memory_runtime.accept(session_id or "default_session", turn_id, text, list(messages))
             active_event_id = event_id
+            trace_event.set(event_id)
             await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
         except asyncio.CancelledError:
             raise

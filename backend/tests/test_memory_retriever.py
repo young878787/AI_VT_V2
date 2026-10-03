@@ -2,7 +2,7 @@ import pathlib
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -83,6 +83,22 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         profile, relevant = await MemoryRetriever(repository, embedding).retrieve("我的喜好")
         self.assertEqual(profile, {"recent_interests": ["喜歡天文"]})
         self.assertEqual(relevant, "喜歡拿鐵")
+
+    async def test_trace_preserves_candidate_order_and_scalar_profile_overwrite(self):
+        rows = [{"id": uuid4(), "group_id": uuid4(), "memory_type": "profile", "status": "active",
+                 "subject_key": "profile.communication_style", "canonical_text": text,
+                 "similarity": .9, "exact_match": False} for text in ("請簡短", "請詳細")]
+        repository = SimpleNamespace(related_items=AsyncMock(return_value=rows))
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
+        with patch("services.memory_retriever.trace") as trace:
+            profile, relevant = await MemoryRetriever(repository, embedding).retrieve("回覆風格", uuid4())
+        self.assertEqual(profile, {"communication_style": "請詳細"})
+        self.assertEqual(relevant, "")
+        evidence = trace.call_args.args[1]
+        self.assertEqual([str(row["id"]) for row in evidence["candidates"]], [str(row["id"]) for row in rows])
+        self.assertEqual([row["projection"] for row in evidence["candidates"]], ["profile_overwritten", "selected"])
+        self.assertEqual([row["id"] for row in evidence["projections"]], [str(rows[-1]["id"])])
+        self.assertEqual((evidence["limit"], evidence["memory_limit"], evidence["min_similarity"]), (20, 8, .75))
 
 
 if __name__ == "__main__":
