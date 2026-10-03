@@ -8,7 +8,7 @@ from domain.memory_settings import EMBEDDING_DIMENSION, RETRIEVAL_INSTRUCTION
 EMBEDDING_PURPOSES = {
     "retrieval_query": "query",
     "memory_match_query": "query",
-    "buffer_document": "document",
+    "context_document": "document",
     "memory_document": "document",
 }
 

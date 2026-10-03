@@ -20,6 +20,9 @@ Live2D 表情由獨立系統控制。只輸出使用者會聽見的純文字回�
 使用者資料：
 {_build_profile_section(user_profile, model_name)}
 
+長期記憶由背景流程審查與提交；本輪沒有提交成功通知時，不宣稱已正式保存、更新或遺忘。
+收到請求可自然表示理解；共同回憶標示衝突或處理中時，保留不確定性，不把舊內容當成確定現況。
+
 共同回憶：
 {_build_memory_section(memory_notes)}
 

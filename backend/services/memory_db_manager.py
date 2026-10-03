@@ -9,7 +9,7 @@ from psycopg.types.json import Jsonb
 
 from domain.memory_decisions import validate_decisions
 from domain.memory_scope import MemoryScope
-from services.memory_llm import _FORGET_REQUEST
+from domain.memory_routing import instruction_policy, forget_scope
 from services.memory_import import LegacyEntry
 
 
@@ -34,7 +34,7 @@ class MemoryDBManager:
                     "INSERT INTO memory_scope_state (user_id, character_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", owner,
                 )
                 await connection.execute(
-                    "SELECT generation FROM memory_scope_state WHERE user_id = %s AND character_id = %s FOR SHARE", owner,
+                    "SELECT generation FROM memory_scope_state WHERE user_id = %s AND character_id = %s FOR UPDATE", owner,
                 )
                 for entry in entries:
                     if entry.id not in embeddings:
@@ -79,9 +79,9 @@ class MemoryDBManager:
 
     async def apply(
         self, job: dict, decisions: list[dict], allowed_targets: set[UUID],
-        embeddings: dict[int, list[float]], buffered_ids: tuple[UUID, ...] = (),
+        embeddings: dict[int, list[float]], context_ids: tuple[UUID, ...] = (), diagnostic: dict | None = None,
     ) -> bool:
-        forget = bool(_FORGET_REQUEST.search(job["source_text"]))
+        forget = instruction_policy(job["source_text"]) == "forget"
         validate_decisions({"decisions": decisions}, allowed_targets, explicit_forget=forget)
         if any(item["action"] == "FORGET" for item in decisions) and any(
             item["action"] not in {"FORGET", "IGNORE"} for item in decisions
@@ -92,40 +92,69 @@ class MemoryDBManager:
             async with connection.transaction():
                 await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
                 generation = await (await connection.execute(
-                    "SELECT generation FROM memory_scope_state WHERE user_id = %s AND character_id = %s FOR SHARE", owner,
+                    "SELECT generation FROM memory_scope_state WHERE user_id = %s AND character_id = %s FOR UPDATE", owner,
                 )).fetchone()
                 current = await (await connection.execute(
-                    """SELECT status, attempts, generation FROM memory_jobs
+                    """SELECT status, attempts, generation, stage, reviewed_candidates FROM memory_jobs
                     WHERE id = %s AND user_id = %s AND character_id = %s FOR UPDATE""",
                     (job["id"], *owner),
                 )).fetchone()
                 if (not generation or not current or generation[0] != job["generation"]
-                        or current != ("running", job["attempts"], job["generation"])):
+                        or current[:3] != ("running", job["attempts"], job["generation"])):
                     return False
-                if len(buffered_ids) > 3 or len(set(buffered_ids)) != len(buffered_ids):
+                if len(context_ids) > 3 or len(set(context_ids)) != len(context_ids):
                     raise ValueError("buffer promotion 數量無效")
-                if buffered_ids:
+                if context_ids:
                     selected_buffers = await (await connection.execute(
                         """SELECT id FROM memory_jobs WHERE user_id = %s AND character_id = %s
                         AND id = ANY(%s) AND status = 'buffered'
-                        AND memory_type_hint = %s FOR UPDATE""",
-                        (*owner, list(buffered_ids), job.get("memory_type_hint")),
+                        AND generation = %s FOR UPDATE""",
+                        (*owner, list(context_ids), job["generation"]),
                     )).fetchall()
-                    if {row[0] for row in selected_buffers} != set(buffered_ids):
+                    if {row[0] for row in selected_buffers} != set(context_ids):
                         raise ValueError("buffer promotion owner、類型或狀態無效")
 
-                source_id = uuid5(job["id"], "source")
+                candidates = current[4]
+                if current[3] != "librarian" or candidates != job.get("reviewed_candidates"):
+                    raise ValueError("持久化接收契約不符")
+                if job.get("stage") != "librarian" or not candidates:
+                    raise ValueError("正式 mutation 必須經過接收審查")
+                if len(decisions) != len(candidates):
+                    raise ValueError("未完成全部已審查候選")
+                indices = [item.get("candidate_index") for item in decisions]
+                if any(type(value) is not int for value in indices) or set(indices) != set(range(len(candidates))):
+                    raise ValueError("候選處理索引無效")
+                source_ids = set()
+                for decision in decisions:
+                    candidate = candidates[decision["candidate_index"]]
+                    if decision.get("source_ids") != candidate["source_ids"]:
+                        raise ValueError("圖書工具不可更換來源")
+                    if any(decision.get(key) != candidate.get(key) for key in (
+                        "canonical_text", "memory_type", "subject_key", "importance", "confidence",
+                        "retention_class", "valid_from", "valid_to", "expires_at", "forget_scope",
+                    )):
+                        raise ValueError("圖書工具不可改寫已審查事實")
+                    if (decision["action"] == "FORGET") != (candidate["intent"] == "forget"):
+                        raise ValueError("遺忘授權與候選不符")
+                    source_ids.update(UUID(value) for value in candidate["source_ids"])
+                sources = await (await connection.execute(
+                    """SELECT id FROM memory_sources WHERE user_id = %s AND character_id = %s
+                    AND id = ANY(%s) AND speaker = 'user' AND raw_text IS NOT NULL FOR SHARE""",
+                    (*owner, list(source_ids)),
+                )).fetchall()
+                if {row[0] for row in sources} != source_ids:
+                    raise ValueError("候選來源已失效")
                 has_forget = any(item["action"] == "FORGET" for item in decisions)
-                if decisions and not has_forget and any(item["action"] not in {"IGNORE", "ARCHIVE", "MERGE"} for item in decisions):
-                    await connection.execute(
-                        """INSERT INTO memory_sources
-                        (id, user_id, character_id, conversation_id, message_id, speaker, raw_text, occurred_at)
-                        VALUES (%s, %s, %s, %s, %s, 'user', %s, now())
-                        ON CONFLICT (id, user_id, character_id) DO NOTHING""",
-                        (source_id, *owner, job["conversation_id"], job["message_id"], job["source_text"]),
-                    )
                 for index, decision in enumerate(decisions):
                     action = decision["action"]
+                    source_id = UUID(decision["source_ids"][0])
+                    barrier = await (await connection.execute(
+                        """SELECT 1 FROM memory_forget_barriers WHERE user_id = %s AND character_id = %s
+                        AND created_at >= %s AND (fact_hash = md5(%s) OR (subject_hash IS NOT NULL AND subject_hash = md5(%s))) LIMIT 1""",
+                        (*owner, job["created_at"], decision.get("canonical_text"), decision.get("subject_key")),
+                    )).fetchone()
+                    if barrier:
+                        raise ValueError("舊候選受遺忘屏障阻擋")
                     targets = [UUID(value) for value in decision["target_memory_ids"]]
                     operation_key = f"{job['id']}:{index}"
                     already_applied = await (await connection.execute(
@@ -137,14 +166,37 @@ class MemoryDBManager:
                     rows = []
                     if targets:
                         async with await connection.execute(
-                            """SELECT id, group_id, status FROM memory_items
+                            """SELECT id, group_id, status, observed_at FROM memory_items
                             WHERE user_id = %s AND character_id = %s AND id = ANY(%s) FOR UPDATE""",
                             (*owner, targets),
                         ) as cursor:
                             rows = await cursor.fetchall()
-                    if len(rows) != len(set(targets)) or any(row[2] != "active" for row in rows):
+                    if len(rows) != len(set(targets)) or any(row[2] not in ({"active", "conflict", "superseded", "archived", "expired"} if action == "FORGET" else {"active", "conflict"}) for row in rows):
                         raise ValueError("Memory target owner 或狀態無效")
+                    if action not in {"FORGET", "REINFORCE"} and any(row[3] > job["created_at"] for row in rows):
+                        raise ValueError("舊工作不可覆寫較新的事實")
                     target_map = {row[0]: row for row in rows}
+                    if action == "CREATE" and decision.get("subject_key"):
+                        newer = await (await connection.execute(
+                            """SELECT 1 FROM memory_items WHERE user_id = %s AND character_id = %s
+                            AND subject_key = %s AND observed_at > %s AND canonical_text <> %s AND status IN ('active', 'conflict') LIMIT 1""",
+                            (*owner, decision["subject_key"], job["created_at"], decision["canonical_text"].strip()),
+                        )).fetchone()
+                        if newer:
+                            raise ValueError("較新的事實已存在，舊候選需重新審查")
+                    if action == "CREATE":
+                        duplicate = await (await connection.execute(
+                            """SELECT id FROM memory_items WHERE user_id = %s AND character_id = %s
+                            AND status = 'active' AND memory_type = %s
+                            AND subject_key IS NOT DISTINCT FROM %s AND canonical_text = %s
+                            AND valid_to IS NOT DISTINCT FROM %s::timestamptz
+                            AND (%s::timestamptz IS NULL OR valid_from = %s::timestamptz)
+                            AND (expires_at IS NULL OR expires_at > now()) LIMIT 1 FOR UPDATE""",
+                            (*owner, decision["memory_type"], decision.get("subject_key"), decision["canonical_text"].strip(),
+                             decision.get("valid_to"), decision.get("valid_from"), decision.get("valid_from")),
+                        )).fetchone()
+                        if duplicate:
+                            action, targets = "REINFORCE", [duplicate[0]]
                     new_id = uuid5(job["id"], f"decision:{index}")
                     audit_target = (new_id if action in {"CREATE", "SUPERSEDE", "CONTRADICT"}
                                     else targets[0] if targets and action != "FORGET" else None)
@@ -164,12 +216,12 @@ class MemoryDBManager:
                              keywords, status, importance, confidence, retention_class, embedding, embedding_model,
                              embedding_contract, observed_at, valid_from, valid_to, expires_at)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                    %s, now(), COALESCE(%s, now()), %s, %s)""",
+                                    %s, %s, COALESCE(%s, %s), %s, %s)""",
                             (new_id, *owner, group_id, decision.get("memory_type", "event"), canonical,
                              decision.get("subject_key"), keywords, status, decision.get("importance", 0.5),
                              decision.get("confidence", 0.5), decision.get("retention_class", "normal"),
-                             Vector(embeddings[index]), self.embedding_model, self.embedding_contract,
-                             decision.get("valid_from"),
+                             Vector(embeddings[index]), self.embedding_model, self.embedding_contract, job["created_at"],
+                             decision.get("valid_from"), job["created_at"],
                              decision.get("valid_to"), decision.get("expires_at")),
                         )
                         await connection.execute(
@@ -179,8 +231,8 @@ class MemoryDBManager:
                         )
                         if action == "SUPERSEDE":
                             await connection.execute(
-                                """UPDATE memory_items SET status = 'superseded', valid_to = now(), updated_at = now()
-                                WHERE id = %s AND user_id = %s AND character_id = %s""", (targets[0], *owner),
+                                """UPDATE memory_items SET status = 'superseded', valid_to = COALESCE(%s::timestamptz, %s), updated_at = now()
+                                WHERE group_id = %s AND id <> %s AND user_id = %s AND character_id = %s AND status IN ('active', 'conflict')""", (decision.get("valid_from"), job["created_at"], group_id, new_id, *owner),
                             )
                             await connection.execute(
                                 """INSERT INTO memory_relations (user_id, character_id, from_id, to_id, kind)
@@ -200,7 +252,7 @@ class MemoryDBManager:
                             (*owner, targets[0], source_id),
                         )
                         await connection.execute(
-                            """UPDATE memory_items SET observed_at = now(), updated_at = now()
+                            """UPDATE memory_items SET updated_at = now()
                             WHERE id = %s AND user_id = %s AND character_id = %s""", (targets[0], *owner),
                         )
                     elif action == "MERGE":
@@ -229,17 +281,60 @@ class MemoryDBManager:
                             (targets, *owner),
                         )
                     elif action == "FORGET":
+                        scope = decision.get("forget_scope", "fact")
+                        if scope != forget_scope(job["source_text"]):
+                            raise ValueError("遺忘範圍超出工作授權")
+                        # 同一事實的版本、衝突及合併關係在同一交易內清除。
+                        expanded = await (await connection.execute(
+                            """WITH RECURSIVE family(id) AS (
+                                SELECT id FROM memory_items WHERE user_id = %s AND character_id = %s
+                                AND group_id = ANY(%s)
+                                UNION
+                                SELECT CASE WHEN r.from_id = f.id THEN r.to_id ELSE r.from_id END
+                                FROM memory_relations r JOIN family f ON r.from_id = f.id OR r.to_id = f.id
+                                WHERE r.user_id = %s AND r.character_id = %s AND r.kind IN ('supersedes', 'merged_into', 'contradicts')
+                            ) SELECT DISTINCT id FROM family""",
+                            (*owner, [row[1] for row in rows], *owner),
+                        )).fetchall()
+                        if scope == "fact":
+                            targets = [row[0] for row in expanded]
+                        await connection.execute(
+                            """INSERT INTO memory_forget_barriers (user_id, character_id, subject_hash, fact_hash)
+                            SELECT user_id, character_id, CASE WHEN %s THEN md5(subject_key) ELSE NULL END, md5(canonical_text) FROM memory_items
+                            WHERE user_id = %s AND character_id = %s AND id = ANY(%s)""", (scope == "fact", *owner, targets),
+                        )
                         if not forget:
                             raise ValueError("FORGET 缺少明確 user request")
                         source_messages = await (await connection.execute(
-                            """SELECT DISTINCT source.message_id FROM memory_sources AS source
+                            """SELECT DISTINCT source.message_id, source.id FROM memory_sources AS source
                             JOIN memory_evidence AS evidence ON evidence.source_id = source.id
                             AND evidence.user_id = source.user_id AND evidence.character_id = source.character_id
                             WHERE source.user_id = %s AND source.character_id = %s
-                            AND evidence.memory_id = ANY(%s) AND source.message_id IS NOT NULL""",
+                            AND evidence.memory_id = ANY(%s)""",
                             (*owner, targets),
                         )).fetchall()
-                        message_ids = [row[0] for row in source_messages]
+                        erased_sources = [row[1] for row in source_messages] + [job["id"]]
+                        affected_jobs = await (await connection.execute(
+                            """SELECT id FROM memory_jobs WHERE user_id = %s AND character_id = %s
+                            AND (source_ids && %s::uuid[] OR id = %s OR EXISTS (
+                                SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(reviewed_candidates) = 'array' THEN reviewed_candidates ELSE '[]'::jsonb END) candidate
+                                JOIN memory_items target ON target.user_id = memory_jobs.user_id
+                                AND target.character_id = memory_jobs.character_id AND target.id = ANY(%s)
+                                WHERE candidate->>'canonical_text' = target.canonical_text))""",
+                            (*owner, erased_sources, job["id"], targets),
+                        )).fetchall()
+                        message_ids = list({row[0] for row in source_messages if row[0]} | {row[0] for row in affected_jobs})
+                        duplicates = await (await connection.execute(
+                            """SELECT id FROM memory_sources WHERE user_id = %s AND character_id = %s
+                            AND (message_id = ANY(%s) OR raw_text IN (SELECT raw_text FROM memory_sources
+                            WHERE user_id = %s AND character_id = %s AND id = ANY(%s)))""",
+                            (*owner, message_ids, *owner, erased_sources),
+                        )).fetchall()
+                        erased_sources = list(set(erased_sources) | {row[0] for row in duplicates})
+                        await connection.execute(
+                            "UPDATE memory_sources SET raw_text = NULL WHERE user_id = %s AND character_id = %s AND id = ANY(%s)",
+                            (*owner, erased_sources),
+                        )
                         await connection.execute(
                             """UPDATE memory_audit SET decision = NULL, target_id = NULL,
                             reason_class = 'forgotten' WHERE user_id = %s AND character_id = %s
@@ -247,8 +342,8 @@ class MemoryDBManager:
                             (*owner, targets, message_ids),
                         )
                         await connection.execute(
-                            """UPDATE memory_jobs SET source_text = NULL, recent_dialogue = NULL,
-                            decisions = NULL, embedding = NULL WHERE user_id = %s AND character_id = %s
+                            """UPDATE memory_jobs SET decisions = NULL, embedding = NULL, reviewed_candidates = NULL, recent_dialogue = NULL,
+                            missing_context = NULL, source_ids = '{}', status = 'cancelled' WHERE user_id = %s AND character_id = %s
                             AND message_id = ANY(%s)""", (*owner, message_ids),
                         )
                         deleted_count = (await connection.execute(
@@ -258,12 +353,21 @@ class MemoryDBManager:
                         await connection.execute(
                             """DELETE FROM memory_sources AS source
                             WHERE source.user_id = %s AND source.character_id = %s
+                            AND source.id = ANY(%s)
                             AND NOT EXISTS (SELECT 1 FROM memory_evidence AS evidence
                             WHERE evidence.source_id = source.id AND evidence.user_id = source.user_id
-                            AND evidence.character_id = source.character_id)""", owner,
+                            AND evidence.character_id = source.character_id)""", (*owner, erased_sources),
                         )
                     elif action != "IGNORE":
                         raise ValueError("不支援的 Memory action")
+                    if action in {"CREATE", "SUPERSEDE", "CONTRADICT", "REINFORCE", "MERGE"}:
+                        evidence_target = new_id if action in {"CREATE", "SUPERSEDE", "CONTRADICT"} else targets[0]
+                        for additional_source in decision["source_ids"]:
+                            await connection.execute(
+                                """INSERT INTO memory_evidence (user_id, character_id, memory_id, source_id, kind)
+                                VALUES (%s,%s,%s,%s,'supports') ON CONFLICT DO NOTHING""",
+                                (*owner, evidence_target, UUID(additional_source)),
+                            )
                     await connection.execute(
                         """INSERT INTO memory_audit
                         (id, user_id, character_id, operation_key, action, target_id, source_event_id,
@@ -275,21 +379,20 @@ class MemoryDBManager:
                          self.model, None if action == "FORGET" else Jsonb(decision), deleted_count),
                     )
                 terminal = "ignored" if not decisions or all(item["action"] == "IGNORE" for item in decisions) else "done"
-                if buffered_ids:
+                if context_ids:
                     await connection.execute(
-                        """UPDATE memory_jobs SET status = 'discarded', source_text = NULL,
+                        """UPDATE memory_jobs SET status = 'discarded',
                         recent_dialogue = NULL, embedding = NULL, updated_at = now()
                         WHERE user_id = %s AND character_id = %s AND id = ANY(%s)""",
-                        (*owner, list(buffered_ids)),
+                        (*owner, list(context_ids)),
                     )
                 await connection.execute(
                     """UPDATE memory_jobs SET status = %s, lease_until = NULL, updated_at = now(),
-                    source_text = CASE WHEN %s THEN NULL ELSE source_text END,
                     recent_dialogue = CASE WHEN %s THEN NULL ELSE recent_dialogue END,
                     embedding = CASE WHEN %s THEN NULL ELSE embedding END,
-                    decisions = %s, buffered_job_ids = %s
+                    decisions = %s, context_job_ids = %s, agent_diagnostics = agent_diagnostics || %s::jsonb
                     WHERE id = %s AND user_id = %s AND character_id = %s""",
-                    (terminal, has_forget, has_forget, has_forget,
-                     None if has_forget else Jsonb(decisions), list(buffered_ids), job["id"], *owner),
+                    (terminal, has_forget, has_forget,
+                     None if has_forget else Jsonb(decisions), list(context_ids), Jsonb([{**(diagnostic or {}), "result": terminal, "committed": True}]), job["id"], *owner),
                 )
                 return True

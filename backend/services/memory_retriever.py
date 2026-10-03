@@ -9,6 +9,7 @@ from infrastructure.memory_repository import MemoryRepository
 
 
 _HISTORY = re.compile(r"以前|之前|曾經|過去|歷史|原本|before|previously|used to", re.I)
+_FUTURE = re.compile(r"未來|下週|下個月|明天|將要|future|next week|tomorrow", re.I)
 _PROFILE_LIST_FIELDS = {"core_traits", "dislikes", "recent_interests", "custom_notes"}
 
 
@@ -18,7 +19,7 @@ class MemoryRetriever:
         self.embedding = embedding
 
     async def retrieve(self, user_text: str, event_id: UUID | None = None) -> tuple[dict, str]:
-        mode = "history" if _HISTORY.search(user_text) else "current"
+        mode = "history" if _HISTORY.search(user_text) else "future" if _FUTURE.search(user_text) else "current"
         try:
             query_embedding = await self.embedding.embed(
                 user_text[:4000], query=True,
@@ -36,7 +37,7 @@ class MemoryRetriever:
         profile: dict = {}
         injected = []
         for row in rows:
-            if row["memory_type"] != "profile" or row["status"] != "active":
+            if row["memory_type"] != "profile" or row["status"] != "active" or row.get("has_conflict") or row.get("pending_change"):
                 continue
             key = row.get("subject_key")
             text = row.get("canonical_text")
@@ -54,11 +55,17 @@ class MemoryRetriever:
         seen_groups = set()
         remaining = 800
         for row in rows:
-            if row["memory_type"] == "profile" or (mode == "current" and row["group_id"] in seen_groups):
+            if row in injected:
                 continue
             if len(selected) >= 8 or remaining <= 0:
                 break
-            label = f"[{row['status']}] " if mode == "history" else ""
+            label = f"[{row['status']}] " if mode != "current" or row["status"] == "conflict" else ""
+            if row.get("has_conflict"):
+                label += "[存在衝突，尚未確認] "
+            if row.get("pending_change"):
+                label += "[更正或遺忘尚未完成，勿視為確定現況] "
+            if mode in {"history", "future"}:
+                label += f"[{row.get('valid_from')} ~ {row.get('valid_to')}] "
             text = (label + row["canonical_text"])[:remaining]
             selected.append(text)
             remaining -= len(text)

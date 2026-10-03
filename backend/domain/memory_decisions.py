@@ -1,4 +1,4 @@
-"""Memory LLM 的單一結構化 tool 契約。"""
+"""DB Manager 的原子操作驗證契約。"""
 
 import re
 from datetime import datetime
@@ -10,37 +10,11 @@ from domain.memory_routing import MEMORY_TYPES, _number
 ACTIONS = frozenset({"CREATE", "REINFORCE", "SUPERSEDE", "MERGE", "CONTRADICT", "ARCHIVE", "FORGET", "IGNORE"})
 RETENTION_CLASSES = frozenset({"temporary", "normal", "important", "core"})
 
-SUBMIT_MEMORY_DECISIONS_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "submit_memory_decisions",
-        "description": "Submit atomic long-term memory decisions for the provided source and candidate IDs.",
-        "parameters": {
-            "type": "object", "additionalProperties": False,
-            "properties": {
-                "decisions": {"type": "array", "maxItems": 12, "items": {
-                    "type": "object", "additionalProperties": False,
-                    "properties": {
-                        "action": {"type": "string", "enum": sorted(ACTIONS)},
-                        "canonical_text": {"type": "string", "maxLength": 2000},
-                        "memory_type": {"type": "string", "enum": sorted(MEMORY_TYPES - {"none"})},
-                        "subject_key": {"type": "string", "maxLength": 160},
-                        "target_memory_ids": {"type": "array", "maxItems": 8, "items": {"type": "string", "format": "uuid"}},
-                        "importance": {"type": "number", "minimum": 0, "maximum": 1},
-                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                        "retention_class": {"type": "string", "enum": sorted(RETENTION_CLASSES)},
-                        "valid_from": {"type": "string", "format": "date-time"},
-                        "valid_to": {"type": "string", "format": "date-time"},
-                        "expires_at": {"type": "string", "format": "date-time"},
-                        "reason": {"type": "string", "maxLength": 1000},
-                    },
-                    "required": ["action", "target_memory_ids", "reason"],
-                }},
-            },
-            "required": ["decisions"],
-        },
-    },
-}
+DECISION_FIELDS = frozenset({
+    "action", "source_ids", "candidate_index", "canonical_text", "memory_type", "subject_key",
+    "target_memory_ids", "importance", "confidence", "retention_class", "valid_from", "valid_to",
+    "expires_at", "reason", "forget_scope",
+})
 
 
 def validate_decisions(payload: object, allowed_target_ids: set[UUID], explicit_forget: bool = False) -> list[dict]:
@@ -50,10 +24,9 @@ def validate_decisions(payload: object, allowed_target_ids: set[UUID], explicit_
     decisions = payload["decisions"]
     if not isinstance(decisions, list) or len(decisions) > 12:
         raise ValueError("decisions 數量無效")
-    properties = SUBMIT_MEMORY_DECISIONS_TOOL["function"]["parameters"]["properties"]["decisions"]["items"]["properties"]
     result = []
     for decision in decisions:
-        if not isinstance(decision, dict) or set(decision) - set(properties):
+        if not isinstance(decision, dict) or set(decision) - DECISION_FIELDS:
             raise ValueError("decision 欄位無效")
         action = decision.get("action")
         targets = decision.get("target_memory_ids")
@@ -78,6 +51,10 @@ def validate_decisions(payload: object, allowed_target_ids: set[UUID], explicit_
             raise ValueError("decision 缺少 target")
         if action == "CREATE" and targets:
             raise ValueError("CREATE 不可指定 target")
+        if "forget_scope" in decision and decision["forget_scope"] not in {"fact", "version"}:
+            raise ValueError("遺忘範圍無效")
+        if action == "FORGET" and decision.get("forget_scope") == "version" and len(targets) != 1:
+            raise ValueError("單一版本遺忘只允許一個 target")
         if action == "FORGET" and not explicit_forget:
             raise ValueError("FORGET 必須有明確 user request")
         if action in {"CREATE", "SUPERSEDE", "CONTRADICT"}:
@@ -115,5 +92,8 @@ def validate_decisions(payload: object, allowed_target_ids: set[UUID], explicit_
                     raise ValueError(f"{key} 日期無效") from None
                 if parsed.tzinfo is None:
                     raise ValueError(f"{key} 必須含時區")
+        if decision.get("valid_from") and decision.get("valid_to"):
+            if datetime.fromisoformat(decision["valid_from"].replace("Z", "+00:00")) >= datetime.fromisoformat(decision["valid_to"].replace("Z", "+00:00")):
+                raise ValueError("記憶有效區間無效")
         result.append(decision)
     return result

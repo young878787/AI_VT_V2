@@ -371,7 +371,7 @@ async def websocket_endpoint(websocket: WebSocket):
         nonlocal active_event_id
         event_id = None
         try:
-            event_id = await memory_runtime.accept(session_id or "default_session", turn_id)
+            event_id = await memory_runtime.accept(session_id or "default_session", turn_id, text, list(messages))
             active_event_id = event_id
             await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
         except asyncio.CancelledError:

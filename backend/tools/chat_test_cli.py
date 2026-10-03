@@ -99,7 +99,7 @@ class MemoryRunStore:
     def job(self, event_id: str) -> dict | None:
         with self.engine.connect() as connection:
             row = connection.execute(text(
-                f'SELECT route, route_confidence, status, route_finalized, buffered_job_ids, decisions, error, '
+                f'SELECT route, route_confidence, stage, agent_diagnostics, status, route_finalized, context_job_ids, decisions, error, '
                 f'embedding_diagnostics, embedding IS NOT NULL AS route_embedding_present '
                 f'FROM "{self.schema}".memory_jobs WHERE id = :event_id '
                 'AND user_id = :user_id AND character_id = :character_id'
@@ -108,7 +108,8 @@ class MemoryRunStore:
                 return None
             return {"route": row["route"], "confidence": row["route_confidence"],
                     "status": row["status"], "route_finalized": row["route_finalized"],
-                    "buffered_job_ids": [str(item) for item in row["buffered_job_ids"]],
+                    "stage": row["stage"], "agent_diagnostics": row["agent_diagnostics"],
+                    "context_job_ids": [str(item) for item in row["context_job_ids"]],
                     "decisions": row["decisions"] or [], "error": row["error"],
                     "embedding_diagnostics": row["embedding_diagnostics"] or [],
                     "route_embedding_present": row["route_embedding_present"]}
@@ -149,9 +150,8 @@ async def wait_memory_job(store: MemoryRunStore, event_id: str | None, timeout: 
 
 
 def create_run_dir() -> Path:
-    run_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-    run_dir = RUNS_DIR / run_id
-    (run_dir / "memory").mkdir(parents=True)
+    run_dir = RUNS_DIR / "latest"
+    (run_dir / "memory").mkdir(parents=True, exist_ok=True)
     return run_dir
 
 
@@ -292,9 +292,11 @@ async def run_turn(
         "expression_debug": expression_debug,
         "memory_changes": memory_changes(before, after),
         "memory_event_id": event_id,
+        "memory_stage": job.get("stage") if job else None,
+        "memory_agent_diagnostics": job.get("agent_diagnostics", []) if job else [],
         "memory_route": job.get("route") if job else None,
         "memory_route_confidence": job.get("confidence") if job else None,
-        "memory_buffered_job_ids": job.get("buffered_job_ids", []) if job else [],
+        "memory_context_job_ids": job.get("context_job_ids", []) if job else [],
         "memory_decisions": job.get("decisions", []) if job else [],
         "memory_audit": await asyncio.to_thread(store.audit, event_id) if event_id else [],
         "memory_embedding_diagnostics": job.get("embedding_diagnostics", []) if job else [],
@@ -337,7 +339,7 @@ def print_turn(record: dict) -> None:
 _EMBEDDING_PURPOSE_LABELS = {
     "retrieval_query": "對話檢索 query",
     "memory_match_query": "記憶比對 query",
-    "buffer_document": "候選文件 document",
+    "context_document": "候選文件 document",
     "memory_document": "記憶文件 document",
 }
 
@@ -404,13 +406,13 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
         "|---|---|---|",
     ])
     for record in records:
-        route_status = f"{record.get('memory_route') or '-'} / {record.get('memory_job_status') or '-'}"
-        if record.get("memory_route") == "buffer":
+        route_status = f"{record.get('memory_stage') or 'intake'}: {record.get('memory_route') or '-'} / {record.get('memory_job_status') or '-'}"
+        if record.get("memory_route") == "needs_context":
             route_embedding_present = record.get(
-                "memory_route_embedding_present", record.get("memory_buffer_embedded")
+                "memory_route_embedding_present"
             )
-            buffer_state = "BUFFER 向量已寫入" if route_embedding_present else "BUFFER 向量未寫入"
-            route_status += f"（{buffer_state}）"
+            context_state = "NEEDS_CONTEXT 向量已寫入" if route_embedding_present else "NEEDS_CONTEXT 向量未寫入"
+            route_status += f"（{context_state}）"
         cells = [record["turn"], route_status,
                  summarize_embedding_diagnostics(record.get("memory_embedding_diagnostics", []))]
         lines.append("| " + " | ".join(str(cell).replace("|", "\\|").replace("\n", " ") for cell in cells) + " |")
@@ -467,7 +469,7 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
     for record in records:
         debug = record.get("expression_debug") or {}
         route_embedding_present = record.get(
-            "memory_route_embedding_present", record.get("memory_buffer_embedded")
+            "memory_route_embedding_present"
         )
         summary = (
             f"第 {record['turn']} 輪｜{record['user']}｜"
@@ -481,9 +483,11 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
             "reply": record.get("reply") or "",
             "expression_debug": debug,
             "memory_changes": record.get("memory_changes", {}),
+            "memory_stage": record.get("memory_stage"),
+            "memory_agent_diagnostics": record.get("memory_agent_diagnostics", []),
             "memory_route": record.get("memory_route"),
             "memory_route_confidence": record.get("memory_route_confidence"),
-            "memory_buffered_job_ids": record.get("memory_buffered_job_ids", []),
+            "memory_context_job_ids": record.get("memory_context_job_ids", []),
             "memory_decisions": record.get("memory_decisions", []),
             "memory_audit": record.get("memory_audit", []),
             "memory_embedding_diagnostics": record.get("memory_embedding_diagnostics", []),
@@ -531,7 +535,7 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
         **model_metadata(),
     }
     (run_dir / "run.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    (run_dir / "turns.jsonl").touch()
+    (run_dir / "turns.jsonl").write_text("", encoding="utf-8")
     records: list[dict] = []
     status = "running"
     error = None

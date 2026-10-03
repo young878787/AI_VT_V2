@@ -15,32 +15,29 @@ from domain.memory_settings import load_memory_settings
 from domain.jev_questions import build_memory_questions
 
 
-def answers(route="none", confidence=0.7, importance=0, explicit=0):
-    return {
-        "memory_route": {"choice": route, "confidence": confidence},
-        "memory_type": {"choice": "project", "confidence": 0.7},
-        "explicit_memory": {"noul": explicit},
-        "importance": {"score": importance, "confidence": 0.7},
-    }
+def answers(route="review", confidence=0.9):
+    return {"memory_noise": {"choice": route, "confidence": confidence}}
 
 
 class MemoryContractTests(unittest.TestCase):
     def test_single_jev_contract_has_bounded_evidence_instructions(self):
         questions = build_memory_questions()
-        self.assertEqual(set(questions), {"memory_route", "memory_type", "explicit_memory", "importance"})
+        self.assertEqual(set(questions), {"memory_noise"})
         for question in questions.values():
             self.assertIn("current_user_input 與 recent_dialogue", question["instructions"])
             self.assertIn("relevant_memory 不得單獨", question["instructions"])
 
     def test_route_boundaries_and_invalid_output(self):
-        self.assertEqual(route_memory("hello", answers("process", 0.65)).route, "process")
-        self.assertEqual(route_memory("hello", answers("process", 0.649, 2.5)).route, "buffer")
-        self.assertEqual(route_memory("hello", answers("buffer", 0.1)).route, "buffer")
-        self.assertEqual(route_memory("hello", answers(explicit=0.80)).route, "process")
-        self.assertEqual(route_memory("hello", answers(importance=2.499)).route, "none")
-        for invalid in (None, {}, answers(confidence=True), answers(importance=float("nan")), answers(route="bad")):
-            self.assertEqual(route_memory("hello", invalid).route, "none")
-            self.assertEqual(route_memory("請記住我喜歡茶", invalid).route, "process")
+        self.assertEqual(route_memory("哈哈哈", answers("noise")).route, "none")
+        self.assertIsNone(route_memory("哈哈哈", answers("noise", 0.84)).route)
+        self.assertIsNone(route_memory("我習慣玩補師", answers()).route)
+        for invalid in (None, {}, answers(confidence=True), answers(confidence=float("nan")), answers("bad")):
+            self.assertIsNone(route_memory("hello", invalid).route)
+            self.assertEqual(route_memory("hello", invalid).error, "jev_invalid")
+        for text in ("不要記住這件事", "不要保存我的地址"):
+            self.assertEqual(route_memory(text, answers()).route, "none")
+        for text in ("請記住我喜歡茶", "忘記我的地址", "不要忘記我喜歡茶"):
+            self.assertIsNone(route_memory(text, answers("noise")).route)
 
     def test_scope_and_stable_ids(self):
         scope = MemoryScope(uuid4(), uuid4(), "test_" + uuid4().hex)

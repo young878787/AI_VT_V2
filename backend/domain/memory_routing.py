@@ -9,7 +9,11 @@ MEMORY_TYPES = frozenset({"profile", "preference", "project", "event", "none"})
 ROUTES = frozenset({"none", "needs_context", "candidate"})
 _NO_STORE = re.compile(r"不要(?:保存|記住|記錄)|別(?:保存|記住|記錄)|do not (?:save|remember)|don't (?:save|remember)", re.I)
 _NEGATED_FORGET = re.compile(r"不要忘|別忘|不用刪|不要刪|don't forget|do not forget", re.I)
-_FORGET = re.compile(r"^(?:請|幫我|麻煩)?(?:把|將)?.{0,40}?(?:忘記我|忘掉|刪除.*記憶)|\b(?:please )?forget (?:my|about)|delete my memory", re.I)
+_FORGET = re.compile(
+    r"^(?:(?:請|幫我|麻煩)(?:把|將)?[^。！？]{0,40}?(?:忘記|忘掉|刪除)|"
+    r"(?:忘記|忘掉)(?:我|關於)|刪除(?:我|關於|記憶)|(?:把|將)[^。！？]{1,40}(?:忘記|忘掉|刪除))"
+    r"|^(?:please )?(?:forget (?:my|about)|delete my memory)", re.I,
+)
 _REQUEST = re.compile(r"(?:幫我|請|麻煩).{0,20}(?:記住|記得|更正|更新|修改)|^(?:記住|更正|更新記憶|修改記憶)|不要忘|別忘|\bremember\b", re.I)
 
 
@@ -23,12 +27,14 @@ def instruction_policy(text: str) -> str:
     return "observe"
 
 
+def forget_scope(text: str) -> str:
+    """明確限定單一版本時，後端不得擴大為整件事。"""
+    return "version" if re.search(r"(?:只|僅).{0,12}版本|(?:這個|最新|單一)版本|only.{0,20}version", text, re.I) else "fact"
+
+
 @dataclass(frozen=True)
 class MemoryRouting:
     route: str | None
-    memory_type: str = "none"
-    importance: float = 0.0
-    explicit_memory: float = 0.0
     confidence: float = 0.0
     explicit_request: bool = False
     error: str | None = None
