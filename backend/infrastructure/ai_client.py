@@ -3,20 +3,13 @@ AI 客戶端：Chat 的 OpenAI 相容客戶端初始化、extra_body 組裝與�
 """
 from openai import AsyncOpenAI, BadRequestError
 
+from core.ai_request_params import no_thinking_extra_body
 from core.config import FALLBACK_MODEL, CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_URL
 
 # Chat 使用指定的 OpenAI 相容端點；長期記憶由 MemoryLLM 經 MemorySettings 自行管理。
 _role_clients = {
     "chat": AsyncOpenAI(base_url=CHAT_BASE_URL, api_key=CHAT_API_KEY),
 }
-
-
-def no_thinking_extra_body(provider: str) -> dict:
-    if provider == "nvidia":
-        return {"chat_template_kwargs": {"enable_thinking": False}}
-    if provider == "qwen":
-        return {"enable_thinking": False}
-    return {}
 
 
 async def chat_create_with_fallback(**kwargs) -> object:
@@ -29,6 +22,14 @@ async def chat_create_with_fallback(**kwargs) -> object:
     target = _role_clients[role]
     role_provider = CHAT_PROVIDER
     request_kwargs = dict(kwargs)
+    extra_body = dict(request_kwargs.get("extra_body") or {})
+    for name, value in no_thinking_extra_body(role_provider).items():
+        if isinstance(value, dict):
+            extra_body[name] = {**extra_body.get(name, {}), **value}
+        else:
+            extra_body[name] = value
+    if extra_body:
+        request_kwargs["extra_body"] = extra_body
     if role_provider == "openai" and "max_tokens" in request_kwargs:
         request_kwargs.setdefault("max_completion_tokens", request_kwargs.pop("max_tokens"))
     try:

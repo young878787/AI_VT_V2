@@ -38,6 +38,14 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
             validate_intake("accept_candidates", {"candidates": [{**self.fact, "intent": "forget"}]}, [self.source], "不要忘記我喜歡茶")
         self.assertNotIn("forget_memory", {item["function"]["name"] for item in librarian_tools(False)})
 
+    def test_intake_rejects_out_of_range_model_scores(self):
+        for field in ("importance", "confidence"):
+            for value in (-1, 3):
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    validate_intake("accept_candidates", {
+                        "candidates": [{**self.fact, field: value}],
+                    }, [self.source], "我喜歡茶")
+
     async def test_librarian_requires_every_candidate_and_keeps_sources(self):
         llm = object.__new__(MemoryLLM)
         llm.call = AsyncMock(return_value=([("create_memory", {"candidate_index": 0, "target_memory_ids": [], "reason": "new"})], {}))

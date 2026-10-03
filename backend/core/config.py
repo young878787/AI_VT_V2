@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
+from core.ai_request_params import provider_from_url
 from core.utils import env_flag
 
 # ============================================================
@@ -21,26 +22,6 @@ print(f"[ENV] Loaded from: {ENV_PATH}")
 # ============================================================
 # AI 路線設定（從 .env 讀取）
 # ============================================================
-def provider_from_url(base_url: str) -> str:
-    """辨識已知端點需要的特殊請求參數；自訂端點使用標準格式。"""
-    host = (urlparse(base_url).hostname or "").lower()
-    if host == "integrate.api.nvidia.com":
-        return "nvidia"
-    if host in {
-        "dashscope.aliyuncs.com",
-        "dashscope-intl.aliyuncs.com",
-        "dashscope-us.aliyuncs.com",
-    } or host.endswith(".dashscope.aliyuncs.com"):
-        return "qwen"
-    if host == "openrouter.ai":
-        return "openrouter"
-    if host == "generativelanguage.googleapis.com":
-        return "google"
-    if host == "api.openai.com":
-        return "openai"
-    return "custom"
-
-
 def role_model_config(role: str) -> tuple[str, str, str, str]:
     """各路線直接使用自己的 key、URL、model，缺少任一項即報錯。"""
     api_key = (os.getenv(f"{role}_AI_API_KEY") or "").strip()
