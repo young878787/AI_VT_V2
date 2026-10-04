@@ -34,7 +34,7 @@ from domain.expression_sequence_library import (
 )
 from domain.expression_visual_signature import (
     resolve_effective_performance_mode,
-    resolve_topic_guard,
+    resolve_topic_guard,  # noqa: F401 - retained as a compatibility export
     resolve_visual_signature,
     select_base_pose,
 )
@@ -1224,7 +1224,6 @@ def build_speaking_micro_sequence(
         for step in existing_sequence
         if isinstance(step, dict) and step.get("kind")
     }
-    speaking_ms = estimate_dialogue_hold_ms(intent)
     hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
     target_timeline_ms = int(target_timeline_ms or _resolve_sequence_target_timeline_ms(intent, hold_ms))
     if existing_timeline_ms >= target_timeline_ms:

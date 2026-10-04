@@ -195,13 +195,18 @@ class MemoryRepository:
                 await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
                 cursor = await connection.execute(
                     """WITH candidate AS (
-                        SELECT job.id, job.user_id, job.character_id FROM memory_jobs AS job
+                        SELECT job.id, job.user_id, job.character_id,
+                        CASE WHEN job.status = 'running' THEN
+                            EXTRACT(EPOCH FROM now() - job.lease_until)::float ELSE NULL END AS recovered_lease_age_sec
+                        FROM memory_jobs AS job
                         JOIN memory_scope_state AS state ON state.user_id = job.user_id
                         AND state.character_id = job.character_id AND state.generation = job.generation
                         WHERE job.user_id = %s AND job.character_id = %s
                         AND (job.route_finalized OR job.created_at < now() - interval '60 seconds')
                         AND job.expires_at > now()
                         AND job.attempts < 3
+                        AND (job.status <> 'retry' OR job.updated_at <= now() -
+                            CASE WHEN job.attempts = 1 THEN interval '2 seconds' ELSE interval '4 seconds' END)
                         AND (job.status IN ('pending', 'retry') OR (job.status = 'running' AND job.lease_until < now()))
                         ORDER BY job.created_at - CASE WHEN job.instruction IN ('remember', 'forget') THEN interval '5 minutes' ELSE interval '0' END FOR UPDATE OF job SKIP LOCKED LIMIT 1
                     )
@@ -211,7 +216,7 @@ class MemoryRepository:
                     lease_until = now() + interval '120 seconds', updated_at = now()
                     FROM candidate WHERE job.id = candidate.id
                     AND job.user_id = candidate.user_id AND job.character_id = candidate.character_id
-                    RETURNING job.*""", owner,
+                    RETURNING job.*, candidate.recovered_lease_age_sec""", owner,
                 )
                 async with cursor:
                     row = await cursor.fetchone()
@@ -270,7 +275,10 @@ class MemoryRepository:
                     "SELECT generation FROM memory_scope_state WHERE user_id = %s AND character_id = %s FOR UPDATE", owner,
                 )
                 await connection.execute(
-                    """UPDATE memory_jobs SET status = 'failed', error = 'lease_exhausted', lease_until = NULL, pending_target_ids = '{}'
+                    """UPDATE memory_jobs SET status = 'failed', error = 'lease_exhausted', lease_until = NULL,
+                    pending_target_ids = '{}', updated_at = now(),
+                    agent_diagnostics = agent_diagnostics || jsonb_build_object(
+                        'attempt', attempts, 'result', 'failed', 'error', 'lease_exhausted', 'retry_exhausted', true)
                     WHERE user_id = %s AND character_id = %s AND status = 'running' AND lease_until < now()
                     AND attempts >= 3""", owner,
                 )
@@ -290,6 +298,27 @@ class MemoryRepository:
                     AND j.expires_at > now() AND j.status IN ('pending','running','retry','buffered','failed'))""", owner,
                 )
                 return count
+
+    async def queue_health(self) -> dict:
+        """只量測目前 owner／generation 的有效工作，不讀來源或模型對話。"""
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                cursor = await connection.execute(
+                    """SELECT count(*) FILTER (WHERE status IN ('pending', 'retry', 'running')),
+                    COALESCE(EXTRACT(EPOCH FROM now() - min(job.created_at)
+                        FILTER (WHERE status IN ('pending', 'retry', 'running'))), 0)::float,
+                    count(*) FILTER (WHERE status = 'buffered'),
+                    count(*) FILTER (WHERE status = 'running' AND lease_until < now()),
+                    count(*) FILTER (WHERE status = 'failed' AND attempts >= 3)
+                    FROM memory_jobs AS job JOIN memory_scope_state AS state
+                    ON (job.user_id, job.character_id, job.generation) =
+                        (state.user_id, state.character_id, state.generation)
+                    WHERE job.user_id = %s AND job.character_id = %s AND job.expires_at > now()""",
+                    (self.scope.user_id, self.scope.character_id),
+                )
+                row = await cursor.fetchone()
+                return dict(zip(("active_jobs", "oldest_age_sec", "buffered_jobs", "expired_leases", "retry_exhausted_jobs"), row))
 
     async def expire_temporary(self) -> int:
         owner = (self.scope.user_id, self.scope.character_id)

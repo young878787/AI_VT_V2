@@ -1175,6 +1175,7 @@ export class LAppModel extends CubismUserModel {
   }
 
   public applyDeterministicVariation(_context: { preset?: string; energy?: number }): void {
+    void _context;
     // Phase 3 再擴充；先保留接口，避免未來重改 update loop 命名
   }
 

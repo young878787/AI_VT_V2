@@ -167,7 +167,6 @@ class MemoryDBManager:
                 )).fetchall()
                 if {row[0] for row in sources} != source_ids:
                     raise ValueError("候選來源已失效")
-                has_forget = any(item["action"] == "FORGET" for item in decisions)
                 checked_targets = set()
                 for index, decision in enumerate(decisions):
                     action = decision["action"]

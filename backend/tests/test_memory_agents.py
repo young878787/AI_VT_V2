@@ -194,6 +194,7 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
             tool_response("propose_operation", {"operation": {**self.fact, "canonical_text": "使用者喜歡無糖茶"}, "replace_index": 0}),
             tool_response("finish", {"outcome": "complete", "reason": "done"})])
         self.assertEqual([d["canonical_text"] for d in result["decisions"]], ["使用者喜歡無糖茶"])
+        self.assertEqual((self.diag["replacements"], self.diag["duplicate_proposals"]), (1, 1))
 
     async def test_needs_context_discards_pending_proposals(self):
         result = await self.run_agent([tool_response("propose_operation", {"operation": self.fact}),
@@ -236,6 +237,29 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
             await self.run_agent([tool_response("finish", {"outcome": "complete", "reason": "done"})] * 3)
         with self.assertRaises(ValueError):
             await self.run_agent([tool_response("propose_operation", {"operation": self.fact})] * 20)
+
+    async def test_failed_workflow_keeps_cumulative_counts(self):
+        self.diag.update(logical_steps=5, search_calls=1, corrections=2)
+        with self.assertRaisesRegex(ValueError, "修正預算用盡"):
+            await self.run_agent([tool_response("search_memories", {"query": "茶"})] * 5)
+        self.assertEqual(self.diag["logical_steps"], 10)
+        self.assertEqual(self.diag["search_calls"], 6)
+        self.assertEqual(self.diag["corrections"], 5)
+
+    async def test_missing_tools_and_steps_exhaustion_preserve_diagnostics(self):
+        with self.assertRaisesRegex(ValueError, "缺少結案工具"):
+            await self.run_agent([{"tool_calls": []}] * 3)
+        self.assertEqual((self.diag["logical_steps"], self.diag["corrections"]), (3, 3))
+        with self.assertRaisesRegex(ValueError, "沒有在預算內完成"):
+            await self.run_agent([tool_response("propose_operation", {"operation": self.fact})] * 20)
+        self.assertEqual(self.diag["duplicate_proposals"], 19)
+        self.assertEqual(self.diag["proposal_count"], 1)
+
+    async def test_read_failure_keeps_read_and_step_count(self):
+        read = AsyncMock(side_effect=RuntimeError("offline"))
+        with self.assertRaisesRegex(RuntimeError, "offline"):
+            await self.run_agent([tool_response("read_context", {"source_ids": [str(self.source["id"])]})], read=read)
+        self.assertEqual((self.diag["read_calls"], self.diag["logical_steps"]), (1, 1))
 
     def test_batch_conflicts_and_mixed_forget_rejected(self):
         target = str(uuid4())

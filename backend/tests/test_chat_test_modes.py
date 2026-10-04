@@ -13,7 +13,7 @@ from uuid import uuid4
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from api.routes import chat_ws
 from core import prompt_logger
-from domain.chat_test_mode import ChatTestMode, resolve_test_mode
+from domain.chat_test_mode import resolve_test_mode
 from backend.tests.test_emotion_chat_ws import FakeWebSocket, jev_answers
 
 

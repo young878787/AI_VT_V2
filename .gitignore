@@ -21,7 +21,6 @@ build/
 everything/
 .agent/
 .agents/
-.github/prompts
 AGENTS.md
 # ============================================================
 # Local ONNX Models (ASR / VAD / Piper TTS，由 voice_txt/models 複製)

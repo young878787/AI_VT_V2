@@ -149,8 +149,8 @@ export const NativeParamPanel: React.FC = () => {
       if (time - lastTime > 100) {
         lastTime = time;
         const model = LAppLive2DManager.getInstance().getActiveModel();
-        if (model && typeof (model as any).getAllParameters === 'function') {
-          const fresh: ParamInfo[] = (model as any).getAllParameters();
+        if (model) {
+          const fresh: ParamInfo[] = model.getAllParameters();
           setParams(fresh);
 
           // 偵測模型切換（參數 ID 集合改變）→ 清除舊覆蓋與自動偵測紀錄
@@ -161,9 +161,7 @@ export const NativeParamPanel: React.FC = () => {
             setAutoDetectedCount(0);
             prevValuesRef.current = {};
             localStorage.removeItem(LS_KEY);
-            if (typeof (model as any).clearAllNativeParamOverrides === 'function') {
-              (model as any).clearAllNativeParamOverrides();
-            }
+            model.clearAllNativeParamOverrides();
           }
           prevParamIdsRef.current = idsKey;
 
@@ -222,8 +220,8 @@ export const NativeParamPanel: React.FC = () => {
   const handleChange = useCallback((paramId: string, value: number) => {
     // 注入模型覆蓋
     const model = LAppLive2DManager.getInstance().getActiveModel();
-    if (model && typeof (model as any).setNativeParamOverride === 'function') {
-      (model as any).setNativeParamOverride(paramId, value);
+    if (model) {
+      model.setNativeParamOverride(paramId, value);
     }
     // 更新 React 端覆蓋（含倒數時間）
     setOverrides(prev => ({
@@ -241,8 +239,8 @@ export const NativeParamPanel: React.FC = () => {
   // ── 全部重置 ─────────────────────────────────────────────────────────
   const handleReset = useCallback(() => {
     const model = LAppLive2DManager.getInstance().getActiveModel();
-    if (model && typeof (model as any).clearAllNativeParamOverrides === 'function') {
-      (model as any).clearAllNativeParamOverrides();
+    if (model) {
+      model.clearAllNativeParamOverrides();
     }
     setOverrides({});
   }, []);

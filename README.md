@@ -92,8 +92,8 @@ python main.py
 
 # 5. 啟動前端（另開一個終端機，於專案根目錄）
 cd vtuber-web-app
-npm install
-npm run dev
+bun install
+bun run dev
 # 瀏覽器開啟 http://localhost:${FRONTEND_PORT}
 
 # TTS（可選）：需先執行 gcloud auth application-default login，
@@ -152,14 +152,15 @@ JEV 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。生成沿用 `CHAT_AI_
 - Cubism SDK 與模型 binary 為 gitignored，新環境需手動放置，無法一鍵重現。
 - Chat 僅取最近 8 輪與有界相關記憶；較早但未摘要的細節可能不在當輪上下文。
 - TTS 需要 Google Cloud ADC 登入，未設定則僅有文字無語音。
-- 目前無 CI，`npm run build` 在部分 Windows 環境可能出現 `spawn EPERM`（與程式碼正確性無關，重試或換終端機即可）。
+- GitHub Actions 分為 `backend-tests`（Ruff + unittest）、`frontend-tests`（Bun lockfile、lint、契約／runtime 檢查與 build）及 `CodeQL`（Python、JavaScript／TypeScript 安全掃描），均在 push／PR 執行；CodeQL 另有每週排程。Rushia 素材未追蹤，完整資源驗收須在本機執行 `bun run check:rushia-assets`，CI build 不代表模型可載入。
+- `bun run build` 在部分 Windows 環境可能出現 `spawn EPERM`（與程式碼正確性無關，重試或換終端機即可）。
 
 未來工作：
 
 - 多模型 expression adapter（Haru 等）與表情差異放大。
 - TTS 串流播放與口型（lip sync）對齊優化。
 - 更精細的記憶檢索排序與長期情緒趨勢；session 級對話持久化（`CHAT_PERSISTENCE_*` 目前預設關閉）。
-- 補上 `LICENSE` 與 CI（lint / typecheck / backend unittest）。
+- 補上 `LICENSE`，並設定 GitHub branch protection 的 required checks。
 
 ## 第三方服務、資料與素材
 

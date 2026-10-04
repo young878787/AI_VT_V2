@@ -2,6 +2,7 @@
   "name": "vtuber-web-app",
   "private": true,
   "version": "0.0.0",
+  "packageManager": "bun@1.4.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +10,8 @@
     "check:expression-plan": "node scripts/check-expression-plan.mjs",
     "check:emotion-state": "node scripts/check-emotion-state.mjs",
     "check:rushia-runtime": "node scripts/check-rushia-runtime.mjs",
-    "build": "npm run generate && tsc -b && vite build",
+    "check:rushia-assets": "node scripts/check-rushia-assets.mjs",
+    "build": "bun run generate && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

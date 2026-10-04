@@ -77,6 +77,7 @@ export class TTSPlayer {
      * @returns Promise，播放完成時 resolve
      */
     public async play(audioBase64: string, _format: string = 'mp3'): Promise<void> {
+        void _format;
         // 停止當前播放
         this.stop();
         const generation = this.playbackGeneration;
@@ -149,7 +150,7 @@ export class TTSPlayer {
             this.currentSource.onended = null;
             try {
                 this.currentSource.stop();
-            } catch (e) {
+            } catch {
                 // 已經停止，忽略錯誤
             }
             this.currentSource.disconnect();

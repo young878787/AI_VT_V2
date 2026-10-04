@@ -50,14 +50,6 @@ const defines = load('src/live2d/LAppDefine.ts');
 const fixedModel = defines.getDefaultModel();
 assert.equal(defines.getModelJsonPath(fixedModel), '/Resources/Rushia/RushiaHD.model3.json');
 assert.equal(defines.AvailableModels, undefined, 'the frontend must have no selectable model list');
-const assetDirectory = path.join(root, 'public/Resources/Rushia');
-const manifest = JSON.parse(fs.readFileSync(path.join(assetDirectory, fixedModel.fileName), 'utf8'));
-const references = manifest.FileReferences;
-for (const asset of [
-  references.Moc, references.Physics, ...references.Textures,
-  ...references.Expressions.map(expression => expression.File),
-  ...Object.values(references.Motions).flat().map(motion => motion.File),
-]) assert.ok(fs.existsSync(path.join(assetDirectory, asset)), `missing Rushia resource: ${asset}`);
 
 // 縮放只改變取景大小；頭頂仍位於畫面頂部內側，且 Retina 不改構圖。
 const viewports = [[1280, 800], [768, 1024], [390, 400], [375, 700]];
@@ -482,4 +474,4 @@ function audioHarness(suspended = false) {
   assert.equal(h.frames.size, 0, 'the completed mouth close must not leave an animation frame queued');
 }
 
-console.log('Rushia runtime checks passed: fixed assets, framing, mouth/eye composition, action timing and cancelled TTS.');
+console.log('Rushia runtime checks passed: fixed model, framing, mouth/eye composition, action timing and cancelled TTS.');

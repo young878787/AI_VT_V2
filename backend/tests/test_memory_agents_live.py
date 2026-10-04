@@ -1,4 +1,5 @@
 """明確啟用的真實 JEV、接收、圖書、embedding 與 DB 評估；每次清理隔離 schema。"""
+import asyncio
 import json
 import os
 import pathlib
@@ -111,9 +112,13 @@ async def evaluate():
             answers = await call_jev({'current_user_input': text, 'recent_dialogue': history}, build_memory_questions())
             routing = route_memory(text, answers)
             await test.repo.route(event, routing, text, history)
-            for _ in range(7):
-                if not await worker.process_one():
-                    break
+            async with asyncio.timeout(330):
+                while True:
+                    await worker.process_one()
+                    status = (await test._query('SELECT status FROM memory_jobs WHERE id = %s', (event,)))[0][0]
+                    if status not in {"pending", "running", "retry"}:
+                        break
+                    await asyncio.sleep(1)
             row = (await test._query('SELECT route, status, error, agent_diagnostics, missing_context FROM memory_jobs WHERE id = %s', (event,)))[0]
             profile, relevant = await MemoryRetriever(test.repo, embedding).retrieve('你記得我的拿鐵與美式咖啡偏好嗎？', event_id=event)
             prompt = build_agent_a_prompt(profile, relevant, {field: 0.0 for field in EMOTION_FIELDS})

@@ -665,11 +665,130 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         llm = SimpleNamespace(decide=AsyncMock(return_value={"outcome": "complete", "reason": "done", "decisions": [decision], "targets": {}}))
         worker = MemoryWorker(self.repo, embedding, llm, self.manager)
         for _ in range(3):
+            await self._query("UPDATE memory_jobs SET updated_at = now() - interval '5 seconds' WHERE id = %s", (event,))
             self.assertTrue(await worker.process_one())
         self.assertFalse(await worker.process_one())
         row = (await self._query("SELECT status, (SELECT raw_text FROM memory_sources WHERE id = memory_jobs.id), attempts, agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
         self.assertEqual(row[:3], ("failed", "我喜歡茶", 3))
         self.assertEqual(row[3]["attempt"], 3)
+        self.assertEqual(row[3]["failures"], 3)
+        self.assertTrue(row[3]["retry_exhausted"])
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 0)
+
+    async def test_retry_backoff_does_not_block_new_pending_work(self):
+        job = await self._job("backoff")
+        await self.repo.finish(job, "retry", error="offline")
+        self.assertIsNone(await self.repo.claim())
+        newer = await self._job("newer")
+        self.assertNotEqual(newer["id"], job["id"])
+        await self.repo.finish(newer, "ignored")
+        await self._query("UPDATE memory_jobs SET updated_at = now() - interval '3 seconds' WHERE id = %s", (job["id"],))
+        second = await self.repo.claim()
+        self.assertEqual(second["attempts"], 2)
+        await self.repo.finish(second, "retry")
+        await self._query("UPDATE memory_jobs SET updated_at = now() - interval '3 seconds' WHERE id = %s", (job["id"],))
+        self.assertIsNone(await self.repo.claim())
+        await self._query("UPDATE memory_jobs SET updated_at = now() - interval '5 seconds' WHERE id = %s", (job["id"],))
+        self.assertEqual((await self.repo.claim())["attempts"], 3)
+
+    async def test_lease_exhaustion_has_diagnostics_and_owner_queue_metrics(self):
+        job = await self._job("lease-exhausted")
+        await self._query("UPDATE memory_jobs SET attempts = 3, lease_until = now() - interval '2 seconds', "
+                          "agent_diagnostics = '{\"calls\":4}'::jsonb WHERE id = %s", (job["id"],))
+        health = await self.repo.queue_health()
+        self.assertEqual((health["active_jobs"], health["expired_leases"]), (1, 1))
+        other = MemoryRepository(self.pool, MemoryScope(uuid4(), uuid4(), self.scope.schema_name))
+        self.assertEqual((await other.queue_health())["active_jobs"], 0)
+        await self.repo.expire_context()
+        self.assertIsNone(await self.repo.claim())
+        row = (await self._query("SELECT status, error, agent_diagnostics FROM memory_jobs WHERE id = %s", (job["id"],)))[0]
+        self.assertEqual(row[:2], ("failed", "lease_exhausted"))
+        self.assertEqual(row[2]["calls"], 4)
+        self.assertTrue(row[2]["retry_exhausted"])
+        self.assertEqual((await self.repo.queue_health())["retry_exhausted_jobs"], 1)
+
+    async def test_timeout_after_accepted_proposal_retries_without_partial_write(self):
+        from services import memory_worker
+        from services.memory_llm import MemoryLLM
+        from backend.tests.test_memory_agents import tool_response
+        event = await self.repo.accept("session", "timeout-after-proposal")
+        await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
+        operation = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
+                     "source_ids": [str(event)], "importance": .7, "confidence": .9, "reason": "user statement",
+                     "search_terms": ["茶", "飲品偏好"]}
+        agent = object.__new__(MemoryLLM)
+        calls = 0
+        async def call(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return tool_response("propose_operation", {"operation": operation})
+            await asyncio.Event().wait()
+        agent.call = call
+        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=VECTOR)), agent, self.manager)
+        with patch.object(memory_worker, "ATTEMPT_TIMEOUT_SEC", .2):
+            await worker.process_one()
+        row = (await self._query("SELECT status, error, agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
+        self.assertEqual(row[:2], ("retry", "TimeoutError"))
+        self.assertEqual((row[2]["logical_steps"], row[2]["proposal_count"]), (2, 1))
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_audit"))[0][0], 0)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 0)
+        await self._query("UPDATE memory_jobs SET updated_at = now() - interval '3 seconds' WHERE id = %s", (event,))
+        agent.call = AsyncMock(side_effect=[tool_response("propose_operation", {"operation": operation}),
+                                           tool_response("finish", {"outcome": "complete", "reason": "done"})])
+        await worker.process_one()
+        self.assertFalse(await worker.process_one())
+        row = (await self._query("SELECT status, attempts, agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
+        self.assertEqual(row[:2], ("done", 2))
+        self.assertEqual(row[2]["logical_steps"], 4)
+        self.assertEqual(row[2]["timeouts"], 1)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_audit"))[0][0], 1)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 1)
+
+    async def test_cancelled_worker_recovers_lease_and_commits_only_once(self):
+        from services.memory_llm import MemoryLLM
+        from backend.tests.test_memory_agents import tool_response
+        event = await self.repo.accept("session", "cancel-agent")
+        await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
+        operation = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
+                     "source_ids": [str(event)], "importance": .7, "confidence": .9, "reason": "user statement",
+                     "search_terms": ["茶", "飲品偏好"]}
+        agent = object.__new__(MemoryLLM)
+        entered = asyncio.Event()
+        async def blocked(*args):
+            entered.set()
+            await asyncio.Event().wait()
+        agent.call = blocked
+        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=VECTOR)), agent, self.manager)
+        task = asyncio.create_task(worker.process_one())
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (event,)))[0][0], "running")
+        await self._query("UPDATE memory_jobs SET lease_until = now() - interval '1 second' WHERE id = %s", (event,))
+        agent.call = AsyncMock(side_effect=[tool_response("propose_operation", {"operation": operation}),
+                                           tool_response("finish", {"outcome": "complete", "reason": "done"})])
+        await worker.process_one()
+        row = (await self._query("SELECT status, attempts, agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
+        self.assertEqual(row[:2], ("done", 2))
+        self.assertGreaterEqual(row[2]["recovered_lease_age_sec"], 1)
+        self.assertLess(row[2]["recovered_lease_age_sec"], 5)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_audit"))[0][0], 1)
+
+    async def test_commit_rejection_after_reset_keeps_cancelled_generation(self):
+        event = await self.repo.accept("session", "reset-agent")
+        await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
+        decision = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
+                    "source_ids": [str(event)], "target_memory_ids": [], "importance": .7,
+                    "confidence": .9, "retention_class": "normal", "reason": "user statement"}
+        async def reset_then_complete(*args):
+            await self.repo.reset()
+            return {"outcome": "complete", "decisions": [decision], "targets": {}}
+        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=VECTOR)),
+                              SimpleNamespace(decide=reset_then_complete), self.manager)
+        await worker.process_one()
+        self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (event,)))[0][0], "cancelled")
         self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 0)
 
     async def test_validation_retry_receives_error_and_commits_corrected_result(self):
@@ -814,6 +933,48 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(recovered["attempts"], job["attempts"])
         self.assertFalse(await self.manager.apply(job, [decision], set(), {0: VECTOR}))
         self.assertTrue(await self.manager.apply(recovered, [decision], set(), {0: VECTOR}))
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 1)
+
+    async def test_terminated_process_claim_is_recovered_without_duplicate_mutation(self):
+        event = await self.repo.accept("session", "terminated-process")
+        await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
+        code = """
+import asyncio, os, sys
+from uuid import UUID
+sys.path.insert(0, 'backend')
+from domain.memory_scope import MemoryScope
+from infrastructure.memory_database import make_pool
+from infrastructure.memory_repository import MemoryRepository
+async def main():
+    scope = MemoryScope(UUID(sys.argv[1]), UUID(sys.argv[2]), sys.argv[3])
+    pool = await make_pool(os.environ['MEMORY_TEST_DATABASE_URL'])
+    job = await MemoryRepository(pool, scope).claim()
+    if job is None:
+        raise RuntimeError('Expected isolated test job')
+    print('claimed', flush=True)
+    await asyncio.Event().wait()
+asyncio.run(main())
+"""
+        process = await asyncio.create_subprocess_exec(sys.executable, "-c", code,
+            str(self.scope.user_id), str(self.scope.character_id), self.scope.schema_name,
+            cwd=BACKEND_ROOT.parent, env={**os.environ, "MEMORY_TEST_DATABASE_URL": TEST_URL},
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            self.assertEqual(await asyncio.wait_for(process.stdout.readline(), 5), b"claimed\n")
+        finally:
+            if process.returncode is None:
+                process.terminate()
+            await asyncio.wait_for(process.wait(), 5)
+        attempts, generation = (await self._query("SELECT attempts, generation FROM memory_jobs WHERE id = %s", (event,)))[0]
+        old = {"id": event, "attempts": attempts, "generation": generation, "source_text": "我喜歡茶"}
+        await self._query("UPDATE memory_jobs SET lease_until = now() - interval '1 second' WHERE id = %s", (event,))
+        recovered = await self.repo.claim()
+        self.assertEqual((recovered["id"], recovered["attempts"]), (event, 2))
+        decision = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
+                    "target_memory_ids": [], "reason": "user statement"}
+        self.assertFalse(await self._apply(old, [decision], set(), {0: VECTOR}))
+        self.assertTrue(await self._apply(recovered, [decision], set(), {0: VECTOR}))
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_audit"))[0][0], 1)
         self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 1)
 
     async def test_forget_cancels_older_uncommitted_duplicate(self):

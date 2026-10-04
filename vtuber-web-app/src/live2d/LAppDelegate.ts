@@ -78,12 +78,12 @@ export class LAppDelegate {
     this._canvas = canvas;
 
     // 1. 檢查 Live2DCubismCore 是否已載入
-    if (typeof (window as any).Live2DCubismCore === 'undefined') {
+    if (typeof window.Live2DCubismCore === 'undefined') {
       LAppPal.printError('Live2DCubismCore 尚未載入');
       return false;
     }
 
-    const core = (window as any).Live2DCubismCore;
+    const core = window.Live2DCubismCore;
     const coreVersion = core.Version;
     LAppPal.printLog(`Live2DCubismCore 已載入，版本: ${coreVersion?.versionNumber || 'Unknown'}`);
 

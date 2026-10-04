@@ -35,6 +35,22 @@ def make_record(turn: int, error: str | None = None) -> dict:
 
 
 class ChatTestCliTests(unittest.TestCase):
+    def test_memory_stability_deduplicates_event_and_keeps_semantics_separate(self):
+        earlier = {"memory_event_id": "event", "memory_attempts": 1, "memory_job_status": "retry",
+                   "memory_agent_diagnostics": {"calls": 2, "logical_steps": 2}}
+        final = {"memory_event_id": "event", "memory_attempts": 2, "memory_job_status": "done",
+                 "latency_memory_completion_sec": 3.5, "semantic_review": {"verdict": "incorrect"},
+                 "memory_agent_diagnostics": {"calls": 5, "logical_steps": 4, "failures": 1,
+                    "queue": {"active_jobs": 2, "oldest_age_sec": 7}}}
+        result = cli.summarize_memory_stability([earlier, final, {"memory_event_id": None}])
+        self.assertEqual(result["observed_jobs"], 1)
+        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(result["totals"]["calls"], 5)
+        self.assertEqual(result["totals"]["logical_steps"], 4)
+        self.assertEqual(result["completion_wait_sec"]["p95"], 3.5)
+        self.assertEqual(result["max_observed_queue_oldest_sec"], 7)
+        self.assertNotIn("semantic_review", result)
+
     def test_fixed_latest_reused_without_creating_history(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -229,7 +245,7 @@ class ChatTestCliTests(unittest.TestCase):
             async def recv(self):
                 await asyncio.sleep(1)
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory():
             socket = SlowSocket()
             store = mock.Mock()
             store.snapshot.return_value = {}

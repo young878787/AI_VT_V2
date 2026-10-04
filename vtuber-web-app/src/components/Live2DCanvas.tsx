@@ -51,12 +51,12 @@ export const Live2DCanvas = () => {
         console.log('開始初始化 Live2D...');
         
         // 檢查 Core 是否已載入
-        if (typeof (window as any).Live2DCubismCore === 'undefined') {
+        if (typeof window.Live2DCubismCore === 'undefined') {
           throw new Error('Live2DCubismCore 尚未載入，請檢查 index.html');
         }
         
         // 檢查 Core 的關鍵 API
-        const core = (window as any).Live2DCubismCore;
+        const core = window.Live2DCubismCore;
         if (!core.Moc || !core.Model || !core.Version) {
           throw new Error('Live2DCubismCore API 不完整');
         }
@@ -196,7 +196,7 @@ export const Live2DCanvas = () => {
   }, [modelDragEnabled]);
 
   // 處理點擊事件（雙擊等其他互動）
-  const handleCanvasClick = useCallback((_event: React.MouseEvent<HTMLCanvasElement>) => {
+  const handleCanvasClick = useCallback(() => {
     // 預留給其他互動使用
   }, []);
 

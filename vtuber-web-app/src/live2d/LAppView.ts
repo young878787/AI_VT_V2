@@ -185,8 +185,8 @@ export class LAppView {
     }
 
     // 螢幕座標轉換為設備座標
-    let deviceX = screenX;
-    let deviceY = screenY;
+    const deviceX = screenX;
+    const deviceY = screenY;
 
     // 設備座標轉換為視圖座標
     const invertedMatrix = new CubismMatrix44();

@@ -74,6 +74,9 @@ class MemoryLLM(MemoryAgentClient):
         memories = {UUID(str(row["id"])): row for row in related}
         fully_read = {key for key, row in memories.items() if len(row["canonical_text"]) <= 600}
         proposals = []
+        for key in ("logical_steps", "search_calls", "read_calls", "corrections", "replacements", "duplicate_proposals"):
+            diagnostic.setdefault(key, 0)
+        diagnostic.update(candidate_count=len(memories), proposal_count=0)
         counts = {"search_memories": 0, "read_context": 0}
         corrections = 0
         tools = agent_tools(instruction_policy(job["source_text"]) == "forget")
@@ -85,10 +88,12 @@ class MemoryLLM(MemoryAgentClient):
             "previous_validation_error": (job.get("agent_diagnostics") or {}).get("validation_error"),
         }, ensure_ascii=False, default=str)}]
         for _ in range(20):
+            diagnostic["logical_steps"] = diagnostic.get("logical_steps", 0) + 1
             assistant = await self.call(list(messages), tools, diagnostic)
             calls = assistant.get("tool_calls") or []
             if not calls:
                 corrections += 1
+                diagnostic["corrections"] = diagnostic.get("corrections", 0) + 1
                 messages.append({"role": "user", "content": "Return exactly one tool call; no prose."})
                 if corrections > 2:
                     raise ValueError("Memory agent 缺少結案工具")
@@ -107,6 +112,8 @@ class MemoryLLM(MemoryAgentClient):
                         raise ValueError("工具參數必須是 object")
                     if name in counts:
                         counts[name] += 1
+                        key = "search_calls" if name == "search_memories" else "read_calls"
+                        diagnostic[key] = diagnostic.get(key, 0) + 1
                         if counts[name] > 2:
                             raise ValueError("補查次數用盡")
                     if name == "search_memories":
@@ -115,6 +122,7 @@ class MemoryLLM(MemoryAgentClient):
                         rows = await search(args["query"], set(memories))
                         rows = rows[:min(4, 12 - len(memories))]
                         memories.update({UUID(str(row["id"])): row for row in rows})
+                        diagnostic["candidate_count"] = len(memories)
                         fully_read.update(UUID(str(row["id"])) for row in rows if len(row["canonical_text"]) <= 600)
                         result = {"candidates": [candidate_card(row) for row in rows]}
                     elif name == "read_context":
@@ -136,6 +144,7 @@ class MemoryLLM(MemoryAgentClient):
                         if len(memories) + len(fresh) > 12:
                             raise ValueError("交付 target 預算用盡")
                         memories.update({UUID(str(row["id"])): row for row in rows})
+                        diagnostic["candidate_count"] = len(memories)
                         fully_read.update(UUID(str(row["id"])) for row in rows)
                         result = {**result, "memories": [{**candidate_card(row), "canonical_text": row["canonical_text"],
                                                           "truncated": False} for row in rows]}
@@ -154,6 +163,7 @@ class MemoryLLM(MemoryAgentClient):
                             raise ValueError("replace_index 無效")
                         if operation in proposals and replacement is None:
                             index = proposals.index(operation)
+                            diagnostic["duplicate_proposals"] = diagnostic.get("duplicate_proposals", 0) + 1
                         else:
                             updated = list(proposals)
                             if replacement is None:
@@ -166,6 +176,9 @@ class MemoryLLM(MemoryAgentClient):
                                 updated[index] = operation
                             validate_batch(updated)
                             proposals = updated
+                            if replacement is not None:
+                                diagnostic["replacements"] = diagnostic.get("replacements", 0) + 1
+                        diagnostic["proposal_count"] = len(proposals)
                         result = {"accepted": True, "index": index}
                     elif name == "finish":
                         if (set(args) != {"outcome", "reason"} or args["outcome"] not in {"complete", "ignore", "needs_context"}
@@ -176,14 +189,13 @@ class MemoryLLM(MemoryAgentClient):
                         if args["outcome"] == "ignore" and proposals:
                             raise ValueError("已有提案不能 ignore")
                         validate_batch(proposals)
-                        diagnostic.update(search_calls=counts["search_memories"], read_calls=counts["read_context"],
-                                          corrections=corrections, candidate_count=len(memories))
                         return {**args, "decisions": proposals if args["outcome"] == "complete" else [],
                                 "targets": memories}
                     else:
                         raise ValueError("未授權工具")
                 except (ValueError, TypeError, KeyError) as error:
                     corrections += 1
+                    diagnostic["corrections"] = diagnostic.get("corrections", 0) + 1
                     result = {"error": str(error)[:200]}
                     if corrections > 2:
                         raise ValueError("Memory agent 修正預算用盡") from error

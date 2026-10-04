@@ -1,4 +1,5 @@
 """單一記憶 agent 的有界傳輸；只回傳工具與彙總診斷。"""
+import asyncio
 import json
 import time
 
@@ -6,11 +7,18 @@ import tiktoken
 from openai import AsyncOpenAI, BadRequestError
 from core.ai_request_params import no_thinking_extra_body, provider_from_url
 
+CALL_TIMEOUT_SEC = 35
+CUMULATIVE_DIAGNOSTIC_FIELDS = (
+    "calls", "input_tokens", "output_tokens", "latency_ms", "input_token_estimate",
+    "embedding_calls", "logical_steps", "search_calls", "read_calls", "corrections",
+    "replacements", "duplicate_proposals", "timeouts", "failures",
+)
+
 
 class MemoryAgentClient:
     def __init__(self, settings):
         self.client = AsyncOpenAI(base_url=settings.memory_base_url, api_key=settings.memory_api_key,
-                                  timeout=35, max_retries=0)
+                                  timeout=CALL_TIMEOUT_SEC, max_retries=0)
         self.model = settings.memory_model
         self.provider = provider_from_url(settings.memory_base_url)
 
@@ -26,18 +34,20 @@ class MemoryAgentClient:
             request["extra_body"] = extra_body
         started = time.monotonic()
         try:
-            diagnostic["calls"] += 1
-            try:
-                response = await self.client.chat.completions.create(**request)
-            except BadRequestError as error:
-                if (getattr(error, "param", None) != "reasoning_effort"
-                        or "set reasoning_effort to 'none'" not in str(error)):
-                    raise
+            async with asyncio.timeout(CALL_TIMEOUT_SEC):
                 diagnostic["calls"] += 1
-                response = await self.client.chat.completions.create(**request, reasoning_effort="none")
+                diagnostic["input_token_estimate"] += input_tokens
+                try:
+                    response = await self.client.chat.completions.create(**request)
+                except BadRequestError as error:
+                    if (getattr(error, "param", None) != "reasoning_effort"
+                            or "set reasoning_effort to 'none'" not in str(error)):
+                        raise
+                    diagnostic["calls"] += 1
+                    diagnostic["input_token_estimate"] += input_tokens
+                    response = await self.client.chat.completions.create(**request, reasoning_effort="none")
         finally:
             diagnostic["latency_ms"] += round((time.monotonic() - started) * 1000)
-            diagnostic["input_token_estimate"] += input_tokens
         if response.usage:
             diagnostic["input_tokens"] += response.usage.prompt_tokens
             diagnostic["output_tokens"] += response.usage.completion_tokens

@@ -106,11 +106,17 @@ WebSocket 伺服器啟動於 `ws://localhost:${BACKEND_PORT}/ws/chat`。
 
 ```bash
 cd vtuber-web-app
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 在瀏覽器開啟 `http://localhost:${FRONTEND_PORT}`。
+
+### CI 與安全掃描
+
+push／PR 分別執行 `backend-tests`（Ruff、unittest）、`frontend-tests`（Bun frozen install、codegen 同步、lint、契約／runtime、型別與 build）及 `CodeQL`（Python、JavaScript／TypeScript 安全掃描）。CodeQL 另有每週排程，掃描 job 成功不代表沒有漏洞，合併阻擋需另設定 code-scanning gate。
+
+Rushia 素材未納入 Git，CI 執行純程式檢查；有素材的本機須另在 `vtuber-web-app/` 執行 `bun run check:rushia-assets`。build 通過不代表模型可載入，也不能取代瀏覽器視覺驗收。
 
 ### Headless Chat 測試（不開前端）
 

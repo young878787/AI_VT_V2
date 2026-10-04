@@ -7,8 +7,8 @@ React + TypeScript + Zustand 前端，使用 Cubism Web SDK 顯示 Rushia，並�
 在本目錄執行：
 
 ```bash
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 前端讀取專案根目錄 `.env`；`FRONTEND_PORT` 預設為 `5173`，`BACKEND_PORT` 預設為 `9999`。目前聊天與表情預覽連線使用 `localhost`，後端啟動及其設定請參閱[專案 README](../README.md)。修改連線設定後需重新啟動 Vite；正式 build 的前端設定於建置時載入。
@@ -156,13 +156,14 @@ npm run dev
 在本目錄執行前端檢查：
 
 ```bash
-npm run check:expression-plan
-npm run check:emotion-state
-npm run check:rushia-runtime
-npm run build
+bun run check:expression-plan
+bun run check:emotion-state
+bun run check:rushia-runtime
+bun run check:rushia-assets
+bun run build
 ```
 
-`build` 依序執行 codegen、TypeScript 與 Vite 建置。`check:rushia-runtime` 涵蓋固定模型資源、取景、眨眼／口型合成、事件重疊、取消、語音結束及低幀率閉嘴；這些檢查不能取代實際 WebGL 視覺驗證。
+`build` 依序執行 codegen、TypeScript 與 Vite 建置。`check:rushia-runtime` 涵蓋固定模型設定、取景、眨眼／口型合成、事件重疊、取消、語音結束及低幀率閉嘴；`check:rushia-assets` 另行確認模型 manifest 與所有引用檔案完整，缺檔時直接失敗。Rushia 素材未納入 Git，因此 `frontend-tests` CI 執行純程式檢查，資源驗收保留本機；build 通過不代表模型可載入。這些檢查都不能取代實際 WebGL 視覺驗證。
 
 後端表情回歸可在**專案根目錄**執行：
 

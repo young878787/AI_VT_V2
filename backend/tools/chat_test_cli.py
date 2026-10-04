@@ -3,8 +3,8 @@
 import argparse
 import asyncio
 from collections import Counter
-import hashlib
 import json
+import math
 import os
 import shutil
 import socket
@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.memory_test_evidence import check_turn, answer_result
 from tools.memory_semantic_review import evaluate_semantics
 from tools.memory_testset import CORE_PATH, fingerprint, generate_cases, load_snapshot, validate_cases, step_mode
+from services.memory_agent_client import CUMULATIVE_DIAGNOSTIC_FIELDS
 
 
 def timestamp() -> str:
@@ -623,6 +624,32 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
     atomic_write_text(path, "\n".join(lines))
 
 
+def summarize_memory_stability(records: list[dict]) -> dict:
+    """按 event 去重，累計成本不混成最後 attempt；語意評分仍獨立。"""
+    jobs = {r["memory_event_id"]: r for r in records if r.get("memory_event_id")}
+    diagnostics = [r.get("memory_agent_diagnostics") or {} for r in jobs.values()]
+    waits = sorted(r["latency_memory_completion_sec"] for r in jobs.values()
+                   if isinstance(r.get("latency_memory_completion_sec"), (int, float)))
+    queues = [d["queue"] for d in diagnostics if d.get("queue")]
+    return {
+        "observed_jobs": len(jobs),
+        "agent_jobs": sum(d.get("logical_steps", 0) > 0 for d in diagnostics),
+        "statuses": dict(Counter(r.get("memory_job_status", "unknown") for r in jobs.values())),
+        "attempts": sum(r.get("memory_attempts") or 0 for r in jobs.values()),
+        "totals": {key: sum(d.get(key, 0) for d in diagnostics) for key in CUMULATIVE_DIAGNOSTIC_FIELDS},
+        "last_errors": dict(Counter((d.get("last_failure") or {}).get("error") or d.get("error")
+                                    for d in diagnostics if d.get("last_failure") or d.get("error"))),
+        "retry_exhausted_jobs": sum(bool(d.get("retry_exhausted")) for d in diagnostics),
+        "recovered_leases": sum(d.get("recovered_lease_age_sec") is not None for d in diagnostics),
+        "completion_wait_sec": {"samples": len(waits), "p50": waits[math.ceil(len(waits) * .5) - 1] if waits else None,
+                                "p95": waits[math.ceil(len(waits) * .95) - 1] if waits else None,
+                                "max": waits[-1] if waits else None},
+        "queue_samples": len(queues),
+        "max_observed_queue_jobs": max((q["active_jobs"] for q in queues), default=None),
+        "max_observed_queue_oldest_sec": max((q["oldest_age_sec"] for q in queues), default=None),
+    }
+
+
 def write_memory_report(records: list[dict], path: Path, metadata: dict, status: str, error: str | None) -> None:
     """主要表格提供回答比對；硬條件及來源證據保留在詳細段落。"""
     try:
@@ -647,6 +674,15 @@ def write_memory_report(records: list[dict], path: Path, metadata: dict, status:
         "- [表情／態度／JEV 報告](expression_report.md)；[案例](cases.json)；[逐輪證據](turns.jsonl)；[DB 結案證據](case_states.jsonl)；[執行摘要](run.json)", ""]
     if error:
         lines.extend([f"最近錯誤：{error}", ""])
+    stability = metadata.get("memory_stability")
+    if stability:
+        totals = stability["totals"]
+        lines.extend(["## Memory 多輪穩定性", "",
+            f"- 工作 {stability['observed_jobs']}；狀態 {stability['statuses']}；總 attempts {stability['attempts']}。",
+            f"- 累計邏輯步驟 {totals['logical_steps']}／HTTP calls {totals['calls']}；search/read {totals['search_calls']}/{totals['read_calls']}；修正 {totals['corrections']}／合法替換 {totals['replacements']}。",
+            f"- Token input/output {totals['input_tokens']}/{totals['output_tokens']}；模型累計耗時 {totals['latency_ms']} ms；timeout {totals['timeouts']}；attempt failures {totals['failures']}；重試耗盡工作 {stability['retry_exhausted_jobs']}。",
+            f"- 結案等待（秒）{stability['completion_wait_sec']}；queue 取樣 {stability['queue_samples']}，觀測最大工作數 {stability['max_observed_queue_jobs']}／最舊 age {stability['max_observed_queue_oldest_sec']} 秒。",
+            "- 每個 event 僅取最後紀錄；累計成本跨 attempts，最後 attempt 的增量見 turns.jsonl 的 attempt_metrics。queue 只在 claim 後取樣；等待包含 Chat 與背景工作重疊，不等同純 Agent 延遲，也不代表持續負載 SLO。", ""])
 
     def cell(value):
         return markdown_cell(value, limit=100000)
@@ -810,6 +846,7 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
     current_case = None
 
     def persist(*, render_reports: bool = False):
+        metadata["memory_stability"] = summarize_memory_stability(records)
         metadata["hard_checks"] = {layer: dict(Counter(r.get("hard_status", {}).get(layer, "not_checked")
             for r in records if r.get("action") != "compress")) for layer in
             ("execution_status", "isolation_status", "memory_evidence_status", "context_evidence_status")}
