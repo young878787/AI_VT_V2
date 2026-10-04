@@ -175,7 +175,7 @@ class EmotionWebSocketTests(unittest.TestCase):
                 await websocket_endpoint(socket)
 
         asyncio.run(run())
-        runtime.retrieve.assert_awaited_once_with("請記住我喜歡茶", event_id=event_id)
+        runtime.retrieve.assert_awaited_once_with("請記住我喜歡茶", event_id=event_id, recent_dialogue=[], summary="")
         runtime.accept.assert_awaited_once_with("test-session", "test-turn", "請記住我喜歡茶", [])
         runtime.route_background.assert_called_once()
         self.assertEqual(runtime.route_background.call_args.args[0], event_id)

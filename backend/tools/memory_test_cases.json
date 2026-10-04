@@ -3,525 +3,818 @@
     "case_id": "case_001",
     "case_type": "context_continuation",
     "source": "Gold",
-    "recall_route": "short_term",
     "expected_focus": [
       "Live2D 指代延續"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。我最近在做 Live2D。"
+        "input": "我最近在做 Live2D。"
       },
       {
         "phase": "probe",
         "session": "context",
-        "input": "不要記住這件事。那個快做好了，你覺得接下來要注意什麼？"
+        "input": "那個快做好了，你覺得接下來要注意什麼？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "history",
+            "fragments": [
+              "Live2D"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "short_term",
+    "expected_result": "應理解「那個」是本 session 正在做、快完成的 Live2D，延續討論完成後的檢查；不得另猜專案。"
   },
   {
     "case_id": "case_002",
     "case_type": "short_reference",
     "source": "Gold",
-    "recall_route": "short_term",
     "expected_focus": [
       "頭髮物理指代"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。我昨天把角色的頭髮物理調好了。"
+        "input": "我昨天把角色的頭髮物理調好了。"
       },
       {
         "phase": "probe",
         "session": "context",
-        "input": "不要記住這件事。可是那部分還是有點抖，你知道我說哪裡嗎？"
+        "input": "可是那部分還是有點抖，你知道我說哪裡嗎？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "history",
+            "fragments": [
+              "頭髮",
+              "物理"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "short_term",
+    "expected_result": "應指出「那部分」是角色的頭髮物理，針對仍會抖動延續討論。"
   },
   {
     "case_id": "case_003",
     "case_type": "window_and_summary",
     "source": "Gold",
-    "recall_route": "short_term",
     "expected_focus": [
       "窗口內延續",
       "compress 後摘要來源"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。我正在調 Live2D 模型，頭髮物理會抖，下一步想修阻尼。"
+        "input": "我正在調 Live2D 模型，頭髮物理會抖，下一步想修阻尼。"
       },
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。先聊一下早餐，我今天吃了蛋餅。"
+        "input": "先聊一下早餐，我今天吃了蛋餅。"
       },
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。我午餐考慮吃麵。"
+        "input": "我午餐考慮吃麵。"
       },
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。最近天氣有點熱。"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "input": "不要記住這件事。回到剛剛模型那件事，你還記得我想修什麼嗎？"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "input": "不要記住這件事。換個話題，我今天整理了桌面。"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "input": "不要記住這件事。我想替鍵盤清潔一下。"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "input": "不要記住這件事。窗邊的盆栽長得很快。"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "input": "不要記住這件事。我晚上可能散步。"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "input": "不要記住這件事。路上新開了一間咖啡店。"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "input": "不要記住這件事。我的水壺是藍色的。"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "input": "不要記住這件事。今天先不要討論咖啡，聊聊散步路線。"
-      },
-      {
-        "phase": "setup",
-        "session": "context",
-        "action": "compress"
+        "input": "最近天氣有點熱。"
       },
       {
         "phase": "probe",
         "session": "context",
-        "input": "不要記住這件事。回到一開始 Live2D 模型那件事，還記得我遇到的問題和下一步嗎？"
+        "input": "回到剛剛模型那件事，你還記得我想修什麼嗎？",
+        "expected_result": "應由近期 history 回答頭髮物理會抖，下一步修阻尼。",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "history",
+            "fragments": [
+              "頭髮",
+              "抖",
+              "阻尼"
+            ]
+          }
+        ]
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "換個話題，我今天整理了桌面。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "我想替鍵盤清潔一下。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "窗邊的盆栽長得很快。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "我晚上可能散步。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "路上新開了一間咖啡店。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "我的水壺是藍色的。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "今天先不要討論咖啡，聊聊散步路線。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "action": "compress"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "今天想整理書架。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "我打算把書依大小排列。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "桌上的杯子剛洗好了。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "晚餐考慮吃炒飯。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "窗外剛有一隻鳥飛過。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "我想買一本空白筆記本。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "明天出門要帶傘。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "我的背包放在門邊。"
+      },
+      {
+        "phase": "context",
+        "session": "context",
+        "input": "今天先聊到這裡，謝謝。"
+      },
+      {
+        "phase": "probe",
+        "session": "context",
+        "input": "回到一開始 Live2D 模型那件事，還記得我遇到的問題和下一步嗎？",
+        "expected_result": "應僅由裁切後 summary 回答頭髮物理會抖、下一步修阻尼；近期 history 不得含目標事實。",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "summary",
+            "fragments": [
+              "頭髮",
+              "抖",
+              "阻尼"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "short_term",
+    "expected_result": "應回答模型頭髮物理會抖，下一步想修阻尼；第一個 probe 由近期 history 提供，第二個只能由 summary 提供。"
   },
   {
     "case_id": "case_004",
     "case_type": "topic_return",
     "source": "Gold",
-    "recall_route": "short_term",
     "expected_focus": [
       "返回模型主題"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。我正在調 Live2D 角色的眼睛參數。"
+        "input": "我正在調 Live2D 角色的眼睛參數。"
       },
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。午餐我吃了牛肉麵。"
+        "input": "午餐我吃了牛肉麵。"
       },
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。剛才程式的 TypeScript 錯誤已修好。"
+        "input": "剛才程式的 TypeScript 錯誤已修好。"
       },
       {
         "phase": "probe",
         "session": "context",
-        "input": "不要記住這件事。對了，剛才那個模型，我是在調哪個部分？"
+        "input": "對了，剛才那個模型，我是在調哪個部分？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "history",
+            "fragments": [
+              "眼睛",
+              "參數"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "short_term",
+    "expected_result": "應回答正在調 Live2D 角色的眼睛參數，不把午餐或 TypeScript 錯誤當成模型部位。"
   },
   {
     "case_id": "case_005",
     "case_type": "session_correction",
     "source": "Gold",
-    "recall_route": "short_term",
     "expected_focus": [
       "同 session 使用修正資訊"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。我現在用 RTX 3060。"
+        "input": "我現在用 RTX 3060。"
       },
       {
-        "phase": "setup",
+        "phase": "context",
         "session": "context",
-        "input": "不要記住這件事。等等，我剛剛講錯，是 5060 Ti。"
+        "input": "等等，我剛剛講錯，是 5060 Ti。"
       },
       {
         "phase": "probe",
         "session": "context",
-        "input": "不要記住這件事。我剛才更正後說現在用哪張顯示卡？"
+        "input": "我剛才更正後說現在用哪張顯示卡？",
+        "evidence": [
+          {
+            "source_step": 2,
+            "source": "history",
+            "fragments": [
+              "5060 Ti"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "short_term",
+    "expected_result": "應使用更正後的 5060 Ti；RTX 3060 是同 session 已被更正的舊說法。"
   },
   {
     "case_id": "case_006",
     "case_type": "explicit_memory",
     "source": "Gold",
-    "recall_route": null,
     "expected_focus": [
       "政策",
       "preference 原子事實與 user 證據"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "記得我最喜歡草莓蛋糕。"
+        "input": "記得我最喜歡草莓蛋糕。",
+        "memory_expectation": "stored"
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應接收最喜歡草莓蛋糕的明確記憶要求，並有正式 user source、evidence、audit 與 active item；回覆不得聲稱未完成的寫入已完成。"
   },
   {
     "case_id": "case_007",
     "case_type": "implicit_profile",
     "source": "Gold",
-    "recall_route": null,
     "expected_focus": [
       "profile 分類",
       "接收與提交"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我目前讀資訊管理系。"
+        "input": "我目前讀資訊管理系。",
+        "memory_expectation": "stored"
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應理解使用者目前讀資訊管理系，正式保存有來源的 profile 事實；不得推定學校或年級。"
   },
   {
     "case_id": "case_008",
     "case_type": "implicit_preference",
     "source": "Gold",
-    "recall_route": null,
     "expected_focus": [
       "飲料偏好",
       "候選與提交"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我通常不喜歡太甜的飲料。"
+        "input": "我通常不喜歡太甜的飲料。",
+        "memory_expectation": "stored"
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應理解通常不喜歡太甜的飲料，保存偏好；不得推定完全不喝甜飲。"
   },
   {
     "case_id": "case_009",
     "case_type": "project_memory",
     "source": "Gold",
-    "recall_route": null,
     "expected_focus": [
       "project 事實",
       "來源證據"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "AI VT 的 Live2D 動作現在交給 JEV 控制。"
+        "input": "AI VT 的 Live2D 動作現在交給 JEV 控制。",
+        "memory_expectation": "stored"
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應理解 AI VT 的 Live2D 動作現在交給 JEV 控制，保存專案事實；不得推定未提供的進度。"
   },
   {
     "case_id": "case_010",
     "case_type": "transient_need",
     "source": "Gold",
-    "recall_route": null,
     "expected_focus": [
       "粗篩與複審實際決策"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我現在有點想喝水。"
+        "input": "我現在有點想喝水。",
+        "memory_expectation": "optional"
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應回應當下想喝水的即時需求；可忽略或待補，不應把它當成永久飲水偏好。"
   },
   {
     "case_id": "case_011",
     "case_type": "explicit_recall",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "空歷史 DB 召回",
       "Chat 注入"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住我最喜歡草莓蛋糕。"
+        "input": "請記住我最喜歡草莓蛋糕。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我之前說最喜歡什麼蛋糕？"
+        "input": "我之前說最喜歡什麼蛋糕？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "草莓",
+              "蛋糕"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應由長期 DB 召回回答最喜歡草莓蛋糕；短期 history 與 summary 必須為空。"
   },
   {
     "case_id": "case_012",
     "case_type": "semantic_recall",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "語意查詢",
       "詞面與向量依據"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住我最喜歡草莓蛋糕。"
+        "input": "請記住我最喜歡草莓蛋糕。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我比較偏好哪種甜點？"
+        "input": "我比較偏好哪種甜點？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "草莓",
+              "蛋糕"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應由長期 DB 的草莓蛋糕偏好回答甜點偏好；不得自行猜其他甜點。"
   },
   {
     "case_id": "case_013",
     "case_type": "project_resume",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "專案脈絡恢復"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住我們的 AI VT 專案使用 Live2D，角色動作現在由 JEV 控制。"
+        "input": "請記住我們的 AI VT 專案使用 Live2D，角色動作現在由 JEV 控制。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我們 AI VT 最近做到哪了？"
+        "input": "我們 AI VT 最近做到哪了？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "Live2D",
+              "JEV"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應由長期資料恢復 AI VT 使用 Live2D、角色動作現在由 JEV 控制；不得編造完成比例。"
   },
   {
     "case_id": "case_014",
     "case_type": "distractor_retrieval",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "合格候選順序",
       "投影無關內容"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住 AI VT 的 Live2D 動作現在由 JEV 決定。"
+        "input": "請記住 AI VT 的 Live2D 動作現在由 JEV 決定。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我目前讀資訊管理系。"
+        "input": "我目前讀資訊管理系。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我的桌機用 RTX 5060 Ti 顯示卡。"
+        "input": "我的桌機用 RTX 5060 Ti 顯示卡。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我週末通常玩 Minecraft。"
+        "input": "我週末通常玩 Minecraft。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我不喜歡太甜的飲料。"
+        "input": "我不喜歡太甜的飲料。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "AI VT 的核心對話由 Chat Model 產生。"
+        "input": "AI VT 的核心對話由 Chat Model 產生。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我們之前 Live2D 動作怎麼決定的？"
+        "input": "我們之前 Live2D 動作怎麼決定的？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "Live2D",
+              "JEV"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應回答 Live2D 動作由 JEV 決定；不要混入科系、顯示卡、遊戲或飲料偏好來回答控制方式。"
   },
   {
     "case_id": "case_015",
     "case_type": "memory_update",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "實際 CREATE/REINFORCE/SUPERSEDE",
       "版本與現況"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住我桌機目前主要使用 NVIDIA GPU。"
+        "input": "請記住我桌機目前主要使用 NVIDIA GPU。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請更新記憶，我桌機最近主要改用 AMD GPU 了。"
+        "input": "請更新記憶，我桌機最近主要改用 AMD GPU 了。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我現在桌機主要用哪個品牌的 GPU？"
+        "input": "我現在桌機主要用哪個品牌的 GPU？",
+        "evidence": [
+          {
+            "source_step": 2,
+            "source": "db",
+            "fragments": [
+              "AMD",
+              "GPU"
+            ]
+          }
+        ],
+        "versions": [
+          {
+            "old_step": 1,
+            "new_step": 2,
+            "old": "NVIDIA",
+            "new": "AMD",
+            "allowed_operations": [
+              "SUPERSEDE",
+              "MERGE",
+              "ARCHIVE",
+              "CREATE"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應回答桌機現在主要用 AMD GPU；NVIDIA 是已更正的舊值，不能當成現況。"
   },
   {
     "case_id": "case_016",
     "case_type": "reinforcement",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "等價與互補",
       "evidence 與實際操作"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住我很喜歡 Minecraft。"
+        "input": "請記住我很喜歡 Minecraft。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "Minecraft 我其實一直都有在玩，週末常玩。"
+        "input": "Minecraft 我其實一直都有在玩，週末常玩。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我平常一直有玩的遊戲是什麼？"
+        "input": "我平常一直有玩的遊戲是什麼？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "Minecraft"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應回答一直在玩 Minecraft，週末常玩；不得把重複事實擴張成未提供的遊戲偏好。"
   },
   {
     "case_id": "case_017",
     "case_type": "temporal_memory",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "日期抽取",
       "過去事件不推定結果"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住我預計在 2026 年 9 月 20 日下午 14:00（Asia/Taipei，UTC+08:00）參加學校的資訊專題成果展。"
+        "input": "請記住我預計在 2026 年 9 月 20 日下午 14:00（Asia/Taipei，UTC+08:00）參加學校的資訊專題成果展。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我之前提過的資訊專題成果展那個活動怎麼樣了？"
+        "input": "我之前提過的資訊專題成果展那個活動怎麼樣了？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "2026",
+              "9",
+              "20",
+              "資訊專題成果展"
+            ]
+          }
+        ]
       }
     ],
-    "event_date": "2026-09-20T14:00:00+08:00"
+    "event_date": "2026-09-20T14:00:00+08:00",
+    "case_group": "long_term",
+    "expected_result": "應指出先前預計於 2026-09-20 14:00 Asia/Taipei 參加資訊專題成果展，現在日期已過，但沒有參加結果來源，不得推定出席或成績。"
   },
   {
     "case_id": "case_018",
     "case_type": "conflicting_superseded",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "新舊版本",
       "current/history 查詢"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住 AI VT 的 Live2D 動作目前由主模型負責。"
+        "input": "請記住 AI VT 的 Live2D 動作目前由主模型負責。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請更正記憶：AI VT 現在改成 JEV 控制 Live2D 動作，主模型不再負責動作。"
+        "input": "請更正記憶：AI VT 現在改成 JEV 控制 Live2D 動作，主模型不再負責動作。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "AI VT 現在由誰控制 Live2D 動作？"
+        "input": "AI VT 現在由誰控制 Live2D 動作？",
+        "evidence": [
+          {
+            "source_step": 2,
+            "source": "db",
+            "fragments": [
+              "JEV",
+              "Live2D"
+            ]
+          }
+        ],
+        "expected_result": "應由 current DB 記憶回答現在 JEV 控制 Live2D 動作，不得把主模型當成現況。",
+        "versions": [
+          {
+            "old_step": 1,
+            "new_step": 2,
+            "old": "由主模型負責",
+            "new": "JEV",
+            "allowed_operations": [
+              "SUPERSEDE",
+              "MERGE",
+              "ARCHIVE",
+              "CREATE"
+            ]
+          }
+        ]
       },
       {
         "phase": "probe",
         "session": "fresh_2",
-        "input": "AI VT 以前的 Live2D 動作由誰控制，後來怎麼改的？"
+        "input": "AI VT 以前的 Live2D 動作由誰控制，後來怎麼改的？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "主模型",
+              "Live2D"
+            ]
+          },
+          {
+            "source_step": 2,
+            "source": "db",
+            "fragments": [
+              "JEV",
+              "Live2D"
+            ]
+          }
+        ],
+        "expected_result": "應由 history DB 記憶回答以前主模型負責，後來改由 JEV 控制。",
+        "versions": [
+          {
+            "old_step": 1,
+            "new_step": 2,
+            "old": "由主模型負責",
+            "new": "JEV",
+            "allowed_operations": [
+              "SUPERSEDE",
+              "MERGE",
+              "ARCHIVE",
+              "CREATE"
+            ]
+          }
+        ]
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "應區分 current 與 history：現在 JEV 控制 Live2D 動作；以前由主模型負責，後來更正為 JEV。"
   },
   {
     "case_id": "case_019",
     "case_type": "unknown_memory",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "沒有電影來源時不捏造",
       "無關候選"
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我目前讀資訊管理系。"
+        "input": "我目前讀資訊管理系。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我桌機目前使用 AMD GPU。"
+        "input": "我桌機目前使用 AMD GPU。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "我不喜歡太甜的飲料。"
+        "input": "我不喜歡太甜的飲料。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我之前是不是有跟你講過我最喜歡哪部電影？"
+        "input": "我之前是不是有跟你講過我最喜歡哪部電影？",
+        "evidence": []
       }
-    ]
+    ],
+    "case_group": "long_term",
+    "expected_result": "沒有最喜歡電影的來源，應誠實表達未知；不能從科系、GPU 或飲料偏好推定電影。"
   },
   {
     "case_id": "case_020",
     "case_type": "multi_memory_synthesis",
     "source": "Gold",
-    "recall_route": "long_term",
     "expected_focus": [
       "多筆召回",
       "來源與投影限制",
@@ -529,39 +822,279 @@
     ],
     "conversation": [
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住 AI VT 使用 Live2D 顯示角色。"
+        "input": "請記住 AI VT 使用 Live2D 顯示角色。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住 AI VT 的 JEV 維護角色情緒。"
+        "input": "請記住 AI VT 的 JEV 維護角色情緒。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住 AI VT 的 JEV 負責即時、計畫與收尾動作。"
+        "input": "請記住 AI VT 的 JEV 負責即時、計畫與收尾動作。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住 AI VT 的 Chat Model 負責核心對話。"
+        "input": "請記住 AI VT 的 Chat Model 負責核心對話。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住 AI VT 的 Memory System 在背景運行。"
+        "input": "請記住 AI VT 的 Memory System 在背景運行。",
+        "memory_expectation": "stored"
       },
       {
-        "phase": "setup",
+        "phase": "memory_setup",
         "session": "seed",
-        "input": "請記住 AI VT 的系統設計希望簡潔，不要過度工程化。"
+        "input": "請記住 AI VT 的系統設計希望簡潔，不要過度工程化。",
+        "memory_expectation": "stored"
       },
       {
         "phase": "probe",
         "session": "fresh_1",
-        "input": "我有點忘了，我們之前 AI VT 整體架構最後怎麼決定的？"
+        "input": "我有點忘了，我們之前 AI VT 整體架構最後怎麼決定的？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "Live2D"
+            ]
+          },
+          {
+            "source_step": 2,
+            "source": "db",
+            "fragments": [
+              "JEV",
+              "情緒"
+            ]
+          },
+          {
+            "source_step": 3,
+            "source": "db",
+            "fragments": [
+              "即時",
+              "計畫",
+              "收尾"
+            ]
+          },
+          {
+            "source_step": 4,
+            "source": "db",
+            "fragments": [
+              "Chat Model",
+              "核心對話"
+            ]
+          },
+          {
+            "source_step": 5,
+            "source": "db",
+            "fragments": [
+              "Memory System",
+              "背景"
+            ]
+          },
+          {
+            "source_step": 6,
+            "source": "db",
+            "fragments": [
+              "簡潔",
+              "過度工程化"
+            ]
+          }
+        ]
+      }
+    ],
+    "case_group": "long_term",
+    "expected_result": "應整合 AI VT 的六項來源：Live2D 顯示、JEV 情緒與三段動作、Chat Model 核心對話、Memory System 背景執行，以及簡潔避免過度工程化。"
+  },
+  {
+    "case_id": "case_021",
+    "case_group": "mixed",
+    "case_type": "cross_source_synthesis",
+    "source": "Gold",
+    "expected_focus": [
+      "cross_source_synthesis",
+      "來源隔離與實際注入"
+    ],
+    "expected_result": "應同時使用使用者長期不喜歡太甜的口味與本次替朋友挑生日蛋糕的情境，可建議低甜度、適合分享的蛋糕；不得推定朋友也不喜歡甜食。",
+    "conversation": [
+      {
+        "phase": "memory_setup",
+        "session": "seed",
+        "input": "請記住我通常不喜歡太甜的甜點。",
+        "memory_expectation": "stored"
+      },
+      {
+        "phase": "context",
+        "session": "mixed",
+        "input": "我今天要替朋友挑生日蛋糕。"
+      },
+      {
+        "phase": "probe",
+        "session": "mixed",
+        "input": "照我的口味，你會建議我怎麼選？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "不喜歡太甜"
+            ]
+          },
+          {
+            "source_step": 2,
+            "source": "history",
+            "fragments": [
+              "朋友",
+              "生日蛋糕"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case_id": "case_022",
+    "case_group": "mixed",
+    "case_type": "temporary_constraint",
+    "source": "Gold",
+    "expected_focus": [
+      "temporary_constraint",
+      "來源隔離與實際注入"
+    ],
+    "expected_result": "應同時使用長期喜歡咖啡與今晚要早睡、暫時避開咖啡因的限制，建議本次選無咖啡因選項；不得保存為永久不喜歡咖啡。",
+    "conversation": [
+      {
+        "phase": "memory_setup",
+        "session": "seed",
+        "input": "請記住我平常很喜歡咖啡。",
+        "memory_expectation": "stored"
+      },
+      {
+        "phase": "context",
+        "session": "mixed",
+        "input": "我今晚要早睡，今天暫時避開咖啡因。"
+      },
+      {
+        "phase": "probe",
+        "session": "mixed",
+        "input": "依照我的喜好和今晚的安排，現在喝什麼好？",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "喜歡咖啡"
+            ]
+          },
+          {
+            "source_step": 2,
+            "source": "history",
+            "fragments": [
+              "早睡",
+              "避開咖啡因"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case_id": "case_023",
+    "case_group": "mixed",
+    "case_type": "recall_continue_update",
+    "source": "Gold",
+    "expected_focus": [
+      "recall_continue_update",
+      "來源隔離與實際注入"
+    ],
+    "expected_result": "應先召回 AI VT 主模型控制動作，以同 session 指代理解後續更正為 JEV，再於全新 session 從 DB 回答目前由 JEV 控制。",
+    "conversation": [
+      {
+        "phase": "memory_setup",
+        "session": "seed",
+        "input": "請記住 AI VT 的 Live2D 動作目前由主模型負責。",
+        "memory_expectation": "stored"
+      },
+      {
+        "phase": "probe",
+        "session": "mixed",
+        "input": "AI VT 的 Live2D 動作現在交給誰？",
+        "expected_result": "應由 DB 召回回答目前主模型控制 Live2D 動作。",
+        "evidence": [
+          {
+            "source_step": 1,
+            "source": "db",
+            "fragments": [
+              "主模型",
+              "Live2D"
+            ]
+          }
+        ]
+      },
+      {
+        "phase": "context",
+        "session": "mixed",
+        "input": "我接下來要更正它的負責者。"
+      },
+      {
+        "phase": "update",
+        "session": "mixed",
+        "input": "請更正記憶：它現在改成由 JEV 控制，主模型不再負責動作。",
+        "memory_expectation": "stored"
+      },
+      {
+        "phase": "probe",
+        "session": "mixed",
+        "input": "那它現在由誰負責？",
+        "expected_result": "應理解同 session 的「它」是 AI VT Live2D 動作，回答更正後 JEV 負責。",
+        "evidence": [
+          {
+            "source_step": 4,
+            "source": "history",
+            "fragments": [
+              "JEV"
+            ]
+          }
+        ]
+      },
+      {
+        "phase": "recall_probe",
+        "session": "fresh",
+        "input": "AI VT 現在由誰控制 Live2D 動作？",
+        "expected_result": "應於全新 session 從正式 DB 回答現在由 JEV 控制；主模型舊值仍保留為 history，不能繼續 active。",
+        "evidence": [
+          {
+            "source_step": 4,
+            "source": "db",
+            "fragments": [
+              "JEV"
+            ]
+          }
+        ],
+        "versions": [
+          {
+            "old_step": 1,
+            "new_step": 4,
+            "old": "由主模型負責",
+            "new": "JEV",
+            "allowed_operations": [
+              "SUPERSEDE",
+              "MERGE",
+              "ARCHIVE",
+              "CREATE"
+            ]
+          }
+        ]
       }
     ]
   }

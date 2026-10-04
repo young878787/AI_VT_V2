@@ -16,18 +16,50 @@ _FUTURE = re.compile(r"未來|下週|下個月|明天|將要|future|next week|to
 _PROFILE_LIST_FIELDS = {"core_traits", "dislikes", "recent_interests", "custom_notes"}
 
 
+_CONTEXT_REFERENCE = re.compile(r"那個|那部分|那件事|這個|這部分|這件事|它|剛才|剛剛|我的口味|我的喜好|今晚的安排|\b(it|that|my taste)\b", re.I)
+
+
+def _format_memory_projection(row: dict, mode: str, remaining: int) -> str:
+    """把候選的來源欄位一起交給 Chat，避免只剩脫離上下文的 canonical 句子。"""
+    memory_type = str(row.get("memory_type") or "unknown")
+    subject_key = str(row.get("subject_key") or "未標註")
+    status = str(row.get("status") or "unknown")
+    metadata = [f"type={memory_type}", f"subject_key={subject_key}", f"status={status}", "actor=未標註"]
+    if row.get("has_conflict"):
+        metadata.append("conflict=true")
+    if row.get("pending_change"):
+        metadata.append("pending_change=true")
+    if mode in {"history", "future"}:
+        metadata.append(f"valid_from={row.get('valid_from')}")
+        metadata.append(f"valid_to={row.get('valid_to')}")
+    prefix = "- 記憶資料（" + "; ".join(metadata) + "）：fact="
+    return (prefix + str(row.get("canonical_text") or ""))[:remaining]
+
+
+def build_retrieval_query(user_text: str, recent_dialogue: list[dict] | None = None, summary: str = "") -> str:
+    """指代型查詢使用有界 user 上下文，必要時沿用既有 summary。"""
+    if not _CONTEXT_REFERENCE.search(user_text):
+        return user_text[:4000]
+    user_context = [m["content"][:400] for m in (recent_dialogue or [])[-16:]
+                    if m.get("role") == "user" and isinstance(m.get("content"), str)][-2:]
+    context = "\n".join(user_context) if user_context else summary[:800]
+    return user_text[:3000] + ("\n當前對話情境：\n" + context if context else "")
+
+
 class MemoryRetriever:
     def __init__(self, repository: MemoryRepository, embedding: MemoryEmbeddingClient) -> None:
         self.repository = repository
         self.embedding = embedding
 
-    async def retrieve(self, user_text: str, event_id: UUID | None = None) -> tuple[dict, str]:
+    async def retrieve(self, user_text: str, event_id: UUID | None = None,
+                       recent_dialogue: list[dict] | None = None, summary: str = "") -> tuple[dict, str]:
         started = time.monotonic()
         mode = "history" if _HISTORY.search(user_text) else "future" if _FUTURE.search(user_text) else "current"
+        query = build_retrieval_query(user_text, recent_dialogue, summary)
         errors = []
         try:
             query_embedding = await self.embedding.embed(
-                user_text[:4000], query=True,
+                query, query=True,
                 purpose="retrieval_query" if event_id is not None else None,
                 event_id=event_id, stage="chat_retrieval",
             )
@@ -36,10 +68,10 @@ class MemoryRetriever:
             print(f"[Memory] embedding query fallback: {type(exc).__name__}")
             query_embedding = None
         try:
-            rows = await self.repository.related_items(user_text, query_embedding, limit=20, mode=mode)
+            rows = await self.repository.related_items(query, query_embedding, limit=20, mode=mode)
         except Exception as exc:
             print(f"[Memory] retrieval fallback: {type(exc).__name__}")
-            trace("retrieval", {"query": user_text, "mode": mode, "limit": 20,
+            trace("retrieval", {"query": query, "user_query": user_text, "mode": mode, "limit": 20,
                 "min_similarity": MIN_RETRIEVAL_SIMILARITY, "candidates": [], "projections": [],
                 "errors": [*errors, {"stage": "repository", "error": type(exc).__name__}],
                 "duration_sec": round(time.monotonic() - started, 4)}, event_id)
@@ -73,19 +105,12 @@ class MemoryRetriever:
                 continue
             if len(selected) >= 8 or remaining <= 0:
                 break
-            label = f"[{row['status']}] " if mode != "current" or row["status"] == "conflict" else ""
-            if row.get("has_conflict"):
-                label += "[存在衝突，尚未確認] "
-            if row.get("pending_change"):
-                label += "[更正或遺忘尚未完成，勿視為確定現況] "
-            if mode in {"history", "future"}:
-                label += f"[{row.get('valid_from')} ~ {row.get('valid_to')}] "
-            text = (label + row["canonical_text"])[:remaining]
+            text = _format_memory_projection(row, mode, remaining)
             selected.append(text)
             remaining -= len(text)
             injected.append(row)
             projections.append({"id": str(row["id"]), "destination": "memory", "text": text})
-        trace("retrieval", {"query": user_text, "mode": mode, "limit": 20,
+        trace("retrieval", {"query": query, "user_query": user_text, "mode": mode, "limit": 20,
             "min_similarity": MIN_RETRIEVAL_SIMILARITY, "memory_limit": 8, "memory_char_budget": 800,
             "profile_char_limit": 300, "embedding_available": query_embedding is not None,
             "candidates": [{"rank": index + 1,

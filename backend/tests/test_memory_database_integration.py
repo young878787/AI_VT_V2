@@ -23,7 +23,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 load_dotenv(BACKEND_ROOT.parent / ".env", override=False)
 
-from domain.memory_scope import MemoryScope
+from domain.memory_scope import MemoryScope, conversation_id
 from domain.memory_routing import MemoryRouting
 from infrastructure.memory_database import check_schema, make_pool
 from infrastructure.memory_repository import MemoryRepository
@@ -73,31 +73,19 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         return await self.repo.claim()
 
     async def _apply(self, job, decisions, targets, embeddings, context_ids=()):
-        from domain.memory_routing import instruction_policy
-        sources = await self.repo.intake_sources(job, [])
-        candidates = []
+        applied = []
         for decision in decisions:
-            candidate = {
-                "canonical_text": decision.get("canonical_text", job["source_text"]),
-                "memory_type": decision.get("memory_type", "event"),
-                "importance": decision.get("importance", 0.7), "confidence": decision.get("confidence", 0.8),
-                "retention_class": decision.get("retention_class", "normal"),
-                "reason": decision["reason"], "source_ids": [str(job["id"])],
-                "intent": "forget" if instruction_policy(job["source_text"]) == "forget" else "fact",
-            }
-            for key in ("subject_key", "valid_from", "valid_to", "expires_at"):
-                if key in decision:
-                    candidate[key] = decision[key]
-            candidates.append(candidate)
-        handed = await self.repo.complete_intake(job, {"route": "candidate", "candidates": candidates}, sources, [], {}, VECTOR)
-        if not handed:
-            return False
-        reviewed = await self.repo.claim()
-        applied = [{**candidate, **decision, "source_ids": candidate["source_ids"], "candidate_index": index}
-                   for index, (candidate, decision) in enumerate(zip(candidates, decisions))]
-        for decision in applied:
-            decision.pop("intent", None)
-        return await self.manager.apply(reviewed, applied, targets, embeddings, context_ids)
+            item = {**decision, "source_ids": decision.get("source_ids", [str(job["id"])])}
+            if item["action"] in {"CREATE", "SUPERSEDE", "CONTRADICT"}:
+                item.setdefault("importance", .7)
+                item.setdefault("confidence", .8)
+                item.setdefault("retention_class", "normal")
+            if item["action"] == "FORGET":
+                from domain.memory_routing import forget_scope
+                item["forget_scope"] = forget_scope(job["source_text"])
+            applied.append(item)
+        snapshots = {row["id"]: row for row in await self.repo.read_memories(targets)}
+        return await self.manager.apply(job, applied, targets, embeddings, context_ids, target_snapshots=snapshots)
 
     async def _create(self, turn="turn1"):
         job = await self._job(turn)
@@ -116,11 +104,11 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.repo.route(none_id, MemoryRouting("none", confidence=0.7), "private text", []))
         buffer_id = await self.repo.accept("session", "buffer")
         self.assertTrue(await self.repo.route(
-            buffer_id, MemoryRouting("needs_context", confidence=0.9), "可能喜歡茶", [], VECTOR,
+            buffer_id, MemoryRouting("needs_context", confidence=0.9), "可能喜歡茶", [],
         ))
         self.assertIsNone(await self.repo.claim())
         item = await self._create()
-        buffers = await self.repo.related_context({"id": uuid4(), "conversation_id": uuid4(), "source_text": "茶"}, VECTOR)
+        buffers = await self.repo.context_jobs({"id": uuid4(), "conversation_id": conversation_id("session"), "generation": 0})
         self.assertEqual(len(buffers), 1)
         other = MemoryRepository(self.pool, MemoryScope(uuid4(), self.scope.character_id, self.scope.schema_name))
         self.assertEqual(await other.accept("session", "turn1"), await self.repo.accept("session", "turn1"))
@@ -133,8 +121,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["status"], "active")
 
         # 單純讀取待補內容不會消耗來源。
-        self.assertEqual(len(await self.repo.related_context(
-            {"id": uuid4(), "conversation_id": uuid4(), "source_text": "茶"}, VECTOR)), 1)
+        self.assertEqual(len(await self.repo.context_jobs(
+            {"id": uuid4(), "conversation_id": conversation_id("session"), "generation": 0})), 1)
 
     async def test_configured_embedding_model_is_saved(self):
         item = await self._create()
@@ -253,7 +241,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
             event_id = await run_repo.accept("run-session", "turn-1")
             self.assertFalse((await asyncio.to_thread(store.job, str(event_id)))["route_finalized"])
             self.assertTrue(await run_repo.route(event_id, MemoryRouting("needs_context", confidence=0.9),
-                                                 "可能喜歡茶", [], VECTOR))
+                                                 "可能喜歡茶", []))
             job = await wait_memory_job(store, str(event_id), timeout=2)
             self.assertEqual((job["route"], job["status"]), ("needs_context", "buffered"))
             self.assertEqual(await asyncio.to_thread(store.audit, str(event_id)), [])
@@ -322,68 +310,45 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(counts, (3, 3))
 
     async def test_worker_to_retriever_flow_is_idempotent(self):
-        event_id = await self.repo.accept("session", "complete-flow")
-        self.assertTrue(await self.repo.route(
-            event_id, MemoryRouting(None, confidence=0.9), "請記住我喜歡茶", [], VECTOR,
-        ))
-        decision = {
-            "action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
-            "target_memory_ids": [], "reason": "explicit statement", "importance": 0.8,
-            "confidence": 0.9, "retention_class": "normal",
-        }
+        event = await self.repo.accept("session", "complete-flow")
+        await self.repo.route(event, MemoryRouting(None), "請記住我喜歡茶", [])
+        decision = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
+                    "target_memory_ids": [], "source_ids": [str(event)], "reason": "user statement",
+                    "importance": .8, "confidence": .9, "retention_class": "normal"}
         embedding = SimpleNamespace(embed=AsyncMock(return_value=VECTOR))
-        candidate = {key: value for key, value in decision.items() if key not in {"action", "target_memory_ids"}}
-        candidate.update(intent="fact", source_ids=[str(event_id)])
-        intake = SimpleNamespace(review=AsyncMock(return_value=({"route": "candidate", "candidates": [candidate]}, {})))
-        decision.update(source_ids=[str(event_id)], candidate_index=0)
-        llm = SimpleNamespace(decide=AsyncMock(return_value=([decision], {})))
-        workers = [MemoryWorker(self.repo, embedding, llm, self.manager, intake) for _ in range(2)]
+        llm = SimpleNamespace(decide=AsyncMock(return_value={"outcome": "complete", "reason": "done",
+                            "decisions": [decision], "targets": {}}))
+        workers = [MemoryWorker(self.repo, embedding, llm, self.manager) for _ in range(2)]
         await asyncio.gather(*(worker.process_one() for worker in workers))
-        await workers[0].process_one()
-        intake.review.assert_awaited_once()
+        self.assertFalse(await workers[0].process_one())
         llm.decide.assert_awaited_once()
-        items = await self.repo.related_items("喜歡茶", VECTOR)
-        async with self.pool.connection() as connection:
-            async with connection.transaction():
-                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
-                diagnostic = await (await connection.execute(
-                    "SELECT status, error FROM memory_jobs WHERE id = %s", (event_id,),
-                )).fetchone()
-        self.assertEqual(len(items), 1, diagnostic)
+        self.assertEqual(embedding.embed.await_count, 2)
         profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve("你記得我喜歡什麼茶嗎")
         self.assertEqual(profile, {})
         self.assertIn("使用者喜歡茶", relevant)
-        async with self.pool.connection() as connection:
-            async with connection.transaction():
-                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
-                job_status = (await (await connection.execute(
-                    "SELECT status FROM memory_jobs WHERE id = %s", (event_id,),
-                )).fetchone())[0]
-                audit_count = (await (await connection.execute("SELECT count(*) FROM memory_audit")).fetchone())[0]
-        self.assertEqual((job_status, audit_count), ("done", 1))
+        self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (event,)))[0][0], "done")
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_audit"))[0][0], 1)
 
     async def test_worker_matches_replaced_entity_from_user_source(self):
         original = await self._job("latte", "請記住我最喜歡的飲料是拿鐵")
-        self.assertTrue(await self._apply(original, [{"action": "CREATE", "canonical_text": "最喜歡的飲料是拿鐵",
+        await self._apply(original, [{"action": "CREATE", "canonical_text": "最喜歡的飲料是拿鐵",
             "memory_type": "preference", "subject_key": "preference.drink", "target_memory_ids": [],
-            "reason": "user statement"}], set(), {0: VECTOR}))
+            "reason": "user statement"}], set(), {0: VECTOR})
         old = (await self.repo.related_items("拿鐵", None))[0]
-        job = await self._job("coffee-change", "更正：我不喝拿鐵了，現在只喝美式咖啡")
-        candidate = {"canonical_text": "使用者現在只喝美式咖啡", "memory_type": "preference",
-            "subject_key": "preference.coffee", "intent": "correction", "importance": .7, "confidence": .9,
-            "retention_class": "normal", "reason": "explicit replacement", "source_ids": [str(job["id"])]}
-        sources = await self.repo.intake_sources(job, [])
-        await self.repo.complete_intake(job, {"route": "candidate", "candidates": [candidate]}, sources, [], {})
-        decision = {key: value for key, value in candidate.items() if key != "intent"}
-        decision.update(action="SUPERSEDE", target_memory_ids=[str(old["id"])], candidate_index=0)
-        llm = SimpleNamespace(decide=AsyncMock(return_value=([decision], {})))
-        orthogonal = [0.0, 1.0] + [0.0] * 1022
-        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=orthogonal)),
-            llm, self.manager, None)
-        self.assertTrue(await worker.process_one())
-        self.assertEqual([row["id"] for row in llm.decide.call_args.args[1]], [old["id"]])
+        event = await self.repo.accept("session", "coffee-change")
+        await self.repo.route(event, MemoryRouting(None), "更正：我不喝拿鐵了，現在只喝美式咖啡", [])
+        async def decide(job, sources, related, search, read, diagnostic):
+            self.assertEqual([row["id"] for row in related], [old["id"]])
+            return {"outcome": "complete", "reason": "done", "targets": {row["id"]: row for row in related},
+                "decisions": [{"action": "SUPERSEDE", "canonical_text": "使用者現在只喝美式咖啡",
+                    "memory_type": "preference", "subject_key": "preference.coffee", "importance": .7,
+                    "confidence": .9, "retention_class": "normal", "reason": "replacement",
+                    "source_ids": [str(event)], "target_memory_ids": [str(old["id"])]}]}
+        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=[0.0,1.0]+[0.0]*1022)),
+                             SimpleNamespace(decide=decide), self.manager)
+        await worker.process_one()
         current = await self.repo.related_items("咖啡", None)
-        self.assertEqual([row["canonical_text"] for row in current], [candidate["canonical_text"]])
+        self.assertEqual([row["canonical_text"] for row in current], ["使用者現在只喝美式咖啡"])
         self.assertEqual(current[0]["group_id"], old["group_id"])
         self.assertEqual((await self._query("SELECT status FROM memory_items WHERE id = %s", (old["id"],)))[0][0], "superseded")
 
@@ -463,34 +428,27 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 cursor = await connection.execute(query, args)
                 return await cursor.fetchall() if cursor.description else []
 
-    async def test_f1_unrelated_context_not_selected_and_not_consumed(self):
+    async def test_f1_unrelated_context_is_not_consumed_by_ignore(self):
         held = await self.repo.accept("session", "held")
-        await self.repo.route(held, MemoryRouting("needs_context"), "可能喜歡咖啡", [], [0., 1.] + [0.] * 1022)
-        job = await self._job("unrelated", "我住在台北")
-        self.assertEqual(await self.repo.related_context(job, VECTOR), [])
-        sources = await self.repo.intake_sources(job, [])
-        await self.repo.complete_intake(job, {"route": "none", "reason": "no fact"}, sources, [], {})
-        self.assertEqual((await self._query("SELECT status, (SELECT raw_text FROM memory_sources WHERE id = memory_jobs.id) FROM memory_jobs WHERE id = %s", (held,)))[0],
-                         ("buffered", "可能喜歡咖啡"))
+        await self.repo.route(held, MemoryRouting("needs_context"), "可能喜歡咖啡", [])
+        job = await self._job("unrelated", "天氣如何")
+        context = await self.repo.context_jobs(job)
+        self.assertEqual([row["id"] for row in context], [held])
+        await self.repo.finish(job, "ignored")
+        self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (held,)))[0][0], "buffered")
 
     async def test_f2_adopted_context_preserves_actual_user_evidence(self):
         held = await self.repo.accept("session", "held")
-        await self.repo.route(held, MemoryRouting("needs_context"), "我喜歡拿鐵", [], VECTOR)
+        await self.repo.route(held, MemoryRouting("needs_context"), "我喜歡拿鐵", [])
         job = await self._job("remember", "幫我記住這件事")
-        context = await self.repo.related_context(job, VECTOR)
-        sources = await self.repo.intake_sources(job, context)
-        candidate = {"canonical_text": "使用者喜歡拿鐵", "memory_type": "preference", "importance": .7,
-                     "confidence": .9, "retention_class": "normal", "intent": "fact", "reason": "user evidence",
-                     "source_ids": [str(held)]}
-        self.assertTrue(await self.repo.complete_intake(job, {"route": "candidate", "candidates": [candidate]}, sources, context, {}))
-        reviewed = await self.repo.claim()
-        decision = {key: value for key, value in candidate.items() if key != "intent"}
-        decision.update(action="CREATE", target_memory_ids=[], candidate_index=0)
-        await self.manager.apply(reviewed, [decision], set(), {0: VECTOR}, tuple(reviewed["context_job_ids"]))
+        context = await self.repo.context_jobs(job)
+        self.assertEqual([row["id"] for row in context], [held])
+        decision = {"action": "CREATE", "canonical_text": "使用者喜歡拿鐵", "memory_type": "preference",
+                    "target_memory_ids": [], "source_ids": [str(held)], "reason": "user evidence"}
+        await self._apply(job, [decision], set(), {0: VECTOR}, (held,))
         raw = await self._query("SELECT s.raw_text FROM memory_sources s JOIN memory_evidence e ON e.source_id = s.id")
-        self.assertTrue(raw)
         self.assertEqual({row[0] for row in raw}, {"我喜歡拿鐵"})
-        self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (held,)))[0], ("discarded",))
+        self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (held,)))[0][0], "discarded")
 
     async def test_f3_unknown_profile_key_has_general_projection(self):
         item = await self._create()
@@ -505,14 +463,15 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.repo.related_items("茶", VECTOR), [])
         self.assertEqual(len(await self.repo.related_items("茶", VECTOR, mode="future")), 1)
 
-    async def test_f5_context_embedding_repairs_contract(self):
+    async def test_f5_context_requires_same_session_without_embedding(self):
         event = await self.repo.accept("session", "held")
         await self.repo.route(event, MemoryRouting("needs_context"), "喜歡拿鐵", [])
-        job = (await self.repo.unembedded_context())[0]
-        self.assertTrue(await self.repo.save_context_embedding(job, VECTOR))
-        self.assertEqual((await self._query("SELECT embedding_model, embedding_contract FROM memory_jobs WHERE id = %s", (event,)))[0],
-                         (EMBEDDING_MODEL, EMBEDDING_CONTRACT))
-        self.assertEqual(len(await self.repo.related_context({"id": uuid4(), "conversation_id": uuid4(), "source_text": "拿鐵"}, VECTOR)), 1)
+        same = await self._job("same", "記住那個")
+        self.assertEqual([row["id"] for row in await self.repo.context_jobs(same)], [event])
+        other = {**same, "conversation_id": uuid4()}
+        self.assertEqual(await self.repo.context_jobs(other), [])
+        columns = await self._query("SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = 'memory_jobs'", (self.scope.schema_name,))
+        self.assertFalse({"embedding", "reviewed_candidates", "stage", "decisions"} & {row[0] for row in columns})
 
     async def test_f6_distinct_jobs_same_fact_are_idempotent(self):
         first = await self._create("first")
@@ -538,42 +497,38 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         event = await self.repo.accept("session", "retry")
         await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
         embedding = SimpleNamespace(embed=AsyncMock(side_effect=RuntimeError("offline")))
-        intake = SimpleNamespace(review=AsyncMock())
-        worker = MemoryWorker(self.repo, embedding, None, self.manager, intake)
+        decision = {"action": "CREATE", "canonical_text": "喜歡茶", "memory_type": "preference",
+                    "source_ids": [str(event)], "target_memory_ids": [], "reason": "test", "importance": .7,
+                    "confidence": .8, "retention_class": "normal"}
+        llm = SimpleNamespace(decide=AsyncMock(return_value={"outcome": "complete", "reason": "done", "decisions": [decision], "targets": {}}))
+        worker = MemoryWorker(self.repo, embedding, llm, self.manager)
         for _ in range(3):
             self.assertTrue(await worker.process_one())
         self.assertFalse(await worker.process_one())
-        intake.review.assert_not_awaited()
-        row = (await self._query("SELECT status, (SELECT raw_text FROM memory_sources WHERE id = memory_jobs.id), agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
-        self.assertEqual(row[:2], ("failed", "我喜歡茶"))
-        self.assertEqual(len([item for item in row[2] if item["role"] == "intake"]), 3)
+        row = (await self._query("SELECT status, (SELECT raw_text FROM memory_sources WHERE id = memory_jobs.id), attempts, agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
+        self.assertEqual(row[:3], ("failed", "我喜歡茶", 3))
+        self.assertEqual(row[3]["attempt"], 3)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 0)
 
     async def test_validation_retry_receives_error_and_commits_corrected_result(self):
-        from services.memory_intake import MemoryIntake
-        event = await self.repo.accept("session", "invalid-subject-key")
+        from services.memory_llm import MemoryLLM
+        from backend.tests.test_memory_agents import tool_response
+        event = await self.repo.accept("session", "invalid-key")
         await self.repo.route(event, MemoryRouting(None), "我的飲食計畫以高蛋白質為主", [])
-        candidate = {"canonical_text": "健康管理：飲食計畫以高蛋白質為主", "memory_type": "project",
-            "subject_key": "health.diet_plan", "intent": "fact", "importance": .7, "confidence": .9,
-            "retention_class": "normal", "reason": "user statement", "source_ids": [str(event)]}
-        intake = object.__new__(MemoryIntake)
-        intake.call = AsyncMock(side_effect=[
-            ([("accept_candidates", {"candidates": [{**candidate, "subject_key": "健康管理.飲食計畫"}]})], {}),
-            ([("accept_candidates", {"candidates": [candidate]})], {}),
-        ])
-        decision = {key: value for key, value in candidate.items() if key != "intent"}
-        decision.update(action="CREATE", target_memory_ids=[], candidate_index=0)
-        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=VECTOR)),
-            SimpleNamespace(decide=AsyncMock(return_value=([decision], {}))), self.manager, intake)
-        self.assertTrue(await worker.process_one())
-        self.assertEqual(await self.repo.related_items("健康管理", None), [])
-        self.assertTrue(await worker.process_one())
-        self.assertTrue(await worker.process_one())
-        feedback = intake.call.call_args_list[1].args[1]["previous_validation_error"]
-        self.assertIn("subject_key", feedback)
+        operation = {"action": "CREATE", "canonical_text": "健康管理：飲食計畫以高蛋白質為主",
+                     "memory_type": "project", "subject_key": "health.diet_plan", "importance": .7,
+                     "confidence": .9, "source_ids": [str(event)], "reason": "user statement"}
+        agent = object.__new__(MemoryLLM)
+        agent.call = AsyncMock(side_effect=[tool_response("propose_operation", {"operation": {**operation, "subject_key": "健康管理.飲食"}}),
+                                           tool_response("propose_operation", {"operation": operation}),
+                                           tool_response("finish", {"outcome": "complete", "reason": "done"})])
+        worker = MemoryWorker(self.repo, SimpleNamespace(embed=AsyncMock(return_value=VECTOR)), agent, self.manager)
+        await worker.process_one()
+        self.assertIn("subject_key", agent.call.call_args_list[1].args[0][-1]["content"])
+        row = (await self._query("SELECT status, attempts, agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
+        self.assertEqual(row[:2], ("done", 1))
+        self.assertEqual(row[2]["corrections"], 1)
         self.assertEqual(len(await self.repo.related_items("健康管理", None)), 1)
-        row = (await self._query("SELECT status, intake_attempts, agent_diagnostics FROM memory_jobs WHERE id = %s", (event,)))[0]
-        self.assertEqual(row[:2], ("done", 2))
-        self.assertTrue(any(item.get("validation_error") == feedback for item in row[2]))
 
     async def test_jev_interruption_recovers_after_deadline(self):
         event = await self.repo.accept("session", "interrupted")
@@ -581,7 +536,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.repo.claim())
         await self._query("UPDATE memory_jobs SET created_at = now() - interval '61 seconds' WHERE id = %s", (event,))
         restored = await self.repo.claim()
-        self.assertEqual((restored["stage"], restored["error"], restored["source_text"]), ("intake", "jev_timeout", "我住台北"))
+        self.assertEqual((restored["route"], restored["error"], restored["source_text"]), ("process", "jev_timeout", "我住台北"))
 
     async def test_context_expiry_never_promotes_and_removes_orphan_source(self):
         event = await self.repo.accept("session", "expire")
@@ -592,20 +547,15 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._query("SELECT status, (SELECT raw_text FROM memory_sources WHERE id = memory_jobs.id) FROM memory_jobs WHERE id = %s", (event,)))[0], ("discarded", None))
         self.assertEqual((await self._query("SELECT count(*) FROM memory_sources"))[0][0], 0)
 
-    async def _reviewed(self, turn, canonical="使用者喜歡茶", subject="preference.tea"):
+    async def _prepared(self, turn, canonical="使用者喜歡茶", subject="preference.tea"):
         job = await self._job(turn, canonical)
-        candidate = {"canonical_text": canonical, "subject_key": subject, "memory_type": "preference",
-                     "importance": .7, "confidence": .9, "retention_class": "normal", "intent": "fact",
-                     "reason": "user statement", "source_ids": [str(job["id"])]}
-        sources = await self.repo.intake_sources(job, [])
-        await self.repo.complete_intake(job, {"route": "candidate", "candidates": [candidate]}, sources, [], {})
-        reviewed = await self.repo.claim()
-        decision = {key: value for key, value in candidate.items() if key != "intent"}
-        decision.update(action="CREATE", target_memory_ids=[], candidate_index=0)
-        return reviewed, decision
+        decision = {"canonical_text": canonical, "subject_key": subject, "memory_type": "preference",
+                    "importance": .7, "confidence": .9, "retention_class": "normal", "reason": "user statement",
+                    "source_ids": [str(job["id"])], "action": "CREATE", "target_memory_ids": []}
+        return job, decision
 
     async def test_concurrent_identical_creates_serialize_and_reinforce(self):
-        first, second = await self._reviewed("parallel1"), await self._reviewed("parallel2")
+        first, second = await self._prepared("parallel1"), await self._prepared("parallel2")
         results = await asyncio.gather(*(self.manager.apply(job, [decision], set(), {0: VECTOR})
                                          for job, decision in (second, first)))
         self.assertEqual(results, [True, True])
@@ -614,38 +564,37 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.manager.apply(first[0], [first[1]], set(), {0: VECTOR}))
 
     async def test_newer_fact_prevents_older_candidate_overwrite(self):
-        old = await self._reviewed("old", "使用者喜歡茶", "preference.drink")
-        new = await self._reviewed("new", "使用者現在喜歡咖啡", "preference.drink")
+        old = await self._prepared("old", "使用者喜歡茶", "preference.drink")
+        new = await self._prepared("new", "使用者現在喜歡咖啡", "preference.drink")
         await self.manager.apply(new[0], [new[1]], set(), {0: VECTOR})
         with self.assertRaisesRegex(ValueError, "較新的事實"):
             await self.manager.apply(old[0], [old[1]], set(), {0: VECTOR})
         self.assertEqual([row["canonical_text"] for row in await self.repo.related_items("咖啡", VECTOR)], ["使用者現在喜歡咖啡"])
 
-    async def test_reset_rejects_librarian_already_running(self):
-        job, decision = await self._reviewed("reset-ready")
+    async def test_reset_rejects_agent_already_running(self):
+        job, decision = await self._prepared("reset-ready")
         await self.repo.reset()
         self.assertFalse(await self.manager.apply(job, [decision], set(), {0: VECTOR}))
         self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 0)
 
-    async def test_forget_preserves_unrelated_waiting_input_and_handles_null_review(self):
+    async def test_forget_preserves_unrelated_waiting_input(self):
         item = await self._create()
         waiting = await self.repo.accept("another", "held")
-        await self.repo.route(waiting, MemoryRouting("needs_context"), "旅遊目的地尚未決定", [], VECTOR)
+        await self.repo.route(waiting, MemoryRouting("needs_context"), "旅遊目的地尚未決定", [])
         dismissed = await self._job("dismissed", "你記得我嗎")
-        await self.repo.complete_intake(dismissed, {"route": "none", "reason": "question"},
-                                        await self.repo.intake_sources(dismissed, []), [], {})
-        # 舊版接收曾保存 JSON null；遺忘不能因其他工作的內容型別失敗。
-        await self._query("UPDATE memory_jobs SET reviewed_candidates = 'null'::jsonb WHERE id = %s", (dismissed["id"],))
+        await self.repo.finish(dismissed, "ignored")
         job = await self._job("forget-safe", "忘記我的茶偏好")
         await self._apply(job, [{"action": "FORGET", "target_memory_ids": [str(item["id"])], "reason": "request"}], {item["id"]}, {})
         self.assertEqual((await self._query("SELECT raw_text FROM memory_sources WHERE id = %s", (waiting,)))[0][0], "旅遊目的地尚未決定")
         self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (waiting,)))[0][0], "buffered")
 
-    async def test_intake_role_cannot_commit_formal_facts(self):
+    async def test_agent_cannot_cite_unrelated_owner_source(self):
+        unrelated = await self._job("unrelated")
         job = await self._job("unauthorized")
         decision = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
-                    "target_memory_ids": [], "reason": "test", "importance": .7, "confidence": .8, "retention_class": "normal"}
-        with self.assertRaisesRegex(ValueError, "持久化接收契約"):
+                    "source_ids": [str(unrelated["id"])], "target_memory_ids": [], "reason": "test",
+                    "importance": .7, "confidence": .8, "retention_class": "normal"}
+        with self.assertRaisesRegex(ValueError, "未授權"):
             await self.manager.apply(job, [decision], set(), {0: VECTOR})
         self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 0)
 
@@ -662,8 +611,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     VALUES (:id,:user,:character,0,:id,:id,'process','pending','legacy user evidence',true)"""),
                     {"id": event, "user": self.scope.user_id, "character": self.scope.character_id})
                 command.upgrade(config, "head")
-                row = connection.execute(text(f'SELECT route,stage,source_ids FROM "{schema}".memory_jobs')).one()
-                self.assertEqual((row[0], row[1], row[2]), (None, "intake", [event]))
+                row = connection.execute(text(f'SELECT route,source_ids FROM "{schema}".memory_jobs')).one()
+                self.assertEqual((row[0], row[1]), ("process", [event]))
                 self.assertEqual(connection.execute(text(f'SELECT raw_text FROM "{schema}".memory_sources')).scalar_one(), "legacy user evidence")
         finally:
             with self.engine.begin() as connection:
@@ -691,7 +640,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([(row["id"], row["status"]) for row in rows], [(item["id"], "expired")])
 
     async def test_expired_lease_reclaimed_after_pool_restart_rejects_old_attempt(self):
-        job, decision = await self._reviewed("restart-lease")
+        job, decision = await self._prepared("restart-lease")
         await self._query("UPDATE memory_jobs SET lease_until = now() - interval '1 second' WHERE id = %s", (job["id"],))
         await self.pool.close()
         self.pool = await make_pool(TEST_URL)
@@ -705,8 +654,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 1)
 
     async def test_forget_cancels_older_uncommitted_duplicate(self):
-        job, decision = await self._reviewed("old-pending", "使用者喜歡茶", "preference.tea")
-        saved, fact = await self._reviewed("new-saved", "使用者喜歡茶", "preference.tea")
+        job, decision = await self._prepared("old-pending", "使用者喜歡茶", "preference.tea")
+        saved, fact = await self._prepared("new-saved", "使用者喜歡茶", "preference.tea")
         await self.manager.apply(saved, [fact], set(), {0: VECTOR})
         item = (await self.repo.related_items("茶", VECTOR))[0]
         forget = await self._job("forget-pending", "忘記我的茶偏好")
@@ -727,6 +676,106 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self._apply(job, [{"action": "FORGET", "target_memory_ids": [str(latest["id"])], "reason": "one version only"}], {latest["id"]}, {})
         history = await self.repo.related_items("茶", VECTOR, mode="history")
         self.assertEqual([row["id"] for row in history], [first["id"]])
+
+    async def test_target_changed_after_delivery_rejects_atomic_batch(self):
+        item = await self._create()
+        job = await self._job("stale", "我的計畫變了")
+        snapshots = {row["id"]: row for row in await self.repo.read_memories({item["id"]})}
+        await self._query("UPDATE memory_items SET canonical_text = '使用者喜歡無糖茶', updated_at = now() WHERE id = %s", (item["id"],))
+        decisions = [
+            {"action": "CREATE", "canonical_text": "使用者使用 Linux", "memory_type": "profile", "importance": .7,
+             "confidence": .9, "retention_class": "normal", "target_memory_ids": [], "source_ids": [str(job["id"])], "reason": "test"},
+            {"action": "ARCHIVE", "target_memory_ids": [str(item["id"])], "source_ids": [str(job["id"])], "reason": "test"}]
+        with self.assertRaisesRegex(ValueError, "target 已在檢索後變更"):
+            await self.manager.apply(job, decisions, {item["id"]}, {0: VECTOR}, target_snapshots=snapshots)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 1)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_audit WHERE source_event_id = %s", (job["id"],)))[0][0], 0)
+        self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (job["id"],)))[0][0], "running")
+
+    async def test_context_from_other_session_is_not_authorized(self):
+        held = await self.repo.accept("other-session", "held")
+        await self.repo.route(held, MemoryRouting("needs_context"), "我喜歡茶", [])
+        job = await self._job("current", "記住那個")
+        decision = {"action": "CREATE", "canonical_text": "喜歡茶", "memory_type": "preference",
+                    "target_memory_ids": [], "source_ids": [str(held)], "reason": "test"}
+        with self.assertRaisesRegex(ValueError, "buffer promotion"):
+            await self._apply(job, [decision], set(), {0: VECTOR}, (held,))
+
+    async def test_worker_query_reused_during_focused_search(self):
+        from services.memory_llm import MemoryLLM
+        from backend.tests.test_memory_agents import tool_response
+        item = await self._create()
+        event = await self.repo.accept("session", "cache")
+        source = "我仍然喜歡茶"
+        await self.repo.route(event, MemoryRouting(None), source, [])
+        operation = {"action": "REINFORCE", "target_memory_ids": [str(item["id"])], "source_ids": [str(event)], "reason": "support"}
+        agent = object.__new__(MemoryLLM)
+        agent.call = AsyncMock(side_effect=[tool_response("search_memories", {"query": source}),
+            tool_response("search_memories", {"query": source}), tool_response("propose_operation", {"operation": operation}),
+            tool_response("finish", {"outcome": "complete", "reason": "done"})])
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=VECTOR))
+        await MemoryWorker(self.repo, embedding, agent, self.manager).process_one()
+        embedding.embed.assert_awaited_once()
+        self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (event,)))[0][0], "done")
+
+    async def test_implicit_overall_design_uses_authorized_context_to_find_project(self):
+        job = await self._job("project-cloud", "圖書館系統雲端同步使用 AWS")
+        decision = {"action": "CREATE", "canonical_text": "圖書館系統雲端同步使用 AWS", "memory_type": "project",
+                    "target_memory_ids": [], "reason": "user fact"}
+        self.assertTrue(await self._apply(job, [decision], set(), {0: VECTOR}))
+        expected = (await self.repo.related_items("AWS", None))[0]
+        event = await self.repo.accept("session", "project-goal")
+        await self.repo.route(event, MemoryRouting(None), "整體設計追求低功耗",
+                              [{"role": "user", "content": "雲端同步使用 AWS"}])
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=[0.0, 1.0] + [0.0] * 1022))
+        agent = SimpleNamespace(decide=AsyncMock(return_value={"outcome": "ignore", "reason": "candidate inspection"}))
+        self.assertTrue(await MemoryWorker(self.repo, embedding, agent, self.manager).process_one())
+        query = embedding.embed.await_args.args[0]
+        self.assertIn("AWS", query)
+        self.assertIn("整體設計追求低功耗", query)
+        candidates = agent.decide.await_args.args[2]
+        self.assertEqual([row["id"] for row in candidates], [expected["id"]])
+        self.assertTrue(candidates[0]["exact_match"])
+        self.assertAlmostEqual(candidates[0]["similarity"], 0)
+
+    async def test_0005_migration_replays_sources_and_invalidates_old_claim(self):
+        schema = "test_" + uuid4().hex
+        events = {name: uuid4() for name in ("pending", "running", "buffered", "done", "missing")}
+        owner = {"user": self.scope.user_id, "character": self.scope.character_id}
+        try:
+            with self.engine.begin() as connection:
+                config = Config(str(BACKEND_ROOT / "alembic.ini"))
+                config.attributes.update(connection=connection, schema=schema)
+                command.upgrade(config, "0005_memory_agents")
+                connection.execute(text(f'INSERT INTO "{schema}".memory_scope_state (user_id,character_id) VALUES (:user,:character)'), owner)
+                for name, event in events.items():
+                    status = "pending" if name == "missing" else name
+                    connection.execute(text(f"""INSERT INTO "{schema}".memory_jobs
+                        (id,user_id,character_id,generation,conversation_id,message_id,route,status,stage,attempts,
+                         intake_attempts,librarian_attempts,source_ids,route_finalized,lease_until)
+                        VALUES (:id,:user,:character,0,:id,:id,'candidate',:status,'librarian',6,3,3,ARRAY[:id]::uuid[],true,now()+interval '120 seconds')"""),
+                        {**owner, "id": event, "status": status})
+                    if name != "missing":
+                        connection.execute(text(f"""INSERT INTO "{schema}".memory_sources
+                            (id,user_id,character_id,conversation_id,message_id,speaker,raw_text,occurred_at)
+                            VALUES (:id,:user,:character,:id,:id,'user',:raw,now())"""),
+                            {**owner, "id": event, "raw": "請記住我喜歡茶"})
+                command.upgrade(config, "head")
+                rows = {row["id"]: row for row in connection.execute(text(f'SELECT id,status,route,generation,attempts,source_ids FROM "{schema}".memory_jobs')).mappings()}
+                self.assertEqual(rows[events["running"]]["generation"], 1)
+                for name in ("pending", "running"):
+                    self.assertEqual((rows[events[name]]["status"], rows[events[name]]["route"], rows[events[name]]["attempts"]), ("pending", "process", 0))
+                    self.assertEqual(rows[events[name]]["source_ids"], [events[name]])
+                self.assertEqual(rows[events["buffered"]]["status"], "buffered")
+                self.assertEqual(rows[events["done"]]["status"], "done")
+                self.assertEqual(rows[events["missing"]]["status"], "failed")
+                self.assertEqual(connection.execute(text(f'SELECT count(*) FROM "{schema}".memory_sources')).scalar_one(), 4)
+            repo = MemoryRepository(self.pool, MemoryScope(self.scope.user_id,self.scope.character_id,schema), EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+            restored = await repo.claim()
+            self.assertEqual(restored["instruction"], "remember")
+        finally:
+            with self.engine.begin() as connection:
+                connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
 if __name__ == "__main__":

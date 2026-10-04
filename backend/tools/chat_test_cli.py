@@ -27,7 +27,9 @@ from zoneinfo import ZoneInfo
 
 # 支援從 repository 根目錄直接執行。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.memory_testset import CORE_PATH, fingerprint, generate_cases, load_snapshot, validate_cases
+from tools.memory_test_evidence import check_turn, answer_result
+from tools.memory_semantic_review import evaluate_semantics
+from tools.memory_testset import CORE_PATH, fingerprint, generate_cases, load_snapshot, validate_cases, step_mode
 
 
 def timestamp() -> str:
@@ -113,26 +115,20 @@ class MemoryRunStore:
     def job(self, event_id: str) -> dict | None:
         with self.engine.connect() as connection:
             row = connection.execute(text(
-                f'SELECT route, route_confidence, stage, agent_diagnostics, status, route_finalized, context_job_ids, decisions, error, '
-                f'embedding_diagnostics, embedding IS NOT NULL AS route_embedding_present, reviewed_candidates, '
-                f'missing_context, source_ids, attempts, intake_attempts, librarian_attempts, generation, '
-                f'created_at, updated_at, lease_until '
+                f'SELECT route, route_confidence, agent_diagnostics, status, route_finalized, context_job_ids, error, '
+                f'embedding_diagnostics, missing_context, source_ids, attempts, generation, created_at, updated_at, lease_until '
                 f'FROM "{self.schema}".memory_jobs WHERE id = :event_id '
                 'AND user_id = :user_id AND character_id = :character_id'
             ), {**self.owner, "event_id": uuid.UUID(event_id)}).mappings().first()
             if row is None:
                 return None
-            return {"route": row["route"], "confidence": row["route_confidence"],
-                    "status": row["status"], "route_finalized": row["route_finalized"],
-                    "stage": row["stage"], "agent_diagnostics": row["agent_diagnostics"],
-                    "context_job_ids": [str(item) for item in row["context_job_ids"]],
-                    "decisions": row["decisions"] or [], "error": row["error"],
-                    "embedding_diagnostics": row["embedding_diagnostics"] or [],
-                    "route_embedding_present": row["route_embedding_present"],
-                    **{key: row[key] for key in ("reviewed_candidates", "missing_context", "attempts",
-                        "intake_attempts", "librarian_attempts", "generation")},
-                    "source_ids": [str(value) for value in row["source_ids"]],
-                    **{key: str(row[key]) if row[key] else None for key in ("created_at", "updated_at", "lease_until")}}
+            result = dict(row)
+            result["confidence"] = result.pop("route_confidence")
+            for key in ("context_job_ids", "source_ids"):
+                result[key] = [str(value) for value in result[key]]
+            for key in ("created_at", "updated_at", "lease_until"):
+                result[key] = str(result[key]) if result[key] else None
+            return result
 
     def audit(self, event_id: str) -> list[dict]:
         operation_event_id = str(uuid.UUID(event_id))
@@ -156,12 +152,14 @@ class MemoryRunStore:
                 "sources": ("memory_sources", "id, conversation_id, message_id, speaker, raw_text, occurred_at"),
                 "evidence": ("memory_evidence", "memory_id, source_id, kind"),
                 "relations": ("memory_relations", "from_id, to_id, kind"),
-                "jobs": ("memory_jobs", "id, route, stage, status, route_finalized, context_job_ids, source_ids, generation, attempts, error"),
+                "audit": ("memory_audit", "action, target_id, operation_key, reason_class"),
+                "jobs": ("memory_jobs", "id, conversation_id, route, status, route_finalized, context_job_ids, source_ids, generation, attempts, error"),
             }.items():
                 name, fields = columns
                 rows = connection.execute(text(f'SELECT {fields} FROM "{self.schema}".{name} '
                     'WHERE user_id = :user_id AND character_id = :character_id'), self.owner).mappings()
-                state[table] = json.loads(json.dumps([dict(row) for row in rows], default=str))
+                state[table] = sorted(json.loads(json.dumps([dict(row) for row in rows], default=str)),
+                                      key=lambda row: json.dumps(row, sort_keys=True))
         state["items"] = self.snapshot()
         return state
 
@@ -175,7 +173,7 @@ def memory_changes(before: dict, after: dict) -> dict:
     return {key: value for key, value in changes.items() if value}
 
 
-async def wait_memory_job(store: MemoryRunStore, event_id: str | None, timeout: float = 30) -> dict:
+async def wait_memory_job(store: MemoryRunStore, event_id: str | None, timeout: float = 330) -> dict:
     if not event_id:
         return {"status": "missing", "error": "未收到 memory event_id"}
     deadline = time.monotonic() + timeout
@@ -190,35 +188,14 @@ async def wait_memory_job(store: MemoryRunStore, event_id: str | None, timeout: 
 
 
 def create_run_dir(root: Path | None = None) -> Path:
-    """建立帶 Asia/Taipei 時間戳的 run 目錄；不同測試類型可使用不同 root。"""
+    """固定最新產物；只解除舊 latest 連結，不覆寫連結指向的歷史。"""
     root = root or RUNS_DIR
     root.mkdir(parents=True, exist_ok=True)
-    name = datetime.now(ZoneInfo("Asia/Taipei")).strftime("%Y%m%d_%H%M%S")
-    suffix = 1
-    while True:
-        run_dir = root / (name if suffix == 1 else f"{name}_{suffix}")
-        try:
-            run_dir.mkdir()
-            return run_dir
-        except FileExistsError:
-            suffix += 1
-
-
-def update_latest(run_dir: Path) -> str | None:
-    """最新 Chat 測試入口只保存相對連結，歷史資料仍由時間資料夾擁有。"""
-    latest = run_dir.parent / "latest"
-    if latest.exists() and not latest.is_symlink():
-        raise RuntimeError("latest 已有非連結資料，停止以避免覆蓋")
-    previous = latest.resolve() if latest.is_symlink() else None
-    previous_run = (previous.name if previous is not None and previous.is_dir()
-                    and previous.parent == run_dir.parent.resolve() and previous != run_dir.resolve() else None)
-    temporary = run_dir.parent / f".latest-{uuid.uuid4().hex}.tmp"
-    try:
-        temporary.symlink_to(run_dir.name, target_is_directory=True)
-        temporary.replace(latest)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return previous_run
+    latest = root / "latest"
+    if latest.is_symlink():
+        latest.unlink()
+    latest.mkdir(exist_ok=True)
+    return latest
 
 
 def model_metadata() -> dict:
@@ -291,9 +268,10 @@ async def connect_backend(url: str, process: subprocess.Popen, timeout: float):
 
 async def run_turn(
     ws, turn: int, user_message: str, model_name: str, session_id: str,
-    store: MemoryRunStore, timeout: float,
+    store: MemoryRunStore, timeout: float, test_mode=None,
 ) -> dict:
     before = await asyncio.to_thread(store.snapshot)
+    state_before = await asyncio.to_thread(store.case_state) if test_mode else None
     started = time.monotonic()
     reply_parts = []
     emotion = source = expression = expression_debug = None
@@ -310,6 +288,7 @@ async def run_turn(
                 "type": "chat", "content": user_message, "model_name": model_name,
                 "session_id": session_id,
                 "turn_id": turn_id,
+                **({"test_mode": test_mode.value} if test_mode else {}),
             }, ensure_ascii=False))
             request_sent = True
             while True:
@@ -350,7 +329,7 @@ async def run_turn(
     job = None
     try:
         if event_id and not interrupted:
-            job = await wait_memory_job(store, event_id, timeout=timeout)
+            job = await wait_memory_job(store, event_id)
     except asyncio.CancelledError:
         interrupted = True
         errors.append("使用者中斷測試")
@@ -368,7 +347,10 @@ async def run_turn(
     except Exception as exc:
         after = before
         errors.append(f"讀取 DB 證據失敗：{type(exc).__name__}")
+    state_after = await asyncio.to_thread(store.case_state) if test_mode else None
     return {
+        "_db_state": state_after,
+        "db_unchanged": state_before == state_after if test_mode else None,
         "turn": turn,
         "ts": timestamp(),
         "turn_id": turn_id,
@@ -384,20 +366,16 @@ async def run_turn(
         "expression_debug": expression_debug,
         "memory_changes": memory_changes(before, after),
         "memory_event_id": event_id,
-        "memory_stage": job.get("stage") if job else None,
-        "memory_agent_diagnostics": job.get("agent_diagnostics", []) if job else [],
+        "memory_agent_diagnostics": job.get("agent_diagnostics", {}) if job else {},
         "memory_route": job.get("route") if job else None,
         "memory_route_confidence": job.get("confidence") if job else None,
         "memory_context_job_ids": job.get("context_job_ids", []) if job else [],
-        "memory_decisions": job.get("decisions", []) if job else [],
         "memory_audit": audit,
-        "memory_embedding_diagnostics": job.get("embedding_diagnostics", []) if job else [],
-        "memory_route_embedding_present": job.get("route_embedding_present") if job else None,
+        "memory_embedding_diagnostics": job.get("embedding_diagnostics", {}) if job else {},
         "memory_job_status": memory_status,
-        "memory_reviewed_candidates": job.get("reviewed_candidates") if job else None,
         "memory_missing_context": job.get("missing_context") if job else None,
         "memory_source_ids": job.get("source_ids", []) if job else [],
-        "memory_attempts": {key: job.get(key) for key in ("attempts", "intake_attempts", "librarian_attempts")} if job else None,
+        "memory_attempts": job.get("attempts") if job else None,
         "memory_generation": job.get("generation") if job else None,
         "memory_route_finalized": job.get("route_finalized") if job else None,
         "memory_job_created_at": job.get("created_at") if job else None,
@@ -434,27 +412,19 @@ def print_turn(record: dict) -> None:
         print("Embedding: " + summarize_embedding_diagnostics(record["memory_embedding_diagnostics"]))
     if record["errors"]:
         print(f"錯誤: {record['errors']}")
+    elif any(not check["passed"] for check in record.get("hard_checks", [])):
+        print(answer_result(record))
 
 
-_EMBEDDING_PURPOSE_LABELS = {
-    "retrieval_query": "對話檢索 query",
-    "memory_match_query": "記憶比對 query",
-    "context_document": "候選文件 document",
-    "memory_document": "記憶文件 document",
-}
-
-
-def summarize_embedding_diagnostics(diagnostics: list[dict]) -> str:
-    summaries = []
-    for item in diagnostics:
-        purpose = _EMBEDDING_PURPOSE_LABELS.get(item.get("purpose"), item.get("purpose", "未知類別"))
-        status = "成功" if item.get("status") == "succeeded" else "失敗"
-        dimension = f"{item['dimension']} 維" if item.get("dimension") is not None else "維度未知"
-        duration = f"{item['duration_ms']} ms" if item.get("duration_ms") is not None else "耗時未知"
-        error = f"，錯誤 {item['error_class']}" if item.get("error_class") else ""
-        stage = f"（{item['stage']}）" if item.get("stage") else ""
-        summaries.append(f"{purpose}{stage} {status}／{dimension}／{duration}{error}")
-    return "；".join(summaries) if summaries else "無紀錄"
+def summarize_embedding_diagnostics(diagnostics: dict) -> str:
+    if not diagnostics:
+        return "無紀錄"
+    configured = diagnostics.get("model") or "-"
+    serving = diagnostics.get("serving_model") or "-"
+    served = diagnostics.get("served_model") or "-"
+    return (f"呼叫 {diagnostics.get('calls', 0)} 次／失敗 {diagnostics.get('failures', 0)} 次／"
+            f"{diagnostics.get('dimension')} 維／{configured}→{serving}→{served}／"
+            f"{diagnostics.get('duration_ms', 0):.1f} ms")
 
 
 def markdown_cell(value: object, limit: int = 240) -> str:
@@ -485,15 +455,15 @@ def injected_count(record: dict) -> int:
     )
 
 
-def read_turn_trace(run_dir: Path, event_id: str | None) -> list[dict]:
+def read_turn_trace(run_dir: Path, turn_id: str | None) -> list[dict]:
     path = run_dir / "memory" / "trace.jsonl"
-    if not event_id or not path.exists():
+    if not turn_id or not path.exists():
         return []
     records = []
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             item = json.loads(line)
-            if uuid.UUID(item["event_id"]) == uuid.UUID(event_id):
+            if item.get("turn_id") == turn_id:
                 records.append(item)
         except (ValueError, KeyError):
             continue  # 程序中斷留下的未完成一行不當成證據。
@@ -649,104 +619,116 @@ def write_markdown_report(records: list[dict], path: Path, metadata: dict, statu
 
 
 def write_memory_report(records: list[dict], path: Path, metadata: dict, status: str, error: str | None) -> None:
-    """寫入記憶／聊天摘要；逐輪完整 trace 不嵌入 Markdown。"""
+    """主要表格提供回答比對；硬條件及來源證據保留在詳細段落。"""
     try:
-        cases = {case["case_id"]: case for case in json.loads((path.parent / "cases.json").read_text(encoding="utf-8"))}
-    except (OSError, ValueError, TypeError, KeyError):
-        cases = {}
-    lines = ["# 記憶與聊天案例觀察", "", f"- 執行狀態：**{status}**",
-        f"- 案例：已完成 {len(metadata.get('completed_case_ids', []))} / {metadata.get('planned_cases', 0)}；"
-        f"實際對話 {sum(record.get('action') != 'compress' for record in records)} / {metadata.get('planned_turns')} 輪",
+        materials = json.loads((path.parent / "cases.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        materials = []
+    states = {}
+    state_path = path.parent / "case_states.jsonl"
+    if state_path.exists():
+        for line in state_path.read_text(encoding="utf-8").splitlines():
+            try:
+                item = json.loads(line)
+                states[item["case_id"]] = item["state"]
+            except (ValueError, KeyError):
+                continue
+    if not materials:
+        materials = [{"case_id": c["case_id"], "conversation": []} for c in metadata.get("case_statuses", [])]
+    lines = ["# 記憶與聊天案例比對", "", f"- 執行狀態：**{status}**",
+        f"- 案例：已執行 {metadata.get('executed_cases', 0)} / {metadata.get('planned_cases', 0)}；實際對話 {sum(r.get('action') != 'compress' for r in records)} 輪",
         f"- 開始：{metadata['started_at']}；案例 SHA-256：`{metadata.get('cases_sha256', '-')}`",
-        "- 語意品質供人工查閱；工作結案與注入均不代表回答正確或因果使用。",
-        "- [表情／態度／JEV 報告](expression_report.md)；逐輪詳細來源：[turns.jsonl](turns.jsonl)",
-        "- 案例快照：[cases.json](cases.json)；結案狀態：[case_states.jsonl](case_states.jsonl)；執行摘要：[run.json](run.json)", "",
-        "| Case | 類型／來源／召回意圖 | 執行狀態 | 對話 | 提出操作／提交操作 | probe 注入筆數 |",
-        "|---|---|---|---|---|---|"]
-    for case in metadata.get("case_statuses", []):
-        actual = [r for r in records if r.get("case_id") == case["case_id"] and r.get("action") != "compress"]
-        material = cases.get(case["case_id"], {})
-        proposed = Counter(d.get("action", "?") for r in actual for d in r.get("memory_decisions", []))
-        committed = Counter(d.get("action", "?") for r in actual for d in r.get("memory_audit", []))
-        injected = [injected_count(r) for r in actual if r.get("phase") == "probe"]
-        lines.append(f"| [{case['case_id']}](#{case['case_id']}) | {material.get('case_type')} / {material.get('source')} / "
-                     f"{material.get('recall_route')} | {case['status']} | {len(actual)} | {dict(proposed)} / {dict(committed)} | {injected} |")
+        "- 回答結果以執行、隔離與來源硬條件為前提；語意比對獨立呈現，不能覆蓋來源失敗。",
+        "- [表情／態度／JEV 報告](expression_report.md)；[案例](cases.json)；[逐輪證據](turns.jsonl)；[DB 結案證據](case_states.jsonl)；[執行摘要](run.json)", ""]
     if error:
-        lines.extend(["", f"停止原因：{error}"])
-    if metadata.get("previous_run"):
-        previous = metadata["previous_run"]
-        lines.extend(["", f"歷史比較：[前一次記憶報告](../{previous}/memory_report.md)／"
-                      f"[前一次表情報告](../{previous}/expression_report.md)／[前一次案例](../{previous}/cases.json)。",
-                      "固定核心案例可逐案比較；新生成案例的內容可能不同，請先核對 cases.json 與模型設定。"])
-    lines.extend(["", "## 逐輪索引", "",
-                  "完整記憶 agent diagnostics、embedding、retrieval、audit、實際 messages 與回覆原文，請依 `case_id`＋`turn` 從 `turns.jsonl` 擷取。", ""])
-    ordered_case_ids = [case["case_id"] for case in metadata.get("case_statuses", [])]
-    ordered_case_ids.extend(case_id for case_id in dict.fromkeys(record.get("case_id", "legacy") for record in records)
-                            if case_id not in ordered_case_ids)
-    for case_id in ordered_case_ids:
-        material = cases.get(case_id, {})
-        case_records = [record for record in records if record.get("case_id") == case_id]
-        focus = "、".join(material.get("expected_focus", [])) or "-"
-        lines.extend([f'<a id="{case_id}"></a>', f"## {case_id}", "",
-                      "觀察方向：" + focus, "",
-                      "| Turn | Phase | 使用者 | 回覆 | Route／Job | 提出／提交 | 注入 | Event | 狀態 |",
-                      "|---:|---|---|---|---|---|---:|---|---|"])
-        for record in case_records:
-            route_status = f"{record.get('memory_stage') or 'control'}:{record.get('memory_route') or '-'} / {record.get('memory_job_status') or '-'}"
-            operations = f"{operation_counts([record], 'memory_decisions')} / {operation_counts([record], 'memory_audit')}"
-            state = "錯誤" if record.get("errors") else "OK"
-            if record.get("action") == "compress":
-                state = "compress"
-            elif record.get("memory_job_status"):
-                state = f"{state}; {record['memory_job_status']}"
-            lines.append("| " + " | ".join([
-                markdown_cell(record.get("turn")), markdown_cell(record.get("phase")),
-                markdown_cell(record.get("user")), markdown_cell(record.get("reply")),
-                markdown_cell(route_status), markdown_cell(operations),
-                markdown_cell(injected_count(record)),
-                markdown_cell(record.get("memory_event_id")), markdown_cell(state),
-            ]) + " |")
-            if record.get("errors"):
-                lines.append(f"|  |  | 錯誤：{markdown_cell(', '.join(record['errors']))} |  |  |  |  |  |  |")
-        probes = [record for record in case_records if record.get("phase") == "probe" and record.get("action") != "compress"]
-        if probes:
-            lines.extend(["", "召回與實際注入：", "",
-                "| Turn | 記憶 ID／狀態 | 對應記憶 | cosine／詞面 | 實際注入 |",
-                "|---:|---|---|---|---|"])
-            for record in probes:
-                retrieval = next((item for item in record.get("trace", []) if item.get("stage") == "retrieval"), {})
-                context = next((item for item in record.get("trace", []) if item.get("stage") == "chat_context"), {})
-                for candidate in retrieval.get("candidates", []):
-                    similarity = candidate.get("similarity")
-                    score = f"{similarity:.4f}" if similarity is not None else "未提供"
-                    lines.append("| " + " | ".join([
-                        str(record["turn"]), markdown_cell(f"{candidate['id']} / {candidate.get('status')}"),
-                        markdown_cell(candidate.get("canonical_text")),
-                        f"{score} / {candidate.get('exact_match')}",
-                        "是" if str(candidate["id"]) in context.get("injected_memory_ids", []) else "否",
-                    ]) + " |")
-                if not retrieval.get("candidates"):
-                    lines.append(f"| {record['turn']} | - | 無合格候選 | - | 否 |")
-                excluded = next((item.get("excluded_candidates", []) for item in record.get("trace", [])
-                    if item.get("stage") == "retrieval_filter" and item.get("mode") == retrieval.get("mode")), [])
-                for candidate in excluded:
-                    similarity = candidate.get("similarity")
-                    score = f"{similarity:.4f}" if similarity is not None else "未提供"
-                    lines.append(f"| {record['turn']} | {markdown_cell(candidate['id'])} / 未通過 | "
-                        f"{markdown_cell(candidate.get('canonical_text'))} | {score} / "
-                        f"{candidate.get('exact_match')} | 否：{candidate.get('rejection_reason')} |")
-        if not case_records:
-            lines.append("| - | - | 尚未執行 | - | - | - | 0 | - | pending |")
-        lines.append("")
-    lines.extend([
-        "## 詳細紀錄", "",
-        "- `turns.jsonl`：每行一筆完整逐輪 evidence；使用 `jq` 以 `case_id`＋`turn` 精確擷取。",
-        "- `case_states.jsonl`：每案 reset 前保存的 sources、evidence、relations、jobs 與 memory items。",
-        "- `server.log`：只在排查後端 transport／runtime stdout 時查看，不作為記憶交易的唯一證據。",
-        "",
-    ])
-    atomic_write_text(path, "\n".join(lines) + "\n")
+        lines.extend([f"最近錯誤：{error}", ""])
 
+    def cell(value):
+        return markdown_cell(value, limit=100000)
+
+    for group in ("short_term", "long_term", "mixed", None):
+        selected = [c for c in materials if c.get("case_group") == group]
+        if not selected:
+            continue
+        lines.extend([f"## {group or 'legacy'}", "",
+            "| Case／Probe | 組別／類型 | 回答結果 | 最終應該答案／對話 |", "|---|---|---|---|"])
+        for case in selected:
+            steps = [(i, s) for i, s in enumerate(case.get("conversation", []), 1) if s["phase"] in {"probe", "recall_probe"}]
+            if not steps and case.get("conversation"):
+                steps = [(len(case["conversation"]), case["conversation"][-1])]
+            for probe, (index, step) in enumerate(steps, 1):
+                record = next((r for r in records if r.get("case_id") == case["case_id"] and r.get("turn") == index), None)
+                result = answer_result(record) if record else "錯誤：此步驟尚未執行"
+                expected = step.get("expected_result", case.get("expected_result", "未定義；TXT 表情回歸"))
+                label = f"probe_{probe}" if step["phase"] in {"probe", "recall_probe"} else "setup"
+                lines.append(f"| [{case['case_id']} / {label}](#{case['case_id']}) | {group or 'legacy'} / {case.get('case_type', '-')} | {cell(result)} | {cell(expected)} |")
+        lines.append("")
+    reviews = [r for r in records if r.get("semantic_review")]
+    if reviews:
+        evaluation = metadata.get("semantic_evaluation", {})
+        lines.extend(["## 回答語意比對", "",
+            f"- 評分 prompt：`{evaluation.get('prompt_version')}`；模型：{evaluation.get('models', [])}；統計：{evaluation.get('counts', {})}",
+            "- 使用既有 Chat 模型，以獨立審查 prompt 比對；這是模型評估，仍需保留人工核對空間。", "",
+            "| Case／Step | 語意判定 | 理由 | 缺少事實／無來源斷言 | 硬條件符合 |", "|---|---|---|---|---|"])
+        for record in reviews:
+            review = record["semantic_review"]
+            lines.append(f"| {record['case_id']} / {record['turn']} | {review.get('verdict', review['status'])} | {cell(review.get('reason', review.get('error')))} | {cell(review.get('missing_facts', []) + review.get('unsupported_claims', []))} | {review['hard_conditions_met']} |")
+        lines.append("")
+    for case in materials:
+        case_id = case["case_id"]
+        actual = [r for r in records if r.get("case_id") == case_id]
+        lines.extend([f'<a id="{case_id}"></a>', f"## {case_id}", "",
+                      "測試目的：" + "、".join(case.get("expected_focus", [])), "",
+                      "| Step | Phase／實際模式 | Session | User input | Assistant reply |",
+                      "|---:|---|---|---|---|"])
+        for index, step in enumerate(case.get("conversation", []), 1):
+            record = next((r for r in actual if r.get("turn") == index), {})
+            lines.append(f"| {index} | {step['phase']} / {record.get('test_mode', '未執行')} | {step['session']} / {record.get('session_id', '-')} | {cell(step.get('input', '[compress]'))} | {cell(record.get('reply', '未執行'))} |")
+        for record in actual:
+            if record.get("action") == "compress":
+                continue
+            lines.extend(["", f"### Step {record['turn']}", ""])
+            if record.get("phase") in {"probe", "recall_probe"} or not any(s["phase"] in {"probe", "recall_probe"} for s in case.get("conversation", [])):
+                lines.extend(["回答結果：" + cell(answer_result(record)), "",
+                    "最終應該答案／對話：" + cell(record.get("expected_result", case.get("expected_result"))), ""])
+            context = next((t for t in record.get("trace", []) if t.get("stage") == "chat_context"), {})
+            retrieval = next((t for t in record.get("trace", []) if t.get("stage") == "retrieval"), {})
+            lines.extend(["短期來源（裁切後）：", "",
+                          "- Summary：" + cell(context.get("retained_summary")),
+                          "- History：" + cell(" / ".join(f"{m['role']}: {m['content']}" for m in context.get("messages", [])[1:-1])), ""])
+            for fact in record.get("source_evidence", []):
+                source = case["conversation"][fact["source_step"] - 1]["input"]
+                lines.append(f"- 來源 Step {fact['source_step']} / {fact['source']}：{cell(source)}；實際位置：{cell(fact['actual'])}")
+            lines.extend(["", "| Memory ID／狀態 | Canonical text | Cosine／exact_match | 投影目的地／裁切後注入 |",
+                          "|---|---|---|---|"])
+            for candidate in retrieval.get("candidates", []):
+                destinations = [p.get("destination") for p in retrieval.get("projections", []) if p['id'] == candidate['id']]
+                injected = candidate['id'] in context.get("injected_memory_ids", [])
+                lines.append(f"| {candidate['id']} / {candidate.get('status')} | {cell(candidate.get('canonical_text'))} | {candidate.get('similarity')} / {candidate.get('exact_match')} | {destinations} / {injected} |")
+            if not retrieval.get("candidates"):
+                lines.append("| - | 無合格候選或此模式停用召回 | - | 無 |")
+            for trace_item in record.get("trace", []):
+                if trace_item.get("stage") == "retrieval_filter" and trace_item.get("mode") == retrieval.get("mode"):
+                    for candidate in trace_item.get("excluded_candidates", []):
+                        lines.append(f"| {candidate['id']} / 未通過 | {cell(candidate.get('canonical_text'))} | {candidate.get('similarity')} / {candidate.get('exact_match')} | 否：{candidate.get('rejection_reason')} |")
+            management_ids = list(dict.fromkeys(c['id'] for t in record.get("trace", [])
+                if t.get("stage") == "memory_candidates" for c in t.get("candidates", [])))
+            lines.extend(["", f"寫入：{record.get('memory_route')} / {record.get('memory_job_status')}；source IDs：{record.get('memory_source_ids', [])}；audit：{cell(record.get('memory_audit', []))}",
+                          "", "Agent 管理候選（不是 Chat 召回）：" + cell(management_ids), "",
+                          "| 硬條件 | 實際值 | 預期值 | 失敗理由 |", "|---|---|---|---|"])
+            for check in record.get("hard_checks", []):
+                lines.append(f"| {check['layer']} / {check['name']} | {cell(check['actual'])} | {cell(check['expected'])} | {cell(check['reason'])} |")
+        state = states.get(case_id, {})
+        if state.get("items"):
+            lines.extend(["", "結案 current/history：", "",
+                          "| Memory ID／狀態 | Canonical text | 有效期間 | User evidence source IDs |", "|---|---|---|---|"])
+            for memory_id, item in state["items"].items():
+                sources = [e["source_id"] for e in state.get("evidence", []) if e["memory_id"] == memory_id]
+                lines.append(f"| {memory_id} / {item['status']} | {cell(item['text'])} | {item.get('valid_from')} ~ {item.get('valid_to')} | {cell(sources)} |")
+            if state.get("relations"):
+                lines.extend(["", "版本關聯：" + cell(state["relations"])])
+        lines.extend(["", f"完整 sources／evidence／relations／audit 與 current/history 狀態請在 [case_states.jsonl](case_states.jsonl) 依 `{case_id}` 查閱；逐輪原始 trace 與硬條件在 [turns.jsonl](turns.jsonl)。", ""])
+    atomic_write_text(path, "\n".join(lines) + "\n")
 
 def write_reports(records, run_dir, metadata, status, error):
     dialogue = [record for record in records if record.get("action") != "compress"]
@@ -755,15 +737,17 @@ def write_reports(records, run_dir, metadata, status, error):
 
 
 def save_record(records: list[dict], record: dict, run_dir: Path, metadata: dict, status: str, error: str | None) -> None:
+    record.pop("_db_state", None)
     records.append(record)
     with (run_dir / "turns.jsonl").open("a", encoding="utf-8") as file:
         file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-async def control_step(ws, action: str, session_id: str, timeout: float) -> dict:
+async def control_step(ws, action: str, session_id: str, timeout: float, test_mode=None) -> dict:
     expected = {"reset": "reset_done", "compress": "compress_done"}[action]
     started = time.monotonic()
-    await ws.send(json.dumps({"type": action, "session_id": session_id}))
+    await ws.send(json.dumps({"type": action, "session_id": session_id,
+                              **({"test_mode": test_mode.value} if test_mode else {})}))
     async with asyncio.timeout(timeout):
         while True:
             message = json.loads(await ws.recv())
@@ -776,7 +760,7 @@ async def control_step(ws, action: str, session_id: str, timeout: float) -> dict
 
 async def run(args: argparse.Namespace) -> tuple[Path, str]:
     database_url = test_database_url()
-    # 先驗證重播來源，執行時建立獨立資料夾並保留來源產物。
+    # 先完整載入重播來源，再覆寫固定最新產物，避免重播 latest 時先清空案例。
     legacy = bool(args.scenario and Path(args.scenario).suffix.lower() == ".txt")
     cases = None
     generator_metadata = {"status": "not_started"}
@@ -785,7 +769,7 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
             inputs = load_scenario(args.scenario)
             if args.max_turns:
                 inputs = inputs[:args.max_turns]
-            cases = [{"case_id": "legacy", "recall_route": None, "conversation": [
+            cases = [{"case_id": "legacy", "case_group": None, "conversation": [
                 {"phase": "probe", "session": "context", "input": value} for value in inputs]}]
         else:
             cases = load_snapshot(args.scenario)
@@ -799,11 +783,11 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
                 except (ValueError, OSError):
                     pass
     elif args.max_turns:
-        raise ValueError("--max-turns 僅供既有 TXT 表情回歸，不裁切 25-case 集")
+        raise ValueError("--max-turns 僅供既有 TXT 表情回歸，不裁切 28-case 集")
     if not legacy and args.max_turns:
-        raise ValueError("25-case 快照不得以 --max-turns 裁切")
+        raise ValueError("28-case 快照不得以 --max-turns 裁切")
     run_dir = create_run_dir()
-    (run_dir / "memory").mkdir()
+    (run_dir / "memory").mkdir(exist_ok=True)
     for name in ("cases.json", "turns.jsonl", "case_states.jsonl", "memory_report.md", "expression_report.md", "server.log"):
         (run_dir / name).write_text("", encoding="utf-8")
     schema = "test_" + uuid.uuid4().hex
@@ -811,7 +795,7 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
     store = MemoryRunStore(database_url, schema, user_id, character_id)
     metadata = {"started_at": timestamp(), "scenario": str(Path(args.scenario).resolve()) if args.scenario else str(CORE_PATH),
         "scenario_sha256": fingerprint(cases) if cases is not None else None,
-        "planned_cases": len(cases) if cases is not None else 25,
+        "planned_cases": len(cases) if cases is not None else 28,
         "planned_turns": sum("input" in step for case in cases for step in case["conversation"]) if cases else None,
         "memory_schema": schema, "legacy": legacy, "generator": generator_metadata,
         "completed_case_ids": [], "case_statuses": [], "cleanup": {}, **model_metadata()}
@@ -821,6 +805,9 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
     current_case = None
 
     def persist(*, render_reports: bool = False):
+        metadata["hard_checks"] = {layer: dict(Counter(r.get("hard_status", {}).get(layer, "not_checked")
+            for r in records if r.get("action") != "compress")) for layer in
+            ("execution_status", "isolation_status", "memory_evidence_status", "context_evidence_status")}
         metadata.update(status=status, error=error, executed_cases=len({r["case_id"] for r in records}),
                         executed_turns=sum(r.get("action") != "compress" for r in records), updated_at=timestamp())
         (run_dir / "run.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -830,10 +817,9 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
     persist(render_reports=True)
     print(f"測試資料夾：{run_dir}")
     try:
-        metadata["previous_run"] = update_latest(run_dir)
         persist(render_reports=True)
         if cases is None:
-            core = validate_cases(json.loads(CORE_PATH.read_text(encoding="utf-8")), source="Gold", count=20)
+            core = validate_cases(json.loads(CORE_PATH.read_text(encoding="utf-8")), source="Gold", count=23)
             # 生成失敗也保存已知固定素材，不冒充完整快照。
             (run_dir / "cases.json").write_text(json.dumps(core, ensure_ascii=False, indent=2), encoding="utf-8")
             cases = core + await generate_cases(core, metadata["generator"])
@@ -865,13 +851,15 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
                     record = {"turn": turn, "ts": timestamp(), "action": "compress", "user": "[compress]",
                               "reply": "", "session_id": session_id, "errors": []}
                     try:
-                        record["control"] = await control_step(ws, "compress", session_id, args.turn_timeout)
+                        record["control"] = await control_step(ws, "compress", session_id, args.turn_timeout,
+                                                            test_mode=step_mode(case, step))
                     except (TimeoutError, RuntimeError) as exc:
                         record["errors"].append(type(exc).__name__)
                 else:
                     attempt_errors = []
                     for attempt in range(1, args.retries + 2):
-                        record = await run_turn(ws, turn, step["input"], "Rushia", session_id, store, args.turn_timeout)
+                        record = await run_turn(ws, turn, step["input"], "Rushia", session_id, store, args.turn_timeout,
+                                                **({"test_mode": step_mode(case, step)} if not legacy else {}))
                         record["attempts"] = attempt
                         if not record["errors"]:
                             break
@@ -887,24 +875,19 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
                             record["errors"].append(f"重連失敗：{type(exc).__name__}")
                             break
                     record["attempt_errors"] = attempt_errors
-                    record["trace"] = read_turn_trace(run_dir, record.get("memory_event_id"))
-                    # 成功角色輸出已由 repository 保存；只保留未提交嘗試的補充 trace。
-                    record["trace"] = [item for item in record["trace"] if not (
-                        item["stage"] == "memory_agent" and any(
-                            all(diagnostic.get(key) == value for key, value in item.items()
-                                if key not in {"event_id", "stage", "timestamp"})
-                            for diagnostic in record.get("memory_agent_diagnostics", [])))]
+                    record["trace"] = read_turn_trace(run_dir, record.get("turn_id"))
                     if not legacy and not record["errors"] and not any(item["stage"] == "chat_context" for item in record["trace"]):
                         record["errors"].append("缺少裁切後 Chat context trace")
-                    context = next((item for item in record["trace"] if item["stage"] == "chat_context"), None)
-                    if case["recall_route"] == "long_term" and step["phase"] == "probe" and context and (
-                            context.get("history_count", 0) != 0 or context.get("summary", "")):
-                        record["errors"].append("長期 probe 的 history／summary 非空")
-                record.update(case_id=case["case_id"], phase=step["phase"], recall_route=case["recall_route"])
-                if record["errors"]:
+                    db_state = record.pop("_db_state", None) or {}
+                    if not legacy:
+                        record["expected_result"] = step.get("expected_result", case["expected_result"])
+                        check_turn(case, step, record, [r for r in records if r.get("case_id") == case["case_id"]], db_state)
+                record.update(case_id=case["case_id"], phase=step["phase"], case_group=case["case_group"],
+                              test_mode=step_mode(case, step).value if not legacy else "normal")
+                if record["errors"] or any(v == "failed" for v in record.get("hard_status", {}).values()):
                     case_has_errors = True
                     status = "interrupted" if record.get("interrupted") else "failed"
-                    error = f"第 {turn} 輪失敗：{record['errors'][0]}"
+                    error = f"第 {turn} 輪失敗：{record['errors'][0] if record['errors'] else answer_result(record)}"
                     current_case["status"] = status
                     current_case["error"] = error
                 save_record(records, record, run_dir, metadata, status, error)
@@ -933,6 +916,18 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
             persist(render_reports=True)
         if status == "running":
             status = "failed" if any(case["status"] == "failed" for case in metadata["case_statuses"]) else "completed"
+        if not legacy:
+            metadata["semantic_evaluation"] = {}
+            semantic_failed = await evaluate_semantics(cases, records, metadata["semantic_evaluation"])
+            for case_status in metadata["case_statuses"]:
+                if case_status["case_id"] in semantic_failed:
+                    case_status["status"] = "failed"
+                    case_status["error"] = "回答語意比對未通過或未完成"
+            metadata["completed_case_ids"] = [c["case_id"] for c in metadata["case_statuses"] if c["status"] == "completed"]
+            if semantic_failed:
+                status = "failed"
+                error = "回答語意比對未通過或未完成：" + ", ".join(sorted(semantic_failed))
+
     except asyncio.CancelledError:
         status, error = "interrupted", "使用者中斷測試"
         if current_case:
@@ -947,6 +942,11 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
             current_case["status"] = status
         print(f"測試失敗：{error}")
     finally:
+        if metadata.get("semantic_evaluation"):
+            try:
+                atomic_write_text(run_dir / "turns.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
+            except OSError as exc:
+                status, error = "failed", f"保存語意比對失敗：{type(exc).__name__}"
         if ws is not None:
             try:
                 await ws.close()
@@ -973,7 +973,7 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
         except OSError as exc:
             status, error = "failed", f"清理短期暫存失敗：{type(exc).__name__}"
             metadata["cleanup"]["short_term"] = "failed"
-        if not args.scenario:
+        if not args.scenario or metadata.get("semantic_evaluation"):
             from infrastructure.ai_client import _role_clients
             for client in _role_clients.values():
                 await client.close()
@@ -984,7 +984,7 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="隔離式 Headless JEV Chat 測試")
-    parser.add_argument("--scenario", help="25-case JSON 快照重播；TXT 保留既有表情回歸，省略時生成完整新集")
+    parser.add_argument("--scenario", help="28-case JSON 快照重播；TXT 保留既有表情回歸，省略時生成完整新集")
     parser.add_argument("--max-turns", type=int, default=0)
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--startup-timeout", type=float, default=60)

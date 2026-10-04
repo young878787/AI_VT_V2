@@ -102,30 +102,32 @@ npm run dev
 
 ## Headless Chat 測試（不開前端）
 
-長期記憶固定使用 PostgreSQL／pgvector `MemoryRuntime`。一般後端使用 `MEMORY_DATABASE_URL` 與固定 `MEMORY_DATABASE_SCHEMA`；`backend/tools/chat_test_cli.py` 會自動啟動同一份後端程式的隔離 instance，使用與正式資料庫不同的 `MEMORY_TEST_DATABASE_URL`，每次建立獨立 schema 並套用 Alembic migration。執行前需設定獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`。本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。缺少測試 DB、測試 DB 指向正式 database 或 schema 不合法時，CLI 會在啟動後端前失敗；測試完成後清理該 schema。CLI 逐輪等待記憶 job 完成，擷取回覆、JEV 決策、route、audit 與記憶變更，不讀寫正式長期記憶。
+長期記憶固定使用 PostgreSQL／pgvector `MemoryRuntime`。一般後端使用 `MEMORY_DATABASE_URL` 與固定 `MEMORY_DATABASE_SCHEMA`；`backend/tools/chat_test_cli.py` 會自動啟動同一份後端程式的隔離 instance，使用與正式資料庫不同的 `MEMORY_TEST_DATABASE_URL`，每次建立獨立 schema 並套用 Alembic migration。執行前需設定獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`。本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。缺少測試 DB、測試 DB 指向正式 database 或 schema 不合法時，CLI 會在啟動後端前失敗；測試完成後清理該 schema。CLI 逐輪等待記憶 job 完成（固定 330 秒，獨立於 Chat／Action 的 `--turn-timeout`），擷取回覆、JEV 決策、route、audit 與記憶變更，不讀寫正式長期記憶。
 
 ```bash
-# 從 repository 根目錄執行：20 個固定 cases ＋ 5 個既有 Chat LLM 新生成案例
+# 從 repository 根目錄執行：23 個固定 cases ＋ 5 個既有 Chat LLM 新生成案例
 backend/.venv/bin/python backend/tools/chat_test_cli.py
 
-# 原樣重播 25-case 快照，不再次生成
+# 原樣重播 28-case 快照，不再次生成
 backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
 
 # 保留既有 TXT 表情回歸；max-turns 僅用於 TXT
 backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-CLI 固定 Rushia。案例的 setup 與 probe 都走 `/ws/chat`；每案 reset 隔離 owner，長期 probe 使用新 session／連線，背景工作結案後再前進。案例數與對話輪數分開記錄，語意品質不自動判定。
+長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。正式 DB 已在備份後升至 Alembic head `0006_single_memory_agent`，正式啟動與目前 schema 相符。
 
-每次建立 `backend/log/chat_test_runs/YYYYMMDD_HHMMSS/`（已 gitignore），`latest/` 指向最新一次結果：
+CLI 固定 Rushia。案例的 setup 與 probe 都走 `/ws/chat`；每案 reset 隔離 owner，長期 probe 使用新 session／連線，背景工作結案後再前進。短期組跳過長期接收與召回，長期 probe 停用短期載入、累積與寫入，綜合組核對跨來源證據。案例數與對話輪數分開記錄，執行後以既有 Chat 模型的獨立審查 prompt 比對所有 probe；保存模型、理由與缺漏，仍需人工核對可能的誤判。
+
+每次覆寫固定 `backend/log/chat_test_runs/latest/`（已 gitignore），不新增時間資料夾；既有歷史保留：
 
 - `cases.json` — 接受的完整案例，供精確重播。
-- `turns.jsonl` — 唯一逐輪詳細資料；每行一筆，含完整表情、原始／resolved JEV、記憶交易、召回與裁切後實際 Chat messages。
-- `case_states.jsonl` — 每案一筆的結案 DB sources、evidence、relations、jobs 與 memory items，不混入逐輪資料。
+- `turns.jsonl` — 唯一逐輪詳細資料；每行一筆，含完整表情、原始／resolved JEV、記憶交易、召回與裁切後實際 Chat messages，以及 probe 的獨立 `semantic_review`。
+- `case_states.jsonl` — 每案一筆的結案 DB sources、evidence、relations、audit、jobs 與 memory items，不混入逐輪資料。
 - `memory_report.md`、`expression_report.md` — 從 JSONL 衍生的精簡閱讀視圖，不內嵌完整 JSON；需要細查時以 `case_id`＋`turn` 查詢 `turns.jsonl`。
 - `run.json`、`server.log` — 案例指紋、生成診斷、執行狀態與清理結果、隔離後端日誌。
 
-獨立六情境 memory-agent 評估使用 `backend/log/memory_agent_runs/<timestamp>/`，包含 `run.json`、`memory_agents.json` 與 `memory_agents_report.md`，不會切換 Chat 測試的 `latest`。
+獨立六情境 memory-agent 評估使用 `backend/log/memory_agent_runs/latest/`，包含 `run.json`、`memory_agents.json` 與 `memory_agents_report.md`，不會切換 Chat 測試的 `latest`。
 
 摘要先讀兩份 Markdown；需要完整 evidence 時再查逐輪 JSON：
 

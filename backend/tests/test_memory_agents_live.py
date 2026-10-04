@@ -14,13 +14,12 @@ from domain.memory_routing import route_memory
 from domain.jev_questions import build_memory_questions
 from infrastructure.typesafe_client import call_jev
 from infrastructure.memory_embedding_client import MemoryEmbeddingClient
-from services.memory_intake import MemoryIntake
 from services.memory_llm import MemoryLLM
 from services.memory_worker import MemoryWorker
 from services.memory_retriever import MemoryRetriever
 from domain.agent_a_prompts import build_agent_a_prompt
 from domain.emotion_state import EMOTION_FIELDS
-from tools.chat_test_cli import create_run_dir, timestamp, update_latest
+from tools.chat_test_cli import create_run_dir, timestamp
 
 MEMORY_AGENT_RUNS_DIR = BACKEND_ROOT / "log" / "memory_agent_runs"
 
@@ -71,7 +70,6 @@ def _write_artifacts(run_dir, report, manifest):
 
 async def evaluate():
     run_dir = create_run_dir(MEMORY_AGENT_RUNS_DIR)
-    previous_run = update_latest(run_dir)
     output = run_dir / "memory_agents.json"
     print(f"補充記憶測試結果：{output}", flush=True)
     test = database_tests.MemoryDatabaseIntegrationTests()
@@ -83,7 +81,6 @@ async def evaluate():
         "status": "running",
         "started_at": timestamp(),
         "updated_at": timestamp(),
-        "previous_run": previous_run,
         "planned_cases": len(case_names),
         "case_names": case_names,
         "schema_cleaned": False,
@@ -95,12 +92,12 @@ async def evaluate():
         await test.asyncSetUp()
         setup_complete = True
         settings = load_memory_settings({**os.environ, 'AI_VT_TEST_MODE': 'true', 'MEMORY_DATABASE_SCHEMA': test.scope.schema_name})
-        embedding, intake, librarian = MemoryEmbeddingClient(settings), MemoryIntake(settings), MemoryLLM(settings)
-        clients = [embedding.client, intake.client, librarian.client]
+        embedding, agent = MemoryEmbeddingClient(settings), MemoryLLM(settings)
+        clients = [embedding.client, agent.client]
         test.repo.embedding_model, test.repo.embedding_contract = settings.embedding_model, settings.embedding_contract
         test.manager.embedding_model, test.manager.embedding_contract = settings.embedding_model, settings.embedding_contract
         test.manager.model = settings.memory_model
-        worker = MemoryWorker(test.repo, embedding, librarian, test.manager, intake)
+        worker = MemoryWorker(test.repo, embedding, agent, test.manager)
         cases = [
             ('noise', '哈哈哈', []),
             ('mixed', '左邊有人！對了，我平常最喜歡喝拿鐵，幫我記住這個飲料偏好。', []),
@@ -117,12 +114,12 @@ async def evaluate():
             for _ in range(7):
                 if not await worker.process_one():
                     break
-            row = (await test._query('SELECT route, status, error, agent_diagnostics, reviewed_candidates, missing_context FROM memory_jobs WHERE id = %s', (event,)))[0]
+            row = (await test._query('SELECT route, status, error, agent_diagnostics, missing_context FROM memory_jobs WHERE id = %s', (event,)))[0]
             profile, relevant = await MemoryRetriever(test.repo, embedding).retrieve('你記得我的拿鐵與美式咖啡偏好嗎？', event_id=event)
             prompt = build_agent_a_prompt(profile, relevant, {field: 0.0 for field in EMOTION_FIELDS})
             result = {'prompt_contains_recall': bool(relevant) and relevant in prompt, 'case': name, 'input': text,
                       'jev': answers, 'route': row[0], 'status': row[1], 'error': row[2],
-                      'agents': row[3], 'candidates': row[4], 'missing_context': row[5], 'fresh_recall': {'profile': profile, 'relevant': relevant}}
+                      'agents': row[3], 'missing_context': row[4], 'fresh_recall': {'profile': profile, 'relevant': relevant}}
             report['cases'].append(result)
             manifest["updated_at"] = timestamp()
             _write_artifacts(run_dir, report, manifest)
@@ -147,7 +144,7 @@ async def evaluate():
 @unittest.skipUnless(os.getenv("MEMORY_LIVE_EVAL") == "1" and database_tests.VALID_TEST_DATABASE,
                      "真實模型評估需 MEMORY_LIVE_EVAL=1 與隔離測試 DB")
 class MemoryLiveEvaluationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_live_intake_librarian_and_fresh_recall(self):
+    async def test_live_single_agent_and_fresh_recall(self):
         report = await evaluate()
         self.assertTrue(report["schema_cleaned"])
         cases = {row["case"]: row for row in report["cases"]}

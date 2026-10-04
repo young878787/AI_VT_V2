@@ -941,6 +941,17 @@ class ExpressionCompilerTests(unittest.TestCase):
             self.assertGreaterEqual(step["durationMs"], expected_sequence_step_min_duration_ms(step))
             self.assertLessEqual(step["durationMs"], 3000)
 
+    def test_short_happy_motion_timeline_covers_randomized_sequence(self):
+        import random
+        state = random.getstate()
+        try:
+            for seed in range(128):
+                with self.subTest(seed=seed):
+                    random.seed(seed)
+                    self.test_short_happy_action_rotates_micro_sequence_to_motion_duration()
+        finally:
+            random.setstate(state)
+
     def test_secondary_emotion_weights_micro_expression_theme_pool(self):
         plan = compile_expression_plan(
             {

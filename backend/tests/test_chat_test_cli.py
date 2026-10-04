@@ -35,37 +35,26 @@ def make_record(turn: int, error: str | None = None) -> dict:
 
 
 class ChatTestCliTests(unittest.TestCase):
-    def test_run_directories_use_taipei_time_and_preserve_previous_artifacts(self):
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        with tempfile.TemporaryDirectory() as directory, \
-             mock.patch.object(cli, "RUNS_DIR", pathlib.Path(directory)), \
-             mock.patch.object(cli, "datetime") as clock:
-            clock.now.return_value = datetime(2026, 10, 3, 13, 5, 7, tzinfo=ZoneInfo("Asia/Taipei"))
-            first = cli.create_run_dir()
-            (first / "turns.jsonl").write_text("existing evidence", encoding="utf-8")
-            self.assertIsNone(cli.update_latest(first))
-            latest = pathlib.Path(directory) / "latest"
-            self.assertEqual(latest.resolve(), first)
-            self.assertEqual((latest / "turns.jsonl").read_text(encoding="utf-8"), "existing evidence")
-            second = cli.create_run_dir()
-            self.assertEqual(first.name, "20261003_130507")
-            self.assertEqual(second.name, "20261003_130507_2")
-            self.assertEqual((first / "turns.jsonl").read_text(encoding="utf-8"), "existing evidence")
-            self.assertEqual(cli.update_latest(second), first.name)
-            self.assertTrue(latest.is_symlink())
-            self.assertEqual(latest.resolve(), second)
-            self.assertEqual(len(list(pathlib.Path(directory).glob(".latest-*.tmp"))), 0)
-
-    def test_latest_does_not_overwrite_existing_directory(self):
+    def test_fixed_latest_reused_without_creating_history(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            latest = root / "latest"
-            latest.mkdir()
-            (latest / "turns.jsonl").write_text("previous evidence", encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeError, "非連結資料"):
-                cli.update_latest(root / "20261003_130507")
-            self.assertEqual((latest / "turns.jsonl").read_text(encoding="utf-8"), "previous evidence")
+            first = cli.create_run_dir(root)
+            (first / "turns.jsonl").write_text("existing evidence")
+            self.assertEqual(cli.create_run_dir(root), first)
+            self.assertFalse(first.is_symlink())
+            self.assertEqual([p.name for p in root.iterdir()], ["latest"])
+
+    def test_old_latest_symlink_does_not_overwrite_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            old = root / "20261003_130507"
+            old.mkdir()
+            (old / "turns.jsonl").write_text("previous evidence")
+            (root / "latest").symlink_to(old.name, target_is_directory=True)
+            latest = cli.create_run_dir(root)
+            (latest / "turns.jsonl").write_text("new evidence")
+            self.assertFalse(latest.is_symlink())
+            self.assertEqual((old / "turns.jsonl").read_text(), "previous evidence")
 
     def test_backend_uses_isolated_test_database_and_scope(self):
         with tempfile.TemporaryDirectory() as directory:

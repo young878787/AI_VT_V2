@@ -7,7 +7,7 @@ from pgvector import Vector
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from domain.memory_decisions import validate_decisions
+from domain.memory_decisions import validate_decisions, validate_sources, validate_batch, validate_current_source
 from domain.memory_scope import MemoryScope
 from domain.memory_routing import instruction_policy, forget_scope
 from services.memory_import import LegacyEntry
@@ -80,9 +80,11 @@ class MemoryDBManager:
     async def apply(
         self, job: dict, decisions: list[dict], allowed_targets: set[UUID],
         embeddings: dict[int, list[float]], context_ids: tuple[UUID, ...] = (), diagnostic: dict | None = None,
+        target_snapshots: dict | None = None,
     ) -> bool:
         forget = instruction_policy(job["source_text"]) == "forget"
         validate_decisions({"decisions": decisions}, allowed_targets, explicit_forget=forget)
+        validate_batch(decisions)
         if any(item["action"] == "FORGET" for item in decisions) and any(
             item["action"] not in {"FORGET", "IGNORE"} for item in decisions
         ):
@@ -95,48 +97,46 @@ class MemoryDBManager:
                     "SELECT generation FROM memory_scope_state WHERE user_id = %s AND character_id = %s FOR UPDATE", owner,
                 )).fetchone()
                 current = await (await connection.execute(
-                    """SELECT status, attempts, generation, stage, reviewed_candidates FROM memory_jobs
+                    """SELECT status, attempts, generation, source_ids,
+                    lease_until > now() AND expires_at > now() AND route_finalized, instruction, conversation_id FROM memory_jobs
                     WHERE id = %s AND user_id = %s AND character_id = %s FOR UPDATE""",
                     (job["id"], *owner),
                 )).fetchone()
                 if (not generation or not current or generation[0] != job["generation"]
-                        or current[:3] != ("running", job["attempts"], job["generation"])):
+                        or current[:3] != ("running", job["attempts"], job["generation"]) or not current[4]):
                     return False
                 if len(context_ids) > 3 or len(set(context_ids)) != len(context_ids):
                     raise ValueError("buffer promotion 數量無效")
                 if context_ids:
                     selected_buffers = await (await connection.execute(
-                        """SELECT id FROM memory_jobs WHERE user_id = %s AND character_id = %s
-                        AND id = ANY(%s) AND status = 'buffered'
-                        AND generation = %s FOR UPDATE""",
-                        (*owner, list(context_ids), job["generation"]),
+                        """SELECT id, source_ids FROM memory_jobs WHERE user_id = %s AND character_id = %s
+                        AND id = ANY(%s) AND status = 'buffered' AND conversation_id = %s
+                        AND generation = %s AND expires_at > now() FOR UPDATE""",
+                        (*owner, list(context_ids), current[6], job["generation"]),
                     )).fetchall()
                     if {row[0] for row in selected_buffers} != set(context_ids):
                         raise ValueError("buffer promotion owner、類型或狀態無效")
 
-                candidates = current[4]
-                if current[3] != "librarian" or candidates != job.get("reviewed_candidates"):
-                    raise ValueError("持久化接收契約不符")
-                if job.get("stage") != "librarian" or not candidates:
-                    raise ValueError("正式 mutation 必須經過接收審查")
-                if len(decisions) != len(candidates):
-                    raise ValueError("未完成全部已審查候選")
-                indices = [item.get("candidate_index") for item in decisions]
-                if any(type(value) is not int for value in indices) or set(indices) != set(range(len(candidates))):
-                    raise ValueError("候選處理索引無效")
-                source_ids = set()
+                authorized = set(current[3])
+                if context_ids:
+                    authorized.update(value for row in selected_buffers for value in row[1])
+                source_ids = validate_sources(decisions, authorized)
                 for decision in decisions:
-                    candidate = candidates[decision["candidate_index"]]
-                    if decision.get("source_ids") != candidate["source_ids"]:
-                        raise ValueError("圖書工具不可更換來源")
-                    if any(decision.get(key) != candidate.get(key) for key in (
-                        "canonical_text", "memory_type", "subject_key", "importance", "confidence",
-                        "retention_class", "valid_from", "valid_to", "expires_at", "forget_scope",
-                    )):
-                        raise ValueError("圖書工具不可改寫已審查事實")
-                    if (decision["action"] == "FORGET") != (candidate["intent"] == "forget"):
-                        raise ValueError("遺忘授權與候選不符")
-                    source_ids.update(UUID(value) for value in candidate["source_ids"])
+                    validate_current_source({UUID(value) for value in decision["source_ids"]}, job["id"], job["source_text"])
+                if current[5] == "no_store":
+                    raise ValueError("禁止保存")
+                # 授權以持久化當輪原文為準，不接受呼叫者改寫 job 的遺忘權限。
+                current_source = await (await connection.execute(
+                    "SELECT raw_text FROM memory_sources WHERE id = %s AND user_id = %s AND character_id = %s AND speaker = 'user' FOR SHARE",
+                    (job["id"], *owner),
+                )).fetchone()
+                if not current_source or current_source[0] != job["source_text"]:
+                    raise ValueError("當輪來源已失效或不符")
+                if instruction_policy(current_source[0]) != current[5]:
+                    raise ValueError("持久化授權契約不符")
+                for row in selected_buffers if context_ids else []:
+                    if not source_ids.intersection(row[1]):
+                        raise ValueError("不可採用未引用的待補來源")
                 sources = await (await connection.execute(
                     """SELECT id FROM memory_sources WHERE user_id = %s AND character_id = %s
                     AND id = ANY(%s) AND speaker = 'user' AND raw_text IS NOT NULL FOR SHARE""",
@@ -145,6 +145,7 @@ class MemoryDBManager:
                 if {row[0] for row in sources} != source_ids:
                     raise ValueError("候選來源已失效")
                 has_forget = any(item["action"] == "FORGET" for item in decisions)
+                checked_targets = set()
                 for index, decision in enumerate(decisions):
                     action = decision["action"]
                     source_id = UUID(decision["source_ids"][0])
@@ -166,7 +167,7 @@ class MemoryDBManager:
                     rows = []
                     if targets:
                         async with await connection.execute(
-                            """SELECT id, group_id, status, observed_at FROM memory_items
+                            """SELECT id, group_id, status, observed_at, updated_at, canonical_text FROM memory_items
                             WHERE user_id = %s AND character_id = %s AND id = ANY(%s) FOR UPDATE""",
                             (*owner, targets),
                         ) as cursor:
@@ -175,6 +176,13 @@ class MemoryDBManager:
                         raise ValueError("Memory target owner 或狀態無效")
                     if action not in {"FORGET", "REINFORCE"} and any(row[3] > job["created_at"] for row in rows):
                         raise ValueError("舊工作不可覆寫較新的事實")
+                    if rows:
+                        if target_snapshots is None or any(row[0] not in target_snapshots for row in rows):
+                            raise ValueError("缺少已交付 target 快照")
+                        if any((row[2], row[4], row[5]) != (target_snapshots[row[0]]["status"],
+                               target_snapshots[row[0]]["updated_at"], target_snapshots[row[0]]["canonical_text"]) for row in rows if row[0] not in checked_targets):
+                            raise ValueError("target 已在檢索後變更，需重新處理")
+                    checked_targets.update(row[0] for row in rows)
                     target_map = {row[0]: row for row in rows}
                     if action == "CREATE" and decision.get("subject_key"):
                         newer = await (await connection.execute(
@@ -316,12 +324,8 @@ class MemoryDBManager:
                         erased_sources = [row[1] for row in source_messages] + [job["id"]]
                         affected_jobs = await (await connection.execute(
                             """SELECT id FROM memory_jobs WHERE user_id = %s AND character_id = %s
-                            AND (source_ids && %s::uuid[] OR id = %s OR EXISTS (
-                                SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(reviewed_candidates) = 'array' THEN reviewed_candidates ELSE '[]'::jsonb END) candidate
-                                JOIN memory_items target ON target.user_id = memory_jobs.user_id
-                                AND target.character_id = memory_jobs.character_id AND target.id = ANY(%s)
-                                WHERE candidate->>'canonical_text' = target.canonical_text))""",
-                            (*owner, erased_sources, job["id"], targets),
+                            AND (source_ids && %s::uuid[] OR id = %s)""",
+                            (*owner, erased_sources, job["id"]),
                         )).fetchall()
                         message_ids = list({row[0] for row in source_messages if row[0]} | {row[0] for row in affected_jobs})
                         duplicates = await (await connection.execute(
@@ -331,6 +335,11 @@ class MemoryDBManager:
                             (*owner, message_ids, *owner, erased_sources),
                         )).fetchall()
                         erased_sources = list(set(erased_sources) | {row[0] for row in duplicates})
+                        affected = await (await connection.execute(
+                            """SELECT message_id FROM memory_jobs WHERE user_id = %s AND character_id = %s
+                            AND source_ids && %s::uuid[]""", (*owner, erased_sources),
+                        )).fetchall()
+                        message_ids = list(set(message_ids) | {row[0] for row in affected})
                         await connection.execute(
                             "UPDATE memory_sources SET raw_text = NULL WHERE user_id = %s AND character_id = %s AND id = ANY(%s)",
                             (*owner, erased_sources),
@@ -342,8 +351,9 @@ class MemoryDBManager:
                             (*owner, targets, message_ids),
                         )
                         await connection.execute(
-                            """UPDATE memory_jobs SET decisions = NULL, embedding = NULL, reviewed_candidates = NULL, recent_dialogue = NULL,
-                            missing_context = NULL, source_ids = '{}', status = 'cancelled' WHERE user_id = %s AND character_id = %s
+                            """UPDATE memory_jobs SET recent_dialogue = NULL, missing_context = NULL, source_ids = '{}',
+                            agent_diagnostics = '{}', embedding_diagnostics = '{}', pending_target_ids = '{}',
+                            lease_until = NULL, status = 'cancelled' WHERE user_id = %s AND character_id = %s
                             AND message_id = ANY(%s)""", (*owner, message_ids),
                         )
                         deleted_count = (await connection.execute(
@@ -362,7 +372,11 @@ class MemoryDBManager:
                         raise ValueError("不支援的 Memory action")
                     if action in {"CREATE", "SUPERSEDE", "CONTRADICT", "REINFORCE", "MERGE"}:
                         evidence_target = new_id if action in {"CREATE", "SUPERSEDE", "CONTRADICT"} else targets[0]
+                        # CREATE/SUPERSEDE/CONTRADICT 已先寫入首個來源的 origin/contradicts；
+                        # 只把其餘來源記成 supports，避免同一來源重複留下兩筆證據。
                         for additional_source in decision["source_ids"]:
+                            if UUID(additional_source) == source_id:
+                                continue
                             await connection.execute(
                                 """INSERT INTO memory_evidence (user_id, character_id, memory_id, source_id, kind)
                                 VALUES (%s,%s,%s,%s,'supports') ON CONFLICT DO NOTHING""",
@@ -382,17 +396,15 @@ class MemoryDBManager:
                 if context_ids:
                     await connection.execute(
                         """UPDATE memory_jobs SET status = 'discarded',
-                        recent_dialogue = NULL, embedding = NULL, updated_at = now()
+                        recent_dialogue = NULL, missing_context = NULL, pending_target_ids = '{}', updated_at = now()
                         WHERE user_id = %s AND character_id = %s AND id = ANY(%s)""",
                         (*owner, list(context_ids)),
                     )
                 await connection.execute(
-                    """UPDATE memory_jobs SET status = %s, lease_until = NULL, updated_at = now(),
-                    recent_dialogue = CASE WHEN %s THEN NULL ELSE recent_dialogue END,
-                    embedding = CASE WHEN %s THEN NULL ELSE embedding END,
-                    decisions = %s, context_job_ids = %s, agent_diagnostics = agent_diagnostics || %s::jsonb
+                    """UPDATE memory_jobs SET status = %s, lease_until = NULL, pending_target_ids = '{}', updated_at = now(),
+                    recent_dialogue = NULL, missing_context = NULL, context_job_ids = %s, agent_diagnostics = %s::jsonb
                     WHERE id = %s AND user_id = %s AND character_id = %s""",
-                    (terminal, has_forget, has_forget,
-                     None if has_forget else Jsonb(decisions), list(context_ids), Jsonb([{**(diagnostic or {}), "result": terminal, "committed": True}]), job["id"], *owner),
+                    (terminal, list(context_ids), Jsonb({**(diagnostic or {}), "attempt": job["attempts"],
+                        "result": terminal, "committed": True}), job["id"], *owner),
                 )
                 return True

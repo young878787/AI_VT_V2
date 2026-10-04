@@ -45,26 +45,21 @@ class AIRequestParamsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("max_tokens", create.call_args.kwargs)
         self.assertNotIn("extra_body", create.call_args.kwargs)
 
-    async def test_both_memory_roles_disable_thinking_and_keep_required_tools(self):
-        settings = SimpleNamespace(memory_base_url="https://remote.example/v1",
-                                   memory_api_key="test-key", memory_model="Gemma4-31B")
-        tools = [{"type": "function", "function": {"name": "result", "parameters": {
-            "type": "object", "properties": {"ok": {"type": "boolean"}}}}}]
-        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(tool_calls=[
-            SimpleNamespace(function=SimpleNamespace(name="result", arguments='{"ok": true}'))]))], usage=None)
-        for role in ("intake", "librarian"):
-            agent = MemoryAgentClient(settings, role)
-            try:
-                with patch.object(agent.client.chat.completions, "create", AsyncMock(return_value=response)) as create:
-                    results, diagnostic = await agent.call("test", {"text": "synthetic"}, tools)
-                self.assertEqual(results, [("result", {"ok": True})])
-                self.assertEqual(diagnostic["role"], role)
-                self.assertIsNone(diagnostic["actual_model"])
-                self.assertIsNone(diagnostic["finish_reason"])
-                request = create.call_args.kwargs
-                self.assertEqual(request["extra_body"], no_thinking_extra_body("custom"))
-                self.assertEqual(request["tool_choice"], "required")
-                self.assertEqual(request["max_completion_tokens"], 4000)
-                self.assertEqual(request["tools"], tools)
-            finally:
-                await agent.client.close()
+    async def test_memory_agent_disables_thinking_and_keeps_single_tool_budget(self):
+        settings = SimpleNamespace(memory_base_url="https://remote.example/v1", memory_api_key="test-key", memory_model="test-model")
+        tools = [{"type": "function", "function": {"name": "finish", "parameters": {"type": "object", "properties": {}}}}]
+        response = SimpleNamespace(choices=[SimpleNamespace(finish_reason="tool_calls", message=SimpleNamespace(tool_calls=[
+            SimpleNamespace(id="call1", function=SimpleNamespace(name="finish", arguments='{}'))]))], usage=None)
+        agent = MemoryAgentClient(settings)
+        diagnostic = {"calls": 0, "latency_ms": 0, "input_token_estimate": 0}
+        try:
+            with patch.object(agent.client.chat.completions, "create", AsyncMock(return_value=response)) as create:
+                result = await agent.call([{"role": "user", "content": "synthetic"}], tools, diagnostic)
+            self.assertEqual(result["tool_calls"][0]["id"], "call1")
+            request = create.call_args.kwargs
+            self.assertEqual(request["extra_body"], no_thinking_extra_body("custom"))
+            self.assertEqual(request["tool_choice"], "required")
+            self.assertFalse(request["parallel_tool_calls"])
+            self.assertEqual(request["max_completion_tokens"], 1024)
+        finally:
+            await agent.client.close()

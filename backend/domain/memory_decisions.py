@@ -11,7 +11,7 @@ ACTIONS = frozenset({"CREATE", "REINFORCE", "SUPERSEDE", "MERGE", "CONTRADICT", 
 RETENTION_CLASSES = frozenset({"temporary", "normal", "important", "core"})
 
 DECISION_FIELDS = frozenset({
-    "action", "source_ids", "candidate_index", "canonical_text", "memory_type", "subject_key",
+    "action", "source_ids", "canonical_text", "memory_type", "subject_key",
     "target_memory_ids", "importance", "confidence", "retention_class", "valid_from", "valid_to",
     "expires_at", "reason", "forget_scope",
 })
@@ -97,3 +97,106 @@ def validate_decisions(payload: object, allowed_target_ids: set[UUID], explicit_
                 raise ValueError("記憶有效區間無效")
         result.append(decision)
     return result
+
+
+def validate_sources(decisions: list[dict], authorized: set[UUID]) -> set[UUID]:
+    used = set()
+    for decision in decisions:
+        ids = decision.get("source_ids")
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 16:
+            raise ValueError("操作必須引用授權 user source_ids")
+        try:
+            values = [UUID(value) for value in ids if isinstance(value, str)]
+        except ValueError:
+            raise ValueError("source_ids 格式錯誤") from None
+        if len(values) != len(ids) or len(set(values)) != len(values) or not set(values) <= authorized:
+            raise ValueError("操作引用未授權或重複的 user source_ids")
+        used.update(values)
+    return used
+
+
+def validate_current_source(used: set[UUID], current_source_id: UUID, text: str) -> None:
+    from domain.memory_routing import instruction_policy
+    earlier_request = instruction_policy(text) == "remember" and re.search(
+        r"這件事|這個|那個|剛剛|剛才|之前|上面|那些|上次|以上|聊過|談過|\b(that|earlier|previous|said)\b", text, re.I)
+    if current_source_id not in used and not earlier_request:
+        raise ValueError("只處理當輪新事實，必須引用 current_source_id；較早來源僅供消解上下文")
+
+
+def validate_batch(decisions: list[dict]) -> None:
+    """整批不允許對同一目標進行不相容操作。"""
+    if any(d["action"] == "FORGET" for d in decisions) and any(d["action"] != "FORGET" for d in decisions):
+        raise ValueError("FORGET 不可與其他記憶 mutation 混用")
+    targets = {}
+    facts = set()
+    for decision in decisions:
+        for target in decision["target_memory_ids"]:
+            previous = targets.get(target)
+            if previous and (previous != "REINFORCE" or decision["action"] != "REINFORCE"):
+                raise ValueError("同一 target 有不相容操作，請替換原提案")
+            targets[target] = decision["action"]
+        if decision["action"] in {"CREATE", "SUPERSEDE", "CONTRADICT"}:
+            fact = decision["canonical_text"].strip()
+            if fact in facts:
+                raise ValueError("同一批不可重複建立相同事實")
+            facts.add(fact)
+
+
+def normalize_proposal(payload: object, allowed_targets: set[UUID], authorized_sources: set[UUID], text: str,
+                       current_source_id: UUID | None = None) -> dict:
+    from domain.memory_routing import instruction_policy, forget_scope
+    if not isinstance(payload, dict) or "candidate_index" in payload or payload.get("action") == "IGNORE":
+        raise ValueError("請提出一個有效操作；無需操作請用 finish")
+    decision = dict(payload)
+    decision.setdefault("target_memory_ids", [])
+    if decision.get("action") in {"CREATE", "SUPERSEDE", "CONTRADICT"}:
+        decision.setdefault("retention_class", "normal")
+    else:
+        if set(decision) & {"canonical_text", "memory_type", "subject_key", "importance", "confidence",
+                            "retention_class", "valid_from", "valid_to", "expires_at"}:
+            raise ValueError("此操作不可改寫事實 metadata")
+    policy = instruction_policy(text)
+    if policy == "no_store":
+        raise ValueError("禁止保存")
+    if decision.get("action") == "FORGET":
+        decision["forget_scope"] = forget_scope(text)
+    elif "forget_scope" in decision:
+        raise ValueError("非遺忘操作不可指定 forget_scope")
+    validate_decisions({"decisions": [decision]}, allowed_targets, policy == "forget")
+    used = validate_sources([decision], authorized_sources)
+    if current_source_id is not None:
+        validate_current_source(used, current_source_id, text)
+    decision["source_ids"] = [str(UUID(value)) for value in decision["source_ids"]]
+    decision["target_memory_ids"] = [str(UUID(value)) for value in decision["target_memory_ids"]]
+    return decision
+
+
+def agent_tools(forget: bool) -> list[dict]:
+    def tool(name, description, properties, required):
+        return {"type": "function", "function": {"name": name, "description": description,
+            "parameters": {"type": "object", "additionalProperties": False,
+                           "properties": properties, "required": required}}}
+    text = {"type": "string", "minLength": 1, "maxLength": 1000}
+    ids = {"type": "array", "maxItems": 8, "items": {"type": "string", "format": "uuid"}}
+    operation = {
+        "action": {"type": "string", "enum": sorted(ACTIONS - {"IGNORE", *(set() if forget else {"FORGET"})})},
+        "source_ids": {**ids, "minItems": 1, "maxItems": 16}, "target_memory_ids": ids, "reason": text,
+        "canonical_text": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "memory_type": {"type": "string", "enum": sorted(MEMORY_TYPES - {"none"})},
+        "subject_key": {"type": "string", "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9_.-]*$"},
+        "importance": {"type": "number", "minimum": 0, "maximum": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "retention_class": {"type": "string", "enum": sorted(RETENTION_CLASSES)},
+        **{key: {"type": "string", "format": "date-time"} for key in ("valid_from", "valid_to", "expires_at")},
+    }
+    return [
+        tool("search_memories", "Find a small batch of related memories using a focused query.", {"query": text}, ["query"]),
+        tool("read_context", "Read authorized sources or supplied memories and their evidence/versions.",
+             {"memory_ids": {**ids, "maxItems": 3}, "source_ids": {**ids, "maxItems": 3}}, []),
+        tool("propose_operation", "Propose ONE operation; no DB write. CREATE/SUPERSEDE/CONTRADICT need canonical_text, memory_type, importance, confidence. Other actions need targets only. Cite user sources. Replace an accepted proposal using its index if needed.",
+             {"operation": {"type": "object", "additionalProperties": False, "properties": operation,
+                            "required": ["action", "source_ids", "reason"]},
+              "replace_index": {"type": "integer", "minimum": 0, "maximum": 11}}, ["operation"]),
+        tool("finish", "End the job without repeating proposals. needs_context discards pending proposals; explain missing evidence.",
+             {"outcome": {"type": "string", "enum": ["complete", "ignore", "needs_context"]}, "reason": text}, ["outcome", "reason"]),
+    ]

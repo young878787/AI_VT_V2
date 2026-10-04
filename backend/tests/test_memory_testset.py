@@ -28,41 +28,42 @@ def generated_cases(core):
     for i, (kind, bases, route) in enumerate(testset.GENERATED_TYPES, 21):
         case = copy.deepcopy(core[bases[0] - 1])
         case.update(case_id=f'random_{i:03}', case_type=kind, source='generated',
-                    base_case=case['case_id'], recall_route=route)
+                    base_case=case['case_id'], case_group=route)
         result.append(case)
     return result
 
 
 class MemoryTestsetTests(unittest.TestCase):
     def test_core_is_complete_and_has_explicit_controls_and_dates(self):
-        core = testset.validate_cases(core_cases(), source='Gold', count=20)
-        self.assertEqual(len(core), 20)
-        self.assertEqual(sum('input' in s for c in core for s in c['conversation']), 65)
+        core = testset.validate_cases(core_cases(), source='Gold', count=23)
+        self.assertEqual(len(core), 23)
+        self.assertEqual(sum('input' in s for c in core for s in c['conversation']), 86)
         self.assertIn('compress', [s.get('action') for s in core[2]['conversation']])
         self.assertTrue(core[16]['event_date'].endswith('+08:00'))
-        self.assertEqual(len([s for s in core[19]['conversation'] if s['phase'] == 'setup']), 6)
+        self.assertEqual(len([s for s in core[19]['conversation'] if s['phase'] == 'memory_setup']), 6)
 
     def test_validator_rejects_answers_unknown_tools_and_unsafe_session_structure(self):
         for change in ('assistant', 'input', 'session', 'action'):
             core = core_cases()
             step = core[0]['conversation'][0]
             if change == 'assistant': step['assistant'] = 'fixed answer'
-            elif change == 'input': step['input'] = '記住我正在做 Live2D'
+            elif change == 'input': step['input'] = ''
             elif change == 'session': core[10]['conversation'][1]['session'] = 'seed'
             else: core[2]['conversation'][-2]['action'] = 'execute_sql'
             with self.subTest(change=change), self.assertRaises(ValueError):
-                testset.validate_cases(core, source='Gold', count=20)
+                testset.validate_cases(core, source='Gold', count=23)
 
     def test_generated_intent_and_required_setup_count(self):
         core = core_cases()
         generated = generated_cases(core)
-        specs = [{k: case[k] for k in ('case_id', 'case_type', 'base_case', 'recall_route')} for case in generated]
+        specs = [{k: case[k] for k in ('case_id', 'case_type', 'base_case', 'case_group')} for case in generated]
         testset.validate_generated(generated, specs)
-        for key, value in (('base_case', 'case_019'), ('case_type', 'anything'), ('recall_route', None)):
+        for key, value in (('base_case', 'case_019'), ('case_type', 'anything'), ('case_group', None)):
             invalid = copy.deepcopy(generated)
             invalid[0][key] = value
             with self.assertRaises(ValueError): testset.validate_generated(invalid, specs)
-        generated[-1]['conversation'] = generated[-1]['conversation'][:1] + generated[-1]['conversation'][-1:]
+        generated[-1]['conversation'] = generated[-1]['conversation'][:1]
+        generated[-1]['conversation'].append(dict(phase='probe',session='fresh',input='query',evidence=[dict(source_step=1,source='db',fragments=['Live2D'])]))
         with self.assertRaisesRegex(ValueError, '前置事實不足'):
             testset.validate_generated(generated, specs)
 
@@ -211,8 +212,8 @@ class MemoryTestsetTests(unittest.TestCase):
             scenario.write_text(json.dumps(cases), encoding='utf-8')
             args = argparse.Namespace(scenario=str(scenario), max_turns=0, retries=0, startup_timeout=1, turn_timeout=1)
             calls = []
-            async def turn(ws, number, user, model, session, store, timeout):
-                calls.append((number, user, model, session))
+            async def turn(ws, number, user, model, session, store, timeout, test_mode=None):
+                calls.append((number, user, model, session, test_mode))
                 return {**make_record(number), 'user': user, 'session_id': session}
             with mock.patch.object(cli, 'RUNS_DIR', root / 'runs'), \
                  mock.patch.object(cli, 'test_database_url', return_value='postgresql://test/db'), \
@@ -223,21 +224,24 @@ class MemoryTestsetTests(unittest.TestCase):
                  mock.patch.object(cli, 'stop_backend'), \
                  mock.patch.object(cli, 'control_step', new=mock.AsyncMock(return_value={'acknowledged': True})) as control, \
                  mock.patch.object(cli, 'read_turn_trace', return_value=[{'stage': 'chat_context'}]), \
+                 mock.patch.object(cli, 'check_turn'), \
+                 mock.patch.object(cli, 'evaluate_semantics', new=mock.AsyncMock(return_value=set())) as review, \
                  mock.patch.object(cli, 'generate_cases', new=mock.AsyncMock()) as generate, \
                  mock.patch.object(cli, 'run_turn', side_effect=turn), mock.patch.object(cli, 'print_turn'):
                 output, status = asyncio.run(cli.run(args))
             self.assertEqual(status, 'completed')
+            review.assert_awaited_once()
             generate.assert_not_called()
-            self.assertEqual(sum(c.args[1] == 'reset' for c in control.call_args_list), 25)
+            self.assertEqual(sum(c.args[1] == 'reset' for c in control.call_args_list), 28)
             self.assertTrue(all(call[2] == 'Rushia' for call in calls))
             metadata = json.loads((output / 'run.json').read_text())
-            self.assertEqual(len(metadata['completed_case_ids']), 25)
+            self.assertEqual(len(metadata['completed_case_ids']), 28)
             self.assertEqual(metadata['cleanup']['schema'], 'removed')
             self.assertFalse((output / 'memory').exists())
-            self.assertEqual(len((output / 'case_states.jsonl').read_text().splitlines()), 25)
+            self.assertEqual(len((output / 'case_states.jsonl').read_text().splitlines()), 28)
             records = [json.loads(line) for line in (output / 'turns.jsonl').read_text().splitlines()]
             self.assertTrue(all('memory_case_state' not in record for record in records))
-            long_probe = [r for r in records if r.get('recall_route') == 'long_term' and r['phase'] == 'probe']
+            long_probe = [r for r in records if r.get('case_group') == 'long_term' and r['phase'] == 'probe']
             self.assertEqual(len({r['session_id'] for r in long_probe}), len(long_probe))
             memory_report = (output / 'memory_report.md').read_text()
             expression_report = (output / 'expression_report.md').read_text()
@@ -264,7 +268,7 @@ class MemoryTestsetTests(unittest.TestCase):
                 output, status = asyncio.run(cli.run(args))
             start.assert_not_called()
             self.assertEqual(status, 'failed')
-            self.assertEqual(len(json.loads((output / 'cases.json').read_text())), 20)
+            self.assertEqual(len(json.loads((output / 'cases.json').read_text())), 23)
             metadata = json.loads((output / 'run.json').read_text())
             self.assertEqual(metadata['executed_cases'], 0)
             self.assertEqual(metadata['completed_case_ids'], [])

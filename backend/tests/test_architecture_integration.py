@@ -14,6 +14,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from services.chat_service import _VisibleTextFilter, build_chat_context, estimate_token_count
+from domain.agent_a_prompts import build_agent_a_prompt, build_turn_scope_hint
+from domain.emotion_state import EMOTION_FIELDS
 from api.routes.chat_ws import websocket_endpoint
 from backend.tests.test_emotion_chat_ws import jev_answers
 from core.config import role_model_config, provider_from_url
@@ -52,6 +54,25 @@ class ArchitectureIntegrationTests(unittest.TestCase):
         self.assertLessEqual(estimate_token_count(context), 512)
         self.assertEqual(context[-1]["role"], "user")
         self.assertTrue(context[-1]["content"].startswith("本輪問題"))
+
+    def test_chat_context_trims_dynamic_sections_before_fixed_prompt_rules(self):
+        emotion = {field: 0.0 for field in EMOTION_FIELDS}
+        prompt = build_agent_a_prompt({}, "m" * 2000, emotion)
+        prompt += "\n\n本 session 已完成的對話摘要：\n" + "s" * 4000
+        context = build_chat_context(prompt, [], "本輪問題", budget=2400)
+        self.assertLessEqual(estimate_token_count(context), 2400)
+        self.assertIn("固定性格", context[0]["content"])
+        self.assertIn("<untrusted_long_term_memory>", context[0]["content"])
+        self.assertIn("此資料區段依 token 預算裁切", context[0]["content"])
+
+    def test_turn_scope_hint_keeps_third_party_preference_separate(self):
+        hint = build_turn_scope_hint(
+            "照我的口味，你會建議我怎麼選？",
+            [{"role": "user", "content": "我今天要替朋友挑生日蛋糕。"}],
+        )
+        self.assertIn("第三方偏好", hint)
+        self.assertIn("對方偏好未知", hint)
+        self.assertEqual(build_turn_scope_hint("我今天想吃蛋糕", []), "")
 
     def test_chat_context_strips_interruption_metadata_from_provider_messages(self):
         context = build_chat_context(

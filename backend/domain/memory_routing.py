@@ -1,12 +1,12 @@
-"""JEV 只排除確定雜訊；接收 agent 才決定記憶語意路由。"""
+"""JEV 只排除確定雜訊；單一記憶 agent 決定保存與操作。"""
 
 import math
 import re
 from dataclasses import dataclass
 
-POLICY_VERSION = "memory_intake_v2"
+POLICY_VERSION = "memory_agent_v3"
 MEMORY_TYPES = frozenset({"profile", "preference", "project", "event", "none"})
-ROUTES = frozenset({"none", "needs_context", "candidate"})
+ROUTES = frozenset({"none", "needs_context", "process"})
 _NO_STORE = re.compile(r"不要(?:保存|記住|記錄)|別(?:保存|記住|記錄)|do not (?:save|remember)|don't (?:save|remember)", re.I)
 _NEGATED_FORGET = re.compile(r"不要忘|別忘|不用刪|不要刪|don't forget|do not forget", re.I)
 _FORGET = re.compile(

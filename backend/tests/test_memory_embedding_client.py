@@ -33,7 +33,7 @@ class MemoryEmbeddingClientTests(unittest.IsolatedAsyncioTestCase):
             "EMBEDDING_AI_QUERY_PREFIX": "Query: ",
             "EMBEDDING_AI_DOCUMENT_PREFIX": "Document: ",
         })
-        response = SimpleNamespace(data=[SimpleNamespace(embedding=[0.0] * 1023 + [1.0])])
+        response = SimpleNamespace(model="jina-retrieval", data=[SimpleNamespace(embedding=[0.0] * 1023 + [1.0])])
 
         with patch("infrastructure.memory_embedding_client.AsyncOpenAI") as openai_factory:
             openai = openai_factory.return_value
@@ -56,6 +56,8 @@ class MemoryEmbeddingClientTests(unittest.IsolatedAsyncioTestCase):
             "jinaai/jina-embeddings-v5-text-small-retrieval",
             "jinaai/jina-embeddings-v5-text-small-retrieval",
         ])
+        self.assertEqual([item["serving_model"] for item in diagnostics], ["jina-retrieval", "jina-retrieval"])
+        self.assertEqual([item["served_model"] for item in diagnostics], ["jina-retrieval", "jina-retrieval"])
 
 
 if __name__ == "__main__":

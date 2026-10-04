@@ -1,8 +1,8 @@
-"""Qwen3 1024 維 embedding 的輸入與輸出契約。"""
+"""可設定 embedding 路線的輸入與輸出契約。"""
 
 import math
 
-from domain.memory_settings import EMBEDDING_DIMENSION, RETRIEVAL_INSTRUCTION
+from domain.memory_settings import EMBEDDING_DIMENSION
 
 
 EMBEDDING_PURPOSES = {
@@ -14,7 +14,8 @@ EMBEDDING_PURPOSES = {
 
 
 def query_document(text: str) -> str:
-    return RETRIEVAL_INSTRUCTION + text
+    """相容舊呼叫端的無前綴 helper；正式路徑請使用 format_embedding_input。"""
+    return text
 
 
 def format_embedding_input(text: str, *, query: bool, query_prefix: str, document_prefix: str) -> str:

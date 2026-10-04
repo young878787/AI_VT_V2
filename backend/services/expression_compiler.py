@@ -1273,6 +1273,14 @@ def build_speaking_micro_sequence(
             break
 
     if sequence:
+        # Fill a short tail by extending existing events, preserving their minimum durations and fades.
+        remaining_ms = max(0, target_timeline_ms - _sequence_timeline_ms(scheduled))
+        for step in reversed(sequence):
+            extension_ms = min(remaining_ms, max(0, 3000 - int(step["durationMs"])))
+            step["durationMs"] += extension_ms
+            remaining_ms -= extension_ms
+            if remaining_ms <= 0:
+                break
         return sequence
 
     fallback_name = selected_motif[0]

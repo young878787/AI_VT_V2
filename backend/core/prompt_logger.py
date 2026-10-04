@@ -12,6 +12,15 @@ _LOG_DIR = Path(__file__).resolve().parent.parent / "log" / "runtime"
 _LOG_FILE = _LOG_DIR / "prompt.log"
 _SEP = "=" * 72
 trace_event = ContextVar("memory_test_event", default=None)
+trace_turn = ContextVar("chat_test_turn", default=None)
+_event_turns: dict[str, str] = {}
+
+
+def bind_trace_event(event_id, turn_id: str) -> None:
+    if test_log_dir() is not None:
+        if len(_event_turns) >= 1000:
+            _event_turns.pop(next(iter(_event_turns)))
+        _event_turns[str(event_id)] = turn_id
 
 
 def test_log_dir() -> Path | None:
@@ -24,12 +33,14 @@ def trace(stage: str, data: dict, event_id=None) -> None:
     """只在隔離測試記錄結構化證據；不改 WS 或 DB 契約。"""
     directory = test_log_dir()
     event_id = event_id or trace_event.get()
-    if directory is None or event_id is None:
+    turn_id = _event_turns.get(str(event_id)) if event_id is not None else trace_turn.get()
+    if directory is None or (event_id is None and turn_id is None):
         return
     try:
         directory.mkdir(parents=True, exist_ok=True)
         with (directory / "trace.jsonl").open("a", encoding="utf-8") as file:
-            file.write(json.dumps({"event_id": str(event_id), "stage": stage,
+            file.write(json.dumps({**({"memory_event_id": str(event_id)} if event_id is not None else {}),
+                "turn_id": turn_id, "stage": stage,
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 **data}, ensure_ascii=False, default=str) + "\n")
     except OSError as exc:

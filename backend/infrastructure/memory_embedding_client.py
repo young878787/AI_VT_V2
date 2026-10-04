@@ -1,6 +1,5 @@
 """獨立的 OpenAI-compatible embedding 路線。"""
 
-import json
 import time
 from datetime import datetime, timezone
 from typing import Awaitable, Callable
@@ -40,6 +39,7 @@ class MemoryEmbeddingClient:
 
         started = time.perf_counter()
         dimension = None
+        served_model = None
         normalized = False
         try:
             response = await self.client.embeddings.create(
@@ -50,6 +50,7 @@ class MemoryEmbeddingClient:
                     document_prefix=self.settings.embedding_document_prefix,
                 ),
             )
+            served_model = getattr(response, "model", None)
             if len(response.data) != 1:
                 raise ValueError("Embedding API 回傳筆數無效")
             raw_vector = response.data[0].embedding
@@ -59,13 +60,14 @@ class MemoryEmbeddingClient:
         except Exception as exc:
             await self._record_diagnostic(
                 event_id, purpose, query, "failed", dimension, normalized,
-                started, type(exc).__name__, stage, job_attempt, decision_index,
+                started, type(exc).__name__, stage, job_attempt, decision_index, served_model,
             )
             raise
 
         await self._record_diagnostic(
             event_id, purpose, query, "succeeded", dimension or self.settings.embedding_dimension,
             normalized, started, None, stage, job_attempt, decision_index,
+            served_model,
         )
         return vector
 
@@ -82,6 +84,7 @@ class MemoryEmbeddingClient:
         stage: str | None,
         job_attempt: int | None,
         decision_index: int | None,
+        served_model: str | None = None,
     ) -> None:
         if event_id is None or purpose is None:
             return
@@ -91,6 +94,8 @@ class MemoryEmbeddingClient:
             "input_mode": "query" if query else "document",
             "status": status,
             "model": self.settings.embedding_model,
+            "serving_model": self.settings.embedding_serving_model,
+            "served_model": served_model,
             "dimension": dimension,
             "normalized": normalized,
             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
@@ -105,4 +110,3 @@ class MemoryEmbeddingClient:
                 await self.diagnostic_writer(event_id, diagnostic)
             except Exception as exc:
                 print(f"[Memory][Embedding] 診斷儲存失敗: {type(exc).__name__}")
-        print("[Memory][Embedding] " + json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":")))

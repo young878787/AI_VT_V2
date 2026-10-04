@@ -9,7 +9,7 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.memory_retriever import MemoryRetriever
+from services.memory_retriever import MemoryRetriever, build_retrieval_query
 from domain.memory_scope import MemoryScope
 from infrastructure.memory_repository import MemoryRepository, MIN_RETRIEVAL_SIMILARITY
 
@@ -46,6 +46,43 @@ class _RecordingConnection:
 
 
 class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
+    def test_context_query_uses_only_bounded_user_sources(self):
+        history = [dict(role="user", content="舊的私人話題"),
+                   dict(role="user", content="今天替朋友挑生日蛋糕。"),
+                   dict(role="assistant", content="猜測你喜歡草莓。"),
+                   dict(role="user", content="今晚要早睡，避開咖啡因。")]
+        query = build_retrieval_query("依照我的口味怎麼選？", history, "不要採用的摘要")
+        self.assertIn("生日蛋糕", query)
+        self.assertIn("咖啡因", query)
+        self.assertNotIn("草莓", query)
+        self.assertNotIn("私人", query)
+        self.assertNotIn("摘要", query)
+        self.assertEqual(build_retrieval_query("我喜歡哪部電影？", history), "我喜歡哪部電影？")
+        self.assertEqual(build_retrieval_query("我的口味？"), "我的口味？")
+        self.assertLessEqual(len(build_retrieval_query("我的口味" + "字" * 5000,
+                            [dict(role="user", content="字" * 5000)])), 4000)
+
+    async def test_context_does_not_change_current_history_mode(self):
+        repository = SimpleNamespace(related_items=AsyncMock(return_value=[]))
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
+        await MemoryRetriever(repository, embedding).retrieve("依照我的口味怎麼選？",
+            recent_dialogue=[dict(role="user", content="之前討論生日蛋糕")])
+        self.assertEqual(repository.related_items.await_args.kwargs["mode"], "current")
+        self.assertIn("生日蛋糕", repository.related_items.await_args.args[0])
+        self.assertEqual(embedding.embed.await_args.args[0], repository.related_items.await_args.args[0])
+
+    async def test_category_aliases_are_lexical_and_similarity_gate_unchanged(self):
+        connection = _RecordingConnection()
+        repository = MemoryRepository(SimpleNamespace(connection=lambda: connection),
+            MemoryScope(uuid4(), uuid4(), "test_" + uuid4().hex), embedding_contract="same-contract")
+        for query in ("我的飲品偏好", "今天挑生日蛋糕"):
+            with self.subTest(query=query):
+                await repository.related_items(query, [1.0] + [0.0] * 1023)
+                sql, args = connection.calls[-1]
+                self.assertEqual(sql.as_string().count("%s"), len(args))
+                self.assertEqual(args[-2], 1 - MIN_RETRIEVAL_SIMILARITY)
+                self.assertTrue(any("飲料" in str(arg) if "飲品" in query else "甜點" in str(arg) for arg in args))
+
     async def test_repository_query_binds_similarity_gate(self):
         connection = _RecordingConnection()
         repository = MemoryRepository(
@@ -82,7 +119,8 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
         profile, relevant = await MemoryRetriever(repository, embedding).retrieve("我的喜好")
         self.assertEqual(profile, {"recent_interests": ["喜歡天文"]})
-        self.assertEqual(relevant, "喜歡拿鐵")
+        self.assertEqual(relevant,
+                         "- 記憶資料（type=preference; subject_key=未標註; status=active; actor=未標註）：fact=喜歡拿鐵")
 
     async def test_trace_preserves_candidate_order_and_scalar_profile_overwrite(self):
         rows = [{"id": uuid4(), "group_id": uuid4(), "memory_type": "profile", "status": "active",

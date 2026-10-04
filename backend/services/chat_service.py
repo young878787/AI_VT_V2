@@ -5,6 +5,7 @@ import re
 import json
 import time
 from collections.abc import Awaitable, Callable
+from difflib import SequenceMatcher
 
 from fastapi import WebSocket
 
@@ -46,20 +47,91 @@ def estimate_token_count(messages: list) -> int:
     return total
 
 
+def _structured_prompt_sections(prompt: str) -> dict[str, tuple[int, int]]:
+    """找出可安全優先裁切的動態資料區段，不動角色與安全規則。"""
+    sections: dict[str, tuple[int, int]] = {}
+    for name, heading, opening, closing in (
+        ("profile", "使用者資料：\n", "<untrusted_user_profile>\n", "</untrusted_user_profile>"),
+        ("memory", "共同回憶：\n", "<untrusted_long_term_memory>\n", "</untrusted_long_term_memory>"),
+    ):
+        heading_start = prompt.find(heading)
+        if heading_start < 0:
+            continue
+        data_start = prompt.find(opening, heading_start + len(heading))
+        if data_start < 0:
+            continue
+        data_start += len(opening)
+        data_end = prompt.find(closing, data_start)
+        if data_end >= data_start:
+            sections[name] = (data_start, data_end)
+
+    summary_heading = "本 session 已完成的對話摘要：\n"
+    summary_start = prompt.find(summary_heading)
+    if summary_start >= 0:
+        summary_body_start = summary_start + len(summary_heading)
+        hint_start = prompt.find("\n\n本輪對象約束：\n", summary_body_start)
+        sections["summary"] = (summary_body_start, hint_start if hint_start >= 0 else len(prompt))
+    return sections
+
+
+def _replace_prompt_section(prompt: str, start: int, end: int, keep: int) -> str:
+    body = prompt[start:end]
+    if keep >= len(body):
+        return prompt
+    marker = "\n…（此資料區段依 token 預算裁切）…\n"
+    if keep <= 0:
+        replacement = marker
+    else:
+        # 保留首尾，讓 profile／記憶的第一筆與最新摘要通常都還能被看見。
+        left = max(1, keep // 2)
+        right = max(1, keep - left)
+        replacement = body[:left] + marker + body[-right:]
+    return prompt[:start] + replacement + prompt[end:]
+
+
+def _trim_structured_prompt(prompt: str, token_budget: int) -> str:
+    """先縮動態區段；只有固定規則本身超限才交給一般 head/tail fallback。"""
+    if estimate_token_count([{"role": "system", "content": prompt}]) <= token_budget:
+        return prompt
+    working = prompt
+    for name in ("summary", "memory", "profile"):
+        sections = _structured_prompt_sections(working)
+        bounds = sections.get(name)
+        if bounds is None:
+            continue
+        start, end = bounds
+        body_length = end - start
+        low, high = 0, body_length
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = _replace_prompt_section(working, start, end, middle)
+            if estimate_token_count([{"role": "system", "content": candidate}]) <= token_budget:
+                low = middle
+            else:
+                high = middle - 1
+        working = _replace_prompt_section(working, start, end, low)
+        if estimate_token_count([{"role": "system", "content": working}]) <= token_budget:
+            return working
+    return working
+
+
 def build_chat_context(prompt: str, history: list[dict], user_text: str, budget: int = CHAT_CONTEXT_TOKEN_BUDGET) -> list[dict]:
     """保留本輪輸入，從最新已完成對話往前納入，固定總 token 預算。"""
     system = {"role": "system", "content": prompt}
     user = {"role": "user", "content": user_text}
     if estimate_token_count([system]) > budget // 2:
-        low, high = 0, len(prompt) // 2
+        system["content"] = _trim_structured_prompt(prompt, budget // 2)
+    if estimate_token_count([system]) > budget // 2:
+        source = system["content"]
+        low, high = 0, len(source) // 2
         while low < high:
             middle = (low + high + 1) // 2
-            system["content"] = prompt[:middle] + "\n…\n" + prompt[-middle:]
+            system["content"] = source[:middle] + "\n…\n" + source[-middle:]
             if estimate_token_count([system]) <= budget // 2:
                 low = middle
             else:
                 high = middle - 1
-        system["content"] = prompt[:low] + "\n…\n" + prompt[-low:] if low else ""
+        system["content"] = source[:low] + "\n…\n" + source[-low:] if low else ""
     if estimate_token_count([system, user]) > budget:
         low, high = 0, len(user_text)
         while low < high:
@@ -91,7 +163,14 @@ def retained_prompt_ranges(original: str, actual: str) -> list[list[int]]:
     size = (len(actual) - len(marker)) // 2
     if size > 0 and actual == original[:size] + marker + original[-size:]:
         return [[0, size], [len(original) - size, len(original)]]
-    return []
+    # 區段裁切會插入自己的 marker；用相同片段比對保留來源範圍，供記憶 evidence locator 使用。
+    ranges = []
+    for tag, start, end, actual_start, actual_end in SequenceMatcher(
+        None, original, actual, autojunk=False,
+    ).get_opcodes():
+        if tag == "equal" and end > start:
+            ranges.append([start, end])
+    return ranges
 
 
 # ============================================================

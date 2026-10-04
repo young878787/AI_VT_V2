@@ -1,61 +1,50 @@
-"""兩種記憶角色共用有界傳輸，不共用語意決策或工具權限。"""
+"""單一記憶 agent 的有界傳輸；只回傳工具與彙總診斷。"""
 import json
 import time
 
 import tiktoken
-
 from openai import AsyncOpenAI, BadRequestError
-
 from core.ai_request_params import no_thinking_extra_body, provider_from_url
-from core.prompt_logger import trace
 
 
 class MemoryAgentClient:
-    def __init__(self, settings, role):
+    def __init__(self, settings):
         self.client = AsyncOpenAI(base_url=settings.memory_base_url, api_key=settings.memory_api_key,
                                   timeout=35, max_retries=0)
         self.model = settings.memory_model
         self.provider = provider_from_url(settings.memory_base_url)
-        self.role = role
 
-    async def call(self, prompt, payload, tools):
-        content = json.dumps(payload, ensure_ascii=False, default=str)
-        input_tokens = len(tiktoken.get_encoding("cl100k_base").encode(prompt + content + json.dumps(tools)))
-        if len(content) > 28000 or input_tokens > 8000:
+    async def call(self, messages, tools, diagnostic):
+        input_tokens = len(tiktoken.get_encoding("cl100k_base").encode(
+            json.dumps({"messages": messages, "tools": tools}, ensure_ascii=False, default=str)))
+        if input_tokens > 8000:
             raise ValueError("Memory agent input budget exceeded")
-        started = time.monotonic()
-        request = dict(model=self.model, messages=[{"role": "system", "content": prompt},
-                       {"role": "user", "content": content}], tools=tools,
-                       tool_choice="required", max_completion_tokens=4000)
+        request = dict(model=self.model, messages=messages, tools=tools, tool_choice="required",
+                       parallel_tool_calls=False, max_completion_tokens=1024)
         extra_body = no_thinking_extra_body(self.provider)
         if extra_body:
             request["extra_body"] = extra_body
-        trace("memory_agent_request", {"role": self.role, "input_token_estimate": input_tokens,
-                                       "request": request})
+        started = time.monotonic()
         try:
-            response = await self.client.chat.completions.create(**request)
-        except BadRequestError as error:
-            if (getattr(error, "param", None) != "reasoning_effort"
-                    or "set reasoning_effort to 'none'" not in str(error)):
-                raise
-            response = await self.client.chat.completions.create(**request, reasoning_effort="none")
-        calls = response.choices[0].message.tool_calls if response.choices else None
-        if not calls or len(calls) > 12:
-            raise ValueError("Memory agent 缺少有界工具結果")
-        allowed = {item["function"]["name"] for item in tools}
-        results = []
-        for call in calls:
-            if call.function.name not in allowed or len(call.function.arguments) > 16000:
-                raise ValueError("Memory agent 越權或超過輸出預算")
-            results.append((call.function.name, json.loads(call.function.arguments)))
-        diagnostic = {"role": self.role, "model": self.model,
-                      "latency_ms": round((time.monotonic() - started) * 1000),
-                      "input_token_estimate": input_tokens,
-                      "tokens": response.usage.total_tokens if response.usage else None,
-                      "actual_model": getattr(response, "model", None),
-                      "usage": response.usage.model_dump() if response.usage else None,
-                      "finish_reason": getattr(response.choices[0], "finish_reason", None) if response.choices else None,
-                      "tools": [name for name, _ in results],
-                      "tool_results": [{"name": name, "arguments": args} for name, args in results]}
-        trace("memory_agent", diagnostic)
-        return results, diagnostic
+            diagnostic["calls"] += 1
+            try:
+                response = await self.client.chat.completions.create(**request)
+            except BadRequestError as error:
+                if (getattr(error, "param", None) != "reasoning_effort"
+                        or "set reasoning_effort to 'none'" not in str(error)):
+                    raise
+                diagnostic["calls"] += 1
+                response = await self.client.chat.completions.create(**request, reasoning_effort="none")
+        finally:
+            diagnostic["latency_ms"] += round((time.monotonic() - started) * 1000)
+            diagnostic["input_token_estimate"] += input_tokens
+        if response.usage:
+            diagnostic["input_tokens"] += response.usage.prompt_tokens
+            diagnostic["output_tokens"] += response.usage.completion_tokens
+        if not response.choices or response.choices[0].finish_reason == "length":
+            raise ValueError("Memory agent output incomplete")
+        message = response.choices[0].message
+        return {"role": "assistant", "content": None, "tool_calls": [
+            {"id": call.id, "type": "function", "function": {
+                "name": call.function.name, "arguments": call.function.arguments}}
+            for call in (message.tool_calls or [])]}

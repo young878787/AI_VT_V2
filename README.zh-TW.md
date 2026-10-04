@@ -115,7 +115,7 @@ npm run dev
 ### Headless Chat 測試（不開前端）
 
 ```bash
-# 從 repository 根目錄執行完整 20＋5 cases
+# 從 repository 根目錄執行完整 23＋5 cases
 backend/.venv/bin/python backend/tools/chat_test_cli.py
 
 # 精確重播已接受的案例快照
@@ -125,11 +125,13 @@ backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/c
 backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-CLI 固定 Rushia，沿用同一 `main:app`／PostgreSQL `MemoryRuntime`，使用與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL` 及專用 `test_<32 lowercase hex>` schema。每案 reset 隔離 owner，setup 結案後執行新 session／連線的長期 probe；不直接灌入記憶。五筆延伸案例沿用 `CHAT_AI_*` 生成，重播不重新生成。
+長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。正式 DB 已在備份後升至 Alembic head `0006_single_memory_agent`，正式啟動與目前 schema 相符。
 
-每次建立 `backend/log/chat_test_runs/YYYYMMDD_HHMMSS/`，`latest/` 以連結指向最新完整 Chat 執行結果。資料夾包含 `cases.json`、`turns.jsonl`、`case_states.jsonl`、`run.json`、`memory_report.md`、`expression_report.md` 與 `server.log`。`turns.jsonl` 保存完整逐輪 JEV／表情、提出／提交操作、DB 來源、召回及裁切後 Chat messages；兩份 Markdown 只保留摘要與查詢入口。語意品質由人工查閱；背景工作錯誤會保存並反映在執行狀態。結束清理測試 schema 與短期／prompt 暫存，不讀寫正式長期記憶。
+CLI 固定 Rushia，沿用同一 `main:app`／PostgreSQL `MemoryRuntime`，使用與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL` 及專用 `test_<32 lowercase hex>` schema。每案 reset 隔離 owner，setup 結案後執行新 session／連線的長期 probe；不直接灌入記憶。短期組跳過長期接收與召回；長期 probe 停用短期載入、累積及寫入；綜合組記錄跨來源證據。五筆延伸案例沿用 `CHAT_AI_*` 生成，重播不重新生成。
 
-獨立六情境 memory-agent 評估使用 `backend/log/memory_agent_runs/<timestamp>/`，保存 `run.json`、`memory_agents.json` 與 `memory_agents_report.md`，不會切換 Chat 測試的 `latest`。
+每次覆寫固定 `backend/log/chat_test_runs/latest/`，不建立新時間資料夾；既有歷史保留。資料夾包含 `cases.json`、`turns.jsonl`、`case_states.jsonl`、`run.json`、`memory_report.md`、`expression_report.md` 與 `server.log`。`turns.jsonl` 保存完整逐輪 JEV／表情、提交操作、DB 來源、召回及裁切後 Chat messages；兩份 Markdown 只保留摘要與查詢入口。主表按三組並列「回答結果」與「最終應該答案／對話」，硬條件失敗時顯示具體錯誤，完整回答不截短。CLI 執行後以既有 Chat 模型的獨立 prompt 比對所有 probe，保存 `semantic_review` 並產生獨立語意表；模型評估仍可供人工核對。語意判定不能覆蓋來源硬條件；背景工作錯誤會保存並反映在執行狀態。結束清理測試 schema 與短期／prompt 暫存，不讀寫正式長期記憶。
+
+獨立六情境 memory-agent 評估使用 `backend/log/memory_agent_runs/latest/`，保存 `run.json`、`memory_agents.json` 與 `memory_agents_report.md`，不會切換 Chat 測試的 `latest`。
 
 先讀兩份摘要 Markdown；需要完整 evidence 時再用 `case_id`＋`turn` 查逐輪 JSON：
 
