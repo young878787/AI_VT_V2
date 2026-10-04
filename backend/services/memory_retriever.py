@@ -3,6 +3,7 @@
 import json
 import re
 import time
+from dataclasses import dataclass
 from uuid import UUID
 
 from infrastructure.memory_embedding_client import MemoryEmbeddingClient
@@ -17,33 +18,72 @@ _PROFILE_LIST_FIELDS = {"core_traits", "dislikes", "recent_interests", "custom_n
 
 
 _CONTEXT_REFERENCE = re.compile(r"那個|那部分|那件事|這個|這部分|這件事|它|剛才|剛剛|我的口味|我的喜好|今晚的安排|\b(it|that|my taste)\b", re.I)
+_RECALL_WRAPPER = re.compile(
+    r"^(?:我想)?(?:確認|問)(?:一下)?[，,：:\s]*|"
+    r"^(?:我有點)?忘了[，,：:\s]*|"
+    r"^(?:關於)[，,：:\s]*|"
+    r"你(?:還)?記得|"
+    r"(?:可以|能)?告訴我|"
+    r"(?:嗎|呢)[？?]?$",
+    re.I,
+)
 
 
-def _format_memory_projection(row: dict, mode: str, remaining: int) -> str:
-    """把候選的來源欄位一起交給 Chat，避免只剩脫離上下文的 canonical 句子。"""
+@dataclass(frozen=True)
+class RetrievalQuery:
+    """同一輪召回的兩種查詢表示；詞面保留原文，向量使用正規化語意。"""
+
+    lexical_text: str
+    semantic_text: str
+
+
+def _format_memory_projection(row: dict, mode: str) -> str:
+    """以完整 fact 為優先，metadata 只保留 Chat 判斷現況所需欄位。"""
     memory_type = str(row.get("memory_type") or "unknown")
     subject_key = str(row.get("subject_key") or "未標註")
     status = str(row.get("status") or "unknown")
-    metadata = [f"type={memory_type}", f"subject_key={subject_key}", f"status={status}", "actor=未標註"]
+    metadata = [f"type={memory_type}", f"subject_key={subject_key}", f"status={status}"]
     if row.get("has_conflict"):
         metadata.append("conflict=true")
     if row.get("pending_change"):
         metadata.append("pending_change=true")
-    if mode in {"history", "future"}:
+    if mode == "future" or status != "active":
         metadata.append(f"valid_from={row.get('valid_from')}")
         metadata.append(f"valid_to={row.get('valid_to')}")
-    prefix = "- 記憶資料（" + "; ".join(metadata) + "）：fact="
-    return (prefix + str(row.get("canonical_text") or ""))[:remaining]
+    fact = str(row.get("canonical_text") or "")
+    return f"- fact={fact}（" + "; ".join(metadata) + "）"
 
 
-def build_retrieval_query(user_text: str, recent_dialogue: list[dict] | None = None, summary: str = "") -> str:
-    """指代型查詢使用有界 user 上下文，必要時沿用既有 summary。"""
+def _normalize_semantic_query(text: str) -> str:
+    """移除不承載檢索語意的聊天框架，不擴張偏好、頻率或時間語意。"""
+    value = text.strip()[:4000]
+    value = value.replace("我的", "使用者的")
+    value = re.sub(r"(?<![\w\u3400-\u9fff])我(?=比較|平常|通常|一直|目前|現在|以前|曾經)", "使用者", value)
+    previous = None
+    while previous != value:
+        previous = value
+        value = _RECALL_WRAPPER.sub("", value).strip(" ，,：:？?。")
+    value = re.sub(r"\s+", " ", value)
+    return value or text.strip()[:4000]
+
+
+def build_retrieval_query(user_text: str, recent_dialogue: list[dict] | None = None, summary: str = "") -> RetrievalQuery:
+    """建立分離的詞面與向量查詢；只有指代型訊息才加入有界 user 上下文。"""
+    lexical = user_text[:4000]
+    semantic = _normalize_semantic_query(user_text)
     if not _CONTEXT_REFERENCE.search(user_text):
-        return user_text[:4000]
+        return RetrievalQuery(lexical, semantic)
     user_context = [m["content"][:400] for m in (recent_dialogue or [])[-16:]
                     if m.get("role") == "user" and isinstance(m.get("content"), str)][-2:]
     context = "\n".join(user_context) if user_context else summary[:800]
-    return user_text[:3000] + ("\n當前對話情境：\n" + context if context else "")
+    if context:
+        lexical = user_text[:3000] + "\n當前對話情境：\n" + context
+        semantic_context = "\n".join(_normalize_semantic_query(item) for item in user_context)
+        if not semantic_context and summary:
+            semantic_context = _normalize_semantic_query(summary[:800])
+        if semantic_context:
+            semantic = semantic[:3000] + "\n相關使用者情境：\n" + semantic_context
+    return RetrievalQuery(lexical, semantic)
 
 
 class MemoryRetriever:
@@ -59,7 +99,7 @@ class MemoryRetriever:
         errors = []
         try:
             query_embedding = await self.embedding.embed(
-                query, query=True,
+                query.semantic_text, query=True,
                 purpose="retrieval_query" if event_id is not None else None,
                 event_id=event_id, stage="chat_retrieval",
             )
@@ -68,10 +108,11 @@ class MemoryRetriever:
             print(f"[Memory] embedding query fallback: {type(exc).__name__}")
             query_embedding = None
         try:
-            rows = await self.repository.related_items(query, query_embedding, limit=20, mode=mode)
+            rows = await self.repository.related_items(query.lexical_text, query_embedding, limit=20, mode=mode)
         except Exception as exc:
             print(f"[Memory] retrieval fallback: {type(exc).__name__}")
-            trace("retrieval", {"query": query, "user_query": user_text, "mode": mode, "limit": 20,
+            trace("retrieval", {"query": query.lexical_text, "semantic_query": query.semantic_text,
+                "user_query": user_text, "mode": mode, "limit": 20,
                 "min_similarity": MIN_RETRIEVAL_SIMILARITY, "candidates": [], "projections": [],
                 "errors": [*errors, {"stage": "repository", "error": type(exc).__name__}],
                 "duration_sec": round(time.monotonic() - started, 4)}, event_id)
@@ -105,12 +146,16 @@ class MemoryRetriever:
                 continue
             if len(selected) >= 8 or remaining <= 0:
                 break
-            text = _format_memory_projection(row, mode, remaining)
+            text = _format_memory_projection(row, mode)
+            separator = 1 if selected else 0
+            if len(text) + separator > remaining:
+                continue
             selected.append(text)
-            remaining -= len(text)
+            remaining -= len(text) + separator
             injected.append(row)
             projections.append({"id": str(row["id"]), "destination": "memory", "text": text})
-        trace("retrieval", {"query": query, "user_query": user_text, "mode": mode, "limit": 20,
+        trace("retrieval", {"query": query.lexical_text, "semantic_query": query.semantic_text,
+            "user_query": user_text, "mode": mode, "limit": 20,
             "min_similarity": MIN_RETRIEVAL_SIMILARITY, "memory_limit": 8, "memory_char_budget": 800,
             "profile_char_limit": 300, "embedding_available": query_embedding is not None,
             "candidates": [{"rank": index + 1,

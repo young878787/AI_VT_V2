@@ -52,15 +52,31 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
                    dict(role="assistant", content="猜測你喜歡草莓。"),
                    dict(role="user", content="今晚要早睡，避開咖啡因。")]
         query = build_retrieval_query("依照我的口味怎麼選？", history, "不要採用的摘要")
-        self.assertIn("生日蛋糕", query)
-        self.assertIn("咖啡因", query)
-        self.assertNotIn("草莓", query)
-        self.assertNotIn("私人", query)
-        self.assertNotIn("摘要", query)
-        self.assertEqual(build_retrieval_query("我喜歡哪部電影？", history), "我喜歡哪部電影？")
-        self.assertEqual(build_retrieval_query("我的口味？"), "我的口味？")
-        self.assertLessEqual(len(build_retrieval_query("我的口味" + "字" * 5000,
-                            [dict(role="user", content="字" * 5000)])), 4000)
+        self.assertIn("生日蛋糕", query.lexical_text)
+        self.assertIn("咖啡因", query.semantic_text)
+        self.assertNotIn("草莓", query.semantic_text)
+        self.assertNotIn("私人", query.semantic_text)
+        self.assertNotIn("摘要", query.semantic_text)
+        movie = build_retrieval_query("我喜歡哪部電影？", history)
+        self.assertEqual((movie.lexical_text, movie.semantic_text), ("我喜歡哪部電影？", "我喜歡哪部電影"))
+        taste = build_retrieval_query("我的口味？")
+        self.assertEqual((taste.lexical_text, taste.semantic_text), ("我的口味？", "使用者的口味"))
+        bounded = build_retrieval_query("我的口味" + "字" * 5000,
+                                        [dict(role="user", content="字" * 5000)])
+        self.assertLessEqual(len(bounded.lexical_text), 4200)
+        self.assertLessEqual(len(bounded.semantic_text), 4200)
+
+    def test_semantic_query_removes_recall_wrapper_without_broadening_fact(self):
+        cases = {
+            "我比較偏好哪種甜點？": "使用者比較偏好哪種甜點",
+            "我平常一直有玩的遊戲是什麼？": "使用者平常一直有玩的遊戲是什麼",
+            "關於我的飲品偏好，你記得是什麼嗎？": "使用者的飲品偏好，是什麼",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                query = build_retrieval_query(raw)
+                self.assertEqual(query.lexical_text, raw)
+                self.assertEqual(query.semantic_text, expected)
 
     async def test_context_does_not_change_current_history_mode(self):
         repository = SimpleNamespace(related_items=AsyncMock(return_value=[]))
@@ -69,7 +85,8 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
             recent_dialogue=[dict(role="user", content="之前討論生日蛋糕")])
         self.assertEqual(repository.related_items.await_args.kwargs["mode"], "current")
         self.assertIn("生日蛋糕", repository.related_items.await_args.args[0])
-        self.assertEqual(embedding.embed.await_args.args[0], repository.related_items.await_args.args[0])
+        self.assertIn("相關使用者情境", embedding.embed.await_args.args[0])
+        self.assertNotEqual(embedding.embed.await_args.args[0], repository.related_items.await_args.args[0])
 
     async def test_category_aliases_are_lexical_and_similarity_gate_unchanged(self):
         connection = _RecordingConnection()
@@ -120,7 +137,26 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         profile, relevant = await MemoryRetriever(repository, embedding).retrieve("我的喜好")
         self.assertEqual(profile, {"recent_interests": ["喜歡天文"]})
         self.assertEqual(relevant,
-                         "- 記憶資料（type=preference; subject_key=未標註; status=active; actor=未標註）：fact=喜歡拿鐵")
+                         "- fact=喜歡拿鐵（type=preference; subject_key=未標註; status=active）")
+
+    async def test_projection_never_marks_partial_record_as_selected(self):
+        rows = [{"id": uuid4(), "group_id": uuid4(), "memory_type": "project", "status": "active",
+                 "subject_key": "project", "canonical_text": "事實" + str(index) + "字" * 130,
+                 "similarity": .9, "exact_match": True} for index in range(8)]
+        repository = SimpleNamespace(related_items=AsyncMock(return_value=rows))
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
+        with patch("services.memory_retriever.trace") as trace:
+            _, relevant = await MemoryRetriever(repository, embedding).retrieve("完整配置", uuid4())
+        evidence = trace.call_args.args[1]
+        selected = {projection["id"] for projection in evidence["projections"]}
+        self.assertLessEqual(len(relevant), 800)
+        self.assertTrue(all(projection["text"].endswith("status=active）")
+                            for projection in evidence["projections"]))
+        self.assertEqual(
+            [candidate["projection"] for candidate in evidence["candidates"]],
+            ["selected" if str(candidate["id"]) in selected else "memory_budget_exhausted"
+             for candidate in evidence["candidates"]],
+        )
 
     async def test_trace_preserves_candidate_order_and_scalar_profile_overwrite(self):
         rows = [{"id": uuid4(), "group_id": uuid4(), "memory_type": "profile", "status": "active",

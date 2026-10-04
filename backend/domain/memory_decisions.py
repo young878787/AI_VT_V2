@@ -13,7 +13,7 @@ RETENTION_CLASSES = frozenset({"temporary", "normal", "important", "core"})
 DECISION_FIELDS = frozenset({
     "action", "source_ids", "canonical_text", "memory_type", "subject_key",
     "target_memory_ids", "importance", "confidence", "retention_class", "valid_from", "valid_to",
-    "expires_at", "reason", "forget_scope",
+    "expires_at", "reason", "forget_scope", "search_terms",
 })
 
 
@@ -61,6 +61,14 @@ def validate_decisions(payload: object, allowed_target_ids: set[UUID], explicit_
             canonical = decision.get("canonical_text")
             if not isinstance(canonical, str) or not canonical.strip() or len(canonical) > 2000:
                 raise ValueError("decision canonical_text 無效")
+            search_terms = decision.get("search_terms")
+            if search_terms is not None and (
+                not isinstance(search_terms, list) or not 1 <= len(search_terms) <= 12 or
+                any(not isinstance(term, str) or not term.strip() or len(term) > 80 or
+                    re.search(r"[\x00-\x1f\x7f]", term) for term in search_terms) or
+                len({term.strip().lower() for term in search_terms}) != len(search_terms)
+            ):
+                raise ValueError("decision search_terms 無效")
         memory_type = decision.get("memory_type")
         if memory_type is not None and memory_type not in MEMORY_TYPES - {"none"}:
             raise ValueError("decision memory_type 無效")
@@ -151,9 +159,11 @@ def normalize_proposal(payload: object, allowed_targets: set[UUID], authorized_s
     decision.setdefault("target_memory_ids", [])
     if decision.get("action") in {"CREATE", "SUPERSEDE", "CONTRADICT"}:
         decision.setdefault("retention_class", "normal")
+        if not decision.get("search_terms"):
+            raise ValueError("新記憶缺少 search_terms")
     else:
         if set(decision) & {"canonical_text", "memory_type", "subject_key", "importance", "confidence",
-                            "retention_class", "valid_from", "valid_to", "expires_at"}:
+                            "retention_class", "valid_from", "valid_to", "expires_at", "search_terms"}:
             raise ValueError("此操作不可改寫事實 metadata")
     policy = instruction_policy(text)
     if policy == "no_store":
@@ -184,6 +194,8 @@ def agent_tools(forget: bool) -> list[dict]:
         "canonical_text": {"type": "string", "minLength": 1, "maxLength": 2000},
         "memory_type": {"type": "string", "enum": sorted(MEMORY_TYPES - {"none"})},
         "subject_key": {"type": "string", "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9_.-]*$"},
+        "search_terms": {"type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": True,
+                         "items": {"type": "string", "minLength": 1, "maxLength": 80}},
         "importance": {"type": "number", "minimum": 0, "maximum": 1},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "retention_class": {"type": "string", "enum": sorted(RETENTION_CLASSES)},
@@ -193,7 +205,7 @@ def agent_tools(forget: bool) -> list[dict]:
         tool("search_memories", "Find a small batch of related memories using a focused query.", {"query": text}, ["query"]),
         tool("read_context", "Read authorized sources or supplied memories and their evidence/versions.",
              {"memory_ids": {**ids, "maxItems": 3}, "source_ids": {**ids, "maxItems": 3}}, []),
-        tool("propose_operation", "Propose ONE operation; no DB write. CREATE/SUPERSEDE/CONTRADICT need canonical_text, memory_type, importance, confidence. Other actions need targets only. Cite user sources. Replace an accepted proposal using its index if needed.",
+        tool("propose_operation", "Propose ONE operation; no DB write. CREATE/SUPERSEDE/CONTRADICT need canonical_text, memory_type, importance, confidence and search_terms. Other actions need targets only. Cite user sources. Replace an accepted proposal using its index if needed.",
              {"operation": {"type": "object", "additionalProperties": False, "properties": operation,
                             "required": ["action", "source_ids", "reason"]},
               "replace_index": {"type": "integer", "minimum": 0, "maximum": 11}}, ["operation"]),

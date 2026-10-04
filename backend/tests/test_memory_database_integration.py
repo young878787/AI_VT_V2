@@ -517,7 +517,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.route(event, MemoryRouting(None), "我的飲食計畫以高蛋白質為主", [])
         operation = {"action": "CREATE", "canonical_text": "健康管理：飲食計畫以高蛋白質為主",
                      "memory_type": "project", "subject_key": "health.diet_plan", "importance": .7,
-                     "confidence": .9, "source_ids": [str(event)], "reason": "user statement"}
+                     "confidence": .9, "source_ids": [str(event)], "reason": "user statement",
+                     "search_terms": ["健康管理", "飲食計畫", "高蛋白質"]}
         agent = object.__new__(MemoryLLM)
         agent.call = AsyncMock(side_effect=[tool_response("propose_operation", {"operation": {**operation, "subject_key": "健康管理.飲食"}}),
                                            tool_response("propose_operation", {"operation": operation}),

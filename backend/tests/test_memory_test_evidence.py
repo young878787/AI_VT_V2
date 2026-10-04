@@ -63,6 +63,7 @@ class MemoryTestEvidenceTests(unittest.TestCase):
         check_turn(case,step,record,previous,state)
         self.assertEqual(record['hard_status']['memory_evidence_status'],'failed')
         context['injected_memory_ids']=['target']
+        context['memory_fragments']=[dict(id='target',text='使用者喜歡草莓',complete=True)]
         check_turn(case,step,record,previous,state)
         self.assertEqual(record['hard_status']['memory_evidence_status'],'passed')
 

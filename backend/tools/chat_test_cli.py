@@ -478,7 +478,7 @@ def read_turn_trace(run_dir: Path, turn_id: str | None) -> list[dict]:
 
 
 def locate_injected_fragments(context: dict, projections: list[dict]) -> None:
-    """以原始 prompt 區間與實際裁切區間交集歸因，包含只保留部分的記憶。"""
+    """記錄裁切後片段；只有完整投影仍在 prompt 時才算成功注入。"""
     from domain.agent_a_prompts import _build_profile_section
     profile = context.get("profile", {})
     profile_section = _build_profile_section(profile)
@@ -499,15 +499,20 @@ def locate_injected_fragments(context: dict, projections: list[dict]) -> None:
             start = context.get("profile_section_start", 0) + offset if offset >= 0 else None
         if start is None or start < 0:
             continue
+        fragments = []
+        projection_end = start + len(text_value)
         for left, right in context["system_retained_ranges"]:
             lower, upper = max(start, left), min(start + len(text_value), right)
             if lower < upper:
                 fragment = text_value[lower - start:upper - start]
-                context["memory_fragments"].append({"id": projection["id"],
-                    "destination": projection["destination"], "text": fragment,
-                    "original_system_range": [lower, upper]})
-                if projection["id"] not in context["injected_memory_ids"]:
-                    context["injected_memory_ids"].append(projection["id"])
+                fragments.append((lower, upper, fragment))
+        complete = any(lower <= start and upper >= projection_end for lower, upper, _ in fragments)
+        for lower, upper, fragment in fragments:
+            context["memory_fragments"].append({"id": projection["id"],
+                "destination": projection["destination"], "text": fragment,
+                "complete": complete, "original_system_range": [lower, upper]})
+        if complete and projection["id"] not in context["injected_memory_ids"]:
+            context["injected_memory_ids"].append(projection["id"])
 
 
 def write_markdown_report(records: list[dict], path: Path, metadata: dict, status: str, error: str | None) -> None:

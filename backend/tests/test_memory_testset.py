@@ -132,8 +132,9 @@ class MemoryTestsetTests(unittest.TestCase):
         self.assertEqual(context['injected_memory_ids'], [])
         context['memory_section_start'] = 0
         cli.locate_injected_fragments(context, [{'id': 'partial', 'destination': 'memory', 'text': 'x' * 2000}])
-        self.assertEqual(context['injected_memory_ids'], ['partial'])
+        self.assertEqual(context['injected_memory_ids'], [])
         self.assertLess(len(context['memory_fragments'][0]['text']), 2000)
+        self.assertFalse(context['memory_fragments'][0]['complete'])
         self.assertIn(context['memory_fragments'][0]['text'], actual)
 
     def test_successful_send_without_ack_is_not_retried(self):

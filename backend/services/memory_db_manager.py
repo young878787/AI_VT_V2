@@ -13,6 +13,31 @@ from domain.memory_routing import instruction_policy, forget_scope
 from services.memory_import import LegacyEntry
 
 
+def _memory_keywords(canonical: str, subject_key: str | None = None,
+                     search_terms: list[str] | None = None) -> list[str]:
+    """檢索詞優先採用已驗證的語意索引，再補 canonical／subject 的穩定詞面。
+
+    查詢端會把中文連續字串切成相鄰雙字詞；索引端也保留相同粒度，避免
+    ``甜點偏好`` 與 ``哪種甜點`` 因陣列元素必須完全相等而錯失詞面命中。
+    """
+    values = [*(search_terms or [])]
+    if subject_key:
+        values.extend([subject_key, *re.findall(r"[a-z0-9]{2,}", subject_key.lower())])
+    values.extend(re.findall(r"[a-z0-9]{2,}|[\u3400-\u9fff]{2,4}", canonical.lower()))
+    result = []
+    for value in values:
+        normalized = value.strip().lower()
+        if not normalized:
+            continue
+        parts = [normalized, *re.findall(r"[a-z0-9_.-]{2,}", normalized)]
+        for chinese in re.findall(r"[\u3400-\u9fff]{2,}", normalized):
+            parts.extend(chinese[index:index + 2] for index in range(len(chinese) - 1))
+        for part in parts:
+            if part not in result:
+                result.append(part)
+    return result[:24]
+
+
 class MemoryDBManager:
     def __init__(
         self, pool, scope: MemoryScope, model: str, embedding_model: str, embedding_contract: str,
@@ -39,9 +64,7 @@ class MemoryDBManager:
                 for entry in entries:
                     if entry.id not in embeddings:
                         raise ValueError("Legacy import 缺少 embedding")
-                    keywords = sorted(set(re.findall(
-                        r"[a-z0-9]{2,}|[\u3400-\u9fff]{2,4}", entry.canonical_text.lower(),
-                    )))[:12]
+                    keywords = _memory_keywords(entry.canonical_text, entry.subject_key)
                     cursor = await connection.execute(
                         """INSERT INTO memory_items
                         (id, user_id, character_id, group_id, memory_type, canonical_text, subject_key,
@@ -217,7 +240,8 @@ class MemoryDBManager:
                         group_id = target_map[targets[0]][1] if targets else new_id
                         status = "conflict" if action == "CONTRADICT" else "active"
                         canonical = decision["canonical_text"].strip()
-                        keywords = sorted(set(re.findall(r"[a-z0-9]{2,}|[\u3400-\u9fff]{2,4}", canonical.lower())))[:12]
+                        keywords = _memory_keywords(canonical, decision.get("subject_key"),
+                                                   decision.get("search_terms"))
                         await connection.execute(
                             """INSERT INTO memory_items
                             (id, user_id, character_id, group_id, memory_type, canonical_text, subject_key,

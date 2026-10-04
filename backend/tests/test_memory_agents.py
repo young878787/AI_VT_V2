@@ -10,6 +10,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from domain.memory_decisions import normalize_proposal, agent_tools, validate_batch
 from domain.memory_routing import instruction_policy
 from services.memory_llm import MemoryLLM, PROMPT
+from services.memory_db_manager import _memory_keywords
 
 
 def tool_response(name, arguments):
@@ -21,7 +22,8 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.source = {"id": uuid4(), "speaker": "user", "raw_text": "我喜歡茶", "occurred_at": "2026-10-03T12:00:00+08:00"}
         self.fact = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "source_ids": [str(self.source["id"])],
-                     "memory_type": "preference", "importance": .7, "confidence": .9, "reason": "user statement"}
+                     "memory_type": "preference", "importance": .7, "confidence": .9, "reason": "user statement",
+                     "search_terms": ["茶", "飲品偏好"]}
         self.job = {"id": self.source["id"], "source_text": "我喜歡茶", "instruction": "observe"}
         self.diag = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "input_token_estimate": 0, "latency_ms": 0}
 
@@ -41,6 +43,9 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
         normalized = normalize_proposal(self.fact, set(), {self.source["id"]}, "我喜歡茶")
         self.assertEqual(normalized["retention_class"], "normal")
         self.assertEqual(normalized["target_memory_ids"], [])
+        with self.assertRaisesRegex(ValueError, "search_terms"):
+            normalize_proposal({key: value for key, value in self.fact.items() if key != "search_terms"},
+                               set(), {self.source["id"]}, "我喜歡茶")
 
     def test_instruction_negation_and_forget_permissions(self):
         for text in ("不要忘記我喜歡茶", "我忘記帶傘了", "你記得我喜歡什麼嗎"):
@@ -56,8 +61,23 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
     def test_memory_prompt_preserves_subject_scope_without_domain_overfitting(self):
         self.assertIn("subject or actor explicit", PROMPT)
         self.assertIn("modality, frequency, uncertainty", PROMPT)
+        self.assertIn("search_terms", PROMPT)
         self.assertNotIn("cake/chocolate/parfait", PROMPT)
         self.assertNotIn("Minecraft concerns", PROMPT)
+
+    def test_search_terms_are_validated_and_prioritized_in_index(self):
+        schema = next(tool["function"]["parameters"] for tool in agent_tools(False)
+                      if tool["function"]["name"] == "propose_operation")
+        self.assertIn("search_terms", schema["properties"]["operation"]["properties"])
+        keywords = _memory_keywords("使用者週末經常玩 ExampleGame。", "example_game",
+                                   ["ExampleGame", "遊戲", "週末遊戲習慣"])
+        self.assertEqual(keywords[:3], ["examplegame", "遊戲", "週末遊戲習慣"])
+        category_keywords = _memory_keywords("", search_terms=["甜點偏好", "遊戲習慣", "飲料偏好"])
+        for keyword in ("甜點", "遊戲", "飲料", "偏好"):
+            self.assertIn(keyword, category_keywords)
+        with self.assertRaisesRegex(ValueError, "search_terms"):
+            normalize_proposal({**self.fact, "search_terms": ["茶", "茶"]}, set(),
+                               {self.source["id"]}, "我喜歡茶")
 
     async def test_minimal_two_round_job_keeps_tool_id_and_no_repeated_decisions(self):
         proposal = tool_response("propose_operation", {"operation": self.fact})

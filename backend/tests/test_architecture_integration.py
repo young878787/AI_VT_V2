@@ -74,6 +74,19 @@ class ArchitectureIntegrationTests(unittest.TestCase):
         self.assertIn("對方偏好未知", hint)
         self.assertEqual(build_turn_scope_hint("我今天想吃蛋糕", []), "")
 
+    def test_turn_scope_hint_requires_explicit_supported_reference(self):
+        hint = build_turn_scope_hint(
+            "可是那部分還是有點抖，你知道我說哪裡嗎？",
+            [{"role": "user", "content": "我昨天把角色的頭髮物理調好了。"}],
+        )
+        self.assertIn("第一句必須先", hint)
+        self.assertIn("不得縮小成來源未提及的部位", hint)
+        advice_hint = build_turn_scope_hint(
+            "那個快畫完了，你覺得最後上光應該注意什麼？",
+            [{"role": "user", "content": "我最近在嘗試練習數位油畫。"}],
+        )
+        self.assertIn("不得只給建議而省略指代對象", advice_hint)
+
     def test_chat_context_strips_interruption_metadata_from_provider_messages(self):
         context = build_chat_context(
             "角色設定",

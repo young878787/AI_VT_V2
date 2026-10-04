@@ -40,6 +40,10 @@ polarity and scope stated by the user, but do not broaden a preference to an ent
 label is optional and may only add a directly supported search synonym. For example, "喜歡咖啡 (飲料偏好)"
 is valid, while "喜歡所有飲料" is not. Do not hard-code example domains or map an object to a category that the
 current source does not support.
+For every new or replacement fact, provide 2-8 concise search_terms in the source language. These are retrieval
+index terms, not additional facts: include the named entity, explicit topic, and a directly supported generic
+category when useful. Do not add preferences, scope, frequency, time, polarity or relationships absent from the
+authorized user sources. Keep canonical_text as the exact atomic truth instead of stuffing aliases into it.
 Every durable statement must make its subject or actor explicit (for example, "使用者" or the named third party)
 and retain modality, frequency, uncertainty, temporariness and time qualifiers such as "通常", "這次" or
 "可能". A preference about the user must not become a preference of a friend, project or other person.

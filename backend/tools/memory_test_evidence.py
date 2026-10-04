@@ -112,9 +112,15 @@ def check_turn(case: dict, step: dict, record: dict, previous: list[dict], state
             ids = own_source_ids(ref)
             linked = {e['memory_id'] for e in evidence if e['source_id'] in ids}
             injected = linked & set(context.get('injected_memory_ids', []))
-            valid = bool(injected)
-            actual = dict(source_ids=sorted(ids), memory_ids=sorted(linked), injected_ids=sorted(injected))
-            reason = '目標 user source 沒有 evidence 連結至裁切後 prompt 的 DB 記憶'
+            projected = '\n'.join(
+                fragment.get('text', '') for fragment in context.get('memory_fragments', [])
+                if fragment.get('id') in injected and fragment.get('complete', True)
+            )
+            fragments_present = all(fragment in projected for fragment in fragments)
+            valid = bool(injected) and fragments_present
+            actual = dict(source_ids=sorted(ids), memory_ids=sorted(linked), injected_ids=sorted(injected),
+                          fragments_present=fragments_present)
+            reason = '目標 user source 的完整 DB 事實沒有進入裁切後 prompt'
             # 綜合來源隔離：長期事實不得在實際近期 history 或 summary 重複提供。
             if case['case_type'] in {'cross_source_synthesis', 'temporary_constraint'}:
                 exclusive = not all(f in history or f in retained_summary for f in fragments)
