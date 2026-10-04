@@ -29,4 +29,5 @@ body.display-mode {
   display: block;
   flex-shrink: 0;
   pointer-events: none;
+  object-fit: contain;
 }

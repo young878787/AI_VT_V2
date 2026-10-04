@@ -69,6 +69,7 @@ export interface ExpressionBasePose {
     eyeLOpen: number
     eyeROpen: number
     mouthForm: number
+    mouthOpenBias?: number
     browLY: number
     browRY: number
     browLAngle: number
@@ -97,6 +98,7 @@ export interface ExpressionMicroEventPatch {
   eyeLOpen?: number
   eyeROpen?: number
   mouthForm?: number
+  mouthOpenBias?: number
   browLY?: number
   browRY?: number
   browLAngle?: number
@@ -163,6 +165,7 @@ export type BlinkAction = BlinkCommand['action']
 
 export interface ExpressionPlanPayload {
   type: 'expression_plan'
+  turn_id?: string
   basePose: ExpressionBasePose
   microEvents: ExpressionMicroEvent[]
   sequence: ExpressionMicroEvent[]
@@ -185,6 +188,7 @@ const EXPRESSION_MICRO_EVENT_PATCH_KEYS = [
   'eyeLOpen',
   'eyeROpen',
   'mouthForm',
+  'mouthOpenBias',
   'browLY',
   'browRY',
   'browLAngle',
@@ -304,6 +308,7 @@ function hasExpressionBasePoseParams(value: unknown): value is ExpressionBasePos
     isNumber(value.eyeLOpen) &&
     isNumber(value.eyeROpen) &&
     isNumber(value.mouthForm) &&
+    (value.mouthOpenBias === undefined || (isNumber(value.mouthOpenBias) && value.mouthOpenBias >= 0 && value.mouthOpenBias <= 1)) &&
     isNumber(value.browLY) &&
     isNumber(value.browRY) &&
     isNumber(value.browLAngle) &&
@@ -357,6 +362,7 @@ function isExpressionMicroEventPatch(value: unknown): value is ExpressionMicroEv
 
   return Object.entries(value).every(([key, patchValue]) => (
     EXPRESSION_MICRO_EVENT_PATCH_KEYS.includes(key as keyof ExpressionMicroEventPatch) &&
+    (key !== 'mouthOpenBias' || (isNumber(patchValue) && patchValue >= 0 && patchValue <= 1)) &&
     (key === 'eyeSync' ? typeof patchValue === 'boolean' : isNumber(patchValue))
   ))
 }

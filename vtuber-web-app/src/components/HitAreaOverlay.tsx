@@ -102,7 +102,7 @@ export const HitAreaOverlay = () => {
           // 使用 'Body' 參數呼叫 hitTest，我們稍後會修改 LAppModel 讓它泛指全模型
           isHit = model.hitTest(viewMouseX, viewMouseY, 'Body');
         }
-      } catch (e) {
+      } catch {
         // 忽略錯誤
       }
 

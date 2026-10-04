@@ -2,9 +2,14 @@ fastapi
 uvicorn
 websockets
 openai
+httpx
 python-dotenv
 tiktoken
 python-multipart
+psycopg[binary,pool]>=3.2,<4
+pgvector>=0.4,<1
+alembic>=1.15,<2
+sqlalchemy>=2,<3
 
 # TTS (Google Cloud Text-to-Speech)
 # 安裝後需設定 GOOGLE_APPLICATION_CREDENTIALS 環境變數

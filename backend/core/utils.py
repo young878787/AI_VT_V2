@@ -39,7 +39,7 @@ def get_msg_field(msg, field: str, default=""):
 
 def normalize_session_id(value: str | None) -> str | None:
     """驗證 session_id 格式，避免不安全檔名。"""
-    if not value:
+    if not isinstance(value, str) or not value:
         return None
     sid = value.strip()
     if not sid:

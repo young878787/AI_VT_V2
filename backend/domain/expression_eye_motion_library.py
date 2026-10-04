@@ -97,7 +97,9 @@ def build_eye_motion_plan(
     energy: float,
     intent: dict,
     action_duration_ms: int | None = None,
+    rng=None,
 ) -> dict:
+    rng = rng or random
     style = resolve_eye_motion_style(emotion, performance_mode, intent)
     preset = EYE_MOTION_PRESETS[style]
     hold_ms = int(_clamp(_coerce_float(intent.get("hold_ms", 1600), 1600.0), 400.0, 12000.0))
@@ -124,5 +126,5 @@ def build_eye_motion_plan(
         "amplitudeX": round(_clamp(preset["amplitudeX"] * energy_scale, -1.0, 1.0), 3),
         "amplitudeY": round(_clamp(preset["amplitudeY"] * energy_scale, -1.0, 1.0), 3),
         "frequencyHz": round(max(0.05, preset["frequencyHz"]), 3),
-        "phaseSeed": round(random.random(), 3),
+        "phaseSeed": round(rng.random(), 3),
     }

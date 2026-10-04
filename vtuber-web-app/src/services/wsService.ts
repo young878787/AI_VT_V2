@@ -1,10 +1,15 @@
 import { useAppStore } from '../store/appStore';
 import { TTSPlayer } from '../audio/TTSPlayer';
 import { isBlinkAction, isExpressionPlanPayload } from '../types/expressionPlan';
+import { isEmotionUpdatePayload } from '../types/emotionState';
+import { actionScheduler } from './actionScheduler';
 
 class WSService {
     private ws: WebSocket | null = null;
     private currentAssistantMessageId: string | null = null;
+    private readonly assistantMessageIds = new Map<string, string>();
+    private activeTurnId: string | null = null;
+    private appliedPlanTurnId: string | null = null;
     private retryCount: number = 0;
     private readonly MAX_RETRIES = 5;
     private readonly RETRY_DELAY_MS = 3000;
@@ -54,16 +59,44 @@ class WSService {
         this.ws.onopen = () => {
             console.log('WebSocket connected');
             this.retryCount = 0; // 成功連線後重置重試計數
+            this.ws?.send(JSON.stringify({ type: 'sync', session_id: this.sessionId }));
+            actionScheduler.setReporter((status, action) => {
+                if (this.ws?.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({ type: 'action_state', status,
+                        action_id: action.id, turn_id: action.turnId, session_id: this.sessionId }));
+                }
+            });
         };
 
         this.ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
                 const store = useAppStore.getState();
+                if (data.type === 'turn_cancelled') {
+                    const cancelledTurnId = typeof data.turn_id === 'string' ? data.turn_id : null;
+                    if (cancelledTurnId) {
+                        const messageId = this.assistantMessageIds.get(cancelledTurnId);
+                        if (messageId && data.status === 'interrupted') {
+                            store.updateChatMessageStatus(messageId, 'interrupted');
+                        }
+                        this.assistantMessageIds.delete(cancelledTurnId);
+                        if (cancelledTurnId === this.activeTurnId) {
+                            actionScheduler.cancel();
+                            this.ttsPlayer.stop();
+                            this.currentAssistantMessageId = null;
+                            store.setAiTyping(false);
+                        }
+                    }
+                    return;
+                }
+                if (typeof data.turn_id === 'string' && data.turn_id !== this.activeTurnId) return;
 
                 if (data.type === 'text_stream') {
                     if (!this.currentAssistantMessageId) {
                         this.currentAssistantMessageId = store.appendChatMessage({ role: 'assistant', content: data.content });
+                        if (typeof data.turn_id === 'string') {
+                            this.assistantMessageIds.set(data.turn_id, this.currentAssistantMessageId);
+                        }
                     } else {
                         const currentMsg = useAppStore.getState().chatHistory.find(m => m.id === this.currentAssistantMessageId);
                         if (currentMsg) {
@@ -71,6 +104,7 @@ class WSService {
                         }
                     }
                 } else if (data.type === 'behavior') {
+                    if (this.appliedPlanTurnId === this.activeTurnId) return;
                     console.log(`Received AI behavior: head=${data.headIntensity}, blush=${data.blushLevel}, eyeL=${data.eyeLOpen}, eyeR=${data.eyeROpen}, mouth=${data.mouthForm}, sync=${data.eyeSync}`);
                     store.setAiBehavior(
                         data.headIntensity,
@@ -97,6 +131,7 @@ class WSService {
                         data.physicsImpulse ?? 0.0,
                     );
                 } else if (data.type === 'blink_control') {
+                    if (this.appliedPlanTurnId === this.activeTurnId) return;
                     console.log(`Received blink control: action=${data.action}, duration=${data.durationSec}`);
                     if (isBlinkAction(data.action)) {
                         store.setBlinkControl(
@@ -114,19 +149,12 @@ class WSService {
 
                     const plan = data;
 
-                    store.setExpressionPlan(plan);
-
-                    for (const command of plan.blinkPlan?.commands ?? []) {
-                        if (isBlinkAction(command.action)) {
-                            store.setBlinkControl(
-                                command.action,
-                                command.durationSec ?? 0,
-                                command.intervalMin,
-                                command.intervalMax,
-                            );
-                        }
-                    }
+                    actionScheduler.submit(plan, 'chat', data.turn_id);
+                    this.appliedPlanTurnId = this.activeTurnId;
                 } else if (data.type === 'stream_end') {
+                    if (typeof data.turn_id === 'string') {
+                        this.assistantMessageIds.delete(data.turn_id);
+                    }
                     this.currentAssistantMessageId = null;
                     store.setAiTyping(false);
                 } else if (data.type === 'voice') {
@@ -136,14 +164,12 @@ class WSService {
                     store.setCompressing(true);
                 } else if (data.type === 'compress_done') {
                     store.setCompressing(false);
-                } else if (data.type === 'jpaf_update') {
-                    store.setJpafState({
-                        persona: data.persona,
-                        dominant: data.dominant,
-                        auxiliary: data.auxiliary ?? '',
-                        baseWeights: data.baseWeights ?? {},
-                        turnCount: data.turnCount,
-                    });
+                } else if (data.type === 'emotion_update') {
+                    if (isEmotionUpdatePayload(data)) {
+                        store.setEmotionState(data.state, data.source);
+                    } else {
+                        console.warn('Received invalid emotion_update payload:', data);
+                    }
                 } else if (data.type === 'error') {
                     store.appendChatMessage({ role: 'system', content: data.content });
                     store.setAiTyping(false);
@@ -155,8 +181,14 @@ class WSService {
         };
 
         this.ws.onclose = () => {
+            actionScheduler.cancel();
+            this.ttsPlayer.stop();
+            actionScheduler.setReporter(null);
             this.ws = null;
             this.currentAssistantMessageId = null;
+            this.assistantMessageIds.clear();
+            this.activeTurnId = null;
+            this.appliedPlanTurnId = null;
             const store = useAppStore.getState();
 
             // 防呆：斷線時確保 AI 狀態歸零
@@ -183,20 +215,26 @@ class WSService {
         };
     }
 
-    public sendMessage(content: string) {
+    public sendMessage(content: string, source: 'text' | 'voice' = 'text') {
         const store = useAppStore.getState();
         const isConnected = this.ws && this.ws.readyState === WebSocket.OPEN;
 
         store.appendChatMessage({ role: 'user', content });
 
         if (isConnected) {
+            actionScheduler.cancel();
             store.setAiTyping(true);
             this.currentAssistantMessageId = null;
+            this.activeTurnId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                ? crypto.randomUUID() : `turn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+            this.appliedPlanTurnId = null;
             // 送出訊息前停止當前 TTS 播放
             this.ttsPlayer.stop();
             const payload: Record<string, string> = {
                 content,
                 model_name: store.currentModelName,
+                turn_id: this.activeTurnId,
+                source,
             };
             if (this.chatPersistenceEnabled && this.sessionId) {
                 payload.session_id = this.sessionId;
@@ -228,14 +266,21 @@ class WSService {
         this.ttsPlayer.stop();
     }
 
-    /**
-     * 通知後端清空 in-memory 短期記憶並重置 JPAF session。
-     * 應在 REST /api/reset-memory 成功後呼叫。
-     */
-    public sendReset(): void {
+    /** REST owner reset 成功後，同步清空目前 WebSocket 連線的短期狀態。 */
+    public syncResetSession(): void {
+        actionScheduler.cancel();
+        this.activeTurnId = null;
+        this.currentAssistantMessageId = null;
+        this.assistantMessageIds.clear();
+        this.appliedPlanTurnId = null;
+        this.ttsPlayer.stop();
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: 'reset' }));
+            this.ws.send(JSON.stringify({ type: 'reset_session', session_id: this.sessionId }));
         }
+    }
+
+    public getSessionId(): string | null {
+        return this.chatPersistenceEnabled ? this.sessionId : null;
     }
 }
 

@@ -1,16 +1,19 @@
 """
-Chat 服務：LLM 串流、Context 壓縮、XML Tool Call 解析、Token 計數、TTS 合成轉發。
+Chat 服務：LLM 串流、Context 壓縮、Token 計數、TTS 合成轉發。
 """
 import re
 import json
+import time
+from collections.abc import Awaitable, Callable
+from difflib import SequenceMatcher
 
 from fastapi import WebSocket
 
-from core.config import AI_PROVIDER, MODEL_NAME, COMPRESS_KEEP_RECENT
+from core.config import CHAT_MODEL_NAME, CHAT_PROVIDER, CHAT_CONTEXT_TOKEN_BUDGET, COMPRESS_KEEP_RECENT
 from core.utils import strip_thinking, get_msg_field
-from infrastructure.ai_client import chat_create_with_fallback, EXTRA_BODY, NO_THINKING_EXTRA_BODY
-from infrastructure.memory_store import append_memory_note
-from domain.jpaf import extract_emotion_state, extract_jpaf_state, strip_jpaf_tags
+from infrastructure.ai_client import chat_create_with_fallback, no_thinking_extra_body
+from infrastructure.memory_store import save_session_summary
+from core.prompt_logger import trace
 
 import tiktoken
 
@@ -19,16 +22,6 @@ try:
     _encoding = tiktoken.get_encoding("cl100k_base")
 except Exception:
     _encoding = None
-
-# XML tool call regex
-_RE_XML_TOOL_BLOCK = re.compile(
-    r"<tool_call>(.*?)</tool_call>", re.DOTALL | re.IGNORECASE
-)
-_RE_XML_FUNC_NAME = re.compile(r"<function=([^>]+)>")
-_RE_XML_PARAM = re.compile(
-    r"<parameter=([^>]+)>(.*?)</parameter>", re.DOTALL | re.IGNORECASE
-)
-
 
 # ============================================================
 # Token 計數
@@ -54,50 +47,130 @@ def estimate_token_count(messages: list) -> int:
     return total
 
 
-# ============================================================
-# XML Tool Call 解析
-# ============================================================
-def parse_xml_tool_calls(content_text: str) -> tuple[list[dict], str]:
-    """
-    解析 content_text 中的 XML 格式 tool_call 區塊。
-    回傳 (tool_calls_list, cleaned_text)。
-    針對不支援原生 function calling 的模型。
-    """
-    if "<tool_call>" not in content_text.lower():
-        return [], content_text
-
-    xml_tool_calls: list[dict] = []
-    for block_match in _RE_XML_TOOL_BLOCK.finditer(content_text):
-        block = block_match.group(1)
-        func_match = _RE_XML_FUNC_NAME.search(block)
-        if not func_match:
+def _structured_prompt_sections(prompt: str) -> dict[str, tuple[int, int]]:
+    """找出可安全優先裁切的動態資料區段，不動角色與安全規則。"""
+    sections: dict[str, tuple[int, int]] = {}
+    for name, heading, opening, closing in (
+        ("profile", "使用者資料：\n", "<untrusted_user_profile>\n", "</untrusted_user_profile>"),
+        ("memory", "共同回憶：\n", "<untrusted_long_term_memory>\n", "</untrusted_long_term_memory>"),
+    ):
+        heading_start = prompt.find(heading)
+        if heading_start < 0:
             continue
-        func_name = func_match.group(1).strip()
-        args: dict = {}
-        for p in _RE_XML_PARAM.finditer(block):
-            p_name = p.group(1).strip()
-            p_val: str | bool | float = p.group(2).strip()
-            if isinstance(p_val, str) and p_val.lower() == "true":
-                p_val = True
-            elif isinstance(p_val, str) and p_val.lower() == "false":
-                p_val = False
+        data_start = prompt.find(opening, heading_start + len(heading))
+        if data_start < 0:
+            continue
+        data_start += len(opening)
+        data_end = prompt.find(closing, data_start)
+        if data_end >= data_start:
+            sections[name] = (data_start, data_end)
+
+    summary_heading = "本 session 已完成的對話摘要：\n"
+    summary_start = prompt.find(summary_heading)
+    if summary_start >= 0:
+        summary_body_start = summary_start + len(summary_heading)
+        hint_start = prompt.find("\n\n本輪對象約束：\n", summary_body_start)
+        sections["summary"] = (summary_body_start, hint_start if hint_start >= 0 else len(prompt))
+    return sections
+
+
+def _replace_prompt_section(prompt: str, start: int, end: int, keep: int) -> str:
+    body = prompt[start:end]
+    if keep >= len(body):
+        return prompt
+    marker = "\n…（此資料區段依 token 預算裁切）…\n"
+    if keep <= 0:
+        replacement = marker
+    else:
+        # 保留首尾，讓 profile／記憶的第一筆與最新摘要通常都還能被看見。
+        left = max(1, keep // 2)
+        right = max(1, keep - left)
+        replacement = body[:left] + marker + body[-right:]
+    return prompt[:start] + replacement + prompt[end:]
+
+
+def _trim_structured_prompt(prompt: str, token_budget: int) -> str:
+    """先縮動態區段；只有固定規則本身超限才交給一般 head/tail fallback。"""
+    if estimate_token_count([{"role": "system", "content": prompt}]) <= token_budget:
+        return prompt
+    working = prompt
+    for name in ("summary", "memory", "profile"):
+        sections = _structured_prompt_sections(working)
+        bounds = sections.get(name)
+        if bounds is None:
+            continue
+        start, end = bounds
+        body_length = end - start
+        low, high = 0, body_length
+        while low < high:
+            middle = (low + high + 1) // 2
+            candidate = _replace_prompt_section(working, start, end, middle)
+            if estimate_token_count([{"role": "system", "content": candidate}]) <= token_budget:
+                low = middle
             else:
-                try:
-                    p_val = float(p_val)  # type: ignore[assignment]
-                except (ValueError, TypeError):
-                    pass
-            args[p_name] = p_val
-        xml_tool_calls.append({"name": func_name, "arguments": args})
+                high = middle - 1
+        working = _replace_prompt_section(working, start, end, low)
+        if estimate_token_count([{"role": "system", "content": working}]) <= token_budget:
+            return working
+    return working
 
-    # 移除 XML 區塊，留下純文字作為回覆
-    cleaned = re.sub(
-        r"<tool_call>.*?</tool_call>",
-        "",
-        content_text,
-        flags=re.DOTALL | re.IGNORECASE,
-    ).strip()
 
-    return xml_tool_calls, cleaned
+def build_chat_context(prompt: str, history: list[dict], user_text: str, budget: int = CHAT_CONTEXT_TOKEN_BUDGET) -> list[dict]:
+    """保留本輪輸入，從最新已完成對話往前納入，固定總 token 預算。"""
+    system = {"role": "system", "content": prompt}
+    user = {"role": "user", "content": user_text}
+    if estimate_token_count([system]) > budget // 2:
+        system["content"] = _trim_structured_prompt(prompt, budget // 2)
+    if estimate_token_count([system]) > budget // 2:
+        source = system["content"]
+        low, high = 0, len(source) // 2
+        while low < high:
+            middle = (low + high + 1) // 2
+            system["content"] = source[:middle] + "\n…\n" + source[-middle:]
+            if estimate_token_count([system]) <= budget // 2:
+                low = middle
+            else:
+                high = middle - 1
+        system["content"] = source[:low] + "\n…\n" + source[-low:] if low else ""
+    if estimate_token_count([system, user]) > budget:
+        low, high = 0, len(user_text)
+        while low < high:
+            middle = (low + high + 1) // 2
+            user["content"] = user_text[:middle]
+            if estimate_token_count([system, user]) <= budget:
+                low = middle
+            else:
+                high = middle - 1
+        user["content"] = user_text[:low]
+    selected: list[dict] = []
+    for item in reversed(history[-16:]):
+        if item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
+            continue
+        dialogue_item = {"role": item["role"], "content": item["content"]}
+        if estimate_token_count([system, dialogue_item, *selected, user]) > budget:
+            break
+        selected.insert(0, dialogue_item)
+    return [system, *selected, user]
+
+
+def retained_prompt_ranges(original: str, actual: str) -> list[list[int]]:
+    """對應 build_chat_context 的裁切，保留原始 system 字元來源區間。"""
+    if original == actual:
+        return [[0, len(original)]]
+    if not actual:
+        return []
+    marker = "\n…\n"
+    size = (len(actual) - len(marker)) // 2
+    if size > 0 and actual == original[:size] + marker + original[-size:]:
+        return [[0, size], [len(original) - size, len(original)]]
+    # 區段裁切會插入自己的 marker；用相同片段比對保留來源範圍，供記憶 evidence locator 使用。
+    ranges = []
+    for tag, start, end, actual_start, actual_end in SequenceMatcher(
+        None, original, actual, autojunk=False,
+    ).get_opcodes():
+        if tag == "equal" and end > start:
+            ranges.append([start, end])
+    return ranges
 
 
 # ============================================================
@@ -106,10 +179,11 @@ def parse_xml_tool_calls(content_text: str) -> tuple[list[dict], str]:
 async def stream_final_text(messages: list, websocket: WebSocket) -> str:
     """使用 OpenAI 相容串流，將 token 即時轉發給前端。"""
     stream = await chat_create_with_fallback(
-        model=MODEL_NAME,
+        model=CHAT_MODEL_NAME,
+        role="chat",
         messages=messages,
         temperature=0.85,
-        extra_body=EXTRA_BODY,
+        extra_body=no_thinking_extra_body(CHAT_PROVIDER),
         stream=True,
     )
 
@@ -127,210 +201,110 @@ async def stream_final_text(messages: list, websocket: WebSocket) -> str:
 
 
 # ============================================================
-# Agent A：JPAF 人格對話串流
+# AI Chat：純文字回覆
 # ============================================================
-async def stream_agent_a(messages: list, websocket: WebSocket) -> tuple[str, dict | None, dict | None]:
-    """
-    Agent A 串流呼叫：產生角色對話 + JPAF 狀態。
-    回傳 (cleaned_text, jpaf_state_dict_or_None, emotion_state_dict_or_None)。
-    串流時即時過濾 <thinking>、<jpaf_state>、<emotion_state> 標籤，只送對話文字到前端。
-    """
-    stream = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        temperature=0.85,
-        extra_body=EXTRA_BODY,
-        stream=True,
-    )
+class _VisibleTextFilter:
+    """跨串流 chunk 移除 thinking 與舊狀態標籤。"""
 
-    all_chunks: list[str] = []       # 完整原始文字（含標籤）
-    visible_buffer: list[str] = []   # 可能需要送出的文字暫存
-    inside_hidden_tag: bool = False   # 是否在隱藏標籤內
-    hidden_tag_name: str = ""         # 當前隱藏標籤名稱
+    def __init__(self) -> None:
+        self.pending = ""
+        self.hidden: str | None = None
 
-    _HIDDEN_OPEN_TAGS = {"<thinking>", "<think>", "<thought>", "<jpaf_state>", "<emotion_state>"}
-    _HIDDEN_CLOSE_MAP = {
-        "thinking": "</thinking>",
-        "think": "</think>",
-        "thought": "</thought>",
-        "jpaf_state": "</jpaf_state>",
-        "emotion_state": "</emotion_state>",
-    }
+    def feed(self, piece: str) -> str:
+        self.pending += piece
+        visible: list[str] = []
+        while self.pending:
+            marker = self.pending.find("<")
+            if marker < 0:
+                if self.hidden is None:
+                    visible.append(self.pending)
+                self.pending = ""
+                break
+            if marker:
+                if self.hidden is None:
+                    visible.append(self.pending[:marker])
+                self.pending = self.pending[marker:]
+            end = self.pending.find(">")
+            if end < 0:
+                break
+            tag = self.pending[:end + 1]
+            self.pending = self.pending[end + 1:]
+            opening = re.fullmatch(r"<([a-z_]+_state|think)>", tag, re.I)
+            closing = re.fullmatch(r"</([a-z_]+_state|think)>", tag, re.I)
+            if opening and self.hidden is None:
+                self.hidden = opening.group(1).lower()
+            elif closing and self.hidden == closing.group(1).lower():
+                self.hidden = None
+            elif self.hidden is None:
+                visible.append(tag)
+        return "".join(visible)
 
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        piece = getattr(delta, "content", None)
-        if not piece:
-            continue
-
-        all_chunks.append(piece)
-
-        # 簡易狀態機：偵測隱藏標籤的開/關
-        if inside_hidden_tag:
-            # 在隱藏標籤內，檢查是否結束
-            close_tag = _HIDDEN_CLOSE_MAP.get(hidden_tag_name, "")
-            # 不送出任何內容
-            # 用累積的全文來檢查結束標籤
-            full_so_far = "".join(all_chunks)
-            if close_tag and close_tag in full_so_far.split(f"<{hidden_tag_name}>")[-1]:
-                inside_hidden_tag = False
-                hidden_tag_name = ""
-        else:
-            # 不在隱藏標籤內，檢查是否有開始標籤
-            combined = "".join(visible_buffer) + piece
-            tag_found = False
-            for open_tag in _HIDDEN_OPEN_TAGS:
-                if open_tag in combined:
-                    # 送出標籤之前的文字
-                    before = combined.split(open_tag)[0]
-                    if before.strip():
-                        await websocket.send_json(
-                            {"type": "text_stream", "content": before}
-                        )
-                    visible_buffer = []
-                    inside_hidden_tag = True
-                    hidden_tag_name = open_tag[1:-1]  # 去掉 < >
-                    tag_found = True
-                    break
-
-            if not tag_found:
-                # 檢查 piece 是否可能是標籤的開頭片段（如 "<thin"）
-                if "<" in piece and not piece.endswith(">"):
-                    visible_buffer.append(piece)
-                else:
-                    # 安全地送出
-                    if visible_buffer:
-                        buffered = "".join(visible_buffer)
-                        visible_buffer = []
-                        await websocket.send_json(
-                            {"type": "text_stream", "content": buffered + piece}
-                        )
-                    else:
-                        await websocket.send_json(
-                            {"type": "text_stream", "content": piece}
-                        )
-
-    # 送出 buffer 中剩餘的文字
-    if visible_buffer and not inside_hidden_tag:
-        remaining = "".join(visible_buffer)
-        if remaining.strip():
-            await websocket.send_json(
-                {"type": "text_stream", "content": remaining}
-            )
-
-    # 從完整原始文字提取 jpaf_state 和乾淨對話
-    raw_text = "".join(all_chunks).strip()
-    jpaf_state = extract_jpaf_state(raw_text)
-    emotion_state = extract_emotion_state(raw_text)
-    clean_text = strip_jpaf_tags(strip_thinking(raw_text))
-
-    return clean_text, jpaf_state, emotion_state
+    def finish(self) -> str:
+        if self.hidden is not None:
+            return ""
+        tail, self.pending = self.pending, ""
+        return tail if "<" not in tail else ""
 
 
-# ============================================================
-# Agent A：JPAF Buffer 模式（不即時串流文字到前端）
-# ============================================================
-async def collect_agent_a(messages: list) -> tuple[str, dict | None, dict | None]:
-    """
-    Agent A buffer 模式：收集完整回覆後解析 JPAF 狀態，不即時送出文字到前端。
-    用於等 A+B 都完成後再一起送的同步模式。
-    回傳 (cleaned_text, jpaf_state_dict_or_None, emotion_state_dict_or_None)。
-    """
-    stream = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        temperature=0.85,
-        extra_body=EXTRA_BODY,
-        stream=True,
-    )
-
+async def stream_agent_a(messages: list, send_chunk: Callable[[str], Awaitable[None]]) -> str:
+    """安全地逐段轉送 Chat 可見文字，完整結果供歷史與 TTS 使用。"""
+    started = time.monotonic()
+    diagnostic = {"configured_model": CHAT_MODEL_NAME, "model": None, "usage": None,
+                  "finish_reason": None, "error": None}
+    stream = None
     chunks: list[str] = []
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        piece = getattr(delta, "content", None)
-        if piece:
-            chunks.append(piece)
-
-    raw_text = "".join(chunks).strip()
-    jpaf_state = extract_jpaf_state(raw_text)
-    emotion_state = extract_emotion_state(raw_text)
-    clean_text = strip_jpaf_tags(strip_thinking(raw_text))
-
-    return clean_text, jpaf_state, emotion_state
-
-
-# ============================================================
-# Agent B-1：Expression Intent
-# ============================================================
-async def call_expression_agent(messages: list, model_name: str = "Hiyori") -> object:
-    """
-    Expression Agent 非串流呼叫：輸出 JSON intent。
-    第一版保留 model_name 介面，但暫時不做 model-specific tool 綁定。
-    """
-    del model_name
-    response = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        temperature=0.4,
-        extra_body=NO_THINKING_EXTRA_BODY,
-        max_tokens=600,
-    )
-    return response
-
-
-async def call_live2d_agent(messages: list, model_name: str = "Hiyori") -> object:
-    """已棄用，保留向後相容。請改用 call_expression_agent。"""
-    return await call_expression_agent(messages, model_name=model_name)
-
-
-# ============================================================
-# Agent B-2：記憶管理
-# ============================================================
-async def call_memory_agent(messages: list, model_name: str = "Hiyori") -> object:
-    """
-    Memory Agent 非串流呼叫：判斷是否需要記憶操作。
-    回傳原始 API response。
-    """
-    from domain.tools import get_memory_tools
-
-    response = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        tools=get_memory_tools(model_name),
-        tool_choice="auto",
-        temperature=0.3,
-        extra_body=NO_THINKING_EXTRA_BODY,
-        max_tokens=400,
-    )
-    return response
+    visible_filter = _VisibleTextFilter()
+    try:
+        stream = await chat_create_with_fallback(
+            model=CHAT_MODEL_NAME, role="chat", messages=messages,
+            temperature=0.85, extra_body=no_thinking_extra_body(CHAT_PROVIDER),
+            max_tokens=400, stream=True,
+        )
+        async for chunk in stream:
+            diagnostic["model"] = getattr(chunk, "model", None) or diagnostic["model"]
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                diagnostic["usage"] = usage.model_dump()
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            diagnostic["finish_reason"] = getattr(choice, "finish_reason", None) or diagnostic["finish_reason"]
+            piece = getattr(choice.delta, "content", None)
+            if piece:
+                visible = visible_filter.feed(piece)
+                if visible:
+                    chunks.append(visible)
+                    await send_chunk(visible)
+        tail = visible_filter.finish()
+        if tail:
+            chunks.append(tail)
+            await send_chunk(tail)
+        return "".join(chunks).strip()
+    except BaseException as exc:
+        diagnostic["error"] = type(exc).__name__
+        raise
+    finally:
+        diagnostic["duration_sec"] = round(time.monotonic() - started, 4)
+        diagnostic["output_token_estimate"] = estimate_token_count([
+            {"role": "assistant", "content": "".join(chunks)}])
+        trace("chat", diagnostic)
+        if stream is not None and hasattr(stream, "close"):
+            await stream.close()
 
 
-# 向後相容別名
-async def call_agent_b(messages: list) -> object:
-    """已棄用，保留向後相容。請改用 call_live2d_agent / call_memory_agent。"""
-    from domain.tools import tools
+async def collect_agent_a(messages: list) -> str:
+    """保留既有收集介面供隔離測試與非串流呼叫。"""
+    async def discard(_piece: str) -> None:
+        pass
 
-    response = await chat_create_with_fallback(
-        model=MODEL_NAME,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto",
-        temperature=0.5,
-        extra_body=EXTRA_BODY,
-        max_tokens=512,
-    )
-    return response
+    return await stream_agent_a(messages, discard)
 
 
 # ============================================================
 # TTS 合成轉發
 # ============================================================
 async def synthesize_and_send_voice(
-    websocket: WebSocket, text: str, speaking_rate: float
+    websocket: WebSocket, text: str, speaking_rate: float, turn_id: str | None = None, send_func=None
 ) -> None:
     """背景執行 TTS，避免阻塞文字串流完成事件。"""
     from tts_service import get_tts_service  # 延遲匯入，避免啟動時強制 TTS 初始化
@@ -344,14 +318,15 @@ async def synthesize_and_send_voice(
             text=text, speaking_rate=speaking_rate
         )
         if tts_result:
-            await websocket.send_json(
-                {
+            payload = {
                     "type": "voice",
                     "audio": tts_result["audio_base64"],
                     "durationMs": tts_result["duration_ms"],
                     "format": tts_result["format"],
                 }
-            )
+            if turn_id:
+                payload["turn_id"] = turn_id
+            await (send_func or websocket.send_json)(payload)
     except Exception as tts_error:
         print(f"[TTS] 合成錯誤（不影響文字回覆）: {tts_error}")
 
@@ -359,14 +334,15 @@ async def synthesize_and_send_voice(
 # ============================================================
 # Context 壓縮
 # ============================================================
-async def compress_context(messages: list, websocket: WebSocket) -> list:
+async def compress_context(messages: list, websocket: WebSocket, session_id: str | None = None, send_func=None) -> list:
     """
     壓縮對話上下文。
     保留最近 COMPRESS_KEEP_RECENT 條 messages，
-    將較舊的部分呼叫 LLM 產生摘要，寫入 memory.md。
+    將較舊的部分呼叫 Chat LLM 產生摘要，寫入短期 session summary。
     """
     # 通知前端：壓縮開始
-    await websocket.send_json({"type": "compressing"})
+    send = send_func or websocket.send_json
+    await send({"type": "compressing"})
 
     try:
         # 一般情況下 messages[0] 是 system prompt；若不是，則完整視為 history
@@ -379,7 +355,7 @@ async def compress_context(messages: list, websocket: WebSocket) -> list:
 
         if len(history) <= COMPRESS_KEEP_RECENT:
             # 不需要壓縮
-            await websocket.send_json({"type": "compress_done"})
+            await send({"type": "compress_done"})
             return messages
 
         # 分離：要壓縮的舊訊息 vs 要保留的近期訊息
@@ -395,7 +371,8 @@ async def compress_context(messages: list, websocket: WebSocket) -> list:
         )
 
         summary_response = await chat_create_with_fallback(
-            model=MODEL_NAME,
+            model=CHAT_MODEL_NAME,
+            role="chat",
             messages=[
                 {
                     "role": "system",
@@ -412,8 +389,8 @@ async def compress_context(messages: list, websocket: WebSocket) -> list:
             else "（摘要生成失敗）"
         )
 
-        # 寫入 memory.md
-        append_memory_note(f"[對話摘要] {summary_text}")
+        if session_id:
+            save_session_summary(session_id, summary_text)
 
         # 重建 messages：system prompt + 摘要上下文 + 近期訊息
         compressed_messages: list = []
@@ -437,6 +414,6 @@ async def compress_context(messages: list, websocket: WebSocket) -> list:
         compressed_messages = messages  # 壓縮失敗時保留原始 messages
 
     # 通知前端：壓縮完成
-    await websocket.send_json({"type": "compress_done"})
+    await send({"type": "compress_done"})
 
     return compressed_messages

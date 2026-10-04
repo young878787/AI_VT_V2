@@ -1,162 +1,111 @@
 """
-記憶持久化：user_profile.json、memory.md、sessions/ 的 File I/O。
-包含 In-Memory Cache 以減少磁碟讀取次數。
+短期 Chat session、Session Summary 與 Emotion State 的檔案持久化。
+長期記憶統一由 PostgreSQL MemoryRuntime 管理。
 """
 import os
 import json
-from datetime import datetime
+import tempfile
 
-from core.config import (
-    USER_PROFILE_PATH,
-    MEMORY_MD_PATH,
-    CHAT_SESSION_DIR,
-    MEMORY_DIR,
-    CHAT_PERSISTENCE_MAX_MESSAGES,
-    JPAF_STATE_PATH,
-)
+from core.config import CHAT_SESSION_DIR, CHAT_PERSISTENCE_MAX_MESSAGES, EMOTION_STATE_DIR
 from core.utils import get_msg_field
+from core.utils import normalize_session_id
+from domain.emotion_state import validate_emotion_state
+from domain.memory_source import MEMORY_SOURCE_FIELD, read_memory_source
 
 # ============================================================
-# In-Memory Cache（減少每輪對話的磁碟 I/O）
-# ============================================================
-_profile_cache: dict | None = None
-_memory_cache: str | None = None
-_jpaf_state_cache: dict | None = None
-
-
-# ============================================================
-# User Profile
-# ============================================================
-def load_user_profile() -> dict:
-    """讀取 user_profile.json（優先從 cache，減少磁碟 I/O）"""
-    global _profile_cache
-    if _profile_cache is not None:
-        return _profile_cache
+def _atomic_write(path: str, content: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary_path = None
     try:
-        with open(USER_PROFILE_PATH, "r", encoding="utf-8") as f:
-            _profile_cache = json.load(f)
-            return _profile_cache
-    except (FileNotFoundError, json.JSONDecodeError):
-        _profile_cache = {
-            "updated_at": "",
-            "core_traits": [],
-            "communication_style": "",
-            "dislikes": [],
-            "recent_interests": [],
-            "custom_notes": [],
-        }
-        return _profile_cache
-
-
-def save_user_profile(profile: dict) -> None:
-    """寫入 user_profile.json，同步更新 cache"""
-    global _profile_cache
-    profile["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(USER_PROFILE_PATH, "w", encoding="utf-8") as f:
-        json.dump(profile, f, ensure_ascii=False, indent=2)
-    _profile_cache = profile
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(path), delete=False) as file:
+            temporary_path = file.name
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 # ============================================================
-# Memory Notes（memory.md）
+# Session Emotion State
 # ============================================================
-def load_memory_notes(max_lines: int = 50) -> str:
-    """讀取 memory.md 最後 N 行（優先從 cache，減少磁碟 I/O）"""
-    global _memory_cache
-    if _memory_cache is not None:
-        return _memory_cache
+def _emotion_state_path(session_id: str) -> str:
+    normalized = normalize_session_id(session_id)
+    if not normalized or normalized != session_id:
+        raise ValueError("無效的 session_id")
+    return os.path.join(EMOTION_STATE_DIR, f"{normalized}.json")
+
+
+def load_session_emotion_state(session_id: str) -> dict | None:
+    """缺檔或內容不符合契約時回 None，不載入舊版 JPAF 資料。"""
     try:
-        with open(MEMORY_MD_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        # 跳過標題行，取最後 max_lines 條有效內容
-        content_lines = [
-            l.strip() for l in lines if l.strip() and not l.strip().startswith("# ")
-        ]
-        recent = (
-            content_lines[-max_lines:]
-            if len(content_lines) > max_lines
-            else content_lines
-        )
-        _memory_cache = "\n".join(recent)
-        return _memory_cache
-    except FileNotFoundError:
-        _memory_cache = ""
-        return _memory_cache
-
-
-def append_memory_note(note: str) -> None:
-    """追加一條記憶到 memory.md，並使 cache 失效（下次重新讀取）"""
-    global _memory_cache
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    date_prefix = datetime.now().strftime("[%m/%d %H:%M]")
-    with open(MEMORY_MD_PATH, "a", encoding="utf-8") as f:
-        f.write(f"\n- {date_prefix} {note}")
-    _memory_cache = None  # 使 cache 失效，下次重新讀取最新內容
-
-
-# ============================================================
-# JPAF State（jpaf_state.json）
-# ============================================================
-def load_jpaf_state() -> dict | None:
-    """讀取 jpaf_state.json（優先從 cache）。回傳 None 表示尚未建立。"""
-    global _jpaf_state_cache
-    if _jpaf_state_cache is not None:
-        return _jpaf_state_cache
-    try:
-        with open(JPAF_STATE_PATH, "r", encoding="utf-8") as f:
-            _jpaf_state_cache = json.load(f)
-            return _jpaf_state_cache
+        with open(_emotion_state_path(session_id), "r", encoding="utf-8") as f:
+            return validate_emotion_state(json.load(f))
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
 
-def save_jpaf_state(state: dict) -> None:
-    """寫入 jpaf_state.json，同步更新 cache。"""
-    global _jpaf_state_cache
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(JPAF_STATE_PATH, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    _jpaf_state_cache = state
+def save_session_emotion_state(session_id: str, state: dict) -> None:
+    """先驗證，再以同目錄暫存檔原子替換 session state。"""
+    validated = validate_emotion_state(state)
+    if validated is None:
+        raise ValueError("無效的 Emotion State")
+    path = _emotion_state_path(session_id)
+    os.makedirs(EMOTION_STATE_DIR, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=EMOTION_STATE_DIR, delete=False
+        ) as file:
+            temporary_path = file.name
+            json.dump(validated, file, ensure_ascii=False, indent=2)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
-# ============================================================
-# 還原（Reset）
-# ============================================================
-def reset_user_profile() -> None:
-    """還原 user_profile.json 為預設值，同步清除 cache。"""
-    default_profile = {
-        "updated_at": "",
-        "core_traits": [],
-        "communication_style": "",
-        "dislikes": [],
-        "recent_interests": [],
-        "custom_notes": [],
-    }
-    save_user_profile(default_profile)
+def reset_session_emotion_state(session_id: str) -> None:
+    try:
+        os.unlink(_emotion_state_path(session_id))
+    except FileNotFoundError:
+        pass
 
 
-def reset_memory_notes() -> None:
-    """清空 memory.md，同步清除 cache。"""
-    global _memory_cache
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    with open(MEMORY_MD_PATH, "w", encoding="utf-8") as f:
-        f.write("# Memory Notes\n")
-    _memory_cache = None
+def _session_summary_path(session_id: str) -> str:
+    normalized = normalize_session_id(session_id)
+    if not normalized or normalized != session_id:
+        raise ValueError("無效的 session_id")
+    return os.path.join(CHAT_SESSION_DIR, f"{normalized}.summary.json")
 
 
-def reset_jpaf_state() -> None:
-    """還原 jpaf_state.json 為預設值（預設 persona），同步清除 cache。"""
-    from domain.jpaf import JPAFSession
-    default_session = JPAFSession()
-    save_jpaf_state(default_session.to_dict())
+def load_session_summary(session_id: str) -> str:
+    try:
+        with open(_session_summary_path(session_id), "r", encoding="utf-8") as file:
+            value = json.load(file)
+        return value.get("summary", "") if isinstance(value, dict) else ""
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+
+
+def save_session_summary(session_id: str, summary: str) -> None:
+    _atomic_write(_session_summary_path(session_id), json.dumps({"summary": summary[:4000]}, ensure_ascii=False))
+
+
+def reset_session_summary(session_id: str) -> None:
+    try:
+        os.unlink(_session_summary_path(session_id))
+    except FileNotFoundError:
+        pass
 
 
 # ============================================================
 # Chat Sessions
 # ============================================================
 def to_persistable_messages(messages: list) -> list[dict]:
-    """只持久化 user/assistant 純文字，避免儲存動態 system prompt 與 tool 訊息。"""
+    """持久化可見文字；user 來源 metadata 僅在完整有效時保留。"""
     persisted: list[dict] = []
     for m in messages:
         role = get_msg_field(m, "role", "")
@@ -164,7 +113,12 @@ def to_persistable_messages(messages: list) -> list[dict]:
             continue
         content = get_msg_field(m, "content", "")
         if isinstance(content, str) and content:
-            persisted.append({"role": role, "content": content})
+            item = {"role": role, "content": content}
+            if role == "user" and read_memory_source(m) is not None:
+                item[MEMORY_SOURCE_FIELD] = dict(m[MEMORY_SOURCE_FIELD])
+            if role == "assistant" and m.get("status") == "interrupted":
+                item["status"] = "interrupted"
+            persisted.append(item)
 
     if len(persisted) > CHAT_PERSISTENCE_MAX_MESSAGES:
         persisted = persisted[-CHAT_PERSISTENCE_MAX_MESSAGES:]
@@ -186,7 +140,12 @@ def load_session_messages(session_id: str) -> list[dict]:
             role = item.get("role")
             content = item.get("content")
             if role in {"user", "assistant"} and isinstance(content, str) and content:
-                restored.append({"role": role, "content": content})
+                restored_item = {"role": role, "content": content}
+                if role == "user" and read_memory_source(item) is not None:
+                    restored_item[MEMORY_SOURCE_FIELD] = dict(item[MEMORY_SOURCE_FIELD])
+                if role == "assistant" and item.get("status") == "interrupted":
+                    restored_item["status"] = "interrupted"
+                restored.append(restored_item)
         return restored
     except FileNotFoundError:
         return []

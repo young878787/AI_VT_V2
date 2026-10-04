@@ -11,39 +11,15 @@ from core import prompt_logger
 
 
 class Task2NamingTests(unittest.TestCase):
-    def test_agent_b_prompts_uses_task2_surface_naming(self):
-        source = (BACKEND_ROOT / "domain" / "agent_b_prompts.py").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("【AI 角色的回覆】", source)
-        self.assertIn("emotion（主題情緒主軸）", source)
-        self.assertNotIn("agent_a_reply", source)
-        self.assertNotIn("agent_a_reply 的語氣", source)
-
-    def test_chat_ws_uses_chat_orchestrator_wording_consistently(self):
+    def test_chat_ws_only_uses_jev_decision_path(self):
         source = (BACKEND_ROOT / "api" / "routes" / "chat_ws.py").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("Chat Orchestrator", source)
-        self.assertIn(
-            "Chat Orchestrator: parallel Expression Agent + Memory Agent...",
-            source,
-        )
-        self.assertNotIn(
-            "Chat Orchestrator: parallel expression + memory...",
-            source,
-        )
-
-        legacy_labels = (
-            "Agent orchestration",
-            "Agent A",
-            "Agent B",
-        )
-        for legacy_label in legacy_labels:
-            with self.subTest(legacy_label=legacy_label):
-                self.assertNotIn(legacy_label, source)
+        self.assertIn("build_jev_questions", source)
+        self.assertEqual(source.count("await call_jev("), 1)
+        self.assertNotIn("EXPRESSION_DECIDER", source)
+        self.assertNotIn("call_expression_agent", source)
 
     def test_log_turn_accepts_dialogue_agent_output_keyword(self):
         original_log_dir = prompt_logger._LOG_DIR
@@ -60,7 +36,7 @@ class Task2NamingTests(unittest.TestCase):
                     system_prompt="system",
                     user_message="hello",
                     dialogue_agent_output="reply",
-                    tool_names=["set_ai_behavior"],
+                    tool_names=["process"],
                     output_tokens=12,
                 )
             finally:
@@ -70,9 +46,9 @@ class Task2NamingTests(unittest.TestCase):
             content = (temp_dir / "prompt.log").read_text(encoding="utf-8")
 
         self.assertIn("[DIALOGUE AGENT OUTPUT]", content)
-        self.assertIn("[EXPRESSION AGENT / MEMORY AGENT TOOL CALLS]", content)
+        self.assertIn("[MEMORY ROUTE]", content)
         self.assertNotIn("[TOOL CALLS]", content)
-        self.assertIn("set_ai_behavior", content)
+        self.assertIn("process", content)
         self.assertIn("reply", content)
 
 

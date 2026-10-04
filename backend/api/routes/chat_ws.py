@@ -1,799 +1,565 @@
-"""
-Chat WebSocket 端點（/ws/chat）：主對話迴圈。
-Chat Orchestrator 負責協調 Dialogue Agent、Expression Agent、Memory Agent。
-"""
+"""Chat WebSocket：JEV Emotion → 共用 state 的 Chat / JEV Action。"""
+
 import asyncio
-import inspect
+import hashlib
 import json
+import math
+import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from api.display_manager import broadcast_to_displays
 from core.config import (
-    AI_PROVIDER,
-    MODEL_NAME,
+    CHAT_PROVIDER,
+    CHAT_MODEL_NAME,
     CHAT_PERSISTENCE_ENABLED,
-    COMPRESS_TOKEN_THRESHOLD,
     COMPRESS_KEEP_RECENT,
+    CHAT_CONTEXT_TOKEN_BUDGET,
 )
+from core.prompt_logger import log_turn, reset_log, trace, trace_event, trace_turn, bind_trace_event
 from core.utils import normalize_session_id
-from domain.jpaf import JPAFSession
-from domain.agent_a_prompts import build_agent_a_prompt
-from domain.agent_b_prompts import build_live2d_prompt, build_memory_prompt
-from infrastructure.memory_store import (
-    load_user_profile,
-    load_memory_notes,
-    load_session_messages,
-    save_session_messages,
-    load_jpaf_state,
-    save_jpaf_state,
-    append_memory_note,
+from domain.agent_a_prompts import build_agent_a_prompt, build_turn_scope_hint
+from domain.emotion_state import EMOTION_FIELDS, resolve_emotion_state, NEUTRAL_EMOTION_STATE
+from domain.expression_intent_schema import (
+    ALLOWED_EMOTIONS,
+    ALLOWED_PERFORMANCE_MODES,
+    normalize_expression_intent,
 )
+from domain.input_event import normalize_chat_input
+from domain.chat_test_mode import resolve_test_mode
+from domain.memory_routing import instruction_policy, POLICY_VERSION
+from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
+from domain.jev_questions import (
+    BASE_EMOTION_CRITERIA,
+    CONFIDENCE_THRESHOLD,
+    JEV_DECISION_CRITERIA_VERSION,
+    build_action_questions,
+    build_jev_context,
+    build_jev_questions,
+    map_answers_to_intent,
+)
+from infrastructure.memory_store import (
+    load_session_emotion_state,
+    load_session_messages,
+    load_session_summary,
+    reset_session_emotion_state,
+    save_session_emotion_state,
+    save_session_messages,
+    reset_session_summary,
+)
+from infrastructure.typesafe_client import call_jev
 from services.chat_service import (
-    collect_agent_a,
-    call_expression_agent,
-    call_memory_agent,
+    stream_agent_a,
+    build_chat_context,
+    retained_prompt_ranges,
     compress_context,
     estimate_token_count,
     synthesize_and_send_voice,
 )
-from services.agent_tool_pipeline import (
-    EXPRESSION_AGENT_ALLOWED_TOOL_NAMES,
-    MEMORY_AGENT_ALLOWED_TOOL_NAMES,
-    extract_agent_tool_calls,
-    filter_tool_calls_for_pool,
-    get_meaningful_memory_tool_arguments,
-    summarize_tool_names,
-)
 from services.expression_compiler import compile_expression_plan
-from services.expression_intent_parser import parse_expression_intent
 from services.expression_legacy_renderer import render_legacy_behavior_payload
-from services.memory_service import execute_profile_update
-from api.display_manager import broadcast_to_displays
-from core.prompt_logger import log_turn, reset_log
-from domain.tools.schema_loader import normalize_model_name
+
 
 router = APIRouter()
 
 
-def _sanitize_behavior_number(args: dict, key: str) -> float | None:
-    value = args.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
-
-
-def _sanitize_optional_behavior_number(args: dict, key: str) -> float | None:
-    if key not in args:
-        return None
-    return _sanitize_behavior_number(args, key)
-
-
-def _sanitize_blink_control_arguments(args: dict) -> dict:
-    sanitized = {"action": args.get("action", "")}
-
-    for key in ("duration_sec", "interval_min", "interval_max"):
-        sanitized_value = _sanitize_optional_behavior_number(args, key)
-        if sanitized_value is not None:
-            sanitized[key] = sanitized_value
-
-    return sanitized
-
-
-def _has_complete_blink_interval_args(args: dict) -> bool:
-    if args.get("action") != "set_interval":
-        return True
-    if "interval_min" not in args or "interval_max" not in args:
-        return False
-    return args["interval_min"] <= args["interval_max"]
-
-
-def _sanitize_behavior_boolean(args: dict, key: str) -> bool | None:
-    value = args.get(key)
-    if not isinstance(value, bool):
-        return None
-    return value
-
-
-def _sanitize_set_ai_behavior_arguments(args: dict) -> dict:
-    sanitized: dict = {}
-
-    for key in (
-        "head_intensity",
-        "blush_level",
-        "eye_l_open",
-        "eye_r_open",
-        "duration_sec",
-        "mouth_form",
-        "brow_l_y",
-        "brow_r_y",
-        "brow_l_angle",
-        "brow_r_angle",
-        "brow_l_form",
-        "brow_r_form",
-        "speaking_rate",
-        "eye_l_smile",
-        "eye_r_smile",
-        "brow_l_x",
-        "brow_r_x",
-    ):
-        sanitized_value = _sanitize_behavior_number(args, key)
-        if sanitized_value is not None:
-            sanitized[key] = sanitized_value
-
-    eye_sync = _sanitize_behavior_boolean(args, "eye_sync")
-    if eye_sync is not None:
-        sanitized["eye_sync"] = eye_sync
-
-    return sanitized
-
-
-async def _maybe_await(result):
-    if inspect.isawaitable(result):
-        await result
-
-
-async def _execute_memory_tool_calls(
-    memory_calls: list[dict],
-    websocket: WebSocket,
-    broadcast_func,
-    execute_profile_update_fn,
-    append_memory_note_fn,
-    model_name: str = "Hiyori",
-) -> dict:
-    memory_calls = filter_tool_calls_for_pool(
-        memory_calls,
-        allowed_tool_names=MEMORY_AGENT_ALLOWED_TOOL_NAMES,
-        label="Memory Agent",
-    )
-
-    print(
-        "[Chat Orchestrator] "
-        f"memory_calls={len(memory_calls)}, names={summarize_tool_names(memory_calls)}"
-    )
-
-    filtered_memory_calls: list[dict] = []
-    for call in memory_calls:
-        fn_name = call["name"]
-        args = call["arguments"]
-
-        if fn_name == "update_user_profile":
-            meaningful_args = get_meaningful_memory_tool_arguments(fn_name, args, model_name=model_name)
-            if meaningful_args is None:
-                continue
-            action = meaningful_args["action"]
-            field = meaningful_args["field"]
-            value = meaningful_args["value"]
-            execute_profile_update_fn(action, field, value, model_name=model_name)
-            call["arguments"] = meaningful_args
-            filtered_memory_calls.append(call)
-            print(f"User profile 已更新 [{action}] {field}: {value}")
-
-        elif fn_name == "save_memory_note":
-            meaningful_args = get_meaningful_memory_tool_arguments(fn_name, args, model_name=model_name)
-            if meaningful_args is None:
-                continue
-            note_content = meaningful_args["content"]
-            append_memory_note_fn(note_content)
-            call["arguments"] = meaningful_args
-            filtered_memory_calls.append(call)
-            print(f"Memory note 已記錄: {note_content}")
-
-    memory_calls = filtered_memory_calls
-
+def _fallback_action_intent(previous_state: dict | None) -> dict:
+    """Action 失敗時延續可用的上一輪表情；首輪使用 neutral。"""
+    if not isinstance(previous_state, dict):
+        return {"emotion": "neutral", "performance_mode": "smile"}
     return {
-        "memory_calls": memory_calls,
+        "emotion": previous_state.get("emotion", "neutral"),
+        "performance_mode": previous_state.get("performanceMode", "smile"),
     }
+
+
+def _choice_fallback_reason(answer: object, allowed: set[str]) -> str:
+    if not isinstance(answer, dict):
+        return "missing_answer"
+    choice = answer.get("choice")
+    if not isinstance(choice, str) or choice not in allowed:
+        return "invalid_choice"
+    confidence = answer.get("confidence")
+    if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
+            or not math.isfinite(confidence)):
+        return "invalid_confidence"
+    if confidence < CONFIDENCE_THRESHOLD:
+        return "low_confidence"
+    return "none"
+
+
+def _record_choice_debug(debug: dict, answers: object, answer_key: str, prefix: str, allowed: set[str]) -> None:
+    answer = answers.get(answer_key) if isinstance(answers, dict) else None
+    debug[f"jev{prefix}Choice"] = "none"
+    if not isinstance(answer, dict):
+        return
+    choice = answer.get("choice")
+    if isinstance(choice, str) and choice in allowed:
+        debug[f"jev{prefix}Choice"] = choice
+    confidence = answer.get("confidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and math.isfinite(confidence):
+        debug[f"jev{prefix}Confidence"] = float(confidence)
+    probabilities = answer.get("probabilities")
+    if isinstance(probabilities, dict):
+        for option in sorted(allowed):
+            probability = probabilities.get(option)
+            if (isinstance(probability, (int, float)) and not isinstance(probability, bool)
+                    and math.isfinite(probability) and 0.0 <= probability <= 1.0):
+                debug[f"jev{prefix}Probability_{option}"] = float(probability)
+
+
+def _action_decision_debug(answers: object, previous_state: dict | None, history_count: int) -> dict:
+    previous_emotion = previous_state.get("emotion") if isinstance(previous_state, dict) else None
+    debug = {
+        "jevDecisionCriteriaVersion": JEV_DECISION_CRITERIA_VERSION,
+        "jevDecisionHistoryMessages": history_count,
+        "jevDecisionPreviousEmotion": (
+            previous_emotion if isinstance(previous_emotion, str) and previous_emotion in ALLOWED_EMOTIONS else "none"
+        ),
+    }
+    _record_choice_debug(debug, answers, "base_emotion", "BaseEmotion", set(BASE_EMOTION_CRITERIA))
+    _record_choice_debug(
+        debug, answers, "interaction_attitude", "InteractionAttitude", ALLOWED_PERFORMANCE_MODES,
+    )
+    return debug
+
+
+async def _produce_and_send_action_plan(
+    websocket: WebSocket,
+    model_name: str,
+    answers: object,
+    previous_expression_state: dict | None,
+    history_count: int,
+    question_hash: str,
+    turn_id: str | None = None,
+    legacy_payloads: bool = False,
+    send_func=None,
+) -> dict:
+    """將單次 JEV 回應的兩個 Choice 編譯為表情 plan。"""
+    base_answer = answers.get("base_emotion") if isinstance(answers, dict) else None
+    attitude_answer = answers.get("interaction_attitude") if isinstance(answers, dict) else None
+    base_fallback_reason = _choice_fallback_reason(base_answer, set(BASE_EMOTION_CRITERIA))
+    attitude_fallback_reason = _choice_fallback_reason(attitude_answer, ALLOWED_PERFORMANCE_MODES)
+    fallback = _fallback_action_intent(previous_expression_state)
+    try:
+        intent = map_answers_to_intent(answers if isinstance(answers, dict) else {})
+    except Exception as exc:
+        print(f"[JEV Decision] 表演欄位解析失敗，使用 fallback: {exc}")
+        intent = {}
+        base_fallback_reason = "mapping_error"
+        attitude_fallback_reason = "mapping_error"
+    if "emotion" not in intent:
+        intent["emotion"] = fallback["emotion"]
+    if "performance_mode" not in intent:
+        intent["performance_mode"] = fallback["performance_mode"] if not isinstance(answers, dict) else "smile"
+
+    intent["speaking_rate"] = {
+        "happy": 1.25, "playful": 1.25, "teasing": 1.25,
+        "sad": 0.8, "gloomy": 0.8, "shy": 0.95, "surprised": 1.15,
+    }.get(intent.get("emotion"), 1.0)
+    try:
+        normalized = normalize_expression_intent(intent)
+        plan = compile_expression_plan(
+            normalized,
+            model_name=model_name,
+            previous_state=previous_expression_state,
+        )
+    except Exception as exc:
+        print(f"[JEV Action] compiler fallback 至 neutral: {exc}")
+        normalized = normalize_expression_intent({"emotion": "neutral", "performance_mode": "smile"})
+        plan = compile_expression_plan(normalized, model_name=model_name, previous_state=None)
+        base_fallback_reason = "compiler_error"
+        attitude_fallback_reason = "compiler_error"
+    decision_debug = _action_decision_debug(
+        answers, previous_expression_state, history_count,
+    )
+    fallback_count = sum(reason != "none" for reason in (base_fallback_reason, attitude_fallback_reason))
+    decision_debug["jevDecisionSource"] = (
+        "jev" if fallback_count == 0 else "fallback" if fallback_count == 2 else "partial_fallback"
+    )
+    decision_debug["jevBaseEmotionFallbackReason"] = base_fallback_reason
+    decision_debug["jevInteractionAttitudeFallbackReason"] = attitude_fallback_reason
+    decision_debug["jevResolvedEmotion"] = plan["debug"]["intentEmotion"]
+    decision_debug["jevResolvedAttitude"] = plan["debug"]["intentPerformanceMode"]
+    decision_debug["jevDecisionQuestionHash"] = question_hash
+    expected_action_fields = set(build_action_questions())
+    missing_action_fields = sorted(expected_action_fields - set(answers)) if isinstance(answers, dict) else sorted(expected_action_fields)
+    decision_debug["jevDecisionMissingActionFields"] = ",".join(missing_action_fields) or "none"
+    plan["debug"].update(decision_debug)
+    print("[JEV Decision] " + json.dumps(decision_debug, ensure_ascii=False), flush=True)
+    render = render_legacy_behavior_payload(plan) if legacy_payloads else None
+    if turn_id:
+        plan = {**plan, "turn_id": turn_id}
+    send = send_func or websocket.send_json
+    await send(plan)
+    await broadcast_to_displays(plan)
+    if render:
+        for blink in render["blink_payloads"]:
+            await send(blink)
+            await broadcast_to_displays(blink)
+        await send(render["behavior_payload"])
+        await broadcast_to_displays(render["behavior_payload"])
+    return {"plan": plan, "speaking_rate": plan.get("speakingRate", 1.0)}
 
 
 @router.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-
-    messages: list = []
-    current_session_id: str | None = None
+    app = getattr(websocket, "app", None)
+    memory_runtime = getattr(getattr(app, "state", None), "memory_runtime", None)
+    if memory_runtime is None:
+        raise RuntimeError("MemoryRuntime 尚未啟動")
+    messages: list[dict] = []
+    session_id: str | None = None
+    emotion_state: dict | None = None
+    expression_state: dict | None = None
+    current_action: dict | None = None
+    version = 0
+    active_turn_id: str | None = None
+    active_task: asyncio.Task | None = None
+    active_turn_text: str | None = None
+    active_turn_message: dict | None = None
+    active_turn_partial: str = ""
+    active_turn_committed = False
+    active_event_id = None
+    active_memory_routed = False
+    short_term_enabled = True
     tts_tasks: set[asyncio.Task] = set()
-    last_behavior_payload: dict | None = None
-    last_expression_carry_state: dict | None = None
+    send_lock = asyncio.Lock()
 
-    # 載入或初始化 JPAF session
-    jpaf_data = load_jpaf_state()
-    jpaf_session = (
-        JPAFSession.from_dict(jpaf_data) if jpaf_data else JPAFSession()
-    )
+    async def send(payload: dict) -> None:
+        async with send_lock:
+            await websocket.send_json(payload)
 
-    # Send initial JPAF state to frontend
-    await websocket.send_json({
-        "type": "jpaf_update",
-        "persona": jpaf_session.current_persona,
-        "dominant": jpaf_session.dominant,
-        "auxiliary": jpaf_session.auxiliary,
-        "baseWeights": jpaf_session.base_weights,
-        "turnCount": jpaf_session.turn_count,
-    })
+    async def cancel_active(finalize_memory: bool = True) -> None:
+        nonlocal active_task, active_turn_id, active_turn_text, active_turn_message, active_turn_partial
+        nonlocal active_turn_committed, active_event_id, active_memory_routed, messages
+        if active_task is not None and not active_task.done():
+            interrupted_turn_id = active_turn_id
+            interrupted_text = active_turn_text
+            was_committed = active_turn_committed
+            interrupted_event_id = active_event_id
+            memory_routed = active_memory_routed
+            active_task.cancel()
+            await asyncio.gather(active_task, return_exceptions=True)
+            if interrupted_turn_id:
+                partial = active_turn_partial if not was_committed else ""
+                if short_term_enabled and interrupted_text and not was_committed:
+                    messages.append(dict(active_turn_message) if active_turn_message else {
+                        "role": "user", "content": interrupted_text,
+                    })
+                if short_term_enabled and partial:
+                    messages.append({
+                        "role": "assistant", "content": partial, "status": "interrupted",
+                    })
+                if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id and interrupted_text and not was_committed:
+                    save_session_messages(session_id, messages)
+                if finalize_memory and interrupted_event_id and not memory_routed and interrupted_text:
+                    memory_runtime.route_background(
+                        interrupted_event_id, interrupted_text, None, list(messages),
+                    )
+                await send({
+                    "type": "turn_cancelled",
+                    "turn_id": interrupted_turn_id,
+                    "status": "cancelled" if was_committed else "interrupted",
+                    "partial_text": partial,
+                })
+        active_task = None
+        active_turn_id = None
+        active_turn_text = None
+        active_turn_message = None
+        active_turn_partial = ""
+        active_turn_committed = False
+        active_event_id = None
+        active_memory_routed = False
+        for task in tts_tasks:
+            task.cancel()
+        tts_tasks.clear()
+
+    async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool,
+                       event_id=None) -> None:
+        nonlocal messages, emotion_state, expression_state, version, active_turn_partial
+        nonlocal active_turn_committed, active_memory_routed
+        action_task: asyncio.Task | None = None
+        try:
+            context = build_jev_context(
+                text,
+                snapshot["messages"],
+                snapshot["emotion"],
+                snapshot["expression"],
+                snapshot["memory"],
+                snapshot["action"],
+            )
+            questions = build_jev_questions()
+            question_hash = hashlib.sha256(
+                json.dumps(questions, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:12]
+            try:
+                jev_started = time.monotonic()
+                answers = await call_jev(context, questions)
+            except Exception as exc:
+                print(f"[JEV Decision] 呼叫失敗，使用 fallback: {exc}")
+                answers = None
+            trace("jev", {"answers": answers, "duration_sec": round(time.monotonic() - jev_started, 4),
+                "policy": instruction_policy(text), "policy_version": POLICY_VERSION,
+                "question_hash": question_hash, "error": "jev_call_failed" if answers is None else None})
+            if event_id is not None:
+                memory_runtime.route_background(event_id, text, answers, snapshot["messages"])
+                active_memory_routed = True
+            emotion_answers = (
+                {field: answers.get(field) for field in EMOTION_FIELDS}
+                if isinstance(answers, dict) else None
+            )
+            next_emotion, source = resolve_emotion_state(emotion_answers, snapshot["emotion"])
+            if active_turn_id != turn_id:
+                return
+            emotion_state = next_emotion
+            version += 1
+            if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
+                save_session_emotion_state(session_id, next_emotion)
+            await send({"type": "emotion_update", "state": next_emotion, "source": source,
+                        "turn_id": turn_id, "version": version})
+
+            prompt = build_agent_a_prompt(snapshot["profile"], snapshot["memory"], next_emotion, model_name=model_name)
+            if snapshot["summary"]:
+                prompt += "\n\n本 session 已完成的對話摘要：\n" + snapshot["summary"][:4000]
+            scope_hint = build_turn_scope_hint(text, snapshot["messages"])
+            if scope_hint:
+                prompt += "\n\n本輪對象約束：\n" + scope_hint
+            chat_messages = build_chat_context(prompt, snapshot["messages"], text)
+            profile_marker = "<untrusted_user_profile>\n"
+            profile_marker_start = prompt.find(profile_marker)
+            profile_start = (profile_marker_start + len(profile_marker)
+                             if profile_marker_start >= 0 else prompt.find("使用者資料：\n") + len("使用者資料：\n"))
+            trace("chat_context", {"messages": chat_messages, "session_id": session_id,
+                "token_budget": CHAT_CONTEXT_TOKEN_BUDGET, "history_limit": 16,
+                "history_count": len(snapshot["messages"]), "history": snapshot["messages"],
+                "summary": snapshot["summary"],
+                "summary_section_start": prompt.find("本 session 已完成的對話摘要：\n") + len("本 session 已完成的對話摘要：\n") if snapshot["summary"] else None,
+                "jev_recent_dialogue": context["recent_dialogue"],
+                "system_prompt_original_chars": len(prompt),
+                "system_prompt_trimmed": chat_messages[0]["content"] != prompt,
+                "system_retained_ranges": retained_prompt_ranges(prompt, chat_messages[0]["content"]),
+                "memory_section_start": prompt.find(snapshot["memory"]) if snapshot["memory"] else None,
+                "profile_section_start": profile_start,
+                "profile": snapshot["profile"], "projected_memory": snapshot["memory"],
+                "token_estimate": estimate_token_count(chat_messages)})
+            action_task = asyncio.create_task(_produce_and_send_action_plan(
+                websocket,
+                model_name,
+                answers,
+                snapshot["expression"],
+                len(context["recent_dialogue"]),
+                question_hash,
+                turn_id,
+                legacy,
+                send,
+            ))
+
+            async def send_chunk(piece: str) -> None:
+                nonlocal active_turn_partial
+                if active_turn_id == turn_id:
+                    await send({"type": "text_stream", "content": piece, "turn_id": turn_id})
+                    if active_turn_id == turn_id:
+                        active_turn_partial += piece
+
+            reply = await stream_agent_a(chat_messages, send_chunk)
+            if not reply:
+                reply = "嗯……"
+                await send_chunk(reply)
+            if active_turn_id != turn_id:
+                return
+            if short_term_enabled:
+                messages.extend([dict(snapshot["user_message"]), {"role": "assistant", "content": reply}])
+            active_turn_committed = True
+            if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
+                save_session_messages(session_id, messages)
+            log_turn(turn_count=sum(item.get("role") == "user" for item in messages),
+                     system_prompt=prompt, user_message=text, dialogue_agent_output=reply,
+                     tool_names=[], output_tokens=estimate_token_count([{"role": "assistant", "content": reply}]))
+            await send({"type": "stream_end", "turn_id": turn_id})
+            # Action 可以在文字完成後才到；TTS 不等待它。
+            speaking_rate = 1.0
+            if action_task.done() and not action_task.cancelled() and action_task.exception() is None:
+                speaking_rate = action_task.result()["speaking_rate"]
+            task = asyncio.create_task(synthesize_and_send_voice(websocket, reply, speaking_rate, turn_id, send))
+            tts_tasks.add(task)
+            task.add_done_callback(tts_tasks.discard)
+            result = await action_task
+            action_task = None
+            if active_turn_id == turn_id:
+                expression_state = result["plan"].get("carryState")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[Chat error][{CHAT_PROVIDER.upper()}] Model={CHAT_MODEL_NAME} | {exc}")
+            if active_turn_id == turn_id:
+                await send({"type": "error", "content": f"API 錯誤: {exc}", "turn_id": turn_id})
+        finally:
+            if action_task is not None and not action_task.done():
+                action_task.cancel()
+                await asyncio.gather(action_task, return_exceptions=True)
+
+    async def prepare_and_run_turn(
+        turn_id: str, text: str, model_name: str, legacy: bool, user_message: dict, mode=None,
+    ) -> None:
+        """將記憶接收／檢索與生成放在同一個可取消的回合 task。"""
+        nonlocal active_event_id
+        event_id = None
+        trace_turn.set(turn_id)
+        trace_event.set(None)
+        write_enabled = mode is None or mode.memory_write
+        read_enabled = mode is None or mode.memory_read
+        trace("test_mode", {"mode": mode.value if mode else "normal",
+            "short_term_enabled": short_term_enabled, "memory_read_enabled": read_enabled,
+            "memory_write_enabled": write_enabled})
+        if write_enabled:
+            try:
+                event_id = await memory_runtime.accept(
+                    session_id or "default_session", turn_id, text, list(messages), user_message,
+                )
+                active_event_id = event_id
+                trace_event.set(event_id)
+                bind_trace_event(event_id, turn_id)
+                trace("memory_accept", {"session_id": session_id})
+                await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
+            except MemoryEventReplay:
+                await send({
+                    "type": "error", "turn_id": turn_id, "code": "turn_id_replayed",
+                    "content": "此 turn_id 已處理",
+                })
+                return
+            except MemoryEventConflict:
+                await send({
+                    "type": "error", "turn_id": turn_id, "code": "turn_id_conflict",
+                    "content": "同一 turn_id 不可對應不同內容",
+                })
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
+                await send({"type": "memory_enqueue_error", "turn_id": turn_id})
+        profile, relevant_memory = ({}, "")
+        summary = load_session_summary(session_id) if short_term_enabled and session_id else ""
+        if read_enabled:
+            profile, relevant_memory = await memory_runtime.retrieve(text, event_id=event_id,
+                recent_dialogue=list(messages) if short_term_enabled else [], summary=summary)
+        snapshot = {
+            "messages": list(messages) if short_term_enabled else [],
+            "emotion": emotion_state if short_term_enabled else None,
+            "expression": expression_state,
+            "action": current_action,
+            "profile": profile,
+            "memory": relevant_memory,
+            "summary": summary,
+            "user_message": user_message,
+        }
+        await run_turn(turn_id, text, model_name, snapshot, legacy, event_id)
 
     try:
         while True:
-            data_str = await websocket.receive_text()
-            data = json.loads(data_str)
-
-            # ---- Session 切換 ----
-            incoming_session_id = _effective_incoming_session_id(
-                data,
-                current_session_id=current_session_id,
-            )
-            session_changed = incoming_session_id != current_session_id
-            last_behavior_payload = _reset_behavior_payload_for_session(
-                current_session_id=current_session_id,
-                incoming_session_id=incoming_session_id,
-                last_behavior_payload=last_behavior_payload,
-            )
-            last_expression_carry_state = _reset_expression_state_for_session(
-                current_session_id=current_session_id,
-                incoming_session_id=incoming_session_id,
-                last_expression_carry_state=last_expression_carry_state,
-            )
-            messages = _reset_messages_for_session(
-                current_session_id=current_session_id,
-                incoming_session_id=incoming_session_id,
-                messages=messages,
-                persistence_enabled=CHAT_PERSISTENCE_ENABLED,
-            )
-            if CHAT_PERSISTENCE_ENABLED and session_changed:
-                if current_session_id and messages:
-                    save_session_messages(current_session_id, messages)
-                current_session_id = incoming_session_id
-                messages = (
-                    load_session_messages(current_session_id)
-                    if current_session_id
-                    else []
-                )
-            elif session_changed:
-                current_session_id = incoming_session_id
-
-            # ---- 手動壓縮指令 ----
-            if data.get("type") == "compress":
-                if len(messages) > COMPRESS_KEEP_RECENT + 1:
-                    messages = await compress_context(messages, websocket)
-                    if CHAT_PERSISTENCE_ENABLED and current_session_id:
-                        save_session_messages(current_session_id, messages)
-                else:
-                    await websocket.send_json({"type": "compress_done"})
+            data = json.loads(await websocket.receive_text())
+            if not isinstance(data, dict):
                 continue
-
-            # ---- 記憶還原指令 ----
-            # 由前端 handleReset 在 REST /api/reset-memory 成功後發送，
-            # 負責清空後端 in-memory 短期記憶，並重新載入已重置的 JPAF session。
-            if data.get("type") == "reset":
-                # 1. 清空短期記憶（in-memory 對話歷史）
-                messages = []
-                last_behavior_payload = None
-                # 2. 清空 session 持久化檔案（避免下次連線重新載入舊歷史）
-                if CHAT_PERSISTENCE_ENABLED and current_session_id:
-                    save_session_messages(current_session_id, [])
-                # 3. 重新從磁碟載入已被 REST API 重置的 JPAF session
-                jpaf_data = load_jpaf_state()
-                jpaf_session = (
-                    JPAFSession.from_dict(jpaf_data) if jpaf_data else JPAFSession()
-                )
-                # 3b. 清空 Prompt Log
-                reset_log()
-                # 4. 通知前端最新 JPAF 狀態（turn_count = 0）
-                await websocket.send_json({
-                    "type": "jpaf_update",
-                    "persona": jpaf_session.current_persona,
-                    "dominant": jpaf_session.dominant,
-                    "auxiliary": jpaf_session.auxiliary,
-                    "baseWeights": jpaf_session.base_weights,
-                    "turnCount": jpaf_session.turn_count,
-                })
-                await websocket.send_json({"type": "reset_done"})
-                continue
-
-            user_message = data.get("content", "")
-            if not user_message:
-                continue
-
-            model_name = normalize_model_name(data.get("model_name", "Hiyori"))
-
-            # ================================================================
-            # 步驟 1：組裝 Dialogue Agent 系統 Prompt（VTuber + JPAF）
-            # ================================================================
-            user_profile = load_user_profile()
-            memory_notes = load_memory_notes()
-            agent_a_system = build_agent_a_prompt(
-                user_profile,
-                memory_notes,
-                jpaf_session,
-                model_name=model_name,
-            )
-
-            # 更新或插入 system prompt
-            if (
-                messages
-                and isinstance(messages[0], dict)
-                and messages[0].get("role") == "system"
-            ):
-                messages[0] = {"role": "system", "content": agent_a_system}
-            else:
-                messages.insert(0, {"role": "system", "content": agent_a_system})
-
-            messages.append({"role": "user", "content": user_message})
-
             try:
-                print(f"[{AI_PROVIDER.upper()}] Dialogue Agent: {user_message[:60]}...")
-
-                # ============================================================
-                # 步驟 2：Dialogue Agent 串流呼叫（JPAF Chat，無 tools）
-                # ============================================================
-                agent_a_text, jpaf_state, emotion_state = await collect_agent_a(
-                    messages
-                )
-
-                if not agent_a_text:
-                    agent_a_text = "（默默地點頭）"
-
-                # 更新 JPAF session
-                if jpaf_state:
-                    # (1) LLM 主動觸發的 Reflection（備用路徑）
-                    if jpaf_state.get("reflection_triggered"):
-                        jpaf_session.apply_reflection(jpaf_state)
-                    # (2) 程式化 TemporaryWeight 追蹤 + 自動 Reflection
-                    active_fn = jpaf_state.get("active_function") or jpaf_session.dominant
-                    evolution = jpaf_session.apply_active_function(active_fn)
-                    if evolution["reflection_triggered"]:
-                        print(
-                            f"[JPAF] 程式化 Reflection 觸發："
-                            f"active={active_fn}, "
-                            f"temp_w={evolution['temporary_weight']:.2f}"
-                        )
-                    # (3) Persona 更新（每輪都執行）
-                    jpaf_session.update_persona(jpaf_state)
-
-                jpaf_session.increment_turn()
-                save_jpaf_state(jpaf_session.to_dict())
-
-                # 將 Dialogue Agent 乾淨回覆加入共用 history
-                messages.append({"role": "assistant", "content": agent_a_text})
-
-                # 注入 JPAF weights snapshot 到短期記憶（模型可看到 weights 演化軌跡）
-                messages.append({
-                    "role": "system",
-                    "content": (
-                        f"[JPAF Turn {jpaf_session.turn_count}] "
-                        f"dom={jpaf_session.dominant}, aux={jpaf_session.auxiliary}, "
-                        f"persona={jpaf_session.current_persona} | "
-                        f"weights: {jpaf_session.weights_inline()}"
-                    ),
-                })
-
-                # ============================================================
-                # 步驟 3：Expression Agent + Memory Agent 並行呼叫
-                # ============================================================
-                print(
-                    f"[{AI_PROVIDER.upper()}] Chat Orchestrator: parallel Expression Agent + Memory Agent..."
-                )
-
-                previous_expression_source = last_expression_carry_state or last_behavior_payload
-                previous_expression_state = _summarize_previous_expression_state(
-                    previous_expression_source
-                )
-
-                # Expression Agent prompt
-                live2d_system = build_live2d_prompt(
-                    user_message,
-                    agent_a_text,
-                    previous_expression_state,
-                    emotion_state,
-                    model_name,
-                )
-                live2d_messages = [
-                    {"role": "system", "content": live2d_system},
-                    {"role": "user", "content": "請根據上述上下文輸出單一 JSON expression intent，僅回傳 JSON object，不要輸出說明文字或任何 tool calls。"},
-                ]
-
-                # Memory Agent prompt
-                memory_system = build_memory_prompt(user_message, agent_a_text, model_name)
-                memory_messages = [
-                    {"role": "system", "content": memory_system},
-                    {"role": "user", "content": "請分析用戶訊息，判斷是否需要記憶操作。"},
-                ]
-
-                # 並行呼叫
-                live2d_response, memory_response = await asyncio.gather(
-                    call_expression_agent(live2d_messages, model_name),
-                    call_memory_agent(memory_messages, model_name),
-                )
-
-                # ============================================================
-                # 步驟 4：處理 Chat Orchestrator tool calls
-                # ============================================================
-                memory_calls: list[dict] = []
-                if live2d_response.choices and len(live2d_response.choices) > 0:
-                    expression_msg = live2d_response.choices[0].message
-                    expression_raw = expression_msg.content or ""
-                    expression_tool_calls = getattr(expression_msg, "tool_calls", []) or []
-                    print(f"[Expression Agent] content: {expression_raw[:200]}")
-                    if not expression_raw.strip():
-                        if expression_tool_calls:
-                            raise ValueError(
-                                "Expression Agent returned legacy tool-call output without JSON intent content"
-                            )
-                        raise ValueError(
-                            "Expression Agent returned empty content without JSON intent"
-                        )
-                    expression_intent = parse_expression_intent(
-                        expression_raw,
-                        emotion_state=emotion_state,
-                        previous_state=previous_expression_state,
-                        user_message=user_message,
-                    )
-                    expression_intent = {**expression_intent, "spoken_text": agent_a_text}
-                    expression_plan = compile_expression_plan(
-                        expression_intent,
-                        model_name=model_name,
-                        previous_state=previous_expression_source,
-                    )
+                mode = resolve_test_mode(data.get("test_mode"))
+            except (ValueError, TypeError):
+                await send({"type": "error", "content": "無效的隔離測試模式", "turn_id": data.get("turn_id")})
+                continue
+            next_short_term = mode is None or mode.short_term
+            incoming_session = normalize_session_id(data.get("session_id")) or session_id
+            if incoming_session != session_id or next_short_term != short_term_enabled:
+                await cancel_active()
+                short_term_enabled = next_short_term
+                session_id = incoming_session
+                expression_state = None
+                current_action = None
+                if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
+                    messages = load_session_messages(session_id)
+                    emotion_state = load_session_emotion_state(session_id)
                 else:
-                    raise ValueError("Expression Agent returned no choices")
+                    messages = []
+                    emotion_state = None
+                version = 0
 
-                legacy_render = render_legacy_behavior_payload(expression_plan)
-                behavior_payload = legacy_render["behavior_payload"]
-                speaking_rate = legacy_render["speaking_rate"]
-                expression_plan_log = _summarize_expression_plan_for_log(expression_plan)
-                print(f"[Expression Plan] {expression_plan_log}")
-
-                # --- 解析 Memory Agent response ---
-                if memory_response.choices and len(memory_response.choices) > 0:
-                    mem_msg = memory_response.choices[0].message
-                    mem_tool_calls = getattr(mem_msg, "tool_calls", []) or []
-                    print(f"[Memory Agent] content: {(mem_msg.content or 'None')[:100]}")
-                    print(f"[Memory Agent] tool_calls count: {len(mem_tool_calls)}")
-                    memory_calls = extract_agent_tool_calls(
-                        memory_response,
-                        model_name=model_name,
-                        label="Memory Agent",
-                    )
-                    for tc in mem_tool_calls:
-                        print(f"[Memory Agent] tool: {tc.function.name} => {(tc.function.arguments or '')[:100]}")
+            control_type = data.get("type")
+            if control_type in {"reset", "reset_session"}:
+                await cancel_active(finalize_memory=False)
+                # ``reset`` 保留既有 owner 長期重置語義；REST reset 完成後，
+                # 前端改送 ``reset_session``，只同步這條連線的 closure 狀態，
+                # 避免同一次使用者操作重複遞增 long-term generation。
+                if control_type == "reset":
+                    await memory_runtime.reset()
+                messages, emotion_state, expression_state = [], None, None
+                current_action = None
+                version += 1
+                if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
+                    save_session_messages(session_id, [])
+                    reset_session_emotion_state(session_id)
+                    reset_session_summary(session_id)
+                reset_log()
+                await send({"type": "emotion_update", "state": dict(NEUTRAL_EMOTION_STATE),
+                            "source": "neutral_fallback"})
+                await send({"type": "reset_done"})
+                continue
+            if control_type == "sync":
+                await send({"type": "emotion_update", "state": emotion_state or dict(NEUTRAL_EMOTION_STATE),
+                            "source": "previous_fallback" if emotion_state else "neutral_fallback",
+                            "version": version})
+                continue
+            if control_type == "action_state":
+                # 前端的播放進度是動作真值；僅接受目前輪次的回報。
+                action_id = data.get("action_id")
+                if (data.get("turn_id") == active_turn_id and data.get("status") in {"started", "finished", "cancelled"}
+                        and isinstance(action_id, str) and 0 < len(action_id) <= 128):
+                    current_action = ({"action_id": action_id, "status": "started"}
+                                      if data["status"] == "started" else None)
+                continue
+            if control_type == "compress":
+                if short_term_enabled and len(messages) > COMPRESS_KEEP_RECENT + 1:
+                    messages = await compress_context(messages, websocket, session_id, send)
+                    if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
+                        save_session_messages(session_id, messages)
                 else:
-                    print("[Memory Agent] No choices returned!")
-
-                execution_result = await _execute_memory_tool_calls(
-                    memory_calls=memory_calls,
-                    websocket=websocket,
-                    broadcast_func=broadcast_to_displays,
-                    execute_profile_update_fn=execute_profile_update,
-                    append_memory_note_fn=append_memory_note,
-                    model_name=model_name,
-                )
-                memory_calls = execution_result["memory_calls"]
-                last_behavior_payload = {**behavior_payload, "speakingRate": speaking_rate}
-                last_expression_carry_state = expression_plan.get("carryState")
-
-                # ---- Prompt Log ----
-                _a_tokens = estimate_token_count(
-                    [{"role": "assistant", "content": agent_a_text}]
-                )
-                _b_tokens = 0
-                for resp in (live2d_response, memory_response):
-                    usage = getattr(resp, "usage", None)
-                    if usage is None:
-                        continue
-
-                    completion_tokens = getattr(usage, "completion_tokens", 0)
-                    if isinstance(completion_tokens, bool):
-                        continue
-                    if isinstance(completion_tokens, int):
-                        _b_tokens += completion_tokens
-                log_turn(
-                    turn_count=jpaf_session.turn_count,
-                    system_prompt=agent_a_system,
-                    user_message=user_message,
-                    dialogue_agent_output=agent_a_text,
-                    tool_names=summarize_tool_names(memory_calls) + [expression_plan_log],
-                    output_tokens=_a_tokens + _b_tokens,
-                )
-
-                # ---- 先送出 expression plan，再保留 legacy payload fallback ----
-                await websocket.send_json(expression_plan)
-                await broadcast_to_displays(expression_plan)
-
-                for blink_payload in legacy_render["blink_payloads"]:
-                    await websocket.send_json(blink_payload)
-                    await broadcast_to_displays(blink_payload)
-
-                # ---- 送出 behavior payload ----
-                await websocket.send_json(behavior_payload)
-                await broadcast_to_displays(behavior_payload)
-
-                # ---- 送出 JPAF 狀態更新 ----
-                await websocket.send_json({
-                    "type": "jpaf_update",
-                    "persona": jpaf_session.current_persona,
-                    "dominant": jpaf_session.dominant,
-                    "auxiliary": jpaf_session.auxiliary,
-                    "baseWeights": jpaf_session.base_weights,
-                    "turnCount": jpaf_session.turn_count,
+                    await send({"type": "compress_done"})
+                continue
+            input_event = normalize_chat_input(data, session_id)
+            if input_event is None:
+                continue
+            text = input_event["text"]
+            model_name = input_event["model_name"]
+            turn_id = input_event["turn_id"]
+            next_user_message = build_user_message(
+                session_id or "default_session", turn_id, text, timestamp=input_event["timestamp"],
+            )
+            source_id = next_user_message["memory_source"]["source_id"]
+            previous = next((item for item in messages
+                             if isinstance(item, dict) and item.get("role") == "user"
+                             and isinstance(item.get("memory_source"), dict)
+                             and item["memory_source"].get("source_id") == source_id), None)
+            if active_turn_id == turn_id or previous is not None:
+                conflict = ((active_turn_text if active_turn_id == turn_id else previous.get("content")) != text)
+                await send({
+                    "type": "error", "turn_id": turn_id,
+                    "code": "turn_id_conflict" if conflict else "turn_id_replayed",
+                    "content": "同一 turn_id 不可對應不同內容" if conflict else "此 turn_id 已處理",
                 })
-
-                # ---- 送出 buffered 文字 ----
-                await websocket.send_json({"type": "text_stream", "content": agent_a_text})
-
-                # ============================================================
-                # 步驟 5：後處理
-                # ============================================================
-                token_count = estimate_token_count(messages)
-                print(f"目前 token 估算: ~{token_count:,}")
-
-                if token_count >= COMPRESS_TOKEN_THRESHOLD:
-                    print(f"Token 數 ({token_count:,}) 接近上限，自動觸發壓縮...")
-                    messages = await compress_context(messages, websocket)
-                    if CHAT_PERSISTENCE_ENABLED and current_session_id:
-                        save_session_messages(current_session_id, messages)
-
-                if CHAT_PERSISTENCE_ENABLED and current_session_id:
-                    save_session_messages(current_session_id, messages)
-
-                await websocket.send_json({"type": "stream_end"})
-
-                # 非阻塞 TTS
-                if agent_a_text:
-                    task = asyncio.create_task(
-                        synthesize_and_send_voice(
-                            websocket, agent_a_text, speaking_rate
-                        )
-                    )
-                    tts_tasks.add(task)
-                    task.add_done_callback(lambda t: tts_tasks.discard(t))
-
-            except Exception as e:
-                print(
-                    f"[AI API error][{AI_PROVIDER.upper()}] Model={MODEL_NAME} | {e}"
-                )
-                try:
-                    await websocket.send_json(
-                        {"type": "error", "content": f"API 錯誤: {str(e)}"}
-                    )
-                except WebSocketDisconnect:
-                    pass
-                raise
-
+                continue
+            # 先切換回合，讓新輸入可以立即打斷生成中的舊回合；記憶檢索不能阻塞取消。
+            await cancel_active()
+            active_turn_id = turn_id
+            active_turn_text = text
+            active_turn_message = next_user_message
+            active_turn_partial = ""
+            active_turn_committed = False
+            active_event_id = None
+            active_memory_routed = False
+            active_task = asyncio.create_task(prepare_and_run_turn(
+                turn_id, text, model_name, data.get("legacy_payloads") is True,
+                active_turn_message, mode,
+            ))
     except WebSocketDisconnect:
-        for task in list(tts_tasks):
-            task.cancel()
         print("Client disconnected")
-    except Exception as e:
-        for task in list(tts_tasks):
-            task.cancel()
-        print(f"WebSocket error: {e}")
-        raise
-
-
-def _build_behavior_payload(
-    head_intensity: float,
-    blush_level: float,
-    eye_sync: bool,
-    eye_l_open: float,
-    eye_r_open: float,
-    duration_sec: float,
-    mouth_form: float,
-    brow_l_y: float,
-    brow_r_y: float,
-    brow_l_angle: float,
-    brow_r_angle: float,
-    brow_l_form: float,
-    brow_r_form: float,
-    eye_l_smile: float = 0.0,
-    eye_r_smile: float = 0.0,
-    brow_l_x: float = 0.0,
-    brow_r_x: float = 0.0,
-    ) -> dict:
-    """組裝行為數據 payload（發送給前端 & Display 端點）。"""
-    return {
-        "type": "behavior",
-        "headIntensity": head_intensity,
-        "blushLevel": blush_level,
-        "eyeSync": eye_sync,
-        "eyeLOpen": eye_l_open,
-        "eyeROpen": eye_r_open,
-        "durationSec": duration_sec,
-        "mouthForm": mouth_form,
-        "browLY": brow_l_y,
-        "browRY": brow_r_y,
-        "browLAngle": brow_l_angle,
-        "browRAngle": brow_r_angle,
-        "browLForm": brow_l_form,
-        "browRForm": brow_r_form,
-        "eyeLSmile": eye_l_smile,
-        "eyeRSmile": eye_r_smile,
-        "browLX": brow_l_x,
-        "browRX": brow_r_x,
-    }
-
-
-def _reset_behavior_payload_for_session(
-    current_session_id: str | None,
-    incoming_session_id: str | None,
-    last_behavior_payload: dict | None,
-) -> dict | None:
-    if incoming_session_id != current_session_id:
-        return None
-    return last_behavior_payload
-
-
-def _effective_incoming_session_id(
-    data: dict,
-    current_session_id: str | None,
-) -> str | None:
-    incoming_session_id = normalize_session_id(data.get("session_id"))
-    if incoming_session_id is not None:
-        return incoming_session_id
-    return current_session_id
-
-
-def _reset_messages_for_session(
-    current_session_id: str | None,
-    incoming_session_id: str | None,
-    messages: list,
-    persistence_enabled: bool,
-) -> list:
-    if not persistence_enabled and incoming_session_id != current_session_id:
-        return []
-    return messages
-
-
-def _reset_expression_state_for_session(
-    current_session_id: str | None,
-    incoming_session_id: str | None,
-    last_expression_carry_state: dict | None,
-) -> dict | None:
-    if incoming_session_id != current_session_id:
-        return None
-    return last_expression_carry_state
-
-
-def _summarize_expression_plan_for_log(expression_plan: dict) -> str:
-    idle_plan = expression_plan.get("idlePlan") if isinstance(expression_plan, dict) else None
-    if not isinstance(idle_plan, dict):
-        return "expression_plan"
-    motion_plan = expression_plan.get("motionPlan") if isinstance(expression_plan, dict) else None
-    motion_summary = "motionPlan none"
-    if isinstance(motion_plan, dict):
-        motion_summary = (
-            f"motionPlan {motion_plan.get('theme', 'unknown_theme')}:"
-            f"{motion_plan.get('variant', 'unknown_variant')}"
-        )
-    eye_motion_plan = expression_plan.get("eyeMotionPlan") if isinstance(expression_plan, dict) else None
-    eye_motion_summary = "eyeMotionPlan none"
-    if isinstance(eye_motion_plan, dict):
-        eye_motion_summary = (
-            f"eyeMotionPlan {eye_motion_plan.get('style', 'unknown_style')} "
-            f"amp {eye_motion_plan.get('amplitudeX', '?')}/{eye_motion_plan.get('amplitudeY', '?')} "
-            f"freq {eye_motion_plan.get('frequencyHz', '?')}"
-        )
-    sequence_events = expression_plan.get("sequence") if isinstance(expression_plan.get("sequence"), list) else []
-    sequence_names = [
-        str(event.get("kind"))
-        for event in sequence_events
-        if isinstance(event, dict) and event.get("kind")
-    ]
-    sequence_summary = ",".join(sequence_names) if sequence_names else "none"
-
-    name = idle_plan.get("name", "unknown_idle")
-    enter_after_ms = idle_plan.get("enterAfterMs", "?")
-    source = idle_plan.get("source") if isinstance(idle_plan.get("source"), dict) else {}
-    action_ms = source.get("actionEnterAfterMs", "?")
-    speaking_ms = source.get("speakingEnterAfterMs", "?")
-    post_speech_hold_ms = source.get("postSpeechHoldMs", "?")
-    loop_events = idle_plan.get("loopEvents") if isinstance(idle_plan.get("loopEvents"), list) else []
-    loop_names = [
-        str(event.get("kind"))
-        for event in loop_events
-        if isinstance(event, dict) and event.get("kind")
-    ]
-    loop_summary = ",".join(loop_names) if loop_names else "none"
-    ambient_enter_after_ms = idle_plan.get("ambientEnterAfterMs", "?")
-    ambient_switch_interval_ms = idle_plan.get("ambientSwitchIntervalMs", "?")
-    ambient_plan = idle_plan.get("ambientPlan") if isinstance(idle_plan.get("ambientPlan"), dict) else {}
-    ambient_states = ambient_plan.get("states") if isinstance(ambient_plan.get("states"), list) else []
-    ambient_names = [
-        str(state.get("kind"))
-        for state in ambient_states
-        if isinstance(state, dict) and state.get("kind")
-    ]
-    ambient_summary = ",".join(ambient_names) if ambient_names else "none"
-    idle_state_flow = f"settleIdle:{name}"
-    if ambient_names:
-        idle_state_flow += " -> " + " -> ".join(
-            f"ambientIdle:{ambient_name}"
-            for ambient_name in ambient_names
-        )
-    return (
-        f"expression_plan idlePlan {name} "
-        f"enterAfterMs {enter_after_ms} "
-        f"actionMs {action_ms} speakingMs {speaking_ms} postSpeechHoldMs {post_speech_hold_ms} "
-        f"sequenceEvents {len(sequence_names)} speakingSequence {sequence_summary} "
-        f"loopEvents {loop_summary} "
-        f"ambientEnterMs {ambient_enter_after_ms} "
-        f"ambientSwitchMs {ambient_switch_interval_ms} "
-        f"ambientStates {ambient_summary} "
-        f"idleStateFlow {idle_state_flow} "
-        f"{motion_summary} "
-        f"{eye_motion_summary}"
-    )
-
-
-def _summarize_previous_expression_state(behavior_payload: dict | None) -> dict | None:
-    if not behavior_payload:
-        return None
-
-    mouth_form = float(behavior_payload.get("mouthForm", 0.0))
-    eye_l_open = float(behavior_payload.get("eyeLOpen", 1.0))
-    eye_r_open = float(behavior_payload.get("eyeROpen", 1.0))
-    eye_l_smile = float(behavior_payload.get("eyeLSmile", 0.0))
-    eye_r_smile = float(behavior_payload.get("eyeRSmile", 0.0))
-    eye_ball_x = float(behavior_payload.get("eyeBallX", 0.0))
-    eye_ball_y = float(behavior_payload.get("eyeBallY", 0.0))
-    eye_sync = bool(behavior_payload.get("eyeSync", True))
-    brow_l_y = float(behavior_payload.get("browLY", 0.0))
-    brow_r_y = float(behavior_payload.get("browRY", 0.0))
-    brow_l_angle = float(behavior_payload.get("browLAngle", 0.0))
-    brow_r_angle = float(behavior_payload.get("browRAngle", 0.0))
-    brow_l_form = float(behavior_payload.get("browLForm", 0.0))
-    brow_r_form = float(behavior_payload.get("browRForm", 0.0))
-    brow_l_x = float(behavior_payload.get("browLX", 0.0))
-    brow_r_x = float(behavior_payload.get("browRX", 0.0))
-
-    summary_parts: list[str] = []
-    if mouth_form > 0.18:
-        summary_parts.append("嘴角偏上揚")
-    elif mouth_form < -0.18:
-        summary_parts.append("嘴角明顯下壓")
-    else:
-        summary_parts.append("嘴角接近中性")
-
-    if eye_l_smile > 0.35 or eye_r_smile > 0.35:
-        summary_parts.append("眼睛帶笑")
-    elif eye_l_open > 1.05 or eye_r_open > 1.05:
-        summary_parts.append("眼睛偏張大")
-    elif eye_l_open < 0.85 or eye_r_open < 0.85:
-        summary_parts.append("眼睛偏瞇")
-    else:
-        summary_parts.append("雙眼自然")
-
-    if (
-        abs(brow_l_angle) > 0.25
-        or abs(brow_r_angle) > 0.25
-        or abs(brow_l_y) > 0.2
-        or abs(brow_r_y) > 0.2
-        or abs(brow_l_form) > 0.2
-        or abs(brow_r_form) > 0.2
-        or abs(brow_l_x) > 0.12
-        or abs(brow_r_x) > 0.12
-    ):
-        summary_parts.append("眉毛有明顯表情")
-    else:
-        summary_parts.append("眉毛變化不大")
-
-    if not eye_sync:
-        summary_parts.append("左右表情不對稱")
-
-    return {
-        "summary": "、".join(summary_parts),
-        "mouth_form": mouth_form,
-        "eye_sync": eye_sync,
-        "eye_l_open": eye_l_open,
-        "eye_r_open": eye_r_open,
-        "eye_l_smile": eye_l_smile,
-        "eye_r_smile": eye_r_smile,
-        "eyeBallX": eye_ball_x,
-        "eyeBallY": eye_ball_y,
-        "brow_l_y": brow_l_y,
-        "brow_r_y": brow_r_y,
-        "brow_l_angle": brow_l_angle,
-        "brow_r_angle": brow_r_angle,
-        "brow_l_form": brow_l_form,
-        "brow_r_form": brow_r_form,
-        "brow_l_x": brow_l_x,
-        "brow_r_x": brow_r_x,
-    }
+    finally:
+        await cancel_active()

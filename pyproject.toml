@@ -1,0 +1,15 @@
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# E402 is intentional in test/tool entrypoints that add backend/ to sys.path
+# before importing the application modules. The compact fixture forms below
+# are existing test-harness conventions and are kept out of the first gate.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/**/*.py" = ["E402"]
+"backend/tools/import_legacy_memory.py" = ["E402"]
+"backend/tests/test_chat_test_modes.py" = ["E701", "E702"]
+"backend/tests/test_memory_test_evidence.py" = ["E701", "E702"]
+"backend/tests/test_memory_testset.py" = ["E701", "E731"]

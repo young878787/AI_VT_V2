@@ -70,6 +70,7 @@ export function applyActiveExpressionEvents(
     nextTargets.eyeLOpen = applyOverlayValue('eyeLOpen', nextTargets.eyeLOpen, event.patch.eyeLOpen, fade);
     nextTargets.eyeROpen = applyOverlayValue('eyeROpen', nextTargets.eyeROpen, event.patch.eyeROpen, fade);
     nextTargets.mouthForm = applyOverlayValue('mouthForm', nextTargets.mouthForm, event.patch.mouthForm, fade);
+    nextTargets.mouthOpenBias = applyOverlayValue('mouthOpenBias', nextTargets.mouthOpenBias ?? 0, event.patch.mouthOpenBias, fade);
     nextTargets.browLY = applyOverlayValue('browLY', nextTargets.browLY, event.patch.browLY, fade);
     nextTargets.browRY = applyOverlayValue('browRY', nextTargets.browRY, event.patch.browRY, fade);
     nextTargets.browLAngle = applyOverlayValue('browLAngle', nextTargets.browLAngle, event.patch.browLAngle, fade);

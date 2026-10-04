@@ -1,0 +1,53 @@
+name: frontend-tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-tests:
+    name: frontend-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: vtuber-web-app/package.json
+
+      - name: Install frontend dependencies
+        working-directory: vtuber-web-app
+        run: bun ci
+
+      - name: Regenerate frontend sources
+        working-directory: vtuber-web-app
+        run: bun run generate
+
+      - name: Verify generated frontend sources
+        run: git diff --exit-code -- vtuber-web-app/src/generated/tools.ts
+
+      - name: Lint frontend
+        working-directory: vtuber-web-app
+        run: bun run lint
+
+      - name: Check frontend contracts
+        working-directory: vtuber-web-app
+        run: |
+          bun run check:expression-plan
+          bun run check:emotion-state
+          bun run check:rushia-runtime
+
+      - name: Build frontend
+        working-directory: vtuber-web-app
+        run: bun run build

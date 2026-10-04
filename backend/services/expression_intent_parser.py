@@ -1,7 +1,6 @@
 import json
 
 from domain.expression_intent_schema import normalize_expression_intent as normalize_expression_intent_schema
-from domain.expression_intent_schema import ALLOWED_EMOTIONS, ALLOWED_PERFORMANCE_MODES
 
 
 PRIMARY_EMOTION_ALIASES = {

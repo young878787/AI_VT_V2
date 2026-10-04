@@ -6,13 +6,5 @@
     "displayName": "huohuo",
     "description": "匯入的模型",
     "imported": true
-  },
-  {
-    "name": "Rushia_first",
-    "directory": "Rushia_first",
-    "fileName": "RushiaHD.model3.json",
-    "displayName": "Rushia（方案A驗證中）",
-    "description": "匯入的模型（vtuber_model 倉庫複製，僅執行檔，來源 .cmo3 留在倉庫）",
-    "imported": true
   }
 ]

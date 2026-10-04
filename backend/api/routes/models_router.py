@@ -22,13 +22,8 @@ router = APIRouter()
 
 @router.get("/api/models")
 async def list_models():
-    """回傳所有可用模型（內建 + 匯入）。"""
-    registry = load_model_registry()
-    # 合併，用 name 去重（匯入覆蓋同名內建）
-    merged: dict[str, dict] = {m["name"]: m for m in BUILTIN_MODELS}
-    for m in registry:
-        merged[m["name"]] = m
-    return {"models": list(merged.values())}
+    """回傳目前固定使用的 Rushia；保留既有匯入資產。"""
+    return {"models": BUILTIN_MODELS}
 
 
 @router.post("/api/models/upload")

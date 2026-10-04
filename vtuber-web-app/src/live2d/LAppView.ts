@@ -110,13 +110,7 @@ export class LAppView {
     
     // 根據 Canvas 寬高比進行縮放
     if (this._canvasWidth > 0 && this._canvasHeight > 0) {
-      if (model.getModel().getCanvasWidth() > 1.0 && this._canvasWidth < this._canvasHeight) {
-        // 橫向較長的模型在縱向較長的視窗中顯示
-        model.getModelMatrix().setWidth(2.0);
-        projection.scale(1.0, this._canvasWidth / this._canvasHeight);
-      } else {
-        projection.scale(this._canvasHeight / this._canvasWidth, 1.0);
-      }
+      projection.scale(this._canvasHeight / this._canvasWidth, 1.0);
     } else {
       console.warn('[Render] canvas size is 0:', this._canvasWidth, this._canvasHeight);
     }
@@ -191,8 +185,8 @@ export class LAppView {
     }
 
     // 螢幕座標轉換為設備座標
-    let deviceX = screenX;
-    let deviceY = screenY;
+    const deviceX = screenX;
+    const deviceY = screenY;
 
     // 設備座標轉換為視圖座標
     const invertedMatrix = new CubismMatrix44();

@@ -9,9 +9,9 @@
 ## 核心能力
 
 - AI 根據對話內容即時驅動 Live2D 模型的表情參數（眼睛、眉毛、嘴角、臉紅、頭部動作）。
-- 每次回覆均搭配 AI 自行設計的獨特表情，透過工具呼叫（Tool Calls）實現。
-- 持久化記憶系統能跨對話記住使用者的個性特徵、喜好及重要事件。
-- 當對話歷史趨近模型的 token 上限時，系統自動壓縮舊訊息並產生摘要寫入記憶。
+- JEV 決定情緒與表演意圖，後端編譯 expression plan，前端 Scheduler 控制播放。
+- PostgreSQL／pgvector `MemoryRuntime` 能跨對話記住使用者的個性特徵、喜好及重要事件；舊 JSON／Markdown 只供一次性匯入。
+- Chat 使用有界近期對話與相關記憶；對話摘要保存在 session 專用檔。
 
 ---
 
@@ -22,9 +22,7 @@ AI_VT_V2/
 ├── backend/                   # Python FastAPI 後端
 │   ├── main.py                # WebSocket 伺服器、LLM 協調、記憶系統
 │   ├── requirements.txt       # Python 相依套件
-│   └── memory/                # 持久化記憶（已 gitignore，執行時自動建立）
-│       ├── user_profile.json  # 使用者個性與喜好資料
-│       └── memory.md          # 帶時間戳記的事件日誌
+│   └── memory/                # 短期 session／summary／emotion state（已 gitignore）
 │
 └── vtuber-web-app/            # React + TypeScript + Vite 前端
     └── src/
@@ -55,18 +53,16 @@ AI_VT_V2/
 | Live2D | Cubism SDK for Web 5 |
 | 後端 | Python、FastAPI、WebSocket |
 | LLM | OpenRouter / NVIDIA / Google AI Studio（模型可設定） |
-| 記憶 | JSON + Markdown 純文字檔 |
+| 記憶 | PostgreSQL、pgvector、Alembic |
 
 ---
 
 ## 運作流程
 
-1. 使用者在聊天面板輸入訊息。
-2. 前端透過 WebSocket 傳送至 Python 後端。
-3. 後端動態組裝 System Prompt（包含使用者畫像與共同回憶），透過選定 provider（OpenRouter / NVIDIA / Google AI Studio）呼叫 LLM。
-4. LLM 使用結構化工具呼叫決定表情參數（`set_ai_behavior`），並視情況更新記憶（`update_user_profile`、`save_memory_note`）。
-5. 後端將表情資料與串流文字同步回傳給前端。
-6. 前端以平滑插值的方式將表情參數套用至 Live2D 模型。
+1. 前端將文字或 ASR 完稿與 `turn_id` 送到 `/ws/chat`；後端固定本輪上下文快照並建立背景記憶待辦。
+2. JEV Emotion 更新六欄即時情緒；Chat 逐段產生可唸對白，JEV Action 並行決定表演意圖。
+3. expression compiler 產生 `expression_plan`，前端 Action Scheduler 仲裁後交給 Live2D 播放。
+4. `stream_end` 代表文字完成；Memory worker 之後可獨立判斷、去重並保存記憶。
 
 ---
 
@@ -77,18 +73,21 @@ AI_VT_V2/
 - Python 3.10+
 - Node.js 18+
 - Cubism SDK for Web（放置於專案根目錄，命名為 `CubismSdkForWeb-5-r.5-beta.3/`）
-- 任一可用 provider 的 API 金鑰（[OpenRouter](https://openrouter.ai)、NVIDIA 或 Google AI Studio）
+- JEV 與 CHAT／MEMORY 路線所需的 API 金鑰（JEV 使用 [OpenRouter](https://openrouter.ai) SystemOne）
 
 ### 環境變數設定
 
 將 `.env.example` 複製為 `.env` 並填入金鑰：
 
 ```
-AI_PROVIDER=openrouter
-OPENROUTER_API_KEY=your_key_here
-# 或使用 Google
-# AI_PROVIDER=google
-# GOOGLE_API_KEY=your_key_here
+OPENROUTER_API_KEY=your_openrouter_key  # JEV_AI_API_KEY 留空時沿用
+CHAT_AI_API_KEY=your_chat_key
+CHAT_AI_BASE_URL=https://api.openai.com/v1
+CHAT_AI_MODEL=gpt-4o-mini
+MEMORY_AI_API_KEY=your_memory_key
+MEMORY_AI_BASE_URL=https://api.openai.com/v1
+MEMORY_AI_MODEL=gpt-4o-mini
+# JEV 使用 SystemOne；可用 JEV_AI_BASE_URL、JEV_AI_MODEL 覆寫預設。
 ```
 
 ### 後端啟動
@@ -107,22 +106,54 @@ WebSocket 伺服器啟動於 `ws://localhost:${BACKEND_PORT}/ws/chat`。
 
 ```bash
 cd vtuber-web-app
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 在瀏覽器開啟 `http://localhost:${FRONTEND_PORT}`。
+
+### CI 與安全掃描
+
+push／PR 分別執行 `backend-tests`（Ruff、unittest）、`frontend-tests`（Bun frozen install、codegen 同步、lint、契約／runtime、型別與 build）及 `CodeQL`（Python、JavaScript／TypeScript 安全掃描）。CodeQL 另有每週排程，掃描 job 成功不代表沒有漏洞，合併阻擋需另設定 code-scanning gate。
+
+Rushia 素材未納入 Git，CI 執行純程式檢查；有素材的本機須另在 `vtuber-web-app/` 執行 `bun run check:rushia-assets`。build 通過不代表模型可載入，也不能取代瀏覽器視覺驗收。
+
+### Headless Chat 測試（不開前端）
+
+```bash
+# 從 repository 根目錄執行完整 23＋5 cases
+backend/.venv/bin/python backend/tools/chat_test_cli.py
+
+# 精確重播已接受的案例快照
+backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
+
+# 既有 TXT 表情回歸素材
+backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
+```
+
+長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。正式 DB 已在備份後升至 Alembic head `0006_single_memory_agent`，正式啟動與目前 schema 相符。
+
+CLI 固定 Rushia，沿用同一 `main:app`／PostgreSQL `MemoryRuntime`，使用與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL` 及專用 `test_<32 lowercase hex>` schema。每案 reset 隔離 owner，setup 結案後執行新 session／連線的長期 probe；不直接灌入記憶。短期組跳過長期接收與召回；長期 probe 停用短期載入、累積及寫入；綜合組記錄跨來源證據。五筆延伸案例沿用 `CHAT_AI_*` 生成，重播不重新生成。
+
+每次覆寫固定 `backend/log/chat_test_runs/latest/`，不建立新時間資料夾；既有歷史保留。資料夾包含 `cases.json`、`turns.jsonl`、`case_states.jsonl`、`run.json`、`memory_report.md`、`expression_report.md` 與 `server.log`。`turns.jsonl` 保存完整逐輪 JEV／表情、提交操作、DB 來源、召回及裁切後 Chat messages；兩份 Markdown 只保留摘要與查詢入口。主表按三組並列「回答結果」與「最終應該答案／對話」，硬條件失敗時顯示具體錯誤，完整回答不截短。CLI 執行後以既有 Chat 模型的獨立 prompt 比對所有 probe，保存 `semantic_review` 並產生獨立語意表；模型評估仍可供人工核對。語意判定不能覆蓋來源硬條件；背景工作錯誤會保存並反映在執行狀態。結束清理測試 schema 與短期／prompt 暫存，不讀寫正式長期記憶。
+
+獨立六情境 memory-agent 評估使用 `backend/log/memory_agent_runs/latest/`，保存 `run.json`、`memory_agents.json` 與 `memory_agents_report.md`，不會切換 Chat 測試的 `latest`。
+
+先讀兩份摘要 Markdown；需要完整 evidence 時再用 `case_id`＋`turn` 查逐輪 JSON：
+
+```bash
+jq 'select(.case_id == "case_014" and .turn == 7)' backend/log/chat_test_runs/latest/turns.jsonl
+```
+
+需設定獨立的 `MEMORY_AI_*`、`EMBEDDING_AI_*`（1024 維）及 JEV key；缺少測試 DB 或測試 DB 指向正式 database 時停止。詳見 [記憶測試集設計與實作](docs/AI_VT_Memory_Testset_Design.md)。
 
 ---
 
 ## 記憶系統說明
 
-AI 在 `backend/memory/`（已排除版本控制）維護兩個持久化檔案：
+長期記憶的唯一真值是 PostgreSQL／pgvector schema，由 Alembic 管理版本。JEV 產生 NONE／BUFFER／PROCESS 分類，PROCESS 由 Memory LLM 產生決策，再由 DB Manager 寫入 owner-scoped tables。`backend/memory/` 只保留短期 session、summary 與 emotion state；`user_profile.json`、`memory_records.json`、`memory.md` 只作明確執行的 legacy importer 輸入。
 
-- `user_profile.json` — 記錄使用者的核心特徵、溝通風格、興趣與討厭的事物。
-- `memory.md` — 以追加方式記錄重要對話事件，附帶時間戳記。
-
-當對話歷史接近模型的 token 上限（約 230,000 tokens）時，系統會自動將較舊的訊息壓縮為摘要，並寫入 `memory.md`，以維持上下文視窗的可用空間。
+Chat 每輪使用最近 8 輪與 PostgreSQL 中的有界相關記憶。手動壓縮的對話摘要存入對應 session 的摘要檔，不混入長期記憶。
 
 ---
 

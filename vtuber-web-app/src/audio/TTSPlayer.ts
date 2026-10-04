@@ -5,6 +5,7 @@
 
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { LAppPal } from '../live2d/LAppPal';
+import { useAppStore } from '../store/appStore';
 
 export class TTSPlayer {
     private static s_instance: TTSPlayer | null = null;
@@ -14,6 +15,8 @@ export class TTSPlayer {
     private analyser: AnalyserNode | null = null;
     private isPlaying: boolean = false;
     private animationFrameId: number | null = null;
+    private playbackGeneration = 0;
+    private resolvePlayback: (() => void) | null = null;
     
     // 口型同步配置
     private readonly lipSyncConfig = {
@@ -74,11 +77,14 @@ export class TTSPlayer {
      * @returns Promise，播放完成時 resolve
      */
     public async play(audioBase64: string, _format: string = 'mp3'): Promise<void> {
+        void _format;
         // 停止當前播放
         this.stop();
+        const generation = this.playbackGeneration;
         
         try {
             const context = await this.ensureContext();
+            if (generation !== this.playbackGeneration) return;
             
             // 解碼 Base64
             const binaryString = atob(audioBase64);
@@ -89,6 +95,7 @@ export class TTSPlayer {
             
             // 解碼音訊資料
             const audioBuffer = await context.decodeAudioData(bytes.buffer.slice(0));
+            if (generation !== this.playbackGeneration) return;
             
             // 建立音訊節點
             this.currentSource = context.createBufferSource();
@@ -103,6 +110,7 @@ export class TTSPlayer {
             
             // 開始口型同步分析
             this.isPlaying = true;
+            this.setSpeaking(true);
             this.startLipSyncAnalysis();
             
             // 播放
@@ -112,9 +120,12 @@ export class TTSPlayer {
             
             // 等待播放完成
             return new Promise((resolve) => {
+                this.resolvePlayback = resolve;
                 if (this.currentSource) {
                     this.currentSource.onended = () => {
+                        if (generation !== this.playbackGeneration) return;
                         this.onPlaybackEnded();
+                        this.resolvePlayback = null;
                         resolve();
                     };
                 } else {
@@ -123,6 +134,7 @@ export class TTSPlayer {
             });
             
         } catch (error) {
+            if (generation !== this.playbackGeneration) return;
             LAppPal.printError(`[TTSPlayer] 播放失敗: ${error}`);
             this.onPlaybackEnded();
             throw error;
@@ -133,10 +145,12 @@ export class TTSPlayer {
      * 停止播放
      */
     public stop(): void {
+        this.playbackGeneration++;
         if (this.currentSource) {
+            this.currentSource.onended = null;
             try {
                 this.currentSource.stop();
-            } catch (e) {
+            } catch {
                 // 已經停止，忽略錯誤
             }
             this.currentSource.disconnect();
@@ -149,7 +163,11 @@ export class TTSPlayer {
         }
         
         this.isPlaying = false;
+        this.currentMouthValue = 0;
+        this.setSpeaking(false);
         this.updateMouthValue(0);
+        this.resolvePlayback?.();
+        this.resolvePlayback = null;
         
         LAppPal.printLog('[TTSPlayer] 已停止');
     }
@@ -159,6 +177,11 @@ export class TTSPlayer {
      */
     public getIsPlaying(): boolean {
         return this.isPlaying;
+    }
+
+    private setSpeaking(speaking: boolean): void {
+        LAppLive2DManager.getInstance().getActiveModel()?.setSpeaking(speaking);
+        useAppStore.getState().setSpeaking(speaking);
     }
     
     /**
@@ -228,6 +251,9 @@ export class TTSPlayer {
      */
     private onPlaybackEnded(): void {
         this.isPlaying = false;
+        this.setSpeaking(false);
+        this.currentSource?.disconnect();
+        this.currentSource = null;
         
         if (this.animationFrameId !== null) {
             cancelAnimationFrame(this.animationFrameId);
@@ -244,13 +270,17 @@ export class TTSPlayer {
      * 平滑閉嘴動畫
      */
     private smoothCloseMouth(): void {
+        const startedAt = performance.now();
+        const startValue = this.currentMouthValue;
         const closeMouth = () => {
-            if (this.currentMouthValue > 0.01) {
-                this.currentMouthValue *= 0.85; // 快速衰減
+            const progress = Math.min(1, (performance.now() - startedAt) / 180);
+            this.currentMouthValue = startValue * (1 - progress) ** 2;
+            if (progress < 1 && this.currentMouthValue > 0.01) {
                 this.updateMouthValue(this.currentMouthValue);
-                requestAnimationFrame(closeMouth);
+                this.animationFrameId = requestAnimationFrame(closeMouth);
             } else {
                 this.currentMouthValue = 0;
+                this.animationFrameId = null;
                 this.updateMouthValue(0);
             }
         };

@@ -9,18 +9,11 @@ from core.config import MODEL_REGISTRY_PATH, RESOURCES_DIR
 # 內建模型清單（與前端 LAppDefine.ts 同步）
 BUILTIN_MODELS: list[dict] = [
     {
-        "name": "Hiyori",
-        "directory": "Hiyori",
-        "fileName": "Hiyori.model3.json",
-        "displayName": "Hiyori（日和）",
-        "description": "溫柔可愛的少女",
-    },
-    {
-        "name": "Haru",
-        "directory": "Haru",
-        "fileName": "Haru.model3.json",
-        "displayName": "Haru（春）",
-        "description": "元氣少女，活潑開朗",
+        "name": "Rushia",
+        "directory": "Rushia",
+        "fileName": "RushiaHD.model3.json",
+        "displayName": "Rushia",
+        "description": "Rushia HD Live2D 模型",
     },
 ]
 

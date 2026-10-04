@@ -1,37 +1,37 @@
 /* =============================================
-   VTuber Studio — 淡藍色開發控制台主題
+   Rushia — 柔和綠藍主題
    ============================================= */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap');
 
 :root {
   /* ── 主色調 (柔和藍系) ── */
-  --primary:          #4a8fd4;
-  --primary-hover:    #5a9fe4;
+  --primary:          #719b89;
+  --primary-hover:    #5b8875;
   --primary-dim:      rgba(74, 143, 212, 0.12);
-  --primary-strong:   #3674b5;
-  --secondary:        #6eacde;
-  --accent:           #2d6cb4;
+  --primary-strong:   #426f5b;
+  --secondary:        #91b6b7;
+  --accent:           #4d8278;
 
   /* ── 背景層次 ── */
-  --bg-base:          #edf2f9;
-  --bg-surface:       #f5f8fc;
+  --bg-base:          #f1f5f1;
+  --bg-surface:       #f8faf7;
   --bg-card:          rgba(255, 255, 255, 0.88);
   --bg-overlay:       rgba(255, 255, 255, 0.95);
   --bg-hover:         rgba(74, 143, 212, 0.06);
   --bg-active:        rgba(74, 143, 212, 0.10);
 
   /* ── 文字 ── */
-  --text-primary:     #1e293b;
-  --text-secondary:   #64748b;
-  --text-muted:       #94a3b8;
-  --text-accent:      #3674b5;
+  --text-primary:     #304b40;
+  --text-secondary:   #708379;
+  --text-muted:       #8f9f96;
+  --text-accent:      #426f5b;
 
   /* ── 邊框 ── */
   --border:           rgba(74, 143, 212, 0.12);
   --border-bright:    rgba(74, 143, 212, 0.35);
-  --border-radius-sm: 0px;
-  --border-radius:    0px;
-  --border-radius-lg: 0px;
+  --border-radius-sm: 8px;
+  --border-radius:    12px;
+  --border-radius-lg: 20px;
 
   /* ── 狀態顏色 ── */
   --success:          #10b981;
@@ -58,7 +58,7 @@
   /* ── 面板尺寸 ── */
   --sidebar-width: 300px;
   --right-width: 380px;
-  --jpaf-width: 160px;
+  --emotion-width: 160px;
   --bottom-height: 260px;
   --gap: 12px;
 }
@@ -124,4 +124,13 @@ input, select {
 select option {
   background: var(--bg-surface);
   color: var(--text-primary);
+}
+
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--primary-strong);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

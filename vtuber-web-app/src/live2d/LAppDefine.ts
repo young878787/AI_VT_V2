@@ -1,6 +1,6 @@
 /**
  * Live2D 應用程式常數定義和模型配置
- * 支援多個模型的配置管理
+ * 固定使用 Rushia HD 模型
  */
 
 /**
@@ -66,39 +66,17 @@ export const ResourcePath = {
 } as const;
 
 /**
- * 可用的模型列表配置
- * 可以輕鬆添加新模型
+ * 固定模型配置；所有畫面與聊天共用同一份 Rushia 資源。
  */
-export const AvailableModels: ModelConfig[] = [
-  {
-    name: 'Hiyori',
-    directory: 'Hiyori',
-    fileName: 'Hiyori.model3.json',
-    displayName: 'Hiyori（日和）',
-    description: '溫柔可愛的少女',
-    scale: 1.0,
-    position: { x: 0.0, y: 0.0 }
-  },
-  {
-    name: 'Haru',
-    directory: 'Haru',
-    fileName: 'Haru.model3.json',
-    displayName: 'Haru（春）',
-    description: '元氣少女，活潑開朗',
-    scale: 1.0,
-    position: { x: 0.0, y: 0.0 }
-  },
-  // 未來可以添加更多模型範例：
-  // {
-  //   name: 'Mao',
-  //   directory: 'Mao',
-  //   fileName: 'Mao.model3.json',
-  //   displayName: 'Mao（貓）',
-  //   description: '貓耳少女',
-  //   scale: 1.0,
-  //   position: { x: 0.0, y: 0.0 }
-  // },
-];
+export const FixedModel: Readonly<ModelConfig> = Object.freeze({
+  name: 'Rushia',
+  directory: 'Rushia',
+  fileName: 'RushiaHD.model3.json',
+  displayName: 'Rushia',
+  description: 'Rushia HD Live2D 模型',
+  scale: 1.0,
+  position: Object.freeze({ x: 0.0, y: 0.0 }),
+});
 
 /**
  * 動作組定義
@@ -161,15 +139,8 @@ export function getModelJsonPath(modelConfig: ModelConfig): string {
 }
 
 /**
- * 根據名稱取得模型配置
- */
-export function getModelConfig(name: string): ModelConfig | undefined {
-  return AvailableModels.find(model => model.name === name);
-}
-
-/**
  * 取得預設模型
  */
 export function getDefaultModel(): ModelConfig {
-  return AvailableModels[0];
+  return FixedModel;
 }

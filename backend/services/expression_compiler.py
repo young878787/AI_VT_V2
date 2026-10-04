@@ -25,6 +25,7 @@ from domain.expression_intent_schema import DEFAULT_INTENT
 from domain.expression_eye_motion_library import build_eye_motion_plan
 from domain.expression_motion_library import build_motion_plan
 from domain.expression_presets import BASE_POSE_PRESETS, PRESET_VARIATION_RULES
+from domain.rushia_expression_profile import build_rushia_expression_plan
 from domain.expression_sequence_library import (
     MICRO_EVENT_LIBRARY,
     MICRO_EXPRESSION_THEME_POOLS,
@@ -33,7 +34,7 @@ from domain.expression_sequence_library import (
 )
 from domain.expression_visual_signature import (
     resolve_effective_performance_mode,
-    resolve_topic_guard,
+    resolve_topic_guard,  # noqa: F401 - retained as a compatibility export
     resolve_visual_signature,
     select_base_pose,
 )
@@ -1223,7 +1224,6 @@ def build_speaking_micro_sequence(
         for step in existing_sequence
         if isinstance(step, dict) and step.get("kind")
     }
-    speaking_ms = estimate_dialogue_hold_ms(intent)
     hold_ms = _coerce_float(intent.get("hold_ms", 1600), 1600.0)
     target_timeline_ms = int(target_timeline_ms or _resolve_sequence_target_timeline_ms(intent, hold_ms))
     if existing_timeline_ms >= target_timeline_ms:
@@ -1272,6 +1272,14 @@ def build_speaking_micro_sequence(
             break
 
     if sequence:
+        # Fill a short tail by extending existing events, preserving their minimum durations and fades.
+        remaining_ms = max(0, target_timeline_ms - _sequence_timeline_ms(scheduled))
+        for step in reversed(sequence):
+            extension_ms = min(remaining_ms, max(0, 3000 - int(step["durationMs"])))
+            step["durationMs"] += extension_ms
+            remaining_ms -= extension_ms
+            if remaining_ms <= 0:
+                break
         return sequence
 
     fallback_name = selected_motif[0]
@@ -1437,7 +1445,10 @@ def build_model_hints(intent: dict, preset_name: str, model_name: str) -> dict:
     }
 
 
-def compile_expression_plan(intent: dict, model_name: str, previous_state: dict | None) -> dict:
+def compile_expression_plan(intent: dict, model_name: str, previous_state: dict | None, *, seed: int | None = None) -> dict:
+    if model_name == "Rushia":
+        return build_rushia_expression_plan(intent, previous_state, seed=seed)
+
     emotion = intent.get("emotion", intent.get("primary_emotion", DEFAULT_INTENT["emotion"]))
     if emotion not in {
         "neutral",

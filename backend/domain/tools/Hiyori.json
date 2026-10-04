@@ -158,58 +158,6 @@
           }
         }
       }
-    ],
-    "memory": [
-      {
-        "type": "function",
-        "function": {
-          "name": "update_user_profile",
-          "description": "更新主人的畫像。當偵測到主人提到新的喜好、性格、興趣、生日、重要決定等個人特徵時呼叫。",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "action": {
-                "type": "string",
-                "enum": ["add", "remove", "update"],
-                "description": "操作類型：add（新增）、remove（移除）、update（更新）"
-              },
-              "field": {
-                "type": "string",
-                "enum": [
-                  "core_traits",
-                  "dislikes",
-                  "recent_interests",
-                  "communication_style",
-                  "custom_notes"
-                ],
-                "description": "要更新的欄位"
-              },
-              "value": {
-                "type": "string",
-                "description": "要新增/移除/更新的內容"
-              }
-            },
-            "required": ["action", "field", "value"]
-          }
-        }
-      },
-      {
-        "type": "function",
-        "function": {
-          "name": "save_memory_note",
-          "description": "記錄重要事件。當對話中發生值得長期記住的事件時呼叫（例如一起討論了有趣話題、主人分享了經歷）。",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "content": {
-                "type": "string",
-                "description": "要記錄的事件內容"
-              }
-            },
-            "required": ["content"]
-          }
-        }
-      }
     ]
   },
   "ui_config": {
@@ -454,35 +402,6 @@
         { "action": "pause", "description": "暫停自動眨眼。用於凝視、專注看著對方、驚訝停頓、或戲劇性時刻；適合搭配後續 force_blink / resume", "duration_hint": "2.0~5.0秒" },
         { "action": "resume", "description": "恢復自動眨眼。暫停後使用，讓角色恢復自然狀態，避免 pause 狀態持續過久" },
         { "action": "set_interval", "description": "調整眨眼頻率。興奮時加快(0.8-1.5s)、放鬆時放慢(2-4s)、撒嬌時加快(1-2s)；連續活潑台詞時可主動使用", "interval_hint": "min: 0.5-5s, max: 1-10s" }
-      ]
-    },
-    "memory": {
-      "system_role": "記憶管理專家",
-      "task_description": "分析用戶的訊息，判斷是否需要記錄用戶的個人特徵或重要事件。不需要產生任何對話文字，只需要決定是否呼叫工具。",
-      "update_user_profile": {
-        "description": "當用戶訊息符合以下任一條件時，必須呼叫：提到喜歡/討厭/偏好、興趣愛好、個人背景、性格或習慣、分享重要決定或計畫。",
-        "field_guide": [
-          { "field": "core_traits", "description": "個人特質、喜好（「喜歡吃拉麵」「是個夜貓子」）" },
-          { "field": "dislikes", "description": "討厭的事物（「討厭下雨天」「不喜歡吃青椒」）" },
-          { "field": "recent_interests", "description": "近期興趣（「在學日文」「最近在看動畫」）" },
-          { "field": "communication_style", "description": "說話風格（「喜歡用表情符號」）" },
-          { "field": "custom_notes", "description": "其他個人資訊（「生日5月20日」「住在台北」）" }
-        ],
-        "examples": [
-          { "input": "我超討厭下雨天", "action": "add", "field": "dislikes", "value": "下雨天" },
-          { "input": "我最近在學日文", "action": "add", "field": "recent_interests", "value": "學習日文" },
-          { "input": "我喜歡吃拉麵", "action": "add", "field": "core_traits", "value": "喜歡吃拉麵" },
-          { "input": "我叫小明", "action": "add", "field": "custom_notes", "value": "名字：小明" }
-        ]
-      },
-      "save_memory_note": {
-        "description": "當對話中發生以下情況時，應該呼叫：用戶分享重要經歷或事件、討論了有趣或有意義的話題、用戶透露重要的個人近況、對話中達成了某種共識或約定。",
-        "format": "簡潔描述事件（10-30字）"
-      },
-      "principles": [
-        "寧可多記也不要漏記——記錄了不重要的東西只是浪費一點空間，但漏掉重要資訊會讓用戶覺得你不記得他",
-        "如果用戶的訊息是純閒聊（如「嗨」「你好」「哈哈」）且沒有包含個人資訊，則不需要呼叫任何工具",
-        "一次可以同時呼叫 update_user_profile 和 save_memory_note"
       ]
     }
   }

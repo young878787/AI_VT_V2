@@ -4,18 +4,23 @@ import type { ExpressionPlanPayload } from '../types/expressionPlan';
 const _port = import.meta.env.BACKEND_PORT || '9999';
 const BACKEND = `http://localhost:${_port}`;
 
+export type StudioExpressionKind = DebugExpressionKind | 'neutral' | 'calm' | 'listening' | 'thinking' | 'soft_smile' | 'closed_smile';
+export type StudioExpressionPlan = ExpressionPlanPayload & { carryState?: Record<string, unknown> };
+
 export interface CompileExpressionPlanRequest {
   modelName: string;
   intent?: Record<string, unknown>;
-  kind?: DebugExpressionKind | 'neutral';
+  kind?: StudioExpressionKind;
   motionKind?: DebugMotionKind;
   intensity?: DebugExpressionIntensity;
   random?: boolean;
   scenario?: 'speaking_micro' | 'brow_eye_micro';
+  seed?: number;
+  previousState?: Record<string, unknown>;
 }
 
 export interface CompileExpressionPlanResponse {
-  plan: ExpressionPlanPayload;
+  plan: StudioExpressionPlan;
   summary?: {
     preset?: string;
     bodyMotionProfile?: string;
@@ -26,6 +31,9 @@ export interface CompileExpressionPlanResponse {
     rawReply?: string | null;
     spokenText?: string;
     motionKind?: string;
+    expressionFamily?: string;
+    expressionVariant?: string;
+    seed?: number;
   };
 }
 

@@ -1,18 +1,54 @@
 """
 Prompt 日誌工具：每輪對話後記錄輸入/輸出提示詞、工具調用、Token 數。
-日誌路徑：backend/log/prompt.log
+一般聊天日誌：backend/log/runtime/prompt.log；測試使用隔離短期目錄。
 """
 import datetime
+import json
+import os
+from contextvars import ContextVar
 from pathlib import Path
 
-# backend/log/prompt.log
-_LOG_DIR = Path(__file__).resolve().parent.parent / "log"
+_LOG_DIR = Path(__file__).resolve().parent.parent / "log" / "runtime"
 _LOG_FILE = _LOG_DIR / "prompt.log"
 _SEP = "=" * 72
+trace_event = ContextVar("memory_test_event", default=None)
+trace_turn = ContextVar("chat_test_turn", default=None)
+_event_turns: dict[str, str] = {}
+
+
+def bind_trace_event(event_id, turn_id: str) -> None:
+    if test_log_dir() is not None:
+        if len(_event_turns) >= 1000:
+            _event_turns.pop(next(iter(_event_turns)))
+        _event_turns[str(event_id)] = turn_id
+
+
+def test_log_dir() -> Path | None:
+    if os.getenv("AI_VT_TEST_MODE", "").lower() == "true" and os.getenv("AI_VT_MEMORY_DIR"):
+        return Path(os.environ["AI_VT_MEMORY_DIR"])
+    return None
+
+
+def trace(stage: str, data: dict, event_id=None) -> None:
+    """只在隔離測試記錄結構化證據；不改 WS 或 DB 契約。"""
+    directory = test_log_dir()
+    event_id = event_id or trace_event.get()
+    turn_id = _event_turns.get(str(event_id)) if event_id is not None else trace_turn.get()
+    if directory is None or (event_id is None and turn_id is None):
+        return
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        with (directory / "trace.jsonl").open("a", encoding="utf-8") as file:
+            file.write(json.dumps({**({"memory_event_id": str(event_id)} if event_id is not None else {}),
+                "turn_id": turn_id, "stage": stage,
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                **data}, ensure_ascii=False, default=str) + "\n")
+    except OSError as exc:
+        print(f"[Test trace] 寫入失敗: {type(exc).__name__}")
 
 
 def _ensure_dir() -> None:
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (test_log_dir() or _LOG_DIR).mkdir(parents=True, exist_ok=True)
 
 
 def log_turn(
@@ -26,12 +62,12 @@ def log_turn(
     """記錄單輪對話到 prompt.log（append 模式）。
 
     Args:
-        turn_count:      本輪的 JPAF turn 編號。
+        turn_count:      本輪的對話編號。
         system_prompt:   送給 Dialogue Agent 的完整系統提示詞。
         user_message:    使用者輸入。
         dialogue_agent_output: Dialogue Agent 清理後的輸出。
-        tool_names:      Expression Agent 與 Memory Agent 本輪呼叫的工具名稱清單。
-        output_tokens:   Dialogue Agent + Expression Agent + Memory Agent 輸出 token 數估算。
+        tool_names:      本輪記憶流程診斷標籤。
+        output_tokens:   Chat 輸出 token 數估算。
     """
     _ensure_dir()
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -47,13 +83,13 @@ def log_turn(
         f"{user_message}\n"
         f"\n[DIALOGUE AGENT OUTPUT]\n"
         f"{dialogue_agent_output}\n"
-        f"\n[EXPRESSION AGENT / MEMORY AGENT TOOL CALLS]  {tool_str}\n"
+        f"\n[MEMORY ROUTE]  {tool_str}\n"
         f"[OUTPUT TOKENS (est.)]  {output_tokens}\n"
         f"{_SEP}\n"
     )
 
     try:
-        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+        with open((test_log_dir() / "prompt.log") if test_log_dir() else _LOG_FILE, "a", encoding="utf-8") as f:
             f.write(block)
     except Exception as e:
         print(f"[PromptLogger] 寫入失敗: {e}")
@@ -62,6 +98,8 @@ def log_turn(
 def reset_log() -> None:
     """清空 prompt.log，寫入重置時間戳（還原記憶時呼叫）。"""
     _ensure_dir()
+    if test_log_dir() is not None:
+        return  # 每案 reset 不抹除本輪隔離診斷。
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         with open(_LOG_FILE, "w", encoding="utf-8") as f:
