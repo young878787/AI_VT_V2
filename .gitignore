@@ -90,3 +90,4 @@ docs/
 .env_copy
 vtuber-web-app/public/Resources/
 Rushia.zip
+backend/memory/emotion_states/
