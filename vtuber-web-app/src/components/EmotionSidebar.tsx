@@ -38,7 +38,7 @@ export const EmotionSidebar = () => {
         shy: 0, pleased: 0, genuinely_angry: 0, sad_or_hurt: 0,
         masking_positive_feeling: 0, wants_continue_interaction: 0.5,
       }, 'neutral_fallback');
-      wsService.sendReset();
+      wsService.syncResetSession();
     } catch (error) {
       console.error('Reset failed:', error);
     }

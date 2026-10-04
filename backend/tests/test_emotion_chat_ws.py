@@ -22,6 +22,7 @@ from domain.emotion_state import (
     NEUTRAL_EMOTION_STATE,
     PERSONALITY,
 )
+from domain.memory_source import MemoryEventConflict, MemoryEventReplay
 
 
 def emotion_answers(score=0.6):
@@ -68,7 +69,9 @@ class FakeWebSocket:
 
     async def send_json(self, payload):
         self.payloads.append(payload)
-        if payload.get("type") == "stream_end":
+        if payload.get("type") == "stream_end" or payload.get("code") in {
+            "turn_id_conflict", "turn_id_replayed",
+        }:
             self._turn_finished.set()
 
 
@@ -82,7 +85,7 @@ class EmotionWebSocketTests(unittest.TestCase):
             reset=AsyncMock(),
         )
         socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
-        captured = {"jev_states": [], "chat_states": [], "prompts": []}
+        captured = {"jev_states": [], "chat_states": [], "prompts": [], "runtime": runtime}
         responses = iter(jev_responses)
 
         async def fake_call_jev(state, questions):
@@ -151,6 +154,72 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(len(plan["debug"]["jevDecisionQuestionHash"]), 12)
         self.assertEqual(socket.payloads[-1]["type"], "stream_end")
 
+    def test_rest_followup_reset_session_does_not_reset_long_term_memory_again(self):
+        socket, captured = self._run([{"type": "reset_session", "session_id": "session_a"}], [])
+        captured["runtime"].reset.assert_not_awaited()
+        self.assertEqual(
+            [payload["type"] for payload in socket.payloads],
+            ["emotion_update", "reset_done"],
+        )
+
+    def test_reset_session_clears_current_websocket_closure_state(self):
+        _, captured = self._run(
+            [
+                {"content": "第一句", "session_id": "session_a", "turn_id": "turn_1"},
+                {"type": "reset_session", "session_id": "session_a"},
+                {"content": "第二句", "session_id": "session_a", "turn_id": "turn_2"},
+            ],
+            [jev_answers(0.8), jev_answers(0.2)],
+        )
+        self.assertEqual(len(captured["jev_states"]), 2)
+        self.assertEqual(captured["jev_states"][1]["recent_dialogue"], [])
+        self.assertNotIn("previous_emotion_state", captured["jev_states"][1])
+        captured["runtime"].reset.assert_not_awaited()
+
+    def test_legacy_websocket_reset_keeps_owner_reset_semantics(self):
+        _, captured = self._run([{"type": "reset", "session_id": "session_a"}], [])
+        captured["runtime"].reset.assert_awaited_once_with()
+
+    def test_same_turn_id_replay_and_conflict_are_rejected_without_second_turn(self):
+        for repeated, expected in (("第一句", "turn_id_replayed"), ("不同內容", "turn_id_conflict")):
+            with self.subTest(expected=expected):
+                socket, captured = self._run(
+                    [
+                        {"content": "第一句", "session_id": "session_a", "turn_id": "turn_1"},
+                        {"content": repeated, "session_id": "session_a", "turn_id": "turn_1"},
+                    ],
+                    [jev_answers(0.8)],
+                )
+                self.assertEqual(len(captured["jev_states"]), 1)
+                error = next(payload for payload in socket.payloads if payload.get("code") == expected)
+                self.assertEqual(error["turn_id"], "turn_1")
+
+    def test_database_replay_and_conflict_stop_before_jev(self):
+        for error_type, expected in (
+            (MemoryEventReplay, "turn_id_replayed"),
+            (MemoryEventConflict, "turn_id_conflict"),
+        ):
+            with self.subTest(expected=expected):
+                socket = FakeWebSocket([
+                    {"content": "第一句", "session_id": "session_a", "turn_id": "turn_1"},
+                ])
+                runtime = SimpleNamespace(
+                    retrieve=AsyncMock(return_value=({}, "")),
+                    accept=AsyncMock(side_effect=error_type("duplicate")),
+                    route_background=Mock(),
+                    reset=AsyncMock(),
+                )
+                socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
+
+                async def run():
+                    with patch("api.routes.chat_ws.call_jev", new=AsyncMock()) as jev, \
+                            patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", False):
+                        await websocket_endpoint(socket)
+                    jev.assert_not_awaited()
+
+                asyncio.run(run())
+                self.assertIn(expected, [payload.get("code") for payload in socket.payloads])
+
     def test_database_runtime_routes_without_file_memory_calls(self):
         socket = FakeWebSocket([{"type": "chat", "content": "請記住我喜歡茶", "session_id": "test-session",
                                  "turn_id": "test-turn"}])
@@ -176,7 +245,9 @@ class EmotionWebSocketTests(unittest.TestCase):
 
         asyncio.run(run())
         runtime.retrieve.assert_awaited_once_with("請記住我喜歡茶", event_id=event_id, recent_dialogue=[], summary="")
-        runtime.accept.assert_awaited_once_with("test-session", "test-turn", "請記住我喜歡茶", [])
+        accept_args = runtime.accept.await_args.args
+        self.assertEqual(accept_args[:4], ("test-session", "test-turn", "請記住我喜歡茶", []))
+        self.assertEqual(accept_args[4]["content"], "請記住我喜歡茶")
         runtime.route_background.assert_called_once()
         self.assertEqual(runtime.route_background.call_args.args[0], event_id)
         accepted = next(item for item in socket.payloads if item["type"] == "input_accepted")

@@ -28,6 +28,7 @@ from domain.expression_intent_schema import (
 from domain.input_event import normalize_chat_input
 from domain.chat_test_mode import resolve_test_mode
 from domain.memory_routing import instruction_policy, POLICY_VERSION
+from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
 from domain.jev_questions import (
     BASE_EMOTION_CRITERIA,
     CONFIDENCE_THRESHOLD,
@@ -217,6 +218,7 @@ async def websocket_endpoint(websocket: WebSocket):
     active_turn_id: str | None = None
     active_task: asyncio.Task | None = None
     active_turn_text: str | None = None
+    active_turn_message: dict | None = None
     active_turn_partial: str = ""
     active_turn_committed = False
     active_event_id = None
@@ -230,7 +232,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json(payload)
 
     async def cancel_active(finalize_memory: bool = True) -> None:
-        nonlocal active_task, active_turn_id, active_turn_text, active_turn_partial
+        nonlocal active_task, active_turn_id, active_turn_text, active_turn_message, active_turn_partial
         nonlocal active_turn_committed, active_event_id, active_memory_routed, messages
         if active_task is not None and not active_task.done():
             interrupted_turn_id = active_turn_id
@@ -243,7 +245,9 @@ async def websocket_endpoint(websocket: WebSocket):
             if interrupted_turn_id:
                 partial = active_turn_partial if not was_committed else ""
                 if short_term_enabled and interrupted_text and not was_committed:
-                    messages.append({"role": "user", "content": interrupted_text})
+                    messages.append(dict(active_turn_message) if active_turn_message else {
+                        "role": "user", "content": interrupted_text,
+                    })
                 if short_term_enabled and partial:
                     messages.append({
                         "role": "assistant", "content": partial, "status": "interrupted",
@@ -263,6 +267,7 @@ async def websocket_endpoint(websocket: WebSocket):
         active_task = None
         active_turn_id = None
         active_turn_text = None
+        active_turn_message = None
         active_turn_partial = ""
         active_turn_committed = False
         active_event_id = None
@@ -365,7 +370,7 @@ async def websocket_endpoint(websocket: WebSocket):
             if active_turn_id != turn_id:
                 return
             if short_term_enabled:
-                messages.extend([{"role": "user", "content": text}, {"role": "assistant", "content": reply}])
+                messages.extend([dict(snapshot["user_message"]), {"role": "assistant", "content": reply}])
             active_turn_committed = True
             if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
                 save_session_messages(session_id, messages)
@@ -396,7 +401,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await asyncio.gather(action_task, return_exceptions=True)
 
     async def prepare_and_run_turn(
-        turn_id: str, text: str, model_name: str, legacy: bool, mode=None,
+        turn_id: str, text: str, model_name: str, legacy: bool, user_message: dict, mode=None,
     ) -> None:
         """將記憶接收／檢索與生成放在同一個可取消的回合 task。"""
         nonlocal active_event_id
@@ -410,12 +415,26 @@ async def websocket_endpoint(websocket: WebSocket):
             "memory_write_enabled": write_enabled})
         if write_enabled:
             try:
-                event_id = await memory_runtime.accept(session_id or "default_session", turn_id, text, list(messages))
+                event_id = await memory_runtime.accept(
+                    session_id or "default_session", turn_id, text, list(messages), user_message,
+                )
                 active_event_id = event_id
                 trace_event.set(event_id)
                 bind_trace_event(event_id, turn_id)
                 trace("memory_accept", {"session_id": session_id})
                 await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
+            except MemoryEventReplay:
+                await send({
+                    "type": "error", "turn_id": turn_id, "code": "turn_id_replayed",
+                    "content": "此 turn_id 已處理",
+                })
+                return
+            except MemoryEventConflict:
+                await send({
+                    "type": "error", "turn_id": turn_id, "code": "turn_id_conflict",
+                    "content": "同一 turn_id 不可對應不同內容",
+                })
+                return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -434,6 +453,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "profile": profile,
             "memory": relevant_memory,
             "summary": summary,
+            "user_message": user_message,
         }
         await run_turn(turn_id, text, model_name, snapshot, legacy, event_id)
 
@@ -464,9 +484,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 version = 0
 
             control_type = data.get("type")
-            if control_type == "reset":
+            if control_type in {"reset", "reset_session"}:
                 await cancel_active(finalize_memory=False)
-                await memory_runtime.reset()
+                # ``reset`` 保留既有 owner 長期重置語義；REST reset 完成後，
+                # 前端改送 ``reset_session``，只同步這條連線的 closure 狀態，
+                # 避免同一次使用者操作重複遞增 long-term generation。
+                if control_type == "reset":
+                    await memory_runtime.reset()
                 messages, emotion_state, expression_state = [], None, None
                 current_action = None
                 version += 1
@@ -506,16 +530,34 @@ async def websocket_endpoint(websocket: WebSocket):
             text = input_event["text"]
             model_name = input_event["model_name"]
             turn_id = input_event["turn_id"]
+            next_user_message = build_user_message(
+                session_id or "default_session", turn_id, text, timestamp=input_event["timestamp"],
+            )
+            source_id = next_user_message["memory_source"]["source_id"]
+            previous = next((item for item in messages
+                             if isinstance(item, dict) and item.get("role") == "user"
+                             and isinstance(item.get("memory_source"), dict)
+                             and item["memory_source"].get("source_id") == source_id), None)
+            if active_turn_id == turn_id or previous is not None:
+                conflict = ((active_turn_text if active_turn_id == turn_id else previous.get("content")) != text)
+                await send({
+                    "type": "error", "turn_id": turn_id,
+                    "code": "turn_id_conflict" if conflict else "turn_id_replayed",
+                    "content": "同一 turn_id 不可對應不同內容" if conflict else "此 turn_id 已處理",
+                })
+                continue
             # 先切換回合，讓新輸入可以立即打斷生成中的舊回合；記憶檢索不能阻塞取消。
             await cancel_active()
             active_turn_id = turn_id
             active_turn_text = text
+            active_turn_message = next_user_message
             active_turn_partial = ""
             active_turn_committed = False
             active_event_id = None
             active_memory_routed = False
             active_task = asyncio.create_task(prepare_and_run_turn(
-                turn_id, text, model_name, data.get("legacy_payloads") is True, mode,
+                turn_id, text, model_name, data.get("legacy_payloads") is True,
+                active_turn_message, mode,
             ))
     except WebSocketDisconnect:
         print("Client disconnected")

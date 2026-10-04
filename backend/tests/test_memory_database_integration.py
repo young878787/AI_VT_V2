@@ -7,6 +7,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -23,10 +24,12 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 load_dotenv(BACKEND_ROOT.parent / ".env", override=False)
 
-from domain.memory_scope import MemoryScope, conversation_id
+from domain.memory_scope import MemoryScope, conversation_id, message_id
 from domain.memory_routing import MemoryRouting
+from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
 from infrastructure.memory_database import check_schema, make_pool
 from infrastructure.memory_repository import MemoryRepository
+from infrastructure.memory_store import load_session_messages, save_session_messages
 from services.memory_db_manager import MemoryDBManager
 from services.memory_import import read_legacy_entries
 from services.memory_retriever import MemoryRetriever
@@ -123,6 +126,115 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # 單純讀取待補內容不會消耗來源。
         self.assertEqual(len(await self.repo.context_jobs(
             {"id": uuid4(), "conversation_id": conversation_id("session"), "generation": 0})), 1)
+
+    async def test_resending_same_event_does_not_reopen_route_or_duplicate_sources(self):
+        event = await self.repo.accept("session", "same-event")
+        self.assertTrue(await self.repo.route(
+            event, MemoryRouting(None), "我喜歡茶", [],
+        ))
+        self.assertEqual(await self.repo.accept("session", "same-event"), event)
+        self.assertFalse(await self.repo.route(
+            event, MemoryRouting(None), "我喜歡茶", [],
+        ))
+        self.assertEqual(
+            (await self._query("SELECT count(*) FROM memory_sources WHERE id = %s", (event,)))[0][0],
+            1,
+        )
+
+    async def test_no_store_policy_overrides_incorrect_repository_route(self):
+        event = await self.repo.accept("session", "no-store-wrong-route")
+        self.assertTrue(await self.repo.route(
+            event, MemoryRouting(None), "甲" * 4001 + "不要記住這件事", [], finalized=False,
+        ))
+        self.assertEqual(await self._query(
+            "SELECT route, status, instruction, route_finalized, recent_dialogue FROM memory_jobs WHERE id = %s",
+            (event,),
+        ), [("none", "ignored", "no_store", True, None)])
+        self.assertEqual(await self._query(
+            "SELECT count(*) FROM memory_sources WHERE id = %s", (event,),
+        ), [(0,)])
+        self.assertIsNone(await self.repo.claim())
+
+    async def test_cross_connection_replay_requires_the_same_persisted_content(self):
+        event, _ = await self.repo.accept_event("session", "cross-connection", "我喜歡茶")
+        self.assertTrue(await self.repo.route(event, MemoryRouting(None), "我喜歡茶", []))
+        with self.assertRaises(MemoryEventReplay):
+            await self.repo.accept_event("session", "cross-connection", "我喜歡茶")
+        with self.assertRaises(MemoryEventConflict):
+            await self.repo.accept_event("session", "cross-connection", "我喜歡咖啡")
+        self.assertEqual(
+            (await self._query("SELECT raw_text FROM memory_sources WHERE id = %s", (event,)))[0][0],
+            "我喜歡茶",
+        )
+
+    async def test_reloaded_history_keeps_source_time_and_excludes_no_store_tail(self):
+        allowed_text = "茶" * 600
+        forbidden_text = "甲" * 4001 + "不要記住這件事"
+        history = []
+        original_time = datetime(2024, 2, 3, 4, 5, 6, tzinfo=timezone.utc)
+        for turn, content in (("history-allowed", allowed_text), ("history-forbidden", forbidden_text)):
+            event, generation = await self.repo.accept_event("session", turn, content)
+            await self.repo.route(event, MemoryRouting("none"), content, [])
+            history.append(build_user_message(
+                "session", turn, content, timestamp=original_time.timestamp(), generation=generation,
+            ))
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "infrastructure.memory_store.CHAT_SESSION_DIR", directory
+        ):
+            save_session_messages("session", history)
+            history = load_session_messages("session")
+        current = await self.repo.accept("session", "history-current")
+        self.assertTrue(await self.repo.route(current, MemoryRouting(None), "本輪新內容", history))
+        self.assertEqual(await self._query(
+            "SELECT message_id, raw_text, occurred_at FROM memory_sources WHERE id = %s",
+            (message_id("session", "history-allowed"),),
+        ), [(message_id("session", "history-allowed"), allowed_text, original_time)])
+        self.assertEqual(await self._query(
+            "SELECT count(*) FROM memory_sources WHERE id = %s",
+            (message_id("session", "history-forbidden"),),
+        ), [(0,)])
+
+    async def test_reset_generation_rejects_sources_retained_by_another_connection(self):
+        old_text = "請記住我喜歡茶"
+        old = await self.repo.accept("session", "before-reset")
+        self.assertTrue(await self.repo.route(old, MemoryRouting(None), old_text, []))
+        stale_message = build_user_message(
+            "session", "before-reset", old_text, timestamp=1_700_000_000, generation=0,
+        )
+
+        await self.repo.reset()
+        current = await self.repo.accept("session", "after-reset")
+        self.assertTrue(await self.repo.route(
+            current, MemoryRouting(None), "本輪新內容", [stale_message],
+        ))
+        self.assertEqual(
+            (await self._query("SELECT count(*) FROM memory_sources WHERE id = %s", (old,)))[0][0],
+            0,
+        )
+
+    async def test_forget_cancelled_source_cannot_be_reintroduced_from_session_history(self):
+        old_text = "請記住我喜歡茶"
+        item = await self._create("forgotten-source")
+        old = message_id("session", "forgotten-source")
+        stale_message = build_user_message(
+            "session", "forgotten-source", old_text, timestamp=1_700_000_000, generation=0,
+        )
+        forget = await self._job("forget-source", "忘記我的茶偏好")
+        await self._apply(
+            forget,
+            [{"action": "FORGET", "target_memory_ids": [str(item["id"])], "reason": "request"}],
+            {item["id"]},
+            {},
+        )
+
+        current = await self.repo.accept("session", "after-forget")
+        self.assertTrue(await self.repo.route(
+            current, MemoryRouting(None), "本輪新內容", [stale_message],
+        ))
+        self.assertEqual(
+            (await self._query("SELECT count(*) FROM memory_sources WHERE id = %s", (old,)))[0][0],
+            0,
+        )
 
     async def test_configured_embedding_model_is_saved(self):
         item = await self._create()
@@ -420,6 +532,56 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({row["status"] for row in await self.repo.related_items("咖啡", VECTOR)}, {"conflict"})
         history = await self.repo.related_items("咖啡", VECTOR, mode="history")
         self.assertEqual({item["status"] for item in history}, {"superseded", "archived", "conflict"})
+
+    async def test_merge_links_current_user_source_to_winner_evidence(self):
+        winner = await self._create("merge-winner")
+        duplicate_job = await self._job("merge-duplicate", "請記住我也偏好烏龍茶")
+        duplicate_decision = {
+            "action": "CREATE", "target_memory_ids": [], "canonical_text": "使用者也偏好烏龍茶",
+            "memory_type": "preference", "reason": "separate duplicate", "importance": 0.7,
+            "confidence": 0.8, "retention_class": "normal",
+        }
+        self.assertTrue(await self._apply(duplicate_job, [duplicate_decision], set(), {0: VECTOR}))
+        duplicate = next(
+            item for item in await self.repo.related_items("烏龍茶", VECTOR)
+            if item["id"] != winner["id"]
+        )
+
+        merge_job = await self._job("merge-current-source", "這兩筆其實是同一個茶偏好")
+        merge_decision = {
+            "action": "MERGE",
+            "target_memory_ids": [str(winner["id"]), str(duplicate["id"])],
+            "reason": "same preference",
+        }
+        self.assertTrue(await self._apply(
+            merge_job, [merge_decision], {winner["id"], duplicate["id"]}, {},
+        ))
+        evidence = await self._query(
+            """SELECT e.kind, s.raw_text FROM memory_evidence e
+            JOIN memory_sources s ON s.id = e.source_id
+            AND s.user_id = e.user_id AND s.character_id = e.character_id
+            WHERE e.memory_id = %s AND e.source_id = %s""",
+            (winner["id"], merge_job["id"]),
+        )
+        self.assertEqual(evidence, [("supports", "這兩筆其實是同一個茶偏好")])
+
+        # 本輪合併來源也必須受到 FORGET 屏障保護；重連後的舊 metadata
+        # 不能把已清除的合併 evidence 重新建回來源表。
+        stale_message = build_user_message(
+            "session", "merge-current-source", "這兩筆其實是同一個茶偏好",
+            timestamp=1_700_000_000, generation=merge_job["generation"],
+        )
+        forget_job = await self._job("forget-merged", "忘記我的茶偏好")
+        self.assertTrue(await self._apply(
+            forget_job,
+            [{"action": "FORGET", "target_memory_ids": [str(winner["id"])], "reason": "request"}],
+            {winner["id"]}, {},
+        ))
+        current = await self.repo.accept("session", "after-forget-merged")
+        self.assertTrue(await self.repo.route(current, MemoryRouting(None), "本輪新內容", [stale_message]))
+        self.assertEqual(await self._query(
+            "SELECT raw_text FROM memory_sources WHERE id = %s", (merge_job["id"],),
+        ), [])
 
     async def _query(self, query, args=()):
         async with self.pool.connection() as connection:
@@ -725,9 +887,16 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "target_memory_ids": [], "reason": "user fact"}
         self.assertTrue(await self._apply(job, [decision], set(), {0: VECTOR}))
         expected = (await self.repo.related_items("AWS", None))[0]
+        context_event = await self.repo.accept("session", "project-context")
+        self.assertTrue(await self.repo.route(
+            context_event, MemoryRouting("needs_context"), "雲端同步使用 AWS", [],
+        ))
         event = await self.repo.accept("session", "project-goal")
         await self.repo.route(event, MemoryRouting(None), "整體設計追求低功耗",
-                              [{"role": "user", "content": "雲端同步使用 AWS"}])
+                              [build_user_message(
+                                  "session", "project-context", "雲端同步使用 AWS",
+                                  timestamp=1_700_000_000, generation=0,
+                              )])
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[0.0, 1.0] + [0.0] * 1022))
         agent = SimpleNamespace(decide=AsyncMock(return_value={"outcome": "ignore", "reason": "candidate inspection"}))
         self.assertTrue(await MemoryWorker(self.repo, embedding, agent, self.manager).process_one())

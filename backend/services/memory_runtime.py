@@ -4,6 +4,7 @@ import asyncio
 from uuid import UUID
 
 from domain.memory_routing import route_memory
+from domain.memory_source import bind_source_generation
 from domain.memory_settings import load_memory_settings
 from infrastructure.memory_database import check_schema, make_pool
 from infrastructure.memory_embedding_client import MemoryEmbeddingClient
@@ -61,8 +62,11 @@ class MemoryRuntime:
         await self.pool.close()
 
     async def accept(self, session_id: str, turn_id: str, text: str | None = None,
-                     recent_dialogue: list[dict] | None = None) -> UUID:
-        event_id = await self.repository.accept(session_id, turn_id)
+                     recent_dialogue: list[dict] | None = None,
+                     user_message: dict | None = None) -> UUID:
+        event_id, generation = await self.repository.accept_event(session_id, turn_id, text)
+        if user_message is not None:
+            bind_source_generation(user_message, generation)
         if text is not None:
             routing = route_memory(text, None)
             # 明確記住／忘記是政策授權，不必等待 JEV；一般 observe 仍等單次 JEV 決定。

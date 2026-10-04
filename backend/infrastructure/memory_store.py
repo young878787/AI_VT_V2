@@ -10,6 +10,7 @@ from core.config import CHAT_SESSION_DIR, CHAT_PERSISTENCE_MAX_MESSAGES, EMOTION
 from core.utils import get_msg_field
 from core.utils import normalize_session_id
 from domain.emotion_state import validate_emotion_state
+from domain.memory_source import MEMORY_SOURCE_FIELD, read_memory_source
 
 # ============================================================
 def _atomic_write(path: str, content: str) -> None:
@@ -104,7 +105,7 @@ def reset_session_summary(session_id: str) -> None:
 # Chat Sessions
 # ============================================================
 def to_persistable_messages(messages: list) -> list[dict]:
-    """只持久化 user/assistant 純文字及中斷標記。"""
+    """持久化可見文字；user 來源 metadata 僅在完整有效時保留。"""
     persisted: list[dict] = []
     for m in messages:
         role = get_msg_field(m, "role", "")
@@ -113,6 +114,8 @@ def to_persistable_messages(messages: list) -> list[dict]:
         content = get_msg_field(m, "content", "")
         if isinstance(content, str) and content:
             item = {"role": role, "content": content}
+            if role == "user" and read_memory_source(m) is not None:
+                item[MEMORY_SOURCE_FIELD] = dict(m[MEMORY_SOURCE_FIELD])
             if role == "assistant" and m.get("status") == "interrupted":
                 item["status"] = "interrupted"
             persisted.append(item)
@@ -138,6 +141,8 @@ def load_session_messages(session_id: str) -> list[dict]:
             content = item.get("content")
             if role in {"user", "assistant"} and isinstance(content, str) and content:
                 restored_item = {"role": role, "content": content}
+                if role == "user" and read_memory_source(item) is not None:
+                    restored_item[MEMORY_SOURCE_FIELD] = dict(item[MEMORY_SOURCE_FIELD])
                 if role == "assistant" and item.get("status") == "interrupted":
                     restored_item["status"] = "interrupted"
                 restored.append(restored_item)

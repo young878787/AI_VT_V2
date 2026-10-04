@@ -8,7 +8,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from domain.memory_decisions import normalize_proposal, agent_tools, validate_batch
-from domain.memory_routing import instruction_policy
+from domain.memory_routing import forget_scope, instruction_policy
 from services.memory_llm import MemoryLLM, PROMPT
 from services.memory_db_manager import _memory_keywords
 
@@ -48,15 +48,77 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
                                set(), {self.source["id"]}, "我喜歡茶")
 
     def test_instruction_negation_and_forget_permissions(self):
-        for text in ("不要忘記我喜歡茶", "我忘記帶傘了", "你記得我喜歡什麼嗎"):
-            self.assertNotEqual(instruction_policy(text), "forget")
+        denied = (
+            ("請幫我寫一句「忘記我的地址」的台詞", "observe"),
+            ("忘記我生日的是我朋友", "observe"),
+            ("Please write a line saying \"forget my address\".", "observe"),
+            ("My friend forgot my birthday.", "observe"),
+            ("Forget my birthday was something my friend did.", "observe"),
+            ("不要忘記我喜歡茶", "remember"),
+            ("Please don't forget my address.", "observe"),
+            ("我忘記帶傘了", "observe"),
+            ("忘記帶傘了", "observe"),
+            ("你記得我喜歡什麼嗎", "observe"),
+            ("更正：忘記我生日的是我朋友", "remember"),
+            ("更正：我現在不喝拿鐵了", "remember"),
+            ("我這週暫時不喝咖啡", "observe"),
+            ("請暫時忘記我的地址", "observe"),
+            ("Forget my address for now.", "observe"),
+            ("暫時不要忘記我的地址", "remember"),
+            ("不是請你忘記我的地址，我是要更正它", "remember"),
+            ("忘記我的密碼怎麼辦？", "observe"),
+            ("忘記我的地址會造成什麼問題？", "observe"),
+            ("Forget my birthday was a mistake.", "observe"),
+        )
+        for text, expected in denied:
+            with self.subTest(text=text):
+                self.assertEqual(instruction_policy(text), expected)
+                schema = next(tool["function"]["parameters"] for tool in agent_tools(
+                    instruction_policy(text) == "forget") if tool["function"]["name"] == "propose_operation")
+                self.assertNotIn("FORGET", schema["properties"]["operation"]["properties"]["action"]["enum"])
+
+        allowed = (
+            "請忘記我的地址",
+            "請忘記「這件事」",
+            "請只忘記咖啡偏好的最新版本",
+            "忘記我的咖啡偏好，包含以前的版本",
+            "幫我刪除關於舊住址的記憶",
+            "請把我的地址忘掉",
+            "請忘記我的地址好嗎？",
+            "Please forget my address.",
+            "Forget about my old address",
+            "Delete my memory about the old address.",
+        )
+        for text in allowed:
+            with self.subTest(text=text):
+                self.assertEqual(instruction_policy(text), "forget")
+                schema = next(tool["function"]["parameters"] for tool in agent_tools(True)
+                              if tool["function"]["name"] == "propose_operation")
+                self.assertIn("FORGET", schema["properties"]["operation"]["properties"]["action"]["enum"])
+
+        self.assertEqual(forget_scope("請只忘記咖啡偏好的最新版本"), "version")
+        self.assertEqual(forget_scope("請只忘記最新的咖啡偏好"), "version")
+        self.assertEqual(forget_scope("請忘記目前的咖啡偏好"), "version")
+        for text in (
+            "請忘記剛剛那筆咖啡偏好",
+            "請只忘記上一筆咖啡偏好",
+            "請只忘記最舊的咖啡偏好",
+            "請忘記這次的咖啡偏好",
+        ):
+            with self.subTest(scope_text=text):
+                self.assertEqual(forget_scope(text), "version")
+        self.assertEqual(forget_scope("忘記我的咖啡偏好，包含以前的版本"), "fact")
         schema = next(tool["function"]["parameters"] for tool in agent_tools(False)
                       if tool["function"]["name"] == "propose_operation")
         self.assertNotIn("FORGET", schema["properties"]["operation"]["properties"]["action"]["enum"])
         target = uuid4()
-        with self.assertRaises(ValueError):
-            normalize_proposal({"action": "FORGET", "source_ids": [str(self.source["id"])],
-                "target_memory_ids": [str(target)], "reason": "erase"}, {target}, {self.source["id"]}, "不要忘記我喜歡茶")
+        proposal = {"action": "FORGET", "source_ids": [str(self.source["id"])],
+                    "target_memory_ids": [str(target)], "reason": "erase"}
+        for text in ("不要忘記我喜歡茶", "請幫我寫一句「忘記我的地址」的台詞", "忘記我生日的是我朋友"):
+            with self.subTest(validator_text=text), self.assertRaises(ValueError):
+                normalize_proposal(proposal, {target}, {self.source["id"]}, text)
+        normalized = normalize_proposal(proposal, {target}, {self.source["id"]}, "請只忘記咖啡偏好的最新版本")
+        self.assertEqual(normalized["forget_scope"], "version")
 
     def test_memory_prompt_preserves_subject_scope_without_domain_overfitting(self):
         self.assertIn("subject or actor explicit", PROMPT)

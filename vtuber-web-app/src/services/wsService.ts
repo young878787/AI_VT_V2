@@ -266,11 +266,8 @@ class WSService {
         this.ttsPlayer.stop();
     }
 
-    /**
-     * 通知後端清空目前 session 的短期對話與情緒狀態。
-     * 應在 REST /api/reset-memory 成功後呼叫。
-     */
-    public sendReset(): void {
+    /** REST owner reset 成功後，同步清空目前 WebSocket 連線的短期狀態。 */
+    public syncResetSession(): void {
         actionScheduler.cancel();
         this.activeTurnId = null;
         this.currentAssistantMessageId = null;
@@ -278,7 +275,7 @@ class WSService {
         this.appliedPlanTurnId = null;
         this.ttsPlayer.stop();
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: 'reset' }));
+            this.ws.send(JSON.stringify({ type: 'reset_session', session_id: this.sessionId }));
         }
     }
 

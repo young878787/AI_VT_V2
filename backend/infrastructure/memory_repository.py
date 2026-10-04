@@ -1,6 +1,6 @@
 """長期記憶的 owner-scoped PostgreSQL 存取。"""
 
-from uuid import UUID, uuid5
+from uuid import UUID
 import re
 
 from pgvector import Vector
@@ -10,6 +10,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from domain.memory_routing import MemoryRouting, instruction_policy
 from domain.memory_scope import MemoryScope, conversation_id, message_id
+from domain.memory_source import MemoryEventConflict, MemoryEventReplay, read_memory_source
 from core.prompt_logger import test_log_dir, trace, trace_event, trace_turn
 
 
@@ -29,7 +30,9 @@ class MemoryRepository:
         self.embedding_model = embedding_model
         self.embedding_contract = embedding_contract
 
-    async def accept(self, session_id: str, turn_id: str) -> UUID:
+    async def accept_event(
+        self, session_id: str, turn_id: str, text: str | None = None,
+    ) -> tuple[UUID, int]:
         """先建立無原文 terminal record；JEV 中斷時保持安全的 NONE。"""
         event_id = message_id(session_id, turn_id)
         owner = (self.scope.user_id, self.scope.character_id)
@@ -42,13 +45,33 @@ class MemoryRepository:
                 generation = (await (await connection.execute(
                     "SELECT generation FROM memory_scope_state WHERE user_id = %s AND character_id = %s FOR SHARE", owner,
                 )).fetchone())[0]
-                await connection.execute(
+                inserted = await connection.execute(
                     """INSERT INTO memory_jobs
                     (id, user_id, character_id, generation, conversation_id, message_id, route, status)
                     VALUES (%s, %s, %s, %s, %s, %s, 'none', 'ignored')
                     ON CONFLICT (user_id, character_id, message_id) DO NOTHING""",
                     (event_id, *owner, generation, conversation_id(session_id), event_id),
                 )
+                if inserted.rowcount == 0 and text is not None:
+                    existing = await (await connection.execute(
+                        """SELECT job.generation, job.status, source.raw_text
+                        FROM memory_jobs AS job LEFT JOIN memory_sources AS source
+                        ON source.id = job.id AND source.user_id = job.user_id
+                        AND source.character_id = job.character_id
+                        WHERE job.id = %s AND job.user_id = %s AND job.character_id = %s""",
+                        (event_id, *owner),
+                    )).fetchone()
+                    if (existing is None or existing[0] != generation
+                            or existing[1] in {"cancelled", "discarded"}):
+                        raise MemoryEventConflict("turn_id 已屬於失效的 memory generation")
+                    raw_text = existing[2]
+                    if raw_text == text and len(text) <= 4001:
+                        raise MemoryEventReplay("turn_id 與內容已接收")
+                    raise MemoryEventConflict("turn_id 已綁定其他或無法驗證的內容")
+        return event_id, generation
+
+    async def accept(self, session_id: str, turn_id: str) -> UUID:
+        event_id, _ = await self.accept_event(session_id, turn_id)
         return event_id
 
     async def route(
@@ -56,13 +79,29 @@ class MemoryRepository:
         recent_dialogue: list[dict], *, finalized: bool = True,
     ) -> bool:
         owner = (self.scope.user_id, self.scope.character_id)
+        policy = instruction_policy(text)
+        # 持久化邊界也拒絕禁存原文，不能依賴呼叫端提供正確 route。
+        if policy == "no_store":
+            routing = MemoryRouting("none")
+            finalized = True
         status = {"none": "ignored", "needs_context": "buffered", "process": "pending", None: "pending"}[routing.route]
-        dialogue = [
-            {"role": item["role"], "content": item["content"][:500]}
-            for item in recent_dialogue[-8:]
+        history = [
+            item for item in recent_dialogue[-8:]
             if isinstance(item, dict) and item.get("role") in {"user", "assistant"}
             and isinstance(item.get("content"), str)
         ]
+        dialogue = [
+            {"role": item["role"], "content": item["content"][:500]}
+            for item in history
+        ]
+        history_sources = []
+        for item in history:
+            source = read_memory_source(item)
+            if source is not None and source.policy != "no_store":
+                history_sources.append((
+                    source.source_id, item["content"][:4001], source.source_id,
+                    source.occurred_at, source.generation,
+                ))
         async with self.pool.connection() as connection:
             async with connection.transaction():
                 await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
@@ -78,38 +117,40 @@ class MemoryRepository:
                     AND job.status IN ('ignored', 'pending') AND NOT job.route_finalized""",
                     (routing.route or "process", routing.confidence,
                      Jsonb([item for item in dialogue if item["role"] == "assistant"][-2:]) if routing.route != "none" else None,
-                     status, instruction_policy(text), routing.error, finalized,
-                     Jsonb({"role": "policy" if instruction_policy(text) == "no_store" else "jev",
+                     status, policy, routing.error, finalized,
+                     Jsonb({"role": "policy" if policy == "no_store" else "jev",
                              "result": routing.route or "review", "confidence": routing.confidence,
                              "error": routing.error}) if finalized else Jsonb({}), event_id, *owner),
                 )
                 changed = cursor.rowcount == 1
                 if changed and routing.route != "none":
                     row = await (await connection.execute(
-                        "SELECT conversation_id FROM memory_jobs WHERE id = %s AND user_id = %s AND character_id = %s",
+                        "SELECT conversation_id, created_at, generation FROM memory_jobs WHERE id = %s AND user_id = %s AND character_id = %s",
                         (event_id, *owner),
                     )).fetchone()
-                    sources = [(event_id, text[:4001])]
-                    sources += [(uuid5(event_id, f"context:{index}"), item["content"])
-                                for index, item in enumerate(dialogue)
-                                if item["role"] == "user" and instruction_policy(item["content"]) != "no_store"][-4:]
+                    eligible_history = set()
+                    if history_sources:
+                        eligible_rows = await (await connection.execute(
+                            """SELECT job.id FROM memory_jobs AS job
+                            JOIN memory_scope_state AS state ON state.user_id = job.user_id
+                            AND state.character_id = job.character_id AND state.generation = job.generation
+                            WHERE job.user_id = %s AND job.character_id = %s
+                            AND job.conversation_id = %s AND job.id = ANY(%s)
+                            AND job.status NOT IN ('cancelled', 'discarded')""",
+                            (*owner, row[0], [source[0] for source in history_sources]),
+                        )).fetchall()
+                        eligible_history = {value[0] for value in eligible_rows}
+                    sources = [(event_id, text[:4001], event_id, row[1])]
+                    sources += [source[:4] for source in history_sources[-4:]
+                                if source[0] in eligible_history and source[4] == row[2]]
                     persisted_sources = []
-                    for source_id, raw_text in sources:
-                        if source_id != event_id:
-                            existing = await (await connection.execute(
-                                """SELECT id FROM memory_sources WHERE user_id = %s AND character_id = %s
-                                AND conversation_id = %s AND speaker = 'user' AND raw_text = %s
-                                ORDER BY occurred_at DESC LIMIT 1""", (*owner, row[0], raw_text),
-                            )).fetchone()
-                            if existing:
-                                persisted_sources.append(existing[0])
-                                continue
+                    for source_id, raw_text, source_message_id, occurred_at in sources:
                         persisted_sources.append(source_id)
                         await connection.execute(
                             """INSERT INTO memory_sources
                             (id, user_id, character_id, conversation_id, message_id, speaker, raw_text, occurred_at)
-                            VALUES (%s, %s, %s, %s, %s, 'user', %s, now()) ON CONFLICT DO NOTHING""",
-                            (source_id, *owner, row[0], event_id, raw_text),
+                            VALUES (%s, %s, %s, %s, %s, 'user', %s, %s) ON CONFLICT DO NOTHING""",
+                            (source_id, *owner, row[0], source_message_id, raw_text, occurred_at),
                         )
                     await connection.execute(
                         "UPDATE memory_jobs SET source_ids = %s WHERE id = %s AND user_id = %s AND character_id = %s",
@@ -414,7 +455,8 @@ class MemoryRepository:
                 await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
                 async with await connection.execute(
                     """SELECT id, speaker, raw_text, occurred_at,
-                    (length(raw_text) >= 500 AND id <> message_id) AS truncated FROM memory_sources
+                    (length(raw_text) >= 4001 OR (length(raw_text) >= 500 AND id <> message_id)) AS truncated
+                    FROM memory_sources
                     WHERE user_id = %s AND character_id = %s AND id = ANY(%s) AND raw_text IS NOT NULL
                     AND speaker = 'user' ORDER BY occurred_at LIMIT 32""", (*owner, list(ids)),
                 ) as cursor:

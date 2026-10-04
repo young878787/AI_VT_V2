@@ -291,6 +291,14 @@ class MemoryDBManager:
                         if len(targets) < 2:
                             raise ValueError("MERGE 至少需要兩個 target，首個為保留版本")
                         winner = targets[0]
+                        # MERGE 沒有建立新 memory item，仍須把促成本輪合併的
+                        # 第一個使用者來源連到 winner，避免只留下操作 audit、
+                        # 卻無法從正式記憶追溯本輪 evidence。
+                        await connection.execute(
+                            """INSERT INTO memory_evidence (user_id, character_id, memory_id, source_id, kind)
+                            VALUES (%s, %s, %s, %s, 'supports') ON CONFLICT DO NOTHING""",
+                            (*owner, winner, source_id),
+                        )
                         for loser in targets[1:]:
                             await connection.execute(
                                 """INSERT INTO memory_evidence (user_id, character_id, memory_id, source_id, kind)
