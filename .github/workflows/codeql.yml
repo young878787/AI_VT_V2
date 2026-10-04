@@ -26,7 +26,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [python, javascript-typescript]
+        include:
+          - language: python
+            scan_path: backend
+          - language: javascript-typescript
+            scan_path: vtuber-web-app
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -45,12 +49,15 @@ jobs:
           queries: security-extended
           config: |
             paths:
-              - backend
-              - vtuber-web-app/src
-              - vtuber-web-app/scripts
-              - vtuber-web-app/vite.config.ts
-              - vtuber-web-app/eslint.config.js
+              # CodeQL paths must be directories here. Keep each language in
+              # its own source tree so the Python extractor does not receive
+              # frontend files as directory roots.
+              - ${{ matrix.scan_path }}
             paths-ignore:
+              - vtuber-web-app/node_modules
+              - vtuber-web-app/dist
+              - vtuber-web-app/public
+              - vtuber-web-app/docs
               - vtuber-web-app/src/live2d/framework
               - vtuber-web-app/src/generated
 
