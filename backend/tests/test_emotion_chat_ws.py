@@ -2,7 +2,6 @@ import asyncio
 import json
 import pathlib
 import sys
-import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch

@@ -32,10 +32,8 @@ from domain.jev_questions import (
 from api.routes.memory_router import reset_memory
 from infrastructure.memory_store import (
     load_session_emotion_state,
-    load_session_messages,
     reset_session_emotion_state,
     save_session_emotion_state,
-    save_session_messages,
     to_persistable_messages,
 )
 from backend.tests.chat_session_fakes import make_chat_session_service
