@@ -14,4 +14,5 @@ sqlalchemy>=2,<3
 # Voice pipeline（ASR / VAD / TTS，port 自 voice_txt；實測 numpy 2.5.3、sherpa-onnx 1.13.8）
 numpy>=1.26
 sherpa-onnx>=1.12
+sherpa-onnx-core>=1.12
 piper-tts[zh]

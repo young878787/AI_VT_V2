@@ -38,7 +38,7 @@ Memory worker → Memory LLM → DB Manager → PostgreSQL
 AI_VT_V2/
 ├── backend/                   # Python FastAPI 後端
 │   ├── main.py                # WebSocket server 進入點
-│   ├── requirements.txt       # Python 相依套件
+│   ├── requirements.txt       # 舊版 pip／相容安裝清單
 │   └── memory/                # 短期 session／summary／emotion state（gitignored）
 └── vtuber-web-app/            # React + TypeScript + Vite 前端
     └── src/
@@ -60,12 +60,12 @@ AI_VT_V2/
 | Sponsor 技術 | 阿里雲 Qwen（DashScope） | LLM 對話備選模型 |
 | 本地語音 | Piper TTS（ONNX） | 本地語音合成（可選） |
 
-完整相依請見 `backend/requirements.txt` 與 `vtuber-web-app/package.json`。Live2D 渲染使用 Cubism SDK for Web 5（見下方第三方素材）。
+Python 主環境的依賴以根目錄 `pyproject.toml` 宣告、由 `uv.lock` 鎖定；`backend/requirements.txt` 保留給既有 pip／CI 流程。前端依賴見 `vtuber-web-app/package.json`。Live2D 渲染使用 Cubism SDK for Web 5（見下方第三方素材）。
 
 ## 安裝與執行
 
 ```bash
-# 1. 前置需求：Python 3.10+、Node.js 18+、JEV 與 CHAT／MEMORY 路線所需的 API 金鑰
+# 1. 前置需求：Python 3.12、uv、Node.js 18+、JEV 與 CHAT／MEMORY 路線所需的 API 金鑰
 # 2. 將 Cubism SDK for Web 解壓縮至專案根目錄，命名為 CubismSdkForWeb-5-r.5-beta.3/
 #    （gitignored，需手動放置；另有 MotionSync plugin 目錄，同為 gitignored）
 
@@ -83,13 +83,18 @@ cp .env.example .env
 # FRONTEND_PORT=5287
 # JEV 固定使用 SystemOne 請求格式；可用 JEV_AI_BASE_URL、JEV_AI_MODEL 覆寫預設。
 
-# 4. 啟動後端（Windows PowerShell）
+# 4. 建立／同步根目錄主環境（Linux/macOS）
+uv sync
+source .venv/bin/activate
 cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
 python main.py
 # WebSocket 伺服器：ws://localhost:${BACKEND_PORT}/ws/chat
+
+# Windows PowerShell：在專案根目錄執行
+# uv sync
+# .\.venv\Scripts\Activate.ps1
+# cd backend
+# python main.py
 
 # 5. 啟動前端（另開一個終端機，於專案根目錄）
 cd vtuber-web-app
@@ -107,13 +112,13 @@ bun run dev
 
 ```bash
 # 從 repository 根目錄執行：23 個固定 cases ＋ 5 個既有 Chat LLM 新生成案例
-backend/.venv/bin/python backend/tools/chat_test_cli.py
+.venv/bin/python backend/tools/chat_test_cli.py
 
 # 原樣重播 28-case 快照，不再次生成
-backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
+.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
 
 # 保留既有 TXT 表情回歸；max-turns 僅用於 TXT
-backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
+.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
 ```
 
 長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。正式 DB 已在備份後升至 Alembic head `0006_single_memory_agent`，正式啟動與目前 schema 相符。
@@ -175,7 +180,7 @@ JEV 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。生成沿用 `CHAT_AI_
 | Google AI Studio（Gemini, OpenAI 相容端點） | https://ai.google.dev/gemini-api/docs/openai | 使用時將金鑰與端點填入對應 CHAT／MEMORY 路線 |
 | 阿里雲 Qwen（DashScope 相容模式） | https://www.alibabacloud.com/help/en/model-studio/ | 使用時將金鑰與端點填入對應 CHAT／MEMORY 路線 |
 | Piper TTS 模型 | `backend/models/`（本地檔案） | 由 `piper-tts[zh]` 載入 ONNX 模型，不依賴雲端語音服務 |
-| React / Vite (rolldown-vite) / Zustand / FastAPI / uvicorn 等開源套件 | 見 `vtuber-web-app/package.json`、`backend/requirements.txt` | 各自遵循 MIT / Apache-2.0 等開源授權 |
+| React / Vite (rolldown-vite) / Zustand / FastAPI / uvicorn 等開源套件 | 見 `vtuber-web-app/package.json`、`pyproject.toml`、`uv.lock` | 各自遵循 MIT / Apache-2.0 等開源授權 |
 
 本 repo 不含任何 API 金鑰、Token 或個人資料；`backend/memory/` 已 gitignore。
 

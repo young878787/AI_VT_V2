@@ -8,6 +8,7 @@ skills-lock.json
 # ============================================================
 # Python Backend
 # ============================================================
+/.venv/
 backend/.venv/
 backend/__pycache__/
 backend/**/__pycache__/
@@ -91,3 +92,4 @@ backend/memory/emotion_states/
 # Local model sources / archives (not for VCS)
 # ============================================================
 vtuber_model/
+uv.lock

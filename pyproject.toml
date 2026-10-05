@@ -1,3 +1,35 @@
+[project]
+name = "ai-vt-v2"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "websockets",
+    "openai",
+    "httpx",
+    "python-dotenv",
+    "tiktoken",
+    "python-multipart",
+    "psycopg[binary,pool]>=3.2,<4",
+    "pgvector>=0.4,<1",
+    "alembic>=1.15,<2",
+    "sqlalchemy>=2,<3",
+    "numpy>=1.26",
+    "sherpa-onnx>=1.12",
+    "sherpa-onnx-core>=1.12",
+    "piper-tts[zh]",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9,<1",
+]
+
+[tool.uv]
+# This repository is an application, not an installable Python package.
+package = false
+
 [tool.ruff]
 target-version = "py312"
 

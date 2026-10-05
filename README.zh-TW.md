@@ -21,7 +21,7 @@
 AI_VT_V2/
 ├── backend/                   # Python FastAPI 後端
 │   ├── main.py                # WebSocket 伺服器、LLM 協調、記憶系統
-│   ├── requirements.txt       # Python 相依套件
+│   ├── requirements.txt       # 舊版 pip／相容安裝清單
 │   └── memory/                # 短期 session／summary／emotion state（已 gitignore）
 │
 └── vtuber-web-app/            # React + TypeScript + Vite 前端
@@ -70,7 +70,8 @@ AI_VT_V2/
 
 ### 前置需求
 
-- Python 3.10+
+- Python 3.12
+- uv
 - Node.js 18+
 - Cubism SDK for Web（放置於專案根目錄，命名為 `CubismSdkForWeb-5-r.5-beta.3/`）
 - JEV 與 CHAT／MEMORY 路線所需的 API 金鑰（JEV 使用 [OpenRouter](https://openrouter.ai) SystemOne）
@@ -93,12 +94,23 @@ MEMORY_AI_MODEL=gpt-4o-mini
 ### 後端啟動
 
 ```bash
+# 從專案根目錄執行；主環境固定在 .venv/
+uv sync
+source .venv/bin/activate   # Linux/macOS
 cd backend
-python -m venv .venv
-.venv\Scripts\activate   # Windows
-pip install -r requirements.txt
 python main.py
 ```
+
+Windows PowerShell 請改用：
+
+```powershell
+uv sync
+.\.venv\Scripts\Activate.ps1
+cd backend
+python main.py
+```
+
+Python 依賴的唯一主要來源是根目錄 `pyproject.toml`，精確解析結果保存在 `uv.lock`；`backend/requirements.txt` 僅保留給既有 pip／相容流程。日後更新依賴時，請在專案根目錄執行 `uv add` 或修改 `pyproject.toml` 後執行 `uv lock`，不要在 `backend/` 另外建立新的 `.venv`。
 
 WebSocket 伺服器啟動於 `ws://localhost:${BACKEND_PORT}/ws/chat`。
 
@@ -122,13 +134,13 @@ Rushia 素材未納入 Git，CI 執行純程式檢查；有素材的本機須另
 
 ```bash
 # 從 repository 根目錄執行完整 23＋5 cases
-backend/.venv/bin/python backend/tools/chat_test_cli.py
+.venv/bin/python backend/tools/chat_test_cli.py
 
 # 精確重播已接受的案例快照
-backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
+.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
 
 # 既有 TXT 表情回歸素材
-backend/.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
+.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
 ```
 
 長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。正式 DB 已在備份後升至 Alembic head `0006_single_memory_agent`，正式啟動與目前 schema 相符。
