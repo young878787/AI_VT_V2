@@ -101,4 +101,20 @@ print(f"[AI Route] CHAT({CHAT_PROVIDER.upper()}) Model: {CHAT_MODEL_NAME} | URL:
 # Context 壓縮閾值
 # ============================================================
 COMPRESS_TOKEN_THRESHOLD: int = 230_000
-COMPRESS_KEEP_RECENT: int = 20
+CHAT_CONTEXT_RECENT_MESSAGES: int = max(2, int(os.getenv("CHAT_CONTEXT_RECENT_MESSAGES", "24")))
+CHAT_COMPRESSION_TRIGGER_MESSAGES: int = max(
+    2, int(os.getenv("CHAT_COMPRESSION_TRIGGER_MESSAGES", "16"))
+)
+CHAT_COMPRESSION_PRESSURE_MESSAGES: int = max(
+    CHAT_COMPRESSION_TRIGGER_MESSAGES,
+    int(os.getenv("CHAT_COMPRESSION_PRESSURE_MESSAGES", "24")),
+)
+CHAT_COMPRESSION_KEEP_RECENT_MESSAGES: int = max(
+    2, int(os.getenv("CHAT_COMPRESSION_KEEP_RECENT_MESSAGES", "8"))
+)
+CHAT_COMPRESSION_TIMEOUT_SEC: float = max(
+    1.0, float(os.getenv("CHAT_COMPRESSION_TIMEOUT_SEC", "30"))
+)
+CHAT_COMPRESSION_RETRY_INTERVAL_SEC: float = max(
+    0.1, float(os.getenv("CHAT_COMPRESSION_RETRY_INTERVAL_SEC", "30"))
+)

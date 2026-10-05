@@ -12,8 +12,9 @@ from api.display_manager import broadcast_to_displays
 from core.config import (
     CHAT_PROVIDER,
     CHAT_MODEL_NAME,
-    CHAT_SESSION_MAX_MESSAGES,
-    COMPRESS_KEEP_RECENT,
+    CHAT_COMPRESSION_KEEP_RECENT_MESSAGES,
+    CHAT_COMPRESSION_PRESSURE_MESSAGES,
+    CHAT_COMPRESSION_TRIGGER_MESSAGES,
     CHAT_CONTEXT_TOKEN_BUDGET,
 )
 from core.prompt_logger import log_turn, reset_log, trace, trace_event, trace_turn, bind_trace_event
@@ -37,13 +38,17 @@ from domain.jev_questions import (
     build_jev_questions,
     map_answers_to_intent,
 )
-from infrastructure.chat_session_repository import ChatSessionStaleError
+from infrastructure.chat_session_repository import (
+    ChatSessionStaleError,
+    ChatSessionTurnConflict,
+    ChatSessionTurnReplay,
+)
 from infrastructure.typesafe_client import call_jev
 from services.chat_service import (
     stream_agent_a,
     build_chat_context,
     retained_prompt_ranges,
-    compress_context,
+    generate_context_summary,
     estimate_token_count,
     synthesize_and_send_voice,
 )
@@ -239,7 +244,6 @@ async def websocket_endpoint(websocket: WebSocket):
     messages: list[dict] = list(session_snapshot["messages"])
     session_id = session_snapshot["session_id"]
     session_generation = session_snapshot["generation"]
-    session_revision = session_snapshot["revision"]
     session_summary = session_snapshot["summary"]
     session_failed = False
     emotion_state: dict | None = session_snapshot["emotion_state"]
@@ -249,7 +253,6 @@ async def websocket_endpoint(websocket: WebSocket):
     active_turn_id: str | None = None
     active_task: asyncio.Task | None = None
     active_turn_text: str | None = None
-    active_turn_message: dict | None = None
     active_turn_partial: str = ""
     active_turn_committed = False
     active_event_id = None
@@ -265,32 +268,84 @@ async def websocket_endpoint(websocket: WebSocket):
         async with send_lock:
             await websocket.send_json(payload)
 
-    async def persist_messages() -> None:
-        nonlocal session_revision, session_failed
-        task = asyncio.create_task(chat_sessions.repository.replace_messages(
-            session_id, session_generation, messages,
+    def consume_task_failure(task: asyncio.Task) -> None:
+        """Retrieve late DB task failures after the caller's timeout path."""
+        if not task.cancelled():
+            task.exception()
+
+    async def refresh_context() -> dict:
+        """Refresh only the short-term projection; durable history stays in PostgreSQL."""
+        nonlocal messages, session_generation, session_summary
+        restored = await chat_sessions.repository.load_context(session_id)
+        if restored is None:
+            raise ChatSessionStaleError("chat session 已刪除")
+        messages = list(restored["messages"])
+        session_generation = restored["generation"]
+        session_summary = restored["summary"]
+        return restored
+
+    async def append_user_message(user_message: dict) -> None:
+        """Persist the user boundary before launching a cancellable model task."""
+        nonlocal session_failed
+        task = asyncio.create_task(chat_sessions.repository.append_user(
+            session_id, session_generation, user_message,
         ))
+        task.add_done_callback(consume_task_failure)
         try:
-            session_revision = await asyncio.wait_for(asyncio.shield(task), timeout=5)
-        except TimeoutError:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            restored = await chat_sessions.repository.load(session_id)
-            expected = chat_sessions.repository.persistable_messages(messages)[-CHAT_SESSION_MAX_MESSAGES:]
-            comparable = [{key: value for key, value in item.items() if key != "created_at"}
-                          for item in restored["messages"]] if restored else []
-            if restored is None or comparable != expected:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        except (ChatSessionTurnReplay, ChatSessionTurnConflict):
+            raise
+        except TimeoutError as exc:
+            try:
+                restored = await chat_sessions.repository.load(session_id)
+            except Exception as confirm_exc:
                 session_failed = True
-                raise RuntimeError("Chat session 保存逾時且無法確認提交結果")
-            session_revision = restored["revision"]
+                raise RuntimeError("Chat user 保存逾時且無法確認提交結果") from confirm_exc
+            durable = next((item for item in restored["messages"] if item.get("role") == "user"
+                            and item.get("turn_id") == user_message.get("turn_id")), None) if restored else None
+            if durable is None or durable.get("content") != user_message.get("content"):
+                session_failed = True
+                raise RuntimeError("Chat user 保存逾時且無法確認提交結果") from exc
+        except Exception:
+            session_failed = True
+            raise
+
+    async def finish_durable_turn(
+        turn_id: str, assistant_text: str | None, outcome: str,
+    ) -> None:
+        nonlocal session_failed
+        task = asyncio.create_task(chat_sessions.repository.finish_turn(
+            session_id, session_generation, turn_id, assistant_text, outcome=outcome,
+        ))
+        task.add_done_callback(consume_task_failure)
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            await refresh_context()
+        except TimeoutError as exc:
+            try:
+                restored = await chat_sessions.repository.load(session_id)
+            except Exception as confirm_exc:
+                session_failed = True
+                raise RuntimeError("Chat turn 結案逾時且無法確認提交結果") from confirm_exc
+            user = next((item for item in restored["messages"] if item.get("role") == "user"
+                         and item.get("turn_id") == turn_id), None) if restored else None
+            assistant = next((item for item in restored["messages"] if item.get("role") == "assistant"
+                              and item.get("turn_id") == turn_id), None) if restored else None
+            confirmed = user is not None and user.get("turn_state") == outcome
+            if assistant_text:
+                confirmed = confirmed and assistant is not None and assistant.get("content") == assistant_text
+            if not confirmed:
+                session_failed = True
+                raise RuntimeError("Chat turn 結案逾時且無法確認提交結果") from exc
+            await refresh_context()
         except Exception:
             session_failed = True
             raise
 
     async def persist_emotion(state: dict) -> None:
-        nonlocal session_revision, session_failed
+        nonlocal session_failed
         try:
-            session_revision = await chat_sessions.repository.update_emotion(
+            await chat_sessions.repository.update_emotion(
                 session_id, session_generation, state,
             )
         except Exception:
@@ -338,8 +393,8 @@ async def websocket_endpoint(websocket: WebSocket):
     memory_event_task = asyncio.create_task(relay_memory_events())
 
     async def cancel_active(finalize_memory: bool = True) -> None:
-        nonlocal active_task, active_turn_id, active_turn_text, active_turn_message, active_turn_partial
-        nonlocal active_turn_committed, active_event_id, active_memory_routed, messages
+        nonlocal active_task, active_turn_id, active_turn_text, active_turn_partial
+        nonlocal active_turn_committed, active_event_id, active_memory_routed
         if active_task is not None and not active_task.done():
             interrupted_turn_id = active_turn_id
             interrupted_text = active_turn_text
@@ -352,17 +407,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 persistence_failed = False
                 partial = active_turn_partial if not was_committed else ""
                 if short_term_enabled and interrupted_text and not was_committed:
-                    messages.append(dict(active_turn_message) if active_turn_message else {
-                        "role": "user", "content": interrupted_text,
-                    })
-                if short_term_enabled and partial:
-                    messages.append({
-                        "role": "assistant", "content": partial, "status": "interrupted",
-                        "turn_id": interrupted_turn_id,
-                    })
-                if short_term_enabled and interrupted_text and not was_committed:
                     try:
-                        await persist_messages()
+                        await finish_durable_turn(interrupted_turn_id, partial or None, "interrupted")
                     except Exception:
                         persistence_failed = True
                         await send({"type": "error", "code": "session_persistence_failed",
@@ -384,7 +430,6 @@ async def websocket_endpoint(websocket: WebSocket):
         active_task = None
         active_turn_id = None
         active_turn_text = None
-        active_turn_message = None
         active_turn_partial = ""
         active_turn_committed = False
         active_event_id = None
@@ -393,10 +438,61 @@ async def websocket_endpoint(websocket: WebSocket):
             task.cancel()
         tts_tasks.clear()
 
+    async def compress_once(force: bool = False) -> bool:
+        """Run one bounded summary transaction; the service owns the loop/retry."""
+        try:
+            batch = await chat_sessions.repository.load_compression_prefix(
+                session_id,
+                session_generation,
+                trigger_messages=CHAT_COMPRESSION_TRIGGER_MESSAGES,
+                keep_recent_messages=CHAT_COMPRESSION_KEEP_RECENT_MESSAGES,
+                force=force,
+            )
+        except ChatSessionStaleError:
+            if force:
+                await send({"type": "compress_done", "status": "skipped", "reason": "stale"})
+            return False
+        if batch is None:
+            if force:
+                await send({"type": "compress_done", "status": "skipped", "reason": "no_work"})
+            return False
+        reason = "manual" if force else (
+            "pressure" if batch["eligible_message_count"] >= CHAT_COMPRESSION_PRESSURE_MESSAGES
+            else "threshold"
+        )
+        await send({"type": "compressing", "status": "started", "reason": reason})
+        try:
+            summary = await generate_context_summary(batch["previous_summary"], batch["messages"])
+            await chat_sessions.repository.commit_summary(
+                session_id,
+                session_generation,
+                batch["cursor"],
+                summary,
+                batch["through_sequence"],
+            )
+            await refresh_context()
+            await send({"type": "compress_done", "status": "success", "reason": reason})
+            return True
+        except ChatSessionStaleError:
+            await send({"type": "compress_done", "status": "skipped", "reason": "stale"})
+            return False
+        except asyncio.CancelledError:
+            try:
+                await send({"type": "compress_done", "status": "cancelled", "reason": "lifecycle"})
+            except Exception:
+                pass
+            raise
+        except Exception as exc:
+            try:
+                await send({"type": "compress_done", "status": "failed", "reason": type(exc).__name__})
+            except Exception:
+                pass
+            raise
+
     async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool,
                        event_id=None, request_started: float | None = None) -> None:
-        nonlocal messages, emotion_state, expression_state, version, active_turn_partial, session_revision
-        nonlocal active_turn_committed, active_memory_routed
+        nonlocal messages, emotion_state, expression_state, version, active_turn_partial
+        nonlocal active_turn_committed, active_memory_routed, session_failed
         action_task: asyncio.Task | None = None
         try:
             context = build_jev_context(
@@ -451,7 +547,7 @@ async def websocket_endpoint(websocket: WebSocket):
             profile_start = (profile_marker_start + len(profile_marker)
                              if profile_marker_start >= 0 else prompt.find("使用者資料：\n") + len("使用者資料：\n"))
             trace("chat_context", {"messages": chat_messages, "session_id": session_id,
-                "token_budget": CHAT_CONTEXT_TOKEN_BUDGET, "history_limit": 16,
+                "token_budget": CHAT_CONTEXT_TOKEN_BUDGET, "history_limit": len(snapshot["messages"]),
                 "history_count": len(snapshot["messages"]), "history": snapshot["messages"],
                 "summary": snapshot["summary"],
                 "summary_section_start": prompt.find("本 session 已完成的對話摘要：\n") + len("本 session 已完成的對話摘要：\n") if snapshot["summary"] else None,
@@ -495,12 +591,10 @@ async def websocket_endpoint(websocket: WebSocket):
             if active_turn_id != turn_id:
                 return
             if short_term_enabled:
-                messages.extend([dict(snapshot["user_message"]), {
-                    "role": "assistant", "content": reply, "turn_id": turn_id,
-                }])
+                await finish_durable_turn(turn_id, reply, "completed")
             active_turn_committed = True
             if short_term_enabled:
-                await persist_messages()
+                await chat_sessions.ensure_compression(compress_once)
             log_turn(turn_count=sum(item.get("role") == "user" for item in messages),
                      system_prompt=prompt, user_message=text, dialogue_agent_output=reply,
                      tool_names=[], output_tokens=estimate_token_count([{"role": "assistant", "content": reply}]))
@@ -533,6 +627,11 @@ async def websocket_endpoint(websocket: WebSocket):
         except Exception as exc:
             print(f"[Chat error][{CHAT_PROVIDER.upper()}] Model={CHAT_MODEL_NAME} | {exc}")
             if active_turn_id == turn_id:
+                if short_term_enabled and not active_turn_committed:
+                    try:
+                        await finish_durable_turn(turn_id, active_turn_partial or None, "failed")
+                    except Exception:
+                        session_failed = True
                 await send({"type": "error", "content": f"API 錯誤: {exc}", "turn_id": turn_id})
         finally:
             if action_task is not None and not action_task.done():
@@ -546,6 +645,13 @@ async def websocket_endpoint(websocket: WebSocket):
         nonlocal active_event_id
         request_started = time.monotonic()
         event_id = None
+        # This immutable view is captured before any await that can let the
+        # background compressor advance the durable cursor.
+        turn_messages = list(messages) if short_term_enabled else []
+        turn_summary = session_summary if short_term_enabled else ""
+        turn_emotion = emotion_state if short_term_enabled else None
+        turn_expression = expression_state
+        turn_action = current_action
         trace_turn.set(turn_id)
         trace_event.set(None)
         write_enabled = mode is None or mode.memory_write
@@ -556,9 +662,13 @@ async def websocket_endpoint(websocket: WebSocket):
         if write_enabled:
             try:
                 event_id = await memory_runtime.accept(
-                    session_id or "default_session", turn_id, text, list(messages), user_message,
+                    session_id or "default_session", turn_id, text, turn_messages, user_message,
                 )
                 active_event_id = event_id
+                if short_term_enabled and hasattr(chat_sessions.repository, "update_user_source"):
+                    await chat_sessions.repository.update_user_source(
+                        session_id, session_generation, turn_id, user_message,
+                    )
                 event_key = str(event_id)
                 memory_event_turn_ids[event_key] = turn_id
                 for event in recent_memory_events():
@@ -567,14 +677,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 trace_event.set(event_id)
                 bind_trace_event(event_id, turn_id)
                 trace("memory_accept", {"session_id": session_id})
-                await send({"type": "input_accepted", "turn_id": turn_id, "event_id": event_id.hex})
             except MemoryEventReplay:
+                if short_term_enabled:
+                    await finish_durable_turn(turn_id, None, "failed")
                 await send({
                     "type": "error", "turn_id": turn_id, "code": "turn_id_replayed",
                     "content": "此 turn_id 已處理",
                 })
                 return
             except MemoryEventConflict:
+                if short_term_enabled:
+                    await finish_durable_turn(turn_id, None, "failed")
                 await send({
                     "type": "error", "turn_id": turn_id, "code": "turn_id_conflict",
                     "content": "同一 turn_id 不可對應不同內容",
@@ -585,16 +698,21 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception as exc:
                 print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
                 await send({"type": "memory_enqueue_error", "turn_id": turn_id})
+        await send({
+            "type": "input_accepted", "turn_id": turn_id,
+            "event_id": event_id.hex if event_id is not None else None,
+            "durable": short_term_enabled,
+        })
         profile, relevant_memory = ({}, "")
-        summary = session_summary if short_term_enabled else ""
+        summary = turn_summary
         if read_enabled:
             profile, relevant_memory = await memory_runtime.retrieve(text, event_id=event_id,
-                recent_dialogue=list(messages) if short_term_enabled else [], summary=summary)
+                recent_dialogue=turn_messages, summary=summary)
         snapshot = {
-            "messages": list(messages) if short_term_enabled else [],
-            "emotion": emotion_state if short_term_enabled else None,
-            "expression": expression_state,
-            "action": current_action,
+            "messages": turn_messages,
+            "emotion": turn_emotion,
+            "expression": turn_expression,
+            "action": turn_action,
             "profile": profile,
             "memory": relevant_memory,
             "summary": summary,
@@ -622,6 +740,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         await send({"type": "session_ready", "session_id": session_id})
+        if short_term_enabled:
+            await chat_sessions.ensure_compression(compress_once)
         while True:
             data = json.loads(await websocket.receive_text())
             if not isinstance(data, dict):
@@ -631,7 +751,7 @@ async def websocket_endpoint(websocket: WebSocket):
             except (ValueError, TypeError):
                 await send({"type": "error", "content": "無效的隔離測試模式", "turn_id": data.get("turn_id")})
                 continue
-            if session_failed:
+            if session_failed and data.get("type") not in {"reset", "reset_session", "sync"}:
                 await send({"type": "error", "code": "session_persistence_failed",
                             "content": "聊天狀態保存失敗，請重新連線後再繼續。",
                             "turn_id": data.get("turn_id")})
@@ -643,7 +763,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 test_snapshot = await chat_sessions.switch_test_session(test_alias)
                 session_id = test_snapshot["session_id"]
                 session_generation = test_snapshot["generation"]
-                session_revision = test_snapshot["revision"]
                 session_summary = test_snapshot["summary"]
                 messages = list(test_snapshot["messages"]) if next_short_term else []
                 emotion_state = test_snapshot["emotion_state"] if next_short_term else None
@@ -659,13 +778,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 expression_state = None
                 current_action = None
                 if short_term_enabled:
-                    restored = await chat_sessions.repository.load(session_id)
+                    restored = await chat_sessions.repository.load_context(session_id)
                     if restored is None:
                         raise ChatSessionStaleError("chat session 已刪除")
                     messages = list(restored["messages"])
                     emotion_state = restored["emotion_state"]
                     session_generation = restored["generation"]
-                    session_revision = restored["revision"]
                     session_summary = restored["summary"]
                 else:
                     messages = []
@@ -675,6 +793,7 @@ async def websocket_endpoint(websocket: WebSocket):
             control_type = data.get("type")
             if control_type in {"reset", "reset_session"}:
                 await cancel_active(finalize_memory=False)
+                await chat_sessions.stop_compression()
                 # ``reset`` 保留既有 owner 長期重置語義；REST reset 完成後，
                 # 前端改送 ``reset_session``，只同步這條連線的 closure 狀態，
                 # 避免同一次使用者操作重複遞增 long-term generation。
@@ -690,8 +809,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     reset_state = await chat_sessions.repository.reset(session_id)
                 messages, emotion_state, expression_state = [], None, None
                 session_generation = reset_state["generation"]
-                session_revision = reset_state["revision"]
                 session_summary = ""
+                session_failed = False
                 current_action = None
                 version += 1
                 reset_log()
@@ -713,26 +832,12 @@ async def websocket_endpoint(websocket: WebSocket):
                                       if data["status"] == "started" else None)
                 continue
             if control_type == "compress":
-                if short_term_enabled and len(messages) > COMPRESS_KEEP_RECENT + 1:
-                    expected_revision = session_revision
-
-                    async def commit_summary(summary_text, compressed_messages):
-                        nonlocal session_revision, session_summary, session_failed
-                        try:
-                            session_revision = await chat_sessions.repository.commit_summary(
-                                session_id, session_generation, expected_revision,
-                                summary_text, compressed_messages,
-                            )
-                            session_summary = summary_text[:4000]
-                        except Exception:
-                            session_failed = True
-                            raise
-
-                    messages = await compress_context(
-                        messages, websocket, session_id, send, commit_summary,
-                    )
+                if short_term_enabled:
+                    task = await chat_sessions.ensure_compression(compress_once, force=True)
+                    if task is None:
+                        await send({"type": "compress_done", "status": "skipped", "reason": "already_running"})
                 else:
-                    await send({"type": "compress_done"})
+                    await send({"type": "compress_done", "status": "skipped", "reason": "short_term_disabled"})
                 continue
             input_event = normalize_chat_input(data, session_id)
             if input_event is None:
@@ -761,16 +866,36 @@ async def websocket_endpoint(websocket: WebSocket):
             await cancel_active()
             if session_failed:
                 continue
+            if short_term_enabled:
+                try:
+                    await append_user_message(next_user_message)
+                except ChatSessionTurnReplay:
+                    await send({
+                        "type": "error", "turn_id": turn_id, "code": "turn_id_replayed",
+                        "content": "此 turn_id 已處理",
+                    })
+                    continue
+                except ChatSessionTurnConflict:
+                    await send({
+                        "type": "error", "turn_id": turn_id, "code": "turn_id_conflict",
+                        "content": "同一 turn_id 不可對應不同內容",
+                    })
+                    continue
+                except Exception:
+                    await send({
+                        "type": "error", "turn_id": turn_id, "code": "session_persistence_failed",
+                        "content": "聊天狀態保存失敗，請重新連線後再繼續。",
+                    })
+                    continue
             active_turn_id = turn_id
             active_turn_text = text
-            active_turn_message = next_user_message
             active_turn_partial = ""
             active_turn_committed = False
             active_event_id = None
             active_memory_routed = False
             active_task = asyncio.create_task(prepare_and_run_turn(
                 turn_id, text, model_name, data.get("legacy_payloads") is True,
-                active_turn_message, mode,
+                next_user_message, mode,
             ))
     except WebSocketDisconnect:
         print("Client disconnected")

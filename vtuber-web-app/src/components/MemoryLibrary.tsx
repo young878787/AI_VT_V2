@@ -115,6 +115,15 @@ export const MemoryLibrary = ({ open, onClose }: MemoryLibraryProps) => {
     }
   };
 
+  const loadSessionPage = async (sessionId: string, offset: number) => {
+    setError(null);
+    try {
+      setSelectedSession(await memoryLibraryService.session(sessionId, { limit: 100, offset }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '聊天紀錄載入失敗');
+    }
+  };
+
   const deleteSession = async (session: ChatSessionSummary) => {
     if (!window.confirm(`確定刪除 session「${session.session_id}」的聊天、摘要與情緒狀態嗎？`)) return;
     try {
@@ -255,7 +264,26 @@ export const MemoryLibrary = ({ open, onClose }: MemoryLibraryProps) => {
                   ))}
                 </div>
                 <div className="memory-library__detail">
-                  {selectedSession ? <SessionDetailPanel detail={selectedSession} /> : <div className="memory-library__placeholder">選擇一個 session 查看聊天紀錄。</div>}
+                  {selectedSession ? (
+                    <>
+                      <SessionDetailPanel detail={selectedSession} />
+                      {(selectedSession.message_count ?? selectedSession.messages.length) > 100 && (
+                        <div className="memory-session-pagination">
+                          <button
+                            type="button"
+                            disabled={(selectedSession.offset ?? 0) === 0}
+                            onClick={() => void loadSessionPage(selectedSession.session_id, Math.max(0, (selectedSession.offset ?? 0) - 100))}
+                          >上一頁</button>
+                          <span>{(selectedSession.offset ?? 0) + 1}–{Math.min((selectedSession.offset ?? 0) + selectedSession.messages.length, selectedSession.message_count ?? selectedSession.messages.length)} / {selectedSession.message_count}</span>
+                          <button
+                            type="button"
+                            disabled={(selectedSession.offset ?? 0) + selectedSession.messages.length >= (selectedSession.message_count ?? 0)}
+                            onClick={() => void loadSessionPage(selectedSession.session_id, (selectedSession.offset ?? 0) + 100)}
+                          >下一頁</button>
+                        </div>
+                      )}
+                    </>
+                  ) : <div className="memory-library__placeholder">選擇一個 session 查看聊天紀錄。</div>}
                 </div>
               </div>
             </div>

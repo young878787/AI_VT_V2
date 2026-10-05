@@ -110,9 +110,14 @@ async def memory_library_sessions(request: Request):
 
 
 @router.get("/api/memory-library/sessions/{session_id}")
-async def memory_library_session(session_id: str, request: Request):
+async def memory_library_session(
+    session_id: str,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0, le=100000),
+):
     try:
-        record = await _library(request).session(session_id)
+        record = await _library(request).session(session_id, limit=limit, offset=offset)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if record is None:

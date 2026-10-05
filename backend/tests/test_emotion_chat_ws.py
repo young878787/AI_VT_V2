@@ -164,7 +164,7 @@ class EmotionWebSocketTests(unittest.TestCase):
 
     def test_persistence_failure_stops_session_before_next_turn(self):
         class FailingRepository(FakeChatSessionRepository):
-            async def replace_messages(self, session_id, generation, messages):
+            async def append_user(self, session_id, generation, message):
                 raise RuntimeError("database unavailable")
 
         service = ChatSessionService(FailingRepository())
@@ -173,7 +173,7 @@ class EmotionWebSocketTests(unittest.TestCase):
              {"content": "第二句", "turn_id": "turn_2"}],
             [jev_answers()], chat_sessions=service,
         )
-        self.assertEqual(len(captured["jev_states"]), 1)
+        self.assertEqual(len(captured["jev_states"]), 0)
         self.assertNotIn("stream_end", [item["type"] for item in socket.payloads])
         self.assertIn("session_persistence_failed", [item.get("code") for item in socket.payloads])
 

@@ -417,10 +417,14 @@ class MemoryLibraryService:
     async def sessions(self) -> list[dict[str, Any]]:
         return await self.chat_repository.list_sessions()
 
-    async def session(self, session_id: str) -> dict[str, Any] | None:
+    async def session(self, session_id: str, *, limit: int = 100, offset: int = 0) -> dict[str, Any] | None:
         normalized = normalize_session_id(session_id)
         if normalized is None:
             raise ValueError("無效的 session_id")
+        if hasattr(self.chat_repository, "load_session_messages"):
+            return await self.chat_repository.load_session_messages(
+                normalized, limit=limit, offset=offset,
+            )
         return await self.chat_repository.load(normalized)
 
     async def delete_session(self, session_id: str) -> dict[str, Any]:

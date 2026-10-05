@@ -76,17 +76,28 @@ export interface ChatSessionSummary {
   updated_at: string;
   has_summary: boolean;
   has_emotion_state: boolean;
+  summary_through_sequence?: number;
 }
 
 export interface ChatMessageRecord {
+  sequence?: number;
+  turn_id?: string;
   role: 'user' | 'assistant';
   content: string;
-  status?: 'interrupted';
+  status?: 'complete' | 'interrupted';
+  turn_state?: 'pending' | 'completed' | 'interrupted' | 'failed';
+  created_at?: string;
 }
 
 export interface ChatSessionDetail {
   session_id: string;
+  generation?: number;
+  revision?: number;
   messages: ChatMessageRecord[];
+  message_count?: number;
+  limit?: number;
+  offset?: number;
+  summary_through_sequence?: number;
   summary: string;
   emotion_state: Record<string, number> | null;
   updated_at: string;

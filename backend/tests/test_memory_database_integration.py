@@ -82,22 +82,21 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_session_is_server_selected_owner_scoped_and_bounded(self):
         session = await self.chat_repo.get_or_create_active()
         self.assertEqual((await self.chat_repo.get_or_create_active())["session_id"], session["session_id"])
-        messages = []
         for index in range(12):
             user = build_user_message(
                 session["session_id"], f"turn_{index}", f"user {index}", generation=0,
             )
             user["turn_id"] = f"turn_{index}"
-            messages.extend([user, {"role": "assistant", "content": f"reply {index}",
-                                    "turn_id": f"turn_{index}"}])
-        revision = await self.chat_repo.replace_messages(
-            session["session_id"], session["generation"], messages,
-        )
+            await self.chat_repo.append_user(session["session_id"], session["generation"], user)
+            await self.chat_repo.finish_turn(
+                session["session_id"], session["generation"], f"turn_{index}", f"reply {index}",
+            )
         restored = await self.chat_repo.load(session["session_id"])
-        self.assertEqual(restored["revision"], revision)
-        self.assertEqual(len(restored["messages"]), 20)
-        self.assertEqual(restored["messages"][0]["content"], "user 2")
+        self.assertGreater(restored["revision"], session["revision"])
+        self.assertEqual(len(restored["messages"]), 24)
+        self.assertEqual(restored["messages"][0]["content"], "user 0")
         self.assertIn("memory_source", restored["messages"][0])
+        self.assertEqual(restored["next_message_sequence"], 24)
 
         other_scope = MemoryScope(uuid4(), self.scope.character_id, self.scope.schema_name)
         other = ChatSessionRepository(self.pool, other_scope)
@@ -107,34 +106,122 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_session_generation_revision_and_replay_guards(self):
         session = await self.chat_repo.get_or_create_active()
-        messages = [{"role": "user", "content": "hello", "turn_id": "turn_1"},
-                    {"role": "assistant", "content": "hi", "turn_id": "turn_1"}]
-        revision = await self.chat_repo.replace_messages(session["session_id"], 0, messages)
-        self.assertEqual(
-            await self.chat_repo.replace_messages(session["session_id"], 0, messages),
-            revision + 1,
-        )
+        user = {"role": "user", "content": "hello", "turn_id": "turn_1"}
+        await self.chat_repo.append_user(session["session_id"], 0, user)
+        await self.chat_repo.finish_turn(session["session_id"], 0, "turn_1", "hi")
+        with self.assertRaisesRegex(Exception, "turn_id"):
+            await self.chat_repo.append_user(session["session_id"], 0, user)
+        await self.chat_repo.commit_summary(session["session_id"], 0, -1, "summary", 1)
         with self.assertRaises(ChatSessionStaleError):
             await self.chat_repo.commit_summary(
-                session["session_id"], 0, revision, "stale", messages,
+                session["session_id"], 0, -1, "stale", 1,
             )
         reset = await self.chat_repo.reset(session["session_id"])
         self.assertEqual(reset["generation"], 1)
         with self.assertRaises(ChatSessionStaleError):
-            await self.chat_repo.replace_messages(session["session_id"], 0, messages)
+            await self.chat_repo.append_user(session["session_id"], 0, user)
         self.assertEqual((await self.chat_repo.load(session["session_id"]))["messages"], [])
 
     async def test_deleting_chat_session_does_not_delete_long_term_memory(self):
         item = await self._create("chat-delete-boundary")
         session = await self.chat_repo.get_or_create_active()
-        await self.chat_repo.replace_messages(
+        await self.chat_repo.append_user(
             session["session_id"], 0,
-            [{"role": "user", "content": "短期文字", "turn_id": "chat-turn"}],
+            {"role": "user", "content": "短期文字", "turn_id": "chat-turn"},
         )
         result = await self.chat_repo.delete(session["session_id"])
         self.assertEqual(result["deleted_sessions"], 1)
         self.assertIsNone(await self.chat_repo.load(session["session_id"]))
         self.assertEqual((await self.repo.read_memories({item["id"]}))[0]["status"], "active")
+
+    async def test_chat_context_cursor_keeps_all_original_rows_and_replay_is_durable(self):
+        session = await self.chat_repo.get_or_create_active()
+        for index in range(30):
+            turn_id = f"long-turn-{index}"
+            await self.chat_repo.append_user(
+                session["session_id"], session["generation"],
+                {"role": "user", "content": f"user {index}", "turn_id": turn_id},
+            )
+            await self.chat_repo.finish_turn(
+                session["session_id"], session["generation"], turn_id, f"reply {index}",
+            )
+
+        context = await self.chat_repo.load_context(session["session_id"])
+        self.assertEqual(len(context["messages"]), 24)
+        self.assertEqual(context["uncompressed_message_count"], 60)
+        with self.assertRaisesRegex(Exception, "turn_id"):
+            await self.chat_repo.append_user(
+                session["session_id"], session["generation"],
+                {"role": "user", "content": "user 0", "turn_id": "long-turn-0"},
+            )
+
+        batch = await self.chat_repo.load_compression_prefix(
+            session["session_id"], session["generation"],
+            trigger_messages=16, keep_recent_messages=8,
+        )
+        self.assertEqual(batch["cursor"], -1)
+        self.assertEqual(batch["through_sequence"], 51)
+        await self.chat_repo.commit_summary(
+            session["session_id"], session["generation"],
+            batch["cursor"], "第一批摘要", batch["through_sequence"],
+        )
+        restored = await self.chat_repo.load(session["session_id"])
+        self.assertEqual(len(restored["messages"]), 60)
+        self.assertEqual(restored["messages"][0]["content"], "user 0")
+        self.assertEqual(restored["summary_through_sequence"], 51)
+        self.assertEqual(
+            (await self.chat_repo.load_context(session["session_id"]))["messages"][0]["content"],
+            "user 26",
+        )
+
+    async def test_pending_turn_blocks_compression_prefix(self):
+        session = await self.chat_repo.get_or_create_active()
+        for index in range(8):
+            turn_id = f"closed-{index}"
+            await self.chat_repo.append_user(
+                session["session_id"], session["generation"],
+                {"role": "user", "content": f"closed {index}", "turn_id": turn_id},
+            )
+            await self.chat_repo.finish_turn(
+                session["session_id"], session["generation"], turn_id, f"reply {index}",
+            )
+        await self.chat_repo.append_user(
+            session["session_id"], session["generation"],
+            {"role": "user", "content": "still generating", "turn_id": "pending"},
+        )
+        batch = await self.chat_repo.load_compression_prefix(
+            session["session_id"], session["generation"],
+            trigger_messages=2, keep_recent_messages=1,
+        )
+        self.assertIsNotNone(batch)
+        self.assertEqual(batch["through_sequence"], 13)
+        self.assertTrue(all(item.get("turn_id") != "pending" for item in batch["messages"]))
+
+    async def test_new_writer_recovers_pending_user_without_inventing_assistant(self):
+        session = await self.chat_repo.get_or_create_active()
+        await self.chat_repo.append_user(
+            session["session_id"], session["generation"],
+            {"role": "user", "content": "程序中止前的輸入", "turn_id": "orphaned"},
+        )
+        recovered = await self.chat_repo.get_or_create_active()
+        self.assertEqual(recovered["messages"][0]["turn_state"], "interrupted")
+        self.assertEqual([item["role"] for item in recovered["messages"]], ["user"])
+
+    async def test_context_window_does_not_split_an_oldest_turn(self):
+        session = await self.chat_repo.get_or_create_active()
+        for index in range(13):
+            turn_id = f"window-turn-{index}"
+            await self.chat_repo.append_user(
+                session["session_id"], session["generation"],
+                {"role": "user", "content": f"window user {index}", "turn_id": turn_id},
+            )
+            await self.chat_repo.finish_turn(
+                session["session_id"], session["generation"], turn_id, f"window reply {index}",
+            )
+        context = await self.chat_repo.load_context(session["session_id"], limit=24)
+        self.assertEqual(len(context["messages"]), 24)
+        self.assertEqual(context["messages"][0]["content"], "window user 1")
+        self.assertEqual(context["messages"][0]["turn_id"], context["messages"][1]["turn_id"])
 
     async def _apply(self, job, decisions, targets, embeddings, context_ids=()):
         applied = []

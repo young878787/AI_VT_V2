@@ -241,10 +241,13 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                 {"role": "assistant", "text": "只送出的半句"},
             ],
         )
-        self.assertIn(
-            {"role": "assistant", "content": "只送出的半句", "status": "interrupted", "turn_id": "turn_1"},
-            chat_sessions.repository.messages,
-        )
+        self.assertTrue(any(
+            item.get("role") == "assistant"
+            and item.get("content") == "只送出的半句"
+            and item.get("status") == "interrupted"
+            and item.get("turn_id") == "turn_1"
+            for item in chat_sessions.repository.messages
+        ))
 
 if __name__ == "__main__":
     unittest.main()

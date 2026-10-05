@@ -31,6 +31,7 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
+        await application.state.chat_session_service.stop_compression()
         await runtime.close()
 
 

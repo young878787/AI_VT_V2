@@ -51,8 +51,15 @@ export const memoryLibraryService = {
       { method: 'DELETE' },
     ),
   sessions: () => request<{ items: ChatSessionSummary[] }>('/api/memory-library/sessions'),
-  session: (sessionId: string) =>
-    request<ChatSessionDetail>(`/api/memory-library/sessions/${encodeURIComponent(sessionId)}`),
+  session: (sessionId: string, options: { limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams({
+      limit: String(options.limit ?? 100),
+      offset: String(options.offset ?? 0),
+    });
+    return request<ChatSessionDetail>(
+      `/api/memory-library/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`,
+    );
+  },
   deleteSession: (sessionId: string) =>
     request<{ status: string }>(`/api/memory-library/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
