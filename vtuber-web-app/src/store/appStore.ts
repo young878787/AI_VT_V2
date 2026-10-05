@@ -14,6 +14,12 @@ export interface ChatMessage {
   status?: 'interrupted';
 }
 
+export interface ChatPerformance {
+  firstTokenLatencyMs: number | null;
+  tokensPerSecond: number | null;
+  outputTokens: number | null;
+}
+
 interface AiBehaviorBridgeModel {
   setAiBehavior?: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number, eyeBallX?: number, eyeBallY?: number) => void;
   setAiHappiness?: (headIntensity: number, durationSec?: number) => void;
@@ -33,9 +39,6 @@ interface AppState {
   // 麥克風狀態
   microphoneEnabled: boolean;
   microphonePermission: 'granted' | 'denied' | 'prompt';
-
-  // 語音輸入（ASR）狀態
-  voiceModeEnabled: boolean;
 
   // 模型載入狀態
   modelLoading: boolean;
@@ -66,6 +69,7 @@ interface AppState {
   isAiTyping: boolean;
   isSpeaking: boolean;
   isCompressing: boolean;
+  chatPerformance: ChatPerformance;
   aiBehavior: {
     headIntensity: number;
     blushLevel: number;
@@ -78,7 +82,6 @@ interface AppState {
   // 動作
   toggleMicrophone: () => void;
   setMicrophonePermission: (permission: 'granted' | 'denied' | 'prompt') => void;
-  setVoiceModeEnabled: (enabled: boolean) => void;
   setModelLoading: (loading: boolean) => void;
   setModelLoaded: (loaded: boolean) => void;
   setModelError: (error: string | null) => void;
@@ -93,6 +96,8 @@ interface AppState {
   setAiTyping: (isTyping: boolean) => void;
   setSpeaking: (isSpeaking: boolean) => void;
   setCompressing: (isCompressing: boolean) => void;
+  setChatPerformance: (metrics: Partial<ChatPerformance>) => void;
+  clearChatPerformance: () => void;
   setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number, eyeBallX?: number, eyeBallY?: number) => void;
   setBlinkControl: (action: BlinkAction, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
   setExpressionPlan: (plan: ExpressionPlanPayload) => void;
@@ -120,7 +125,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 初始狀態
   microphoneEnabled: false,
   microphonePermission: 'prompt',
-  voiceModeEnabled: false,
   modelLoading: false,
   modelLoaded: false,
   modelError: null,
@@ -129,7 +133,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   showControls: true,
 
   // 模型變換初始狀態
-  modelDragEnabled: false,
+  modelDragEnabled: true,
   modelScale: 1.0,
 
   // Hit Area 調試初始狀態
@@ -146,6 +150,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   isAiTyping: false,
   isSpeaking: false,
   isCompressing: false,
+  chatPerformance: {
+    firstTokenLatencyMs: null,
+    tokensPerSecond: null,
+    outputTokens: null,
+  },
   aiBehavior: {
     headIntensity: 0,
     blushLevel: 0,
@@ -169,9 +178,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setMicrophonePermission: (permission) =>
     set({ microphonePermission: permission }),
-
-  setVoiceModeEnabled: (enabled) =>
-    set({ voiceModeEnabled: enabled }),
 
   setModelLoading: (loading) =>
     set({ modelLoading: loading }),
@@ -208,8 +214,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleModelDrag: () =>
     set((state) => ({
       modelDragEnabled: !state.modelDragEnabled,
-      // 開啟拖移模式時，暂停視線追蹤避免衝突
-      eyeTrackingEnabled: state.modelDragEnabled ? state.eyeTrackingEnabled : false
     })),
 
   setModelScale: (scale: number) => {
@@ -286,6 +290,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSpeaking: (isSpeaking) => set({ isSpeaking }),
 
   setCompressing: (isCompressing) => set({ isCompressing }),
+
+  setChatPerformance: (metrics) => set((state) => ({
+    chatPerformance: { ...state.chatPerformance, ...metrics },
+  })),
+
+  clearChatPerformance: () => set({
+    chatPerformance: {
+      firstTokenLatencyMs: null,
+      tokensPerSecond: null,
+      outputTokens: null,
+    },
+  }),
 
   setAiBehavior: (headIntensity, blushLevel, eyeLOpen, eyeROpen, durationSec = 5.0, mouthForm = 0.0, browLY = 0.0, browRY = 0.0, browLAngle = 0.0, browRAngle = 0.0, browLForm = 0.0, browRForm = 0.0, eyeSync = true, eyeLSmile = 0.0, eyeRSmile = 0.0, browLX = 0.0, browRX = 0.0, bodyAngleX = 0.0, bodyAngleY = 0.0, bodyAngleZ = 0.0, breathLevel = 0.35, physicsImpulse = 0.0, eyeBallX = 0.0, eyeBallY = 0.0) => {
     set({ aiBehavior: { headIntensity, blushLevel, eyeLOpen, eyeROpen } });

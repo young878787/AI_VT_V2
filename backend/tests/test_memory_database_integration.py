@@ -1,6 +1,7 @@
 """使用專用 DB 與每個測試獨立的 schema 驗證 Memory transaction。"""
 
 import asyncio
+import json
 import math
 import os
 import pathlib
@@ -32,6 +33,7 @@ from infrastructure.memory_repository import MemoryRepository
 from infrastructure.memory_store import load_session_messages, save_session_messages
 from services.memory_db_manager import MemoryDBManager
 from services.memory_import import read_legacy_entries
+from services.memory_library import MemoryLibraryService
 from services.memory_retriever import MemoryRetriever
 from services.memory_worker import MemoryWorker
 from tools.chat_test_cli import MemoryRunStore, wait_memory_job
@@ -1068,6 +1070,46 @@ asyncio.run(main())
         self.assertEqual([row["id"] for row in candidates], [expected["id"]])
         self.assertTrue(candidates[0]["exact_match"])
         self.assertAlmostEqual(candidates[0]["similarity"], 0)
+
+    async def test_memory_library_lists_details_and_deletes_group_with_sources(self):
+        item = await self._create("library-delete")
+        library = MemoryLibraryService(self.repo)
+
+        listing = await library.list_memories()
+        self.assertEqual([row["id"] for row in listing["items"]], [str(item["id"])])
+        detail = await library.memory_detail(item["group_id"])
+        self.assertIsNotNone(detail)
+        self.assertEqual(len(detail["versions"]), 1)
+        self.assertEqual(len(detail["evidence"]), 1)
+
+        result = await library.delete_memory_group(item["group_id"])
+        self.assertEqual(result["deleted_memory_count"], 1)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 0)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_sources"))[0][0], 0)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_audit"))[0][0], 2)
+
+    async def test_memory_library_export_and_owner_purge_remove_all_rows(self):
+        await self._create("library-purge")
+        library = MemoryLibraryService(self.repo)
+        lines = [line async for line in library.export_jsonl()]
+        self.assertEqual(json.loads(lines[0])["record_type"], "manifest")
+        self.assertEqual(json.loads(lines[1])["embedding"], VECTOR)
+
+        result = await library.purge_owner_data()
+        self.assertGreaterEqual(result["purged"]["memory_items"], 1)
+        for table in ("memory_items", "memory_sources", "memory_jobs", "memory_audit", "memory_forget_barriers"):
+            self.assertEqual((await self._query(f"SELECT count(*) FROM {table}"))[0][0], 0)
+
+    async def test_memory_library_purge_rejects_old_claim_after_generation_change(self):
+        job = await self._job("library-generation")
+        library = MemoryLibraryService(self.repo)
+        await library.purge_owner_data()
+        decision = {
+            "action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
+            "target_memory_ids": [], "source_ids": [str(job["id"])], "reason": "user statement",
+            "importance": .7, "confidence": .8, "retention_class": "normal",
+        }
+        self.assertFalse(await self.manager.apply(job, [decision], set(), {0: VECTOR}))
 
     async def test_0005_migration_replays_sources_and_invalidates_old_claim(self):
         schema = "test_" + uuid4().hex

@@ -4,7 +4,7 @@ Voice WebSocket 端點（即時語音輸入）。
 協議（見 docs/2026-09-21-語音即時整合計劃.md §8）：
 - C→S binary：raw Int16LE PCM 16kHz mono，建議 ~100ms/幀
 - C→S JSON：{"type":"mic_state","active":true|false}（半雙工閘門，false 時丟棄音訊）
-- S→C JSON：{"type":"asr_state","state":"listening"|"processing"|"idle"}
+- S→C JSON：{"type":"asr_state","state":"ready"|"listening"|"processing"|"idle"}
             {"type":"asr_final","text":"...","durationMs":1234}
             {"type":"error","message":"..."}
 
@@ -14,11 +14,13 @@ run_coroutine_threadsafe 送回事件迴圈，避免卡住 asyncio。
 """
 import asyncio
 import json
+import logging
 import queue
 import threading
 
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnected
 
 from core.config import (
     ASR_ENABLED,
@@ -32,10 +34,12 @@ from infrastructure.asr_engine import build_online_recognizer, transcribe_online
 from infrastructure.vad_engine import AutoGain, SpeechSegmenter, VadWrapper
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # ASR 模型載入耗時（約 1s），所有連線共用一個 recognizer；
 # decode 保守起見以鎖保護（本應用實際上為單人單連線）。
 _recognizer = None
+_recognizer_error: str | None = None
 _recognizer_lock = threading.Lock()
 _ASR_DECODE_LOCK = threading.Lock()
 
@@ -44,12 +48,35 @@ _FRAME_QUEUE_MAX = 250  # 幀佇列上限（100ms/幀 ≈ 25s 音訊），滿時
 
 
 def _get_recognizer():
-    global _recognizer
+    global _recognizer, _recognizer_error
     if _recognizer is None:
         with _recognizer_lock:
             if _recognizer is None:
-                _recognizer = build_online_recognizer(ASR_MODEL_DIR)
+                try:
+                    _recognizer = build_online_recognizer(ASR_MODEL_DIR)
+                except Exception as exc:
+                    _recognizer_error = str(exc)
+                    raise
+                _recognizer_error = None
     return _recognizer
+
+
+async def initialize_voice_runtime() -> bool:
+    """後端啟動時預載 ASR；失敗只停用語音，不阻止文字聊天啟動。"""
+    if not ASR_ENABLED:
+        logger.info("ASR disabled; voice input will not be started")
+        return False
+    try:
+        await asyncio.to_thread(_get_recognizer)
+    except Exception:
+        logger.exception("ASR preload failed; voice input is unavailable")
+        return False
+    logger.info("ASR recognizer preloaded and ready")
+    return True
+
+
+def voice_runtime_error() -> str | None:
+    return _recognizer_error
 
 
 class _VoiceSession:
@@ -148,17 +175,36 @@ async def voice_endpoint(websocket: WebSocket):
         await websocket.close()
         return
 
+    # 正式入口會在 lifespan 預載；保留這個 fallback，避免 router 被單獨掛載時
+    # 對前端宣告 ready 後才發現 recognizer 不可用。
+    if _recognizer is None and not await initialize_voice_runtime():
+        detail = voice_runtime_error() or "未知錯誤"
+        await websocket.send_json({
+            "type": "error",
+            "message": f"ASR 啟動失敗: {detail}",
+        })
+        await websocket.close()
+        return
+
     loop = asyncio.get_running_loop()
-    session = _VoiceSession(websocket, loop)
     try:
-        await websocket.send_json({"type": "asr_state", "state": "idle"})
+        session = _VoiceSession(websocket, loop)
+    except Exception as exc:
+        await websocket.send_json({
+            "type": "error",
+            "message": f"語音處理器啟動失敗: {exc}",
+        })
+        await websocket.close()
+        return
+    try:
+        await websocket.send_json({"type": "asr_state", "state": "ready"})
         while True:
             message = await websocket.receive()
             if message.get("bytes"):
                 session.put_frame(message["bytes"])
             elif message.get("text"):
                 session.handle_control(message["text"])
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, WebSocketDisconnected):
         pass
     finally:
         session.close()

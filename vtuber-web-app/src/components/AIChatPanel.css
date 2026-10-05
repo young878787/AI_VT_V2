@@ -53,6 +53,20 @@
   flex: 1;
 }
 
+.chat-performance {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.chat-performance span + span {
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
 /* 連線狀態點 */
 .ai-chat-panel__header::after {
   content: '';
@@ -205,6 +219,36 @@
   align-items: center;
 }
 
+.voice-button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border: 1px solid var(--border);
+  border-radius: 0px;
+  background: white;
+  color: var(--text-primary);
+  font-size: 15px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.voice-button:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary-strong);
+}
+
+.voice-button.active {
+  background: var(--danger, #ef4444);
+  border-color: transparent;
+  color: white;
+  box-shadow: 0 0 0 3px rgba(239,68,68,0.15);
+}
+
+.voice-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .chat-input {
   flex: 1;
   padding: 8px 14px;
@@ -255,4 +299,22 @@
 
 .send-button:not(:disabled):active {
   transform: translateY(0);
+}
+
+.voice-status {
+  margin-top: 6px;
+  color: var(--primary-strong);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+@media (max-width: 560px) {
+  .chat-performance {
+    gap: 4px;
+    font-size: 9px;
+  }
+
+  .chat-performance span + span {
+    padding-left: 4px;
+  }
 }

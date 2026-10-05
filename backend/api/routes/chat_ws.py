@@ -58,9 +58,34 @@ from services.chat_service import (
 )
 from services.expression_compiler import compile_expression_plan
 from services.expression_legacy_renderer import render_legacy_behavior_payload
+from services.memory_events import recent_memory_events, subscribe_memory_events
 
 
 router = APIRouter()
+
+
+def _memory_status_message(event: dict) -> tuple[str, bool] | None:
+    """將背景記憶事件轉成聊天可讀訊息；回傳值的第二欄表示是否結束追蹤。"""
+    event_type = event.get("type")
+    route = event.get("route")
+    status = event.get("status")
+    if event_type == "memory_route_pending":
+        return "記憶：已收到，等待背景判定。", False
+    if event_type == "memory_route_finalized":
+        if route == "none":
+            return "記憶：本輪不需要寫入。", True
+        return "記憶：已排入背景整理。", False
+    if event_type == "memory_committed":
+        return "記憶：已完成寫入／更新。", True
+    if event_type == "memory_job_finished":
+        messages = {
+            "ignored": "記憶：本輪未產生需要保存的變更。",
+            "buffered": "記憶：需要更多上下文，稍後再整理。",
+            "failed": "記憶：寫入失敗，請查看後端紀錄。",
+        }
+        if status in messages:
+            return messages[status], status != "retry"
+    return None
 
 
 def _fallback_action_intent(previous_state: dict | None) -> dict:
@@ -226,10 +251,53 @@ async def websocket_endpoint(websocket: WebSocket):
     short_term_enabled = True
     tts_tasks: set[asyncio.Task] = set()
     send_lock = asyncio.Lock()
+    memory_event_queue: asyncio.Queue[dict] = asyncio.Queue()
+    memory_event_turn_ids: dict[str, str] = {}
+    queued_memory_revisions: set[int] = set()
 
     async def send(payload: dict) -> None:
         async with send_lock:
             await websocket.send_json(payload)
+
+    def queue_memory_event(event: dict) -> None:
+        event_id = str(event.get("event_id") or "")
+        revision = event.get("revision")
+        if event_id not in memory_event_turn_ids or revision in queued_memory_revisions:
+            return
+        if isinstance(revision, int):
+            queued_memory_revisions.add(revision)
+        memory_event_queue.put_nowait(event)
+
+    unsubscribe_memory_events = subscribe_memory_events(queue_memory_event)
+
+    async def relay_memory_events() -> None:
+        try:
+            while True:
+                event = await memory_event_queue.get()
+                status = _memory_status_message(event)
+                if status is None:
+                    continue
+                message, terminal = status
+                event_id = str(event.get("event_id") or "")
+                turn_id = memory_event_turn_ids.get(event_id)
+                if turn_id is None:
+                    continue
+                await send({
+                    "type": "memory_status",
+                    "turn_id": turn_id,
+                    "event_id": event_id,
+                    "status": event.get("status") or event.get("type"),
+                    "content": message,
+                })
+                if terminal:
+                    memory_event_turn_ids.pop(event_id, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # WebSocket 關閉時停止 UI 事件轉發，不影響背景 worker。
+            return
+
+    memory_event_task = asyncio.create_task(relay_memory_events())
 
     async def cancel_active(finalize_memory: bool = True) -> None:
         nonlocal active_task, active_turn_id, active_turn_text, active_turn_message, active_turn_partial
@@ -257,6 +325,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if finalize_memory and interrupted_event_id and not memory_routed and interrupted_text:
                     memory_runtime.route_background(
                         interrupted_event_id, interrupted_text, None, list(messages),
+                        turn_id=interrupted_turn_id,
                     )
                 await send({
                     "type": "turn_cancelled",
@@ -277,7 +346,7 @@ async def websocket_endpoint(websocket: WebSocket):
         tts_tasks.clear()
 
     async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool,
-                       event_id=None) -> None:
+                       event_id=None, request_started: float | None = None) -> None:
         nonlocal messages, emotion_state, expression_state, version, active_turn_partial
         nonlocal active_turn_committed, active_memory_routed
         action_task: asyncio.Task | None = None
@@ -304,7 +373,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 "policy": instruction_policy(text), "policy_version": POLICY_VERSION,
                 "question_hash": question_hash, "error": "jev_call_failed" if answers is None else None})
             if event_id is not None:
-                memory_runtime.route_background(event_id, text, answers, snapshot["messages"])
+                memory_runtime.route_background(
+                    event_id, text, answers, snapshot["messages"], turn_id=turn_id,
+                )
                 active_memory_routed = True
             emotion_answers = (
                 {field: answers.get(field) for field in EMOTION_FIELDS}
@@ -356,13 +427,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 send,
             ))
 
+            first_token_latency_ms: float | None = None
+
             async def send_chunk(piece: str) -> None:
+                nonlocal first_token_latency_ms
                 nonlocal active_turn_partial
                 if active_turn_id == turn_id:
+                    if first_token_latency_ms is None and request_started is not None:
+                        first_token_latency_ms = round((time.monotonic() - request_started) * 1000, 1)
                     await send({"type": "text_stream", "content": piece, "turn_id": turn_id})
                     if active_turn_id == turn_id:
                         active_turn_partial += piece
 
+            generation_started = time.monotonic()
             reply = await stream_agent_a(chat_messages, send_chunk)
             if not reply:
                 reply = "嗯……"
@@ -377,7 +454,19 @@ async def websocket_endpoint(websocket: WebSocket):
             log_turn(turn_count=sum(item.get("role") == "user" for item in messages),
                      system_prompt=prompt, user_message=text, dialogue_agent_output=reply,
                      tool_names=[], output_tokens=estimate_token_count([{"role": "assistant", "content": reply}]))
-            await send({"type": "stream_end", "turn_id": turn_id})
+            generation_ms = round((time.monotonic() - generation_started) * 1000, 1)
+            output_tokens = estimate_token_count([{"role": "assistant", "content": reply}])
+            tokens_per_second = round(output_tokens / max(generation_ms / 1000, 0.001), 1)
+            await send({
+                "type": "stream_end",
+                "turn_id": turn_id,
+                "metrics": {
+                    "first_token_latency_ms": first_token_latency_ms,
+                    "generation_ms": generation_ms,
+                    "output_tokens": output_tokens,
+                    "tokens_per_second": tokens_per_second,
+                },
+            })
             # Action 可以在文字完成後才到；TTS 不等待它。
             speaking_rate = 1.0
             if action_task.done() and not action_task.cancelled() and action_task.exception() is None:
@@ -405,6 +494,7 @@ async def websocket_endpoint(websocket: WebSocket):
     ) -> None:
         """將記憶接收／檢索與生成放在同一個可取消的回合 task。"""
         nonlocal active_event_id
+        request_started = time.monotonic()
         event_id = None
         trace_turn.set(turn_id)
         trace_event.set(None)
@@ -419,6 +509,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     session_id or "default_session", turn_id, text, list(messages), user_message,
                 )
                 active_event_id = event_id
+                event_key = str(event_id)
+                memory_event_turn_ids[event_key] = turn_id
+                for event in recent_memory_events():
+                    if str(event.get("event_id")) == event_key:
+                        queue_memory_event(event)
                 trace_event.set(event_id)
                 bind_trace_event(event_id, turn_id)
                 trace("memory_accept", {"session_id": session_id})
@@ -455,7 +550,10 @@ async def websocket_endpoint(websocket: WebSocket):
             "summary": summary,
             "user_message": user_message,
         }
-        await run_turn(turn_id, text, model_name, snapshot, legacy, event_id)
+        await run_turn(
+            turn_id, text, model_name, snapshot, legacy, event_id,
+            request_started=request_started,
+        )
 
     try:
         while True:
@@ -563,3 +661,6 @@ async def websocket_endpoint(websocket: WebSocket):
         print("Client disconnected")
     finally:
         await cancel_active()
+        unsubscribe_memory_events()
+        memory_event_task.cancel()
+        await asyncio.gather(memory_event_task, return_exceptions=True)

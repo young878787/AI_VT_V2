@@ -9,6 +9,7 @@ class WSService {
     private currentAssistantMessageId: string | null = null;
     private readonly assistantMessageIds = new Map<string, string>();
     private activeTurnId: string | null = null;
+    private activeTurnStartedAt: number | null = null;
     private appliedPlanTurnId: string | null = null;
     private retryCount: number = 0;
     private readonly MAX_RETRIES = 5;
@@ -84,14 +85,21 @@ class WSService {
                             actionScheduler.cancel();
                             this.ttsPlayer.stop();
                             this.currentAssistantMessageId = null;
+                            this.activeTurnStartedAt = null;
                             store.setAiTyping(false);
                         }
                     }
                     return;
                 }
-                if (typeof data.turn_id === 'string' && data.turn_id !== this.activeTurnId) return;
+                if (typeof data.turn_id === 'string' && data.turn_id !== this.activeTurnId
+                    && data.type !== 'memory_status') return;
 
                 if (data.type === 'text_stream') {
+                    if (store.chatPerformance.firstTokenLatencyMs === null && this.activeTurnStartedAt !== null) {
+                        store.setChatPerformance({
+                            firstTokenLatencyMs: performance.now() - this.activeTurnStartedAt,
+                        });
+                    }
                     if (!this.currentAssistantMessageId) {
                         this.currentAssistantMessageId = store.appendChatMessage({ role: 'assistant', content: data.content });
                         if (typeof data.turn_id === 'string') {
@@ -156,6 +164,18 @@ class WSService {
                         this.assistantMessageIds.delete(data.turn_id);
                     }
                     this.currentAssistantMessageId = null;
+                    const metrics = data.metrics;
+                    if (metrics && typeof metrics === 'object') {
+                        store.setChatPerformance({
+                            firstTokenLatencyMs: typeof metrics.first_token_latency_ms === 'number'
+                                ? metrics.first_token_latency_ms : store.chatPerformance.firstTokenLatencyMs,
+                            tokensPerSecond: typeof metrics.tokens_per_second === 'number'
+                                ? metrics.tokens_per_second : null,
+                            outputTokens: typeof metrics.output_tokens === 'number'
+                                ? metrics.output_tokens : null,
+                        });
+                    }
+                    this.activeTurnStartedAt = null;
                     store.setAiTyping(false);
                 } else if (data.type === 'voice') {
                     // TTS 語音播放
@@ -164,6 +184,10 @@ class WSService {
                     store.setCompressing(true);
                 } else if (data.type === 'compress_done') {
                     store.setCompressing(false);
+                } else if (data.type === 'memory_status') {
+                    if (typeof data.content === 'string' && data.content.trim()) {
+                        store.appendChatMessage({ role: 'system', content: data.content });
+                    }
                 } else if (data.type === 'emotion_update') {
                     if (isEmotionUpdatePayload(data)) {
                         store.setEmotionState(data.state, data.source);
@@ -188,6 +212,7 @@ class WSService {
             this.currentAssistantMessageId = null;
             this.assistantMessageIds.clear();
             this.activeTurnId = null;
+            this.activeTurnStartedAt = null;
             this.appliedPlanTurnId = null;
             const store = useAppStore.getState();
 
@@ -220,6 +245,7 @@ class WSService {
         const isConnected = this.ws && this.ws.readyState === WebSocket.OPEN;
 
         store.appendChatMessage({ role: 'user', content });
+        store.clearChatPerformance();
 
         if (isConnected) {
             actionScheduler.cancel();
@@ -227,6 +253,7 @@ class WSService {
             this.currentAssistantMessageId = null;
             this.activeTurnId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
                 ? crypto.randomUUID() : `turn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+            this.activeTurnStartedAt = performance.now();
             this.appliedPlanTurnId = null;
             // 送出訊息前停止當前 TTS 播放
             this.ttsPlayer.stop();
@@ -270,10 +297,12 @@ class WSService {
     public syncResetSession(): void {
         actionScheduler.cancel();
         this.activeTurnId = null;
+        this.activeTurnStartedAt = null;
         this.currentAssistantMessageId = null;
         this.assistantMessageIds.clear();
         this.appliedPlanTurnId = null;
         this.ttsPlayer.stop();
+        useAppStore.getState().clearChatPerformance();
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ type: 'reset_session', session_id: this.sessionId }));
         }

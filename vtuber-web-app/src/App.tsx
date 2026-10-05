@@ -1,5 +1,5 @@
 /** Rushia 主舞台；調整工具保留在不影響取景的側邊抽屜。 */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Live2DCanvas } from '@components/Live2DCanvas';
 import { ControlPanel } from '@components/ControlPanel';
 import { AIChatPanel } from '@components/AIChatPanel';
@@ -7,6 +7,7 @@ import { HitAreaOverlay } from '@components/HitAreaOverlay';
 import { ExpressionPlanDebugPanel } from '@components/ExpressionPlanDebugPanel';
 import { NativeParamPanel } from '@components/NativeParamPanel';
 import { EmotionSidebar } from '@components/EmotionSidebar';
+import { MemoryLibrary } from '@components/MemoryLibrary';
 import { useAppStore } from '@store/appStore';
 import './App.css';
 
@@ -21,6 +22,8 @@ function App() {
   const isSpeaking = useAppStore(s => s.isSpeaking);
   const resetModelTransform = useAppStore(s => s.resetModelTransform);
   const [drawer, setDrawer] = useState<Drawer>(null);
+  const [memoryLibraryOpen, setMemoryLibraryOpen] = useState(false);
+  const closeMemoryLibrary = useCallback(() => setMemoryLibraryOpen(false), []);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('appearance');
   const drawerTrigger = useRef<HTMLButtonElement | null>(null);
   const closeButton = useRef<HTMLButtonElement | null>(null);
@@ -62,6 +65,9 @@ function App() {
           <button type="button" className={`room-button room-button--subtle ${drawer === 'settings' ? 'room-button--active' : ''}`}
             aria-expanded={drawer === 'settings'} aria-controls="room-tools"
             onClick={event => toggleDrawer('settings', event.currentTarget)}>設定</button>
+          <button type="button" className={`room-button ${memoryLibraryOpen ? 'room-button--active' : ''}`}
+            aria-expanded={memoryLibraryOpen} aria-controls="memory-library"
+            onClick={() => { setDrawer(null); setMemoryLibraryOpen(true); }}>記憶圖書館</button>
         </div>
       </header>
 
@@ -99,6 +105,7 @@ function App() {
           {drawer === 'settings' && settingsTab === 'emotion' && <div className="room-drawer__panel room-drawer__emotion"><EmotionSidebar /></div>}
         </div>
       </aside>
+      <MemoryLibrary open={memoryLibraryOpen} onClose={closeMemoryLibrary} />
     </div>
   );
 }

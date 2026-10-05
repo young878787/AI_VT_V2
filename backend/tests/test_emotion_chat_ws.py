@@ -154,6 +154,15 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(len(plan["debug"]["jevDecisionQuestionHash"]), 12)
         self.assertEqual(socket.payloads[-1]["type"], "stream_end")
 
+    def test_stream_end_reports_chat_performance_metrics(self):
+        socket, _ = self._run([{"content": "測試效能"}], [jev_answers()])
+        stream_end = next(item for item in socket.payloads if item["type"] == "stream_end")
+        metrics = stream_end["metrics"]
+        self.assertGreaterEqual(metrics["first_token_latency_ms"], 0)
+        self.assertGreaterEqual(metrics["generation_ms"], 0)
+        self.assertGreater(metrics["output_tokens"], 0)
+        self.assertGreater(metrics["tokens_per_second"], 0)
+
     def test_rest_followup_reset_session_does_not_reset_long_term_memory_again(self):
         socket, captured = self._run([{"type": "reset_session", "session_id": "session_a"}], [])
         captured["runtime"].reset.assert_not_awaited()

@@ -5,6 +5,7 @@
 import os
 import json
 import tempfile
+from datetime import datetime
 
 from core.config import CHAT_SESSION_DIR, CHAT_PERSISTENCE_MAX_MESSAGES, EMOTION_STATE_DIR
 from core.utils import get_msg_field
@@ -160,7 +161,91 @@ def save_session_messages(session_id: str, messages: list) -> None:
         os.makedirs(CHAT_SESSION_DIR, exist_ok=True)
         path = os.path.join(CHAT_SESSION_DIR, f"{session_id}.json")
         data = to_persistable_messages(messages)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        _atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
     except Exception as e:
         print(f"寫入 session 失敗 ({session_id}): {e}")
+
+
+def _session_file(session_id: str) -> str:
+    normalized = normalize_session_id(session_id)
+    if not normalized or normalized != session_id:
+        raise ValueError("無效的 session_id")
+    return os.path.join(CHAT_SESSION_DIR, f"{normalized}.json")
+
+
+def list_session_records() -> list[dict]:
+    """列出目前短期持久化目錄中的 session，不讀取長期記憶。"""
+    try:
+        names = os.listdir(CHAT_SESSION_DIR)
+    except FileNotFoundError:
+        return []
+    records = []
+    for name in names:
+        if not name.endswith(".json") or name.endswith(".summary.json"):
+            continue
+        session_id = name[:-5]
+        if normalize_session_id(session_id) != session_id:
+            continue
+        path = os.path.join(CHAT_SESSION_DIR, name)
+        try:
+            messages = load_session_messages(session_id)
+            modified_at = datetime.fromtimestamp(os.path.getmtime(path)).astimezone().isoformat()
+            summary_path = _session_summary_path(session_id)
+            emotion_path = _emotion_state_path(session_id)
+            first_user = next((item["content"] for item in messages if item.get("role") == "user"), "")
+            records.append({
+                "session_id": session_id,
+                "message_count": len(messages),
+                "preview": first_user[:160],
+                "updated_at": modified_at,
+                "has_summary": os.path.exists(summary_path),
+                "has_emotion_state": os.path.exists(emotion_path),
+            })
+        except (OSError, ValueError):
+            continue
+    return sorted(records, key=lambda item: item["updated_at"], reverse=True)
+
+
+def get_session_record(session_id: str) -> dict | None:
+    """回傳指定 session 的短期資料；不存在時回 None。"""
+    normalized = normalize_session_id(session_id)
+    if not normalized or normalized != session_id:
+        raise ValueError("無效的 session_id")
+    path = _session_file(normalized)
+    if not os.path.exists(path):
+        return None
+    messages = load_session_messages(normalized)
+    return {
+        "session_id": normalized,
+        "messages": messages,
+        "summary": load_session_summary(normalized),
+        "emotion_state": load_session_emotion_state(normalized),
+        "updated_at": datetime.fromtimestamp(os.path.getmtime(path)).astimezone().isoformat(),
+    }
+
+
+def delete_session(session_id: str) -> dict:
+    """刪除指定 session 的訊息、摘要與情緒檔案。"""
+    normalized = normalize_session_id(session_id)
+    if not normalized or normalized != session_id:
+        raise ValueError("無效的 session_id")
+    paths = (
+        _session_file(normalized),
+        _session_summary_path(normalized),
+        _emotion_state_path(normalized),
+    )
+    deleted = []
+    for path in paths:
+        try:
+            os.unlink(path)
+            deleted.append(path)
+        except FileNotFoundError:
+            pass
+    return {"session_id": normalized, "deleted_files": len(deleted)}
+
+
+def delete_all_sessions() -> dict:
+    """刪除所有可辨識的短期 session 檔案。"""
+    session_ids = [item["session_id"] for item in list_session_records()]
+    deleted_files = sum(delete_session(session_id)["deleted_files"] for session_id in session_ids)
+    return {"session_count": len(session_ids), "deleted_files": deleted_files}

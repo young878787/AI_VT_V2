@@ -70,7 +70,12 @@ class MemoryWorker:
         async def finish(status, **kwargs):
             elapsed()
             async with asyncio.timeout(DB_TIMEOUT_SEC):
-                return await self.repository.finish(job, status, diagnostic=diagnostic, **kwargs)
+                changed = await self.repository.finish(job, status, diagnostic=diagnostic, **kwargs)
+                if changed and status in {"ignored", "buffered", "failed"}:
+                    publish_memory_event(
+                        "memory_job_finished", str(job["id"]), str(job["message_id"]), status=status,
+                    )
+                return changed
 
         async def embed(text, purpose):
             key = (getattr(getattr(self.embedding, "settings", None), "embedding_contract", None),

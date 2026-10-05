@@ -84,7 +84,7 @@ class MemoryRuntime:
         return event_id
 
     def route_background(self, event_id: UUID, text: str, answers: object,
-                         recent_dialogue: list[dict]) -> None:
+                         recent_dialogue: list[dict], turn_id: str | None = None) -> None:
         routing = route_memory(text, answers)
 
         async def save_route() -> None:
@@ -92,7 +92,7 @@ class MemoryRuntime:
                 changed = await self.repository.route(event_id, routing, text, recent_dialogue)
                 if changed:
                     publish_memory_event(
-                        "memory_route_finalized", str(event_id), str(event_id),
+                        "memory_route_finalized", str(event_id), turn_id or str(event_id),
                         route=routing.route or "process", confidence=routing.confidence,
                         explicit_request=routing.explicit_request,
                     )
