@@ -16,7 +16,7 @@
 - 持久化記憶：PostgreSQL／pgvector `MemoryRuntime` 保存跨 session 的使用者特徵、偏好與事件；舊 JSON／Markdown 只供一次性匯入。
 - 背景記憶整理：JEV 負責分類，Memory LLM 產生受驗證的記憶決策，DB Manager 交易寫入 PostgreSQL。
 - 上下文自動壓縮：Chat 只取最近對話與有界相關記憶；手動壓縮的摘要存於 session 專用檔，維持 context window 可用。
-- 可選 TTS 語音：支援 Google Cloud TTS（Chirp 3 HD），可開關（`TTS_ENABLED`）。
+- 可選本地 TTS 語音：使用 Piper ONNX 推理，可開關（`TTS_ENABLED`）。
 - 手動除錯面板：ControlPanel / ModelParamPanel 可手動調參、即時檢視 Live2D 參數。
 
 ## 系統架構
@@ -25,7 +25,7 @@
 使用者文字／語音 → /ws/chat → PostgreSQL MemoryRuntime 接收事件與檢索
                             ↓
                         JEV Emotion → Runtime Emotion
-                            ├── Chat 逐段文字 → TTS
+                            ├── Chat 完整文字 → 本地 Piper TTS
                             └── JEV Action → expression compiler → expression_plan
                                                         ↓
                                   前端 Action Scheduler → Live2D adapter → LAppModel
@@ -57,7 +57,8 @@ AI_VT_V2/
 | AI 模型 | OpenRouter / NVIDIA Build / Google AI Studio (Gemini) / 阿里雲 Qwen（DashScope，相容 OpenAI API） | Chat 對白、Memory 判斷；JEV 另行決定情緒與動作 |
 | 前端 | React 19、TypeScript、Vite（rolldown-vite）、Zustand | UI、Live2D 渲染、WebSocket 客戶端、全域狀態 |
 | 後端 | Python、FastAPI、WebSocket（uvicorn）、tiktoken | 對話編排、expression compiler、記憶系統、token 估算 |
-| Sponsor 技術 | 阿里雲 Qwen（DashScope）、Google Cloud Text-to-Speech（Chirp 3 HD） | LLM 對話備選模型、語音合成（可選） |
+| Sponsor 技術 | 阿里雲 Qwen（DashScope） | LLM 對話備選模型 |
+| 本地語音 | Piper TTS（ONNX） | 本地語音合成（可選） |
 
 完整相依請見 `backend/requirements.txt` 與 `vtuber-web-app/package.json`。Live2D 渲染使用 Cubism SDK for Web 5（見下方第三方素材）。
 
@@ -96,8 +97,8 @@ bun install
 bun run dev
 # 瀏覽器開啟 http://localhost:${FRONTEND_PORT}
 
-# TTS（可選）：需先執行 gcloud auth application-default login，
-# 並在 .env 設 TTS_ENABLED=true、TTS_LANGUAGE、TTS_VOICE_NAME
+# TTS（可選）：將 Piper 模型與 .onnx.json 放入 backend/models/，
+# 並在 .env 設 TTS_ENABLED=true、PIPER_MODEL_PATH 等本地參數
 ```
 
 ## Headless Chat 測試（不開前端）
@@ -151,7 +152,7 @@ JEV 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。生成沿用 `CHAT_AI_
 - Live2D 模型以 Hiyori（SDK 範例模型）調校為主，換其他模型時表情幅度可能需重新調 adapter。
 - Cubism SDK 與模型 binary 為 gitignored，新環境需手動放置，無法一鍵重現。
 - Chat 僅取最近 8 輪與有界相關記憶；較早但未摘要的細節可能不在當輪上下文。
-- TTS 需要 Google Cloud ADC 登入，未設定則僅有文字無語音。
+- TTS 需要本地 Piper 模型檔；未啟用或模型不存在時僅有文字無語音。
 - GitHub Actions 分為 `backend-tests`（Ruff + unittest）、`frontend-tests`（Bun lockfile、lint、契約／runtime 檢查與 build）及 `CodeQL`（Python、JavaScript／TypeScript 安全掃描），均在 push／PR 執行；CodeQL 另有每週排程。Rushia 素材未追蹤，完整資源驗收須在本機執行 `bun run check:rushia-assets`，CI build 不代表模型可載入。
 - `bun run build` 在部分 Windows 環境可能出現 `spawn EPERM`（與程式碼正確性無關，重試或換終端機即可）。
 
@@ -173,7 +174,7 @@ JEV 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。生成沿用 `CHAT_AI_
 | NVIDIA Build API | https://build.nvidia.com | 使用時將金鑰與端點填入對應 CHAT／MEMORY 路線 |
 | Google AI Studio（Gemini, OpenAI 相容端點） | https://ai.google.dev/gemini-api/docs/openai | 使用時將金鑰與端點填入對應 CHAT／MEMORY 路線 |
 | 阿里雲 Qwen（DashScope 相容模式） | https://www.alibabacloud.com/help/en/model-studio/ | 使用時將金鑰與端點填入對應 CHAT／MEMORY 路線 |
-| Google Cloud Text-to-Speech（Chirp 3 HD） | https://cloud.google.com/text-to-speech | 需 GCP ADC 登入，`TTS_ENABLED=true` 才啟用 |
+| Piper TTS 模型 | `backend/models/`（本地檔案） | 由 `piper-tts[zh]` 載入 ONNX 模型，不依賴雲端語音服務 |
 | React / Vite (rolldown-vite) / Zustand / FastAPI / uvicorn 等開源套件 | 見 `vtuber-web-app/package.json`、`backend/requirements.txt` | 各自遵循 MIT / Apache-2.0 等開源授權 |
 
 本 repo 不含任何 API 金鑰、Token 或個人資料；`backend/memory/` 已 gitignore。

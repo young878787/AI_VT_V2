@@ -68,10 +68,8 @@ ASR_SAMPLE_RATE: int = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 ASR_USE_AGC: bool = env_flag("ASR_USE_AGC", True)
 ASR_SILENCE_SEC: float = float(os.getenv("ASR_SILENCE_SEC", "1.2"))
 
-# TTS 輸出引擎：piper（本地串流）| google（既有整檔 Chirp3 路徑）
-TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "google").lower().strip()
-if TTS_PROVIDER not in ("piper", "google"):
-    raise RuntimeError(f"未知的 TTS_PROVIDER='{TTS_PROVIDER}'。支援值: piper | google")
+# TTS 僅使用本地 Piper 推理；未啟用或模型不存在時維持純文字回覆。
+TTS_ENABLED: bool = env_flag("TTS_ENABLED", False)
 PIPER_MODEL_PATH: str = os.getenv(
     "PIPER_MODEL_PATH", os.path.join(_BACKEND_DIR, "models", "zh_TW-multi-voice.onnx")
 )

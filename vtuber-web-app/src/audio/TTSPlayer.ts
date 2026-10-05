@@ -73,10 +73,10 @@ export class TTSPlayer {
     /**
      * 播放 Base64 編碼的音訊
      * @param audioBase64 Base64 編碼的音訊資料
-     * @param format 音訊格式（預設 mp3）
+     * @param format 音訊格式（本地 Piper 預設 wav）
      * @returns Promise，播放完成時 resolve
      */
-    public async play(audioBase64: string, _format: string = 'mp3'): Promise<void> {
+    public async play(audioBase64: string, _format: string = 'wav'): Promise<void> {
         void _format;
         // 停止當前播放
         this.stop();

@@ -5,8 +5,9 @@ port 自 voice_txt/src/voice_txt/tts.py，差異：
   - 合成輸出改為 synthesize_to_wav()：回傳 (wav_bytes, sample_rate)
   - SentenceSplitter 原樣保留（切句規則經 voice_txt 測試驗證）
 
-鏈路：LLM 串流 content → SentenceSplitter 切句 → PiperTTS 逐句合成
-→ voice_chunk 訊息（base64 WAV）→ 前端排程播放。
+目前聊天鏈路：完整 LLM 回覆 → TTSService → PiperTTS 合成 WAV
+→ `voice` 訊息（base64 WAV）→ 前端播放與口型同步。
+`SentenceSplitter` 保留給本地串流切句的獨立測試與後續接線使用。
 """
 from __future__ import annotations
 
@@ -111,25 +112,25 @@ class PiperTTS:
         next(self.voice.synthesize("你好。", syn_config=self._syn_config()), None)
         self.warmup_ms = (time.perf_counter() - t_w) * 1000
 
-    def _syn_config(self):
+    def _syn_config(self, length_scale: float | None = None):
         from piper import SynthesisConfig
 
         return SynthesisConfig(speaker_id=self.speaker_id,
-                               length_scale=self.length_scale,
+                               length_scale=self.length_scale if length_scale is None else length_scale,
                                normalize_audio=True)
 
-    def synthesize_float32(self, text: str) -> tuple[np.ndarray, int]:
+    def synthesize_float32(self, text: str, length_scale: float | None = None) -> tuple[np.ndarray, int]:
         """合成一句 → (float32 mono 樣本, sample_rate)。"""
         chunks = [c.audio_float_array for c in self.voice.synthesize(
-            text, syn_config=self._syn_config())]
+            text, syn_config=self._syn_config(length_scale))]
         if not chunks:
             return np.zeros(0, dtype=np.float32), self.sample_rate
         audio = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
         return np.asarray(audio, dtype=np.float32), self.sample_rate
 
-    def synthesize_to_wav(self, text: str) -> tuple[bytes, int]:
+    def synthesize_to_wav(self, text: str, length_scale: float | None = None) -> tuple[bytes, int]:
         """合成一句 → (16-bit mono WAV bytes, sample_rate)，可直接餵瀏覽器 decodeAudioData。"""
-        audio, sr = self.synthesize_float32(text)
+        audio, sr = self.synthesize_float32(text, length_scale)
         pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:

@@ -159,7 +159,7 @@ class WSService {
                     store.setAiTyping(false);
                 } else if (data.type === 'voice') {
                     // TTS 語音播放
-                    this.playVoice(data.audio, data.format || 'mp3');
+                    this.playVoice(data.audio, data.format || 'wav');
                 } else if (data.type === 'compressing') {
                     store.setCompressing(true);
                 } else if (data.type === 'compress_done') {
