@@ -12,12 +12,11 @@ from api.display_manager import broadcast_to_displays
 from core.config import (
     CHAT_PROVIDER,
     CHAT_MODEL_NAME,
-    CHAT_PERSISTENCE_ENABLED,
+    CHAT_SESSION_MAX_MESSAGES,
     COMPRESS_KEEP_RECENT,
     CHAT_CONTEXT_TOKEN_BUDGET,
 )
 from core.prompt_logger import log_turn, reset_log, trace, trace_event, trace_turn, bind_trace_event
-from core.utils import normalize_session_id
 from domain.agent_a_prompts import build_agent_a_prompt, build_turn_scope_hint
 from domain.emotion_state import EMOTION_FIELDS, resolve_emotion_state, NEUTRAL_EMOTION_STATE
 from domain.expression_intent_schema import (
@@ -38,15 +37,7 @@ from domain.jev_questions import (
     build_jev_questions,
     map_answers_to_intent,
 )
-from infrastructure.memory_store import (
-    load_session_emotion_state,
-    load_session_messages,
-    load_session_summary,
-    reset_session_emotion_state,
-    save_session_emotion_state,
-    save_session_messages,
-    reset_session_summary,
-)
+from infrastructure.chat_session_repository import ChatSessionStaleError
 from infrastructure.typesafe_client import call_jev
 from services.chat_service import (
     stream_agent_a,
@@ -58,6 +49,7 @@ from services.chat_service import (
 )
 from services.expression_compiler import compile_expression_plan
 from services.expression_legacy_renderer import render_legacy_behavior_payload
+from services.chat_session_service import ChatSessionInUseError
 from services.memory_events import recent_memory_events, subscribe_memory_events
 
 
@@ -232,11 +224,25 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     app = getattr(websocket, "app", None)
     memory_runtime = getattr(getattr(app, "state", None), "memory_runtime", None)
+    chat_sessions = getattr(getattr(app, "state", None), "chat_session_service", None)
     if memory_runtime is None:
         raise RuntimeError("MemoryRuntime 尚未啟動")
-    messages: list[dict] = []
-    session_id: str | None = None
-    emotion_state: dict | None = None
+    if chat_sessions is None:
+        raise RuntimeError("ChatSessionService 尚未啟動")
+    writer_context = chat_sessions.writer()
+    try:
+        session_snapshot = await writer_context.__aenter__()
+    except ChatSessionInUseError as exc:
+        await websocket.send_json({"type": "error", "code": "session_in_use", "content": str(exc)})
+        await websocket.close(code=1008)
+        return
+    messages: list[dict] = list(session_snapshot["messages"])
+    session_id = session_snapshot["session_id"]
+    session_generation = session_snapshot["generation"]
+    session_revision = session_snapshot["revision"]
+    session_summary = session_snapshot["summary"]
+    session_failed = False
+    emotion_state: dict | None = session_snapshot["emotion_state"]
     expression_state: dict | None = None
     current_action: dict | None = None
     version = 0
@@ -258,6 +264,38 @@ async def websocket_endpoint(websocket: WebSocket):
     async def send(payload: dict) -> None:
         async with send_lock:
             await websocket.send_json(payload)
+
+    async def persist_messages() -> None:
+        nonlocal session_revision, session_failed
+        task = asyncio.create_task(chat_sessions.repository.replace_messages(
+            session_id, session_generation, messages,
+        ))
+        try:
+            session_revision = await asyncio.wait_for(asyncio.shield(task), timeout=5)
+        except TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            restored = await chat_sessions.repository.load(session_id)
+            expected = chat_sessions.repository.persistable_messages(messages)[-CHAT_SESSION_MAX_MESSAGES:]
+            comparable = [{key: value for key, value in item.items() if key != "created_at"}
+                          for item in restored["messages"]] if restored else []
+            if restored is None or comparable != expected:
+                session_failed = True
+                raise RuntimeError("Chat session 保存逾時且無法確認提交結果")
+            session_revision = restored["revision"]
+        except Exception:
+            session_failed = True
+            raise
+
+    async def persist_emotion(state: dict) -> None:
+        nonlocal session_revision, session_failed
+        try:
+            session_revision = await chat_sessions.repository.update_emotion(
+                session_id, session_generation, state,
+            )
+        except Exception:
+            session_failed = True
+            raise
 
     def queue_memory_event(event: dict) -> None:
         event_id = str(event.get("event_id") or "")
@@ -311,6 +349,7 @@ async def websocket_endpoint(websocket: WebSocket):
             active_task.cancel()
             await asyncio.gather(active_task, return_exceptions=True)
             if interrupted_turn_id:
+                persistence_failed = False
                 partial = active_turn_partial if not was_committed else ""
                 if short_term_enabled and interrupted_text and not was_committed:
                     messages.append(dict(active_turn_message) if active_turn_message else {
@@ -319,20 +358,29 @@ async def websocket_endpoint(websocket: WebSocket):
                 if short_term_enabled and partial:
                     messages.append({
                         "role": "assistant", "content": partial, "status": "interrupted",
+                        "turn_id": interrupted_turn_id,
                     })
-                if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id and interrupted_text and not was_committed:
-                    save_session_messages(session_id, messages)
-                if finalize_memory and interrupted_event_id and not memory_routed and interrupted_text:
+                if short_term_enabled and interrupted_text and not was_committed:
+                    try:
+                        await persist_messages()
+                    except Exception:
+                        persistence_failed = True
+                        await send({"type": "error", "code": "session_persistence_failed",
+                                    "content": "聊天狀態保存失敗，請重新連線後再繼續。",
+                                    "turn_id": interrupted_turn_id})
+                if (not persistence_failed and finalize_memory and interrupted_event_id
+                        and not memory_routed and interrupted_text):
                     memory_runtime.route_background(
                         interrupted_event_id, interrupted_text, None, list(messages),
                         turn_id=interrupted_turn_id,
                     )
-                await send({
-                    "type": "turn_cancelled",
-                    "turn_id": interrupted_turn_id,
-                    "status": "cancelled" if was_committed else "interrupted",
-                    "partial_text": partial,
-                })
+                if not persistence_failed:
+                    await send({
+                        "type": "turn_cancelled",
+                        "turn_id": interrupted_turn_id,
+                        "status": "cancelled" if was_committed else "interrupted",
+                        "partial_text": partial,
+                    })
         active_task = None
         active_turn_id = None
         active_turn_text = None
@@ -347,7 +395,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool,
                        event_id=None, request_started: float | None = None) -> None:
-        nonlocal messages, emotion_state, expression_state, version, active_turn_partial
+        nonlocal messages, emotion_state, expression_state, version, active_turn_partial, session_revision
         nonlocal active_turn_committed, active_memory_routed
         action_task: asyncio.Task | None = None
         try:
@@ -386,8 +434,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 return
             emotion_state = next_emotion
             version += 1
-            if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
-                save_session_emotion_state(session_id, next_emotion)
+            if short_term_enabled:
+                await persist_emotion(next_emotion)
             await send({"type": "emotion_update", "state": next_emotion, "source": source,
                         "turn_id": turn_id, "version": version})
 
@@ -447,10 +495,12 @@ async def websocket_endpoint(websocket: WebSocket):
             if active_turn_id != turn_id:
                 return
             if short_term_enabled:
-                messages.extend([dict(snapshot["user_message"]), {"role": "assistant", "content": reply}])
+                messages.extend([dict(snapshot["user_message"]), {
+                    "role": "assistant", "content": reply, "turn_id": turn_id,
+                }])
             active_turn_committed = True
-            if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
-                save_session_messages(session_id, messages)
+            if short_term_enabled:
+                await persist_messages()
             log_turn(turn_count=sum(item.get("role") == "user" for item in messages),
                      system_prompt=prompt, user_message=text, dialogue_agent_output=reply,
                      tool_names=[], output_tokens=estimate_token_count([{"role": "assistant", "content": reply}]))
@@ -536,7 +586,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 print(f"[Memory] 無法持久化輸入事件: {type(exc).__name__}")
                 await send({"type": "memory_enqueue_error", "turn_id": turn_id})
         profile, relevant_memory = ({}, "")
-        summary = load_session_summary(session_id) if short_term_enabled and session_id else ""
+        summary = session_summary if short_term_enabled else ""
         if read_enabled:
             profile, relevant_memory = await memory_runtime.retrieve(text, event_id=event_id,
                 recent_dialogue=list(messages) if short_term_enabled else [], summary=summary)
@@ -555,7 +605,23 @@ async def websocket_endpoint(websocket: WebSocket):
             request_started=request_started,
         )
 
+    async def watch_session_invalidation() -> None:
+        event = chat_sessions.invalidation_event
+        if event is None:
+            return
+        await event.wait()
+        try:
+            await cancel_active(finalize_memory=False)
+            await send({"type": "error", "code": "session_deleted",
+                        "content": "目前聊天 session 已由管理操作刪除，連線即將關閉。"})
+        finally:
+            await chat_sessions.acknowledge_invalidation()
+            await websocket.close(code=1012)
+
+    session_invalidation_task = asyncio.create_task(watch_session_invalidation())
+
     try:
+        await send({"type": "session_ready", "session_id": session_id})
         while True:
             data = json.loads(await websocket.receive_text())
             if not isinstance(data, dict):
@@ -565,17 +631,42 @@ async def websocket_endpoint(websocket: WebSocket):
             except (ValueError, TypeError):
                 await send({"type": "error", "content": "無效的隔離測試模式", "turn_id": data.get("turn_id")})
                 continue
+            if session_failed:
+                await send({"type": "error", "code": "session_persistence_failed",
+                            "content": "聊天狀態保存失敗，請重新連線後再繼續。",
+                            "turn_id": data.get("turn_id")})
+                continue
             next_short_term = mode is None or mode.short_term
-            incoming_session = normalize_session_id(data.get("session_id")) or session_id
-            if incoming_session != session_id or next_short_term != short_term_enabled:
+            test_alias = data.get("test_session_alias") if mode is not None else None
+            if isinstance(test_alias, str) and test_alias != session_id:
                 await cancel_active()
-                short_term_enabled = next_short_term
-                session_id = incoming_session
+                test_snapshot = await chat_sessions.switch_test_session(test_alias)
+                session_id = test_snapshot["session_id"]
+                session_generation = test_snapshot["generation"]
+                session_revision = test_snapshot["revision"]
+                session_summary = test_snapshot["summary"]
+                messages = list(test_snapshot["messages"]) if next_short_term else []
+                emotion_state = test_snapshot["emotion_state"] if next_short_term else None
                 expression_state = None
                 current_action = None
-                if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
-                    messages = load_session_messages(session_id)
-                    emotion_state = load_session_emotion_state(session_id)
+                short_term_enabled = next_short_term
+                version = 0
+                await send({"type": "session_ready", "session_id": session_id,
+                            "test_session_alias": test_alias})
+            if next_short_term != short_term_enabled:
+                await cancel_active()
+                short_term_enabled = next_short_term
+                expression_state = None
+                current_action = None
+                if short_term_enabled:
+                    restored = await chat_sessions.repository.load(session_id)
+                    if restored is None:
+                        raise ChatSessionStaleError("chat session 已刪除")
+                    messages = list(restored["messages"])
+                    emotion_state = restored["emotion_state"]
+                    session_generation = restored["generation"]
+                    session_revision = restored["revision"]
+                    session_summary = restored["summary"]
                 else:
                     messages = []
                     emotion_state = None
@@ -588,14 +679,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 # 前端改送 ``reset_session``，只同步這條連線的 closure 狀態，
                 # 避免同一次使用者操作重複遞增 long-term generation。
                 if control_type == "reset":
-                    await memory_runtime.reset()
+                    if hasattr(memory_runtime, "reset_chat_and_memory"):
+                        reset_state = await memory_runtime.reset_chat_and_memory(
+                            chat_sessions.repository, session_id,
+                        )
+                    else:  # Unit-test runtime double; production always exposes the atomic method.
+                        await memory_runtime.reset()
+                        reset_state = await chat_sessions.repository.reset(session_id)
+                else:
+                    reset_state = await chat_sessions.repository.reset(session_id)
                 messages, emotion_state, expression_state = [], None, None
+                session_generation = reset_state["generation"]
+                session_revision = reset_state["revision"]
+                session_summary = ""
                 current_action = None
                 version += 1
-                if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
-                    save_session_messages(session_id, [])
-                    reset_session_emotion_state(session_id)
-                    reset_session_summary(session_id)
                 reset_log()
                 await send({"type": "emotion_update", "state": dict(NEUTRAL_EMOTION_STATE),
                             "source": "neutral_fallback"})
@@ -616,9 +714,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
             if control_type == "compress":
                 if short_term_enabled and len(messages) > COMPRESS_KEEP_RECENT + 1:
-                    messages = await compress_context(messages, websocket, session_id, send)
-                    if short_term_enabled and CHAT_PERSISTENCE_ENABLED and session_id:
-                        save_session_messages(session_id, messages)
+                    expected_revision = session_revision
+
+                    async def commit_summary(summary_text, compressed_messages):
+                        nonlocal session_revision, session_summary, session_failed
+                        try:
+                            session_revision = await chat_sessions.repository.commit_summary(
+                                session_id, session_generation, expected_revision,
+                                summary_text, compressed_messages,
+                            )
+                            session_summary = summary_text[:4000]
+                        except Exception:
+                            session_failed = True
+                            raise
+
+                    messages = await compress_context(
+                        messages, websocket, session_id, send, commit_summary,
+                    )
                 else:
                     await send({"type": "compress_done"})
                 continue
@@ -631,6 +743,7 @@ async def websocket_endpoint(websocket: WebSocket):
             next_user_message = build_user_message(
                 session_id or "default_session", turn_id, text, timestamp=input_event["timestamp"],
             )
+            next_user_message["turn_id"] = turn_id
             source_id = next_user_message["memory_source"]["source_id"]
             previous = next((item for item in messages
                              if isinstance(item, dict) and item.get("role") == "user"
@@ -646,6 +759,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
             # 先切換回合，讓新輸入可以立即打斷生成中的舊回合；記憶檢索不能阻塞取消。
             await cancel_active()
+            if session_failed:
+                continue
             active_turn_id = turn_id
             active_turn_text = text
             active_turn_message = next_user_message
@@ -660,7 +775,11 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         print("Client disconnected")
     finally:
-        await cancel_active()
-        unsubscribe_memory_events()
-        memory_event_task.cancel()
-        await asyncio.gather(memory_event_task, return_exceptions=True)
+        try:
+            await cancel_active()
+        finally:
+            unsubscribe_memory_events()
+            memory_event_task.cancel()
+            session_invalidation_task.cancel()
+            await asyncio.gather(memory_event_task, session_invalidation_task, return_exceptions=True)
+            await writer_context.__aexit__(None, None, None)

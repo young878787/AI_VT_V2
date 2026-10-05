@@ -42,11 +42,9 @@ CHAT_CONTEXT_TOKEN_BUDGET: int = max(512, int(os.getenv("CHAT_CONTEXT_TOKEN_BUDG
 FALLBACK_MODEL: str | None = os.getenv("QWEN_FALLBACK_MODEL_NAME") or None
 
 # ============================================================
-# 記憶系統路徑常數
+# 測試 trace 與其他非聊天 runtime 產物的根目錄
 # ============================================================
 MEMORY_DIR: str = os.path.abspath(os.getenv("AI_VT_MEMORY_DIR") or os.path.join(_BACKEND_DIR, "memory"))
-CHAT_SESSION_DIR: str = os.path.join(MEMORY_DIR, "sessions")
-EMOTION_STATE_DIR: str = os.path.join(MEMORY_DIR, "emotion_states")
 
 # ============================================================
 # Model Registry 路徑常數
@@ -77,10 +75,9 @@ PIPER_SPEAKER_ID: int = int(os.getenv("PIPER_SPEAKER_ID", "1"))
 PIPER_LENGTH_SCALE: float = float(os.getenv("PIPER_LENGTH_SCALE", "1.0"))
 
 # ============================================================
-# 對話持久化設定
+# 對話持久化設定（固定使用 PostgreSQL）
 # ============================================================
-CHAT_PERSISTENCE_ENABLED: bool = env_flag("AI_VT_TEST_MODE", False) or env_flag("CHAT_PERSISTENCE_ENABLED", False)
-CHAT_PERSISTENCE_MAX_MESSAGES: int = int(os.getenv("CHAT_PERSISTENCE_MAX_MESSAGES", "80"))
+CHAT_SESSION_MAX_MESSAGES: int = max(2, int(os.getenv("CHAT_SESSION_MAX_MESSAGES", "20")))
 
 # ============================================================
 # Jev（System One）情緒與表情決策設定

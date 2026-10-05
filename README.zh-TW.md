@@ -143,7 +143,7 @@ Rushia 素材未納入 Git，CI 執行純程式檢查；有素材的本機須另
 .venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。正式 DB 已在備份後升至 Alembic head `0006_single_memory_agent`，正式啟動與目前 schema 相符。
+長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。程式 migration head 為 `0007_chat_sessions`；正式 DB 最近確認仍為 `0006_single_memory_agent`，部署新程式前必須先依備份與授權流程升版。
 
 CLI 固定 Rushia，沿用同一 `main:app`／PostgreSQL `MemoryRuntime`，使用與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL` 及專用 `test_<32 lowercase hex>` schema。每案 reset 隔離 owner，setup 結案後執行新 session／連線的長期 probe；不直接灌入記憶。短期組跳過長期接收與召回；長期 probe 停用短期載入、累積及寫入；綜合組記錄跨來源證據。五筆延伸案例沿用 `CHAT_AI_*` 生成，重播不重新生成。
 

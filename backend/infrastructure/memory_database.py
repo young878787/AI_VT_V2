@@ -35,6 +35,11 @@ async def check_schema(pool: AsyncConnectionPool, scope: MemoryScope) -> None:
             )).fetchone()
             if dimension is None or dimension[0] != 1024:
                 raise RuntimeError("Memory embedding 維度必須為 1024")
+            chat_tables = await (await connection.execute(
+                "SELECT to_regclass('chat_sessions'), to_regclass('chat_messages')"
+            )).fetchone()
+            if chat_tables != ("chat_sessions", "chat_messages"):
+                raise RuntimeError("Chat session schema 尚未套用 Alembic migration")
 
 
 async def make_pool(database_url: str) -> AsyncConnectionPool:

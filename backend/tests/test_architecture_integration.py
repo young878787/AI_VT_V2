@@ -20,11 +20,13 @@ from api.routes.chat_ws import websocket_endpoint
 from backend.tests.test_emotion_chat_ws import jev_answers
 from core.config import role_model_config, provider_from_url
 from domain.input_event import normalize_chat_input
+from backend.tests.chat_session_fakes import make_chat_session_service
 
 
 class ArchitectureIntegrationTests(unittest.TestCase):
-    def test_input_normalization_rejects_invalid_session_and_user_identity(self):
-        self.assertIsNone(normalize_chat_input({"content": "hello", "session_id": "../bad"}))
+    def test_input_normalization_ignores_client_session_and_user_identity(self):
+        ignored = normalize_chat_input({"content": "hello", "session_id": "../bad"}, "server_session")
+        self.assertEqual(ignored["session_id"], "server_session")
         event = normalize_chat_input({"content": " 你好 ", "source": "voice", "turn_id": "bad/id", "user_id": "other"})
         self.assertEqual(event["text"], "你好")
         self.assertEqual(event["source"], "voice")
@@ -145,7 +147,9 @@ class ArchitectureIntegrationTests(unittest.TestCase):
             reset=AsyncMock(),
         )
         socket = Socket()
-        socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=runtime, chat_session_service=make_chat_session_service(),
+        ))
 
         async def run():
             with patch("api.routes.chat_ws.call_jev", side_effect=fake_jev), \
@@ -213,17 +217,17 @@ class ArchitectureIntegrationTests(unittest.TestCase):
             reset=AsyncMock(),
         )
         socket = Socket()
-        socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
-        saved = Mock()
+        chat_sessions = make_chat_session_service()
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=runtime, chat_session_service=chat_sessions,
+        ))
 
         async def run():
             with patch("api.routes.chat_ws.call_jev", side_effect=fake_jev), \
                  patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
                  patch("api.routes.chat_ws.broadcast_to_displays"), \
                  patch("api.routes.chat_ws.log_turn"), \
-                 patch("api.routes.chat_ws.synthesize_and_send_voice"), \
-                 patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", True), \
-                 patch("api.routes.chat_ws.save_session_messages", saved):
+                 patch("api.routes.chat_ws.synthesize_and_send_voice"):
                 await websocket_endpoint(socket)
 
         asyncio.run(run())
@@ -237,10 +241,10 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                 {"role": "assistant", "text": "只送出的半句"},
             ],
         )
-        self.assertTrue(any(
-            {"role": "assistant", "content": "只送出的半句", "status": "interrupted"} in call.args[1]
-            for call in saved.call_args_list
-        ))
+        self.assertIn(
+            {"role": "assistant", "content": "只送出的半句", "status": "interrupted", "turn_id": "turn_1"},
+            chat_sessions.repository.messages,
+        )
 
 if __name__ == "__main__":
     unittest.main()

@@ -116,12 +116,11 @@ export const MemoryLibrary = ({ open, onClose }: MemoryLibraryProps) => {
   };
 
   const deleteSession = async (session: ChatSessionSummary) => {
-    if (!window.confirm(`確定刪除 session「${session.session_id}」的聊天、摘要與情緒檔案嗎？`)) return;
+    if (!window.confirm(`確定刪除 session「${session.session_id}」的聊天、摘要與情緒狀態嗎？`)) return;
     try {
       await memoryLibraryService.deleteSession(session.session_id);
       if (session.session_id === wsService.getSessionId()) {
         useAppStore.getState().clearChatHistory();
-        wsService.syncResetSession();
       }
       setSelectedSession(null);
       await reload();
@@ -240,7 +239,7 @@ export const MemoryLibrary = ({ open, onClose }: MemoryLibraryProps) => {
             </div>
           ) : (
             <div className="memory-library__workspace">
-              {overview && overview.sessions.count === 0 && <div className="memory-library__notice">目前沒有聊天 session。請確認 `CHAT_PERSISTENCE_ENABLED` 與 `VITE_CHAT_PERSISTENCE_ENABLED` 都已開啟。</div>}
+              {overview && overview.sessions.count === 0 && <div className="memory-library__notice">目前沒有聊天 session；連線聊天後會由後端建立。</div>}
               <div className="memory-library__columns">
                 <div className="memory-library__list" aria-label="聊天 session 列表">
                   {!loading && sessions.length === 0 && <div className="memory-library__empty">目前沒有可讀取的聊天紀錄。</div>}

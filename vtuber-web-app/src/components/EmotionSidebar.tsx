@@ -27,9 +27,7 @@ export const EmotionSidebar = () => {
     if (!confirm('確定要清除記憶、對話與情緒狀態嗎？')) return;
     try {
       const backendPort = import.meta.env.BACKEND_PORT || '9999';
-      const sessionId = wsService.getSessionId();
-      const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
-      const res = await fetch(`http://localhost:${backendPort}/api/reset-memory${query}`, {
+      const res = await fetch(`http://localhost:${backendPort}/api/reset-memory`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(await res.text());

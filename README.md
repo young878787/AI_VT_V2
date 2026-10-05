@@ -121,7 +121,7 @@ bun run dev
 .venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
 ```
 
-長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。正式 DB 已在備份後升至 Alembic head `0006_single_memory_agent`，正式啟動與目前 schema 相符。
+長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。程式 migration head 為 `0007_chat_sessions`；正式 DB 最近確認仍為 `0006_single_memory_agent`，部署新程式前必須先依備份與授權流程升版。
 
 CLI 固定 Rushia。案例的 setup 與 probe 都走 `/ws/chat`；每案 reset 隔離 owner，長期 probe 使用新 session／連線，背景工作結案後再前進。短期組跳過長期接收與召回，長期 probe 停用短期載入、累積與寫入，綜合組核對跨來源證據。案例數與對話輪數分開記錄，執行後以既有 Chat 模型的獨立審查 prompt 比對所有 probe；保存模型、理由與缺漏，仍需人工核對可能的誤判。
 
@@ -165,7 +165,7 @@ JEV 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。生成沿用 `CHAT_AI_
 
 - 多模型 expression adapter（Haru 等）與表情差異放大。
 - TTS 串流播放與口型（lip sync）對齊優化。
-- 更精細的記憶檢索排序與長期情緒趨勢；session 級對話持久化（`CHAT_PERSISTENCE_*` 目前預設關閉）。
+- 更精細的記憶檢索排序與長期情緒趨勢；session 級對話、摘要與情緒狀態固定保存於 PostgreSQL。
 - 補上 `LICENSE`，並設定 GitHub branch protection 的 required checks。
 
 ## 第三方服務、資料與素材

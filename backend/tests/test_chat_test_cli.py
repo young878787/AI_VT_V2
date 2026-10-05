@@ -13,6 +13,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from tools import chat_test_cli as cli
+from domain.chat_test_mode import ChatTestMode
 
 
 class FakeSocket:
@@ -249,9 +250,13 @@ class ChatTestCliTests(unittest.TestCase):
             socket = SlowSocket()
             store = mock.Mock()
             store.snapshot.return_value = {}
-            record = asyncio.run(cli.run_turn(socket, 1, "hi", "Hiyori", "test_session", store, 0.01))
+            record = asyncio.run(cli.run_turn(
+                socket, 1, "hi", "Hiyori", "test_session", store, 0.01,
+                test_mode=ChatTestMode.SHORT_ONLY,
+            ))
             self.assertIn("逾時", record["errors"][0])
-            self.assertEqual(socket.payload["session_id"], "test_session")
+            self.assertEqual(socket.payload["test_session_alias"], "test_session")
+            self.assertNotIn("session_id", socket.payload)
             self.assertEqual(record["memory_changes"], {})
 
     def test_missing_or_same_test_database_fails_before_backend(self):

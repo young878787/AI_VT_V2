@@ -29,6 +29,7 @@ from domain.memory_scope import MemoryScope, conversation_id, message_id
 from domain.memory_routing import MemoryRouting
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
 from infrastructure.memory_database import check_schema, make_pool
+from infrastructure.chat_session_repository import ChatSessionRepository, ChatSessionStaleError
 from infrastructure.memory_repository import MemoryRepository
 from infrastructure.memory_store import load_session_messages, save_session_messages
 from services.memory_db_manager import MemoryDBManager
@@ -62,6 +63,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.pool = await make_pool(TEST_URL)
         await check_schema(self.pool, self.scope)
         self.repo = MemoryRepository(self.pool, self.scope, EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+        self.chat_repo = ChatSessionRepository(self.pool, self.scope)
         self.manager = MemoryDBManager(
             self.pool, self.scope, "test-model", EMBEDDING_MODEL, EMBEDDING_CONTRACT,
         )
@@ -76,6 +78,63 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         event_id = await self.repo.accept("session", turn)
         await self.repo.route(event_id, MemoryRouting(None, confidence=0.9), text, [])
         return await self.repo.claim()
+
+    async def test_chat_session_is_server_selected_owner_scoped_and_bounded(self):
+        session = await self.chat_repo.get_or_create_active()
+        self.assertEqual((await self.chat_repo.get_or_create_active())["session_id"], session["session_id"])
+        messages = []
+        for index in range(12):
+            user = build_user_message(
+                session["session_id"], f"turn_{index}", f"user {index}", generation=0,
+            )
+            user["turn_id"] = f"turn_{index}"
+            messages.extend([user, {"role": "assistant", "content": f"reply {index}",
+                                    "turn_id": f"turn_{index}"}])
+        revision = await self.chat_repo.replace_messages(
+            session["session_id"], session["generation"], messages,
+        )
+        restored = await self.chat_repo.load(session["session_id"])
+        self.assertEqual(restored["revision"], revision)
+        self.assertEqual(len(restored["messages"]), 20)
+        self.assertEqual(restored["messages"][0]["content"], "user 2")
+        self.assertIn("memory_source", restored["messages"][0])
+
+        other_scope = MemoryScope(uuid4(), self.scope.character_id, self.scope.schema_name)
+        other = ChatSessionRepository(self.pool, other_scope)
+        other_session = await other.get_or_create_active()
+        self.assertNotEqual(other_session["session_id"], session["session_id"])
+        self.assertIsNone(await other.load(session["session_id"]))
+
+    async def test_chat_session_generation_revision_and_replay_guards(self):
+        session = await self.chat_repo.get_or_create_active()
+        messages = [{"role": "user", "content": "hello", "turn_id": "turn_1"},
+                    {"role": "assistant", "content": "hi", "turn_id": "turn_1"}]
+        revision = await self.chat_repo.replace_messages(session["session_id"], 0, messages)
+        self.assertEqual(
+            await self.chat_repo.replace_messages(session["session_id"], 0, messages),
+            revision + 1,
+        )
+        with self.assertRaises(ChatSessionStaleError):
+            await self.chat_repo.commit_summary(
+                session["session_id"], 0, revision, "stale", messages,
+            )
+        reset = await self.chat_repo.reset(session["session_id"])
+        self.assertEqual(reset["generation"], 1)
+        with self.assertRaises(ChatSessionStaleError):
+            await self.chat_repo.replace_messages(session["session_id"], 0, messages)
+        self.assertEqual((await self.chat_repo.load(session["session_id"]))["messages"], [])
+
+    async def test_deleting_chat_session_does_not_delete_long_term_memory(self):
+        item = await self._create("chat-delete-boundary")
+        session = await self.chat_repo.get_or_create_active()
+        await self.chat_repo.replace_messages(
+            session["session_id"], 0,
+            [{"role": "user", "content": "短期文字", "turn_id": "chat-turn"}],
+        )
+        result = await self.chat_repo.delete(session["session_id"])
+        self.assertEqual(result["deleted_sessions"], 1)
+        self.assertIsNone(await self.chat_repo.load(session["session_id"]))
+        self.assertEqual((await self.repo.read_memories({item["id"]}))[0]["status"], "active")
 
     async def _apply(self, job, decisions, targets, embeddings, context_ids=()):
         applied = []

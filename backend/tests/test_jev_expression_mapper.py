@@ -38,6 +38,7 @@ from infrastructure.memory_store import (
     save_session_messages,
     to_persistable_messages,
 )
+from backend.tests.chat_session_fakes import make_chat_session_service
 
 
 def emotion_answers(score=0.6):
@@ -171,22 +172,22 @@ class EmotionContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 save_session_emotion_state("../unsafe", first)
 
-    def test_rest_reset_clears_only_selected_session_state_and_messages(self):
-        with tempfile.TemporaryDirectory() as directory, \
-            mock.patch("infrastructure.memory_store.EMOTION_STATE_DIR", directory + "/emotions"), \
-            mock.patch("infrastructure.memory_store.CHAT_SESSION_DIR", directory + "/sessions"):
-            state = dict(NEUTRAL_EMOTION_STATE)
-            for session_id in ("session_1", "session_2"):
-                save_session_emotion_state(session_id, state)
-                save_session_messages(session_id, [{"role": "user", "content": "hello"}])
-            runtime = SimpleNamespace(reset=mock.AsyncMock())
-            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime)))
-            asyncio.run(reset_memory("session_1", request=request))
-            runtime.reset.assert_awaited_once_with()
-            self.assertIsNone(load_session_emotion_state("session_1"))
-            self.assertEqual(load_session_messages("session_1"), [])
-            self.assertEqual(load_session_emotion_state("session_2"), state)
-            self.assertEqual(len(load_session_messages("session_2")), 1)
+    def test_rest_reset_uses_atomic_owner_chat_and_memory_boundary(self):
+        chat_sessions = make_chat_session_service([{"role": "user", "content": "hello"}])
+
+        async def reset_both(repository, session_id):
+            return await repository.reset(session_id)
+
+        runtime = SimpleNamespace(reset_chat_and_memory=mock.AsyncMock(side_effect=reset_both))
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=runtime, chat_session_service=chat_sessions,
+        )))
+        asyncio.run(reset_memory(request=request))
+        runtime.reset_chat_and_memory.assert_awaited_once_with(
+            chat_sessions.repository, "server_session",
+        )
+        self.assertEqual(chat_sessions.repository.messages, [])
+        self.assertEqual(chat_sessions.repository.generation, 1)
 
     def test_interrupted_assistant_message_preserves_status(self):
         messages = [

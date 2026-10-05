@@ -57,7 +57,7 @@ export const memoryLibraryService = {
     request<{ status: string }>(`/api/memory-library/sessions/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
     }),
-  purgeSessions: () => request<{ status: string; session_count: number; deleted_files: number }>(
+  purgeSessions: () => request<{ status: string; session_count: number }>(
     '/api/memory-library/purge-chat-sessions',
     {
       method: 'POST',

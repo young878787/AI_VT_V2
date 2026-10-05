@@ -15,15 +15,19 @@ from api.routes import chat_ws
 from core import prompt_logger
 from domain.chat_test_mode import resolve_test_mode
 from backend.tests.test_emotion_chat_ws import FakeWebSocket, jev_answers
+from backend.tests.chat_session_fakes import make_chat_session_service
 
 
 class ChatTestModeTests(unittest.TestCase):
     def run_modes(self, modes, test_instance=True, initial_history=None):
-        socket = FakeWebSocket([dict(content=f'query {i}', session_id='shared_session', turn_id=f'turn_{i}', test_mode=m)
+        socket = FakeWebSocket([dict(content=f'query {i}', test_session_alias='shared_session', turn_id=f'turn_{i}', test_mode=m)
                                 for i, m in enumerate(modes)])
         runtime = SimpleNamespace(accept=AsyncMock(side_effect=lambda *a: uuid4()),
             retrieve=AsyncMock(return_value=({}, 'DB fact')), route_background=Mock(), reset=AsyncMock())
-        socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
+        chat_sessions = make_chat_session_service(initial_history or [], "prior summary")
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=runtime, chat_session_service=chat_sessions,
+        ))
         contexts, jev_contexts = [], []
         async def chat(messages, send):
             contexts.append(messages)
@@ -34,12 +38,6 @@ class ChatTestModeTests(unittest.TestCase):
             return jev_answers()
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
                 'AI_VT_TEST_MODE': 'true' if test_instance else 'false', 'AI_VT_MEMORY_DIR': directory}), \
-                patch.object(chat_ws, 'CHAT_PERSISTENCE_ENABLED', True), \
-                patch.object(chat_ws, 'load_session_messages', return_value=initial_history or []) as load_messages, \
-                patch.object(chat_ws, 'load_session_summary', return_value='prior summary') as load_summary, \
-                patch.object(chat_ws, 'load_session_emotion_state', return_value=None) as load_emotion, \
-                patch.object(chat_ws, 'save_session_messages') as save_messages, \
-                patch.object(chat_ws, 'save_session_emotion_state') as save_emotion, \
                 patch.object(chat_ws, 'call_jev', side_effect=jev), \
                 patch.object(chat_ws, 'stream_agent_a', side_effect=chat), \
                 patch.object(chat_ws, 'broadcast_to_displays'), \
@@ -49,7 +47,7 @@ class ChatTestModeTests(unittest.TestCase):
             trace_file = pathlib.Path(directory) / 'trace.jsonl'
             traces = [json.loads(line) for line in trace_file.read_text().splitlines()] if trace_file.exists() else []
         return SimpleNamespace(runtime=runtime, contexts=contexts, jev=jev_contexts, traces=traces,
-            loads=[load_messages, load_summary, load_emotion], saves=[save_messages, save_emotion], socket=socket)
+            chat_sessions=chat_sessions, socket=socket)
 
     def test_short_only_has_history_but_never_calls_long_term(self):
         result = self.run_modes(['short_only', 'short_only'])
@@ -68,8 +66,7 @@ class ChatTestModeTests(unittest.TestCase):
         self.assertEqual(result.runtime.retrieve.await_count, 2)
         self.assertTrue(all(c.kwargs['recent_dialogue'] == [] and c.kwargs['summary'] == ''
                             for c in result.runtime.retrieve.await_args_list))
-        for method in result.loads + result.saves:
-            method.assert_not_called()
+        self.assertEqual(result.chat_sessions.repository.revision, 0)
         self.assertTrue(all(len(c) == 2 for c in result.contexts))
         self.assertTrue(all(not c['recent_dialogue'] for c in result.jev))
         self.assertTrue(all(c[-1]['content'].startswith('query') for c in result.contexts))
@@ -130,10 +127,10 @@ class ChatTestModeTests(unittest.TestCase):
                     async def receive_text(self):
                         self.index += 1
                         if self.index == 1:
-                            return json.dumps(dict(content='first', turn_id='turn_1', session_id='shared_session', test_mode=mode))
+                            return json.dumps(dict(content='first', turn_id='turn_1', test_session_alias='shared_session', test_mode=mode))
                         if self.index == 2:
                             await partial_sent.wait()
-                            return json.dumps(dict(content='second', turn_id='turn_2', session_id='shared_session', test_mode=mode))
+                            return json.dumps(dict(content='second', turn_id='turn_2', test_session_alias='shared_session', test_mode=mode))
                         await completed.wait()
                         raise WebSocketDisconnect()
                     async def send_json(self, payload):
@@ -149,14 +146,11 @@ class ChatTestModeTests(unittest.TestCase):
                     return 'completed'
                 runtime = SimpleNamespace(accept=AsyncMock(), retrieve=AsyncMock(return_value=({}, '')),
                     route_background=Mock(), reset=AsyncMock())
-                socket = Socket();socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
+                chat_sessions = make_chat_session_service()
+                socket = Socket();socket.app = SimpleNamespace(state=SimpleNamespace(
+                    memory_runtime=runtime, chat_session_service=chat_sessions,
+                ))
                 with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'AI_VT_TEST_MODE': 'true', 'AI_VT_MEMORY_DIR': directory}), \
-                        patch.object(chat_ws, 'CHAT_PERSISTENCE_ENABLED', True), \
-                        patch.object(chat_ws, 'load_session_messages', return_value=[]), \
-                        patch.object(chat_ws, 'load_session_summary', return_value=''), \
-                        patch.object(chat_ws, 'load_session_emotion_state', return_value=None), \
-                        patch.object(chat_ws, 'save_session_messages') as saved, \
-                        patch.object(chat_ws, 'save_session_emotion_state'), \
                         patch.object(chat_ws, 'call_jev', new=AsyncMock(return_value=jev_answers())), \
                         patch.object(chat_ws, 'stream_agent_a', side_effect=chat), \
                         patch.object(chat_ws, 'broadcast_to_displays'), \
@@ -167,11 +161,13 @@ class ChatTestModeTests(unittest.TestCase):
                 cancelled = next(p for p in payloads if p['type'] == 'turn_cancelled')
                 self.assertEqual(cancelled['partial_text'], 'sent partial')
                 if mode == 'memory_probe':
-                    saved.assert_not_called()
+                    self.assertEqual(chat_sessions.repository.revision, 0)
                     self.assertEqual(len(contexts[1]), 2)
                 else:
-                    self.assertIn(dict(role='assistant', content='sent partial'), contexts[1])
-                    self.assertTrue(any(any(m.get('status') == 'interrupted' for m in call.args[1]) for call in saved.call_args_list))
+                    self.assertTrue(any(m.get('role') == 'assistant' and m.get('content') == 'sent partial'
+                                        for m in contexts[1]))
+                    self.assertTrue(any(m.get('status') == 'interrupted'
+                                        for m in chat_sessions.repository.messages))
 
     def test_worker_trace_is_correlated_with_bound_turn(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'AI_VT_TEST_MODE': 'true', 'AI_VT_MEMORY_DIR': directory}):

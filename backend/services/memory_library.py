@@ -10,13 +10,8 @@ from uuid import UUID, uuid4
 from psycopg import sql
 
 from core.utils import normalize_session_id
+from infrastructure.chat_session_repository import ChatSessionRepository
 from infrastructure.memory_repository import MemoryRepository
-from infrastructure.memory_store import (
-    delete_all_sessions,
-    delete_session,
-    get_session_record,
-    list_session_records,
-)
 
 
 CURRENT_MEMORY_STATUSES = {"active", "conflict"}
@@ -62,8 +57,10 @@ def _vector_values(value: Any) -> list[float] | None:
 class MemoryLibraryService:
     """所有查詢都固定到 runtime 的 MemoryRepository scope。"""
 
-    def __init__(self, repository: MemoryRepository) -> None:
+    def __init__(self, repository: MemoryRepository,
+                 chat_repository: ChatSessionRepository | None = None) -> None:
         self.repository = repository
+        self.chat_repository = chat_repository or ChatSessionRepository(repository.pool, repository.scope)
         self.pool = repository.pool
         self.scope = repository.scope
 
@@ -97,7 +94,7 @@ class MemoryLibraryService:
                 source_count = (await source_cursor.fetchone())[0]
 
         queue = await self.repository.queue_health()
-        sessions = list_session_records()
+        sessions = await self.chat_repository.list_sessions()
         return {
             "contract_version": 1,
             "long_term": {
@@ -417,24 +414,20 @@ class MemoryLibraryService:
                         record["embedding"] = _vector_values(record["embedding"])
                         yield json.dumps(_json_value(record), ensure_ascii=False) + "\n"
 
-    @staticmethod
-    def sessions() -> list[dict[str, Any]]:
-        return list_session_records()
+    async def sessions(self) -> list[dict[str, Any]]:
+        return await self.chat_repository.list_sessions()
 
-    @staticmethod
-    def session(session_id: str) -> dict[str, Any] | None:
+    async def session(self, session_id: str) -> dict[str, Any] | None:
         normalized = normalize_session_id(session_id)
         if normalized is None:
             raise ValueError("無效的 session_id")
-        return get_session_record(normalized)
+        return await self.chat_repository.load(normalized)
 
-    @staticmethod
-    def delete_session(session_id: str) -> dict[str, Any]:
+    async def delete_session(self, session_id: str) -> dict[str, Any]:
         normalized = normalize_session_id(session_id)
         if normalized is None:
             raise ValueError("無效的 session_id")
-        return delete_session(normalized)
+        return await self.chat_repository.delete(normalized)
 
-    @staticmethod
-    def delete_all_sessions() -> dict[str, Any]:
-        return delete_all_sessions()
+    async def delete_all_sessions(self) -> dict[str, Any]:
+        return await self.chat_repository.delete_all()

@@ -186,14 +186,17 @@ async def disconnect_probe():
 
     runtime = SimpleNamespace(accept=AsyncMock(return_value=uuid4()), retrieve=AsyncMock(return_value=({}, "")),
                               route_background=Mock(), reset=AsyncMock())
+    from backend.tests.chat_session_fakes import make_chat_session_service
     socket = Socket()
-    socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
+    socket.app = SimpleNamespace(state=SimpleNamespace(
+        memory_runtime=runtime, chat_session_service=make_chat_session_service(),
+    ))
     endpoint_error = None
     with patch("api.routes.chat_ws.call_jev", return_value=jev_answers()), \
             patch("api.routes.chat_ws.stream_agent_a", side_effect=chat), \
             patch("api.routes.chat_ws._produce_and_send_action_plan", side_effect=action), \
             patch("api.routes.chat_ws.synthesize_and_send_voice", side_effect=tts), \
-            patch("api.routes.chat_ws.log_turn"), patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", False):
+            patch("api.routes.chat_ws.log_turn"):
         try:
             await websocket_endpoint(socket)
         except RuntimeError as exc:

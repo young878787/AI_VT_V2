@@ -14,8 +14,6 @@ class WSService {
     private retryCount: number = 0;
     private readonly MAX_RETRIES = 5;
     private readonly RETRY_DELAY_MS = 3000;
-    private readonly chatPersistenceEnabled: boolean;
-    private readonly sessionStorageKey = 'vtuber-chat-session-id';
     private sessionId: string | null = null;
     
     // TTS 播放器
@@ -23,29 +21,6 @@ class WSService {
 
     constructor() {
         this.ttsPlayer = TTSPlayer.getInstance();
-        this.chatPersistenceEnabled = String(import.meta.env.VITE_CHAT_PERSISTENCE_ENABLED ?? 'false').toLowerCase() === 'true';
-        if (this.chatPersistenceEnabled) {
-            this.sessionId = this.getOrCreateSessionId();
-        }
-    }
-
-    private getOrCreateSessionId(): string {
-        try {
-            const existing = localStorage.getItem(this.sessionStorageKey);
-            if (existing) {
-                return existing;
-            }
-
-            const raw = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-                ? crypto.randomUUID()
-                : `session_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
-            const normalized = raw.replace(/[^A-Za-z0-9_-]/g, '_');
-            localStorage.setItem(this.sessionStorageKey, normalized);
-            return normalized;
-        } catch {
-            return `session_${Date.now()}`;
-        }
     }
 
     public connect() {
@@ -60,11 +35,11 @@ class WSService {
         this.ws.onopen = () => {
             console.log('WebSocket connected');
             this.retryCount = 0; // 成功連線後重置重試計數
-            this.ws?.send(JSON.stringify({ type: 'sync', session_id: this.sessionId }));
+            this.ws?.send(JSON.stringify({ type: 'sync' }));
             actionScheduler.setReporter((status, action) => {
                 if (this.ws?.readyState === WebSocket.OPEN) {
                     this.ws.send(JSON.stringify({ type: 'action_state', status,
-                        action_id: action.id, turn_id: action.turnId, session_id: this.sessionId }));
+                        action_id: action.id, turn_id: action.turnId }));
                 }
             });
         };
@@ -73,6 +48,10 @@ class WSService {
             try {
                 const data = JSON.parse(event.data);
                 const store = useAppStore.getState();
+                if (data.type === 'session_ready') {
+                    this.sessionId = typeof data.session_id === 'string' ? data.session_id : null;
+                    return;
+                }
                 if (data.type === 'turn_cancelled') {
                     const cancelledTurnId = typeof data.turn_id === 'string' ? data.turn_id : null;
                     if (cancelledTurnId) {
@@ -214,6 +193,7 @@ class WSService {
             this.activeTurnId = null;
             this.activeTurnStartedAt = null;
             this.appliedPlanTurnId = null;
+            this.sessionId = null;
             const store = useAppStore.getState();
 
             // 防呆：斷線時確保 AI 狀態歸零
@@ -263,9 +243,6 @@ class WSService {
                 turn_id: this.activeTurnId,
                 source,
             };
-            if (this.chatPersistenceEnabled && this.sessionId) {
-                payload.session_id = this.sessionId;
-            }
             this.ws!.send(JSON.stringify(payload));
         } else {
             console.error('WebSocket is not connected');
@@ -293,7 +270,7 @@ class WSService {
         this.ttsPlayer.stop();
     }
 
-    /** REST owner reset 成功後，同步清空目前 WebSocket 連線的短期狀態。 */
+    /** REST owner reset 會使後端關閉舊寫入連線；此處只清理前端回合狀態。 */
     public syncResetSession(): void {
         actionScheduler.cancel();
         this.activeTurnId = null;
@@ -303,13 +280,10 @@ class WSService {
         this.appliedPlanTurnId = null;
         this.ttsPlayer.stop();
         useAppStore.getState().clearChatPerformance();
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: 'reset_session', session_id: this.sessionId }));
-        }
     }
 
     public getSessionId(): string | null {
-        return this.chatPersistenceEnabled ? this.sessionId : null;
+        return this.sessionId;
     }
 }
 

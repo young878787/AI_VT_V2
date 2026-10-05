@@ -12,7 +12,6 @@ from fastapi import WebSocket
 from core.config import CHAT_MODEL_NAME, CHAT_PROVIDER, CHAT_CONTEXT_TOKEN_BUDGET, COMPRESS_KEEP_RECENT
 from core.utils import strip_thinking, get_msg_field
 from infrastructure.ai_client import chat_create_with_fallback, no_thinking_extra_body
-from infrastructure.memory_store import save_session_summary
 from core.prompt_logger import trace
 
 import tiktoken
@@ -334,11 +333,12 @@ async def synthesize_and_send_voice(
 # ============================================================
 # Context 壓縮
 # ============================================================
-async def compress_context(messages: list, websocket: WebSocket, session_id: str | None = None, send_func=None) -> list:
+async def compress_context(messages: list, websocket: WebSocket, session_id: str | None = None,
+                           send_func=None, commit_func=None) -> list:
     """
     壓縮對話上下文。
     保留最近 COMPRESS_KEEP_RECENT 條 messages，
-    將較舊的部分呼叫 Chat LLM 產生摘要，寫入短期 session summary。
+    將較舊的部分呼叫 Chat LLM 產生摘要；持久化由呼叫端以版本檢查提交。
     """
     # 通知前端：壓縮開始
     send = send_func or websocket.send_json
@@ -389,9 +389,6 @@ async def compress_context(messages: list, websocket: WebSocket, session_id: str
             else "（摘要生成失敗）"
         )
 
-        if session_id:
-            save_session_summary(session_id, summary_text)
-
         # 重建 messages：system prompt + 摘要上下文 + 近期訊息
         compressed_messages: list = []
         if has_system_prompt:
@@ -406,6 +403,9 @@ async def compress_context(messages: list, websocket: WebSocket, session_id: str
                 *recent_messages,
             ]
         )
+
+        if commit_func is not None:
+            await commit_func(summary_text, compressed_messages)
 
         print(f"Context 壓縮完成：{len(messages)} 條 → {len(compressed_messages)} 條")
 

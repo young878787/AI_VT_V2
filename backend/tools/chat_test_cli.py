@@ -287,9 +287,8 @@ async def run_turn(
         async with asyncio.timeout(timeout):
             await ws.send(json.dumps({
                 "type": "chat", "content": user_message, "model_name": model_name,
-                "session_id": session_id,
                 "turn_id": turn_id,
-                **({"test_mode": test_mode.value} if test_mode else {}),
+                **({"test_mode": test_mode.value, "test_session_alias": session_id} if test_mode else {}),
             }, ensure_ascii=False))
             request_sent = True
             while True:
@@ -787,8 +786,9 @@ def save_record(records: list[dict], record: dict, run_dir: Path, metadata: dict
 async def control_step(ws, action: str, session_id: str, timeout: float, test_mode=None) -> dict:
     expected = {"reset": "reset_done", "compress": "compress_done"}[action]
     started = time.monotonic()
-    await ws.send(json.dumps({"type": action, "session_id": session_id,
-                              **({"test_mode": test_mode.value} if test_mode else {})}))
+    await ws.send(json.dumps({"type": action,
+                              **({"test_mode": test_mode.value, "test_session_alias": session_id}
+                                 if test_mode else {})}))
     async with asyncio.timeout(timeout):
         while True:
             message = json.loads(await ws.recv())

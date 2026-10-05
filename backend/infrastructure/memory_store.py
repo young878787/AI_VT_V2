@@ -1,17 +1,21 @@
-"""
-短期 Chat session、Session Summary 與 Emotion State 的檔案持久化。
-長期記憶統一由 PostgreSQL MemoryRuntime 管理。
+"""Legacy JSON helpers kept only for explicit import and historical tests.
+
+Runtime Chat state is stored by :mod:`chat_session_repository`; no production
+request path may use this module as a fallback.
 """
 import os
 import json
 import tempfile
 from datetime import datetime
 
-from core.config import CHAT_SESSION_DIR, CHAT_PERSISTENCE_MAX_MESSAGES, EMOTION_STATE_DIR
+from core.config import CHAT_SESSION_MAX_MESSAGES, MEMORY_DIR
 from core.utils import get_msg_field
 from core.utils import normalize_session_id
 from domain.emotion_state import validate_emotion_state
 from domain.memory_source import MEMORY_SOURCE_FIELD, read_memory_source
+
+CHAT_SESSION_DIR = os.path.join(MEMORY_DIR, "sessions")
+EMOTION_STATE_DIR = os.path.join(MEMORY_DIR, "emotion_states")
 
 # ============================================================
 def _atomic_write(path: str, content: str) -> None:
@@ -121,8 +125,8 @@ def to_persistable_messages(messages: list) -> list[dict]:
                 item["status"] = "interrupted"
             persisted.append(item)
 
-    if len(persisted) > CHAT_PERSISTENCE_MAX_MESSAGES:
-        persisted = persisted[-CHAT_PERSISTENCE_MAX_MESSAGES:]
+    if len(persisted) > CHAT_SESSION_MAX_MESSAGES:
+        persisted = persisted[-CHAT_SESSION_MAX_MESSAGES:]
     return persisted
 
 

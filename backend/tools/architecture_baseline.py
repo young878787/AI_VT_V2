@@ -40,7 +40,7 @@ def isolated_environment(directory: str) -> dict[str, str]:
     return {
         "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
         "PYTHON_DOTENV_DISABLED": "1", "AI_VT_MEMORY_DIR": directory,
-        "AI_VT_TEST_MODE": "false", "CHAT_PERSISTENCE_ENABLED": "false",
+        "AI_VT_TEST_MODE": "false", "CHAT_SESSION_MAX_MESSAGES": "20",
         "ASR_ENABLED": "false", "TTS_ENABLED": "false",
         **{f"{role}_AI_{field}": value
            for role in ("CHAT", "JEV", "MEMORY", "EMBEDDING")

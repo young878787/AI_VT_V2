@@ -111,3 +111,10 @@ class MemoryRuntime:
 
     async def reset(self) -> None:
         await self.repository.reset()
+
+    async def reset_chat_and_memory(self, chat_repository, session_id: str) -> dict[str, int]:
+        """Reset long- and short-term owner state in one PostgreSQL transaction."""
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await self.repository.reset(connection=connection)
+                return await chat_repository.reset(session_id, connection=connection)

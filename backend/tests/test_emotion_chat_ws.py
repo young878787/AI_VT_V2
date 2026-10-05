@@ -23,6 +23,8 @@ from domain.emotion_state import (
     PERSONALITY,
 )
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay
+from backend.tests.chat_session_fakes import FakeChatSessionRepository, make_chat_session_service
+from services.chat_session_service import ChatSessionService
 
 
 def emotion_answers(score=0.6):
@@ -69,14 +71,14 @@ class FakeWebSocket:
 
     async def send_json(self, payload):
         self.payloads.append(payload)
-        if payload.get("type") == "stream_end" or payload.get("code") in {
+        if payload.get("type") in {"stream_end", "error"} or payload.get("code") in {
             "turn_id_conflict", "turn_id_replayed",
         }:
             self._turn_finished.set()
 
 
 class EmotionWebSocketTests(unittest.TestCase):
-    def _run(self, frames, jev_responses, persistence=False, storage=None):
+    def _run(self, frames, jev_responses, persistence=False, storage=None, chat_sessions=None):
         socket = FakeWebSocket(frames)
         runtime = SimpleNamespace(
             retrieve=AsyncMock(return_value=({}, "")),
@@ -84,8 +86,12 @@ class EmotionWebSocketTests(unittest.TestCase):
             route_background=Mock(),
             reset=AsyncMock(),
         )
-        socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
-        captured = {"jev_states": [], "chat_states": [], "prompts": [], "runtime": runtime}
+        chat_sessions = chat_sessions or make_chat_session_service()
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=runtime, chat_session_service=chat_sessions,
+        ))
+        captured = {"jev_states": [], "chat_states": [], "prompts": [], "runtime": runtime,
+                    "chat_sessions": chat_sessions}
         responses = iter(jev_responses)
 
         async def fake_call_jev(state, questions):
@@ -109,14 +115,8 @@ class EmotionWebSocketTests(unittest.TestCase):
                 patch("api.routes.chat_ws.build_agent_a_prompt", side_effect=fake_prompt), \
                 patch("api.routes.chat_ws.broadcast_to_displays"), \
                 patch("api.routes.chat_ws.log_turn"), \
-                patch("api.routes.chat_ws.synthesize_and_send_voice"), \
-                patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", persistence):
-                if storage is None:
-                    await websocket_endpoint(socket)
-                else:
-                    with patch("infrastructure.memory_store.EMOTION_STATE_DIR", storage + "/emotions"), \
-                        patch("infrastructure.memory_store.CHAT_SESSION_DIR", storage + "/sessions"):
-                        await websocket_endpoint(socket)
+                patch("api.routes.chat_ws.synthesize_and_send_voice"):
+                await websocket_endpoint(socket)
 
         asyncio.run(run())
         return socket, captured
@@ -129,7 +129,7 @@ class EmotionWebSocketTests(unittest.TestCase):
             [{"content": "妳今天好可愛"}], [answers],
         )
         types = [payload["type"] for payload in socket.payloads]
-        self.assertEqual(types[:2], ["input_accepted", "emotion_update"])
+        self.assertEqual(types[:3], ["session_ready", "input_accepted", "emotion_update"])
         self.assertEqual(types.count("expression_plan"), 1)
         self.assertNotIn("behavior", types)
         self.assertNotIn("blink_control", types)
@@ -163,12 +163,27 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertGreater(metrics["output_tokens"], 0)
         self.assertGreater(metrics["tokens_per_second"], 0)
 
+    def test_persistence_failure_stops_session_before_next_turn(self):
+        class FailingRepository(FakeChatSessionRepository):
+            async def replace_messages(self, session_id, generation, messages):
+                raise RuntimeError("database unavailable")
+
+        service = ChatSessionService(FailingRepository())
+        socket, captured = self._run(
+            [{"content": "第一句", "turn_id": "turn_1"},
+             {"content": "第二句", "turn_id": "turn_2"}],
+            [jev_answers()], chat_sessions=service,
+        )
+        self.assertEqual(len(captured["jev_states"]), 1)
+        self.assertNotIn("stream_end", [item["type"] for item in socket.payloads])
+        self.assertIn("session_persistence_failed", [item.get("code") for item in socket.payloads])
+
     def test_rest_followup_reset_session_does_not_reset_long_term_memory_again(self):
         socket, captured = self._run([{"type": "reset_session", "session_id": "session_a"}], [])
         captured["runtime"].reset.assert_not_awaited()
         self.assertEqual(
             [payload["type"] for payload in socket.payloads],
-            ["emotion_update", "reset_done"],
+            ["session_ready", "emotion_update", "reset_done"],
         )
 
     def test_reset_session_clears_current_websocket_closure_state(self):
@@ -218,11 +233,13 @@ class EmotionWebSocketTests(unittest.TestCase):
                     route_background=Mock(),
                     reset=AsyncMock(),
                 )
-                socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
+                socket.app = SimpleNamespace(state=SimpleNamespace(
+                    memory_runtime=runtime, chat_session_service=make_chat_session_service(),
+                ))
 
                 async def run():
                     with patch("api.routes.chat_ws.call_jev", new=AsyncMock()) as jev, \
-                            patch("api.routes.chat_ws.CHAT_PERSISTENCE_ENABLED", False):
+                            patch("api.routes.chat_ws.synthesize_and_send_voice"):
                         await websocket_endpoint(socket)
                     jev.assert_not_awaited()
 
@@ -238,7 +255,9 @@ class EmotionWebSocketTests(unittest.TestCase):
             accept=AsyncMock(return_value=event_id),
             route_background=Mock(),
         )
-        socket.app = SimpleNamespace(state=SimpleNamespace(memory_runtime=runtime))
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=runtime, chat_session_service=make_chat_session_service(),
+        ))
 
         async def fake_chat(messages, send_chunk):
             await send_chunk("知道了")
@@ -255,7 +274,7 @@ class EmotionWebSocketTests(unittest.TestCase):
         asyncio.run(run())
         runtime.retrieve.assert_awaited_once_with("請記住我喜歡茶", event_id=event_id, recent_dialogue=[], summary="")
         accept_args = runtime.accept.await_args.args
-        self.assertEqual(accept_args[:4], ("test-session", "test-turn", "請記住我喜歡茶", []))
+        self.assertEqual(accept_args[:4], ("server_session", "test-turn", "請記住我喜歡茶", []))
         self.assertEqual(accept_args[4]["content"], "請記住我喜歡茶")
         runtime.route_background.assert_called_once()
         self.assertEqual(runtime.route_background.call_args.args[0], event_id)
@@ -313,23 +332,23 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(plan["debug"]["jevResolvedAttitude"], "smile")
 
     def test_persisted_session_is_restored_and_isolated(self):
-        with tempfile.TemporaryDirectory() as storage:
-            first, _ = self._run(
-                [{"content": "hi", "session_id": "session_a"}],
-                [jev_answers(0.8)], True, storage,
-            )
-            first_state = next(item["state"] for item in first.payloads if item["type"] == "emotion_update")
-            second, captured = self._run(
-                [{"type": "sync", "session_id": "session_a"},
-                 {"content": "back", "session_id": "session_a"},
-                 {"type": "sync", "session_id": "session_b"}],
-                [None], True, storage,
-            )
-            updates = [item for item in second.payloads if item["type"] == "emotion_update"]
-            self.assertEqual(updates[0]["state"], first_state)
-            self.assertEqual(updates[1]["source"], "previous_fallback")
-            self.assertEqual(updates[2]["state"], NEUTRAL_EMOTION_STATE)
-            self.assertEqual(captured["jev_states"][0]["previous_emotion_state"], first_state)
+        chat_sessions = make_chat_session_service()
+        first, _ = self._run(
+            [{"content": "hi", "session_id": "client_a"}],
+            [jev_answers(0.8)], chat_sessions=chat_sessions,
+        )
+        first_state = next(item["state"] for item in first.payloads if item["type"] == "emotion_update")
+        second, captured = self._run(
+            [{"type": "sync", "session_id": "client_b"},
+             {"content": "back", "session_id": "client_b"}],
+            [None], chat_sessions=chat_sessions,
+        )
+        updates = [item for item in second.payloads if item["type"] == "emotion_update"]
+        self.assertEqual(updates[0]["state"], first_state)
+        self.assertEqual(updates[1]["source"], "previous_fallback")
+        self.assertEqual(captured["jev_states"][0]["previous_emotion_state"], first_state)
+        ready = next(item for item in second.payloads if item["type"] == "session_ready")
+        self.assertEqual(ready["session_id"], "server_session")
 
 
 if __name__ == "__main__":

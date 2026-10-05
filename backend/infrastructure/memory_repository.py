@@ -332,30 +332,35 @@ class MemoryRepository:
                 )
                 return cursor.rowcount
 
-    async def reset(self) -> None:
+    async def reset(self, *, connection=None) -> None:
         """generation 鎖與刪除同 transaction，阻止已在 LLM 呼叫的舊 worker 回寫。"""
         owner = (self.scope.user_id, self.scope.character_id)
-        async with self.pool.connection() as connection:
-            async with connection.transaction():
-                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
-                await connection.execute(
-                    "INSERT INTO memory_scope_state (user_id, character_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", owner,
-                )
-                await connection.execute(
-                    """UPDATE memory_scope_state SET generation = generation + 1
-                    WHERE user_id = %s AND character_id = %s""", owner,
-                )
-                await connection.execute(
-                    """UPDATE memory_jobs SET status = 'cancelled',
-                    recent_dialogue = NULL, embedding_diagnostics = '{}'::jsonb, missing_context = NULL,
-                    source_ids = '{}', pending_target_ids = '{}', agent_diagnostics = '{}',
-                    lease_until = NULL, updated_at = now()
-                    WHERE user_id = %s AND character_id = %s""", owner,
-                )
-                await connection.execute("DELETE FROM memory_items WHERE user_id = %s AND character_id = %s", owner)
-                await connection.execute("DELETE FROM memory_sources WHERE user_id = %s AND character_id = %s", owner)
-                await connection.execute("DELETE FROM memory_audit WHERE user_id = %s AND character_id = %s", owner)
-                await connection.execute("DELETE FROM memory_forget_barriers WHERE user_id = %s AND character_id = %s", owner)
+        async def execute(active_connection) -> None:
+            await active_connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+            await active_connection.execute(
+                "INSERT INTO memory_scope_state (user_id, character_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", owner,
+            )
+            await active_connection.execute(
+                """UPDATE memory_scope_state SET generation = generation + 1
+                WHERE user_id = %s AND character_id = %s""", owner,
+            )
+            await active_connection.execute(
+                """UPDATE memory_jobs SET status = 'cancelled',
+                recent_dialogue = NULL, embedding_diagnostics = '{}'::jsonb, missing_context = NULL,
+                source_ids = '{}', pending_target_ids = '{}', agent_diagnostics = '{}',
+                lease_until = NULL, updated_at = now()
+                WHERE user_id = %s AND character_id = %s""", owner,
+            )
+            await active_connection.execute("DELETE FROM memory_items WHERE user_id = %s AND character_id = %s", owner)
+            await active_connection.execute("DELETE FROM memory_sources WHERE user_id = %s AND character_id = %s", owner)
+            await active_connection.execute("DELETE FROM memory_audit WHERE user_id = %s AND character_id = %s", owner)
+            await active_connection.execute("DELETE FROM memory_forget_barriers WHERE user_id = %s AND character_id = %s", owner)
+        if connection is not None:
+            await execute(connection)
+            return
+        async with self.pool.connection() as own_connection:
+            async with own_connection.transaction():
+                await execute(own_connection)
 
     async def related_items(self, text: str, embedding: list[float] | None, limit: int = 20,
                             mode: str = "current", subject_keys: tuple[str, ...] = ()) -> list[dict]:

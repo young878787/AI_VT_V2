@@ -6,12 +6,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.utils import env_flag
-from core.utils import normalize_session_id
-from infrastructure.memory_store import (
-    reset_session_emotion_state,
-    save_session_messages,
-    reset_session_summary,
-)
 from services.memory_library import MemoryLibraryService
 
 router = APIRouter()
@@ -31,7 +25,12 @@ def _runtime(request: Request):
 
 def _library(request: Request) -> MemoryLibraryService:
     _ensure_local_management(request)
-    return MemoryLibraryService(_runtime(request).repository)
+    state = getattr(getattr(request, "app", None), "state", None)
+    chat_service = getattr(state, "chat_session_service", None)
+    return MemoryLibraryService(
+        _runtime(request).repository,
+        chat_service.repository if chat_service is not None else None,
+    )
 
 
 def _ensure_local_management(request: Request) -> None:
@@ -52,17 +51,18 @@ def _memory_uuid(value: str) -> UUID:
 
 
 @router.post("/api/reset-memory")
-async def reset_memory(session_id: str | None = None, request: Request = None):
-    """還原使用者記憶與指定 chat session 的情緒狀態。"""
+async def reset_memory(request: Request):
+    """原子還原 owner 的長期記憶與目前活動 Chat session。"""
     runtime = getattr(getattr(getattr(request, "app", None), "state", None), "memory_runtime", None)
     if runtime is None:
         raise RuntimeError("MemoryRuntime 尚未啟動")
-    await runtime.reset()
-    normalized = normalize_session_id(session_id)
-    if normalized:
-        reset_session_emotion_state(normalized)
-        save_session_messages(normalized, [])
-        reset_session_summary(normalized)
+    chat_service = getattr(getattr(getattr(request, "app", None), "state", None),
+                           "chat_session_service", None)
+    if chat_service is None:
+        raise RuntimeError("ChatSessionService 尚未啟動")
+    active = await chat_service.repository.get_or_create_active()
+    await chat_service.invalidate(active["session_id"])
+    await runtime.reset_chat_and_memory(chat_service.repository, active["session_id"])
     return {"status": "ok", "message": "記憶與情緒狀態已還原。"}
 
 
@@ -106,13 +106,13 @@ async def memory_library_delete_memory(group_id: str, request: Request):
 
 @router.get("/api/memory-library/sessions")
 async def memory_library_sessions(request: Request):
-    return {"items": _library(request).sessions()}
+    return {"items": await _library(request).sessions()}
 
 
 @router.get("/api/memory-library/sessions/{session_id}")
 async def memory_library_session(session_id: str, request: Request):
     try:
-        record = _library(request).session(session_id)
+        record = await _library(request).session(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if record is None:
@@ -123,7 +123,11 @@ async def memory_library_session(session_id: str, request: Request):
 @router.delete("/api/memory-library/sessions/{session_id}")
 async def memory_library_delete_session(session_id: str, request: Request):
     try:
-        result = _library(request).delete_session(session_id)
+        state = getattr(getattr(request, "app", None), "state", None)
+        chat_service = getattr(state, "chat_session_service", None)
+        if chat_service is not None:
+            await chat_service.invalidate(session_id)
+        result = await _library(request).delete_session(session_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "ok", **result}
@@ -133,7 +137,11 @@ async def memory_library_delete_session(session_id: str, request: Request):
 async def memory_library_purge_chat_sessions(payload: PurgeLongTermRequest, request: Request):
     if payload.confirmation != "PURGE CHAT SESSIONS":
         raise HTTPException(status_code=400, detail="確認文字不符")
-    result = _library(request).delete_all_sessions()
+    state = getattr(getattr(request, "app", None), "state", None)
+    chat_service = getattr(state, "chat_session_service", None)
+    if chat_service is not None:
+        await chat_service.invalidate()
+    result = await _library(request).delete_all_sessions()
     return {"status": "ok", **result}
 
 

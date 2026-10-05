@@ -14,6 +14,8 @@ from api.routes.display_ws import router as display_router
 from api.routes.expression_debug_router import router as expression_debug_router
 from api.routes.memory_router import router as memory_router
 from api.routes.voice_ws import initialize_voice_runtime, router as voice_router
+from infrastructure.chat_session_repository import ChatSessionRepository
+from services.chat_session_service import ChatSessionService
 from services.memory_runtime import MemoryRuntime
 
 
@@ -22,6 +24,9 @@ async def lifespan(application: FastAPI):
     await initialize_voice_runtime()
     runtime = await MemoryRuntime.create()
     application.state.memory_runtime = runtime
+    application.state.chat_session_service = ChatSessionService(
+        ChatSessionRepository(runtime.pool, runtime.repository.scope)
+    )
     runtime.start()
     try:
         yield
