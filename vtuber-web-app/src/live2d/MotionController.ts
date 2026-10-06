@@ -42,6 +42,7 @@ export class MotionController {
    * 釋放單例實例
    */
   public static releaseInstance(): void {
+    this.s_instance?.stopAutoPlay();
     this.s_instance = null;
   }
 
@@ -128,7 +129,7 @@ export class MotionController {
     const manager = LAppLive2DManager.getInstance();
     const model = manager.getActiveModel();
     
-    if (model) {
+    if (model && !model.isAutoMotionSuspended()) {
       model.startRandomMotion('Idle', Priority.Idle);
       this._currentMotion = { group: 'Idle', index: -1, priority: Priority.Idle };
     }
@@ -189,7 +190,6 @@ export class MotionController {
    * 取得可用的動作群組列表
    */
   public getAvailableMotionGroups(): string[] {
-    // 基於 Hiyori/Haru 模型的標準動作群組
-    return ['Idle', 'TapBody', 'TapHead'];
+    return LAppLive2DManager.getInstance().getActiveModel()?.getMotionGroupNames() ?? [];
   }
 }

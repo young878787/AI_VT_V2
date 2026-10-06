@@ -158,6 +158,276 @@ assert.ok(minimumLeft < 0.05, 'resumed blink must visibly close the eyes');
 near(parameters.get('left'), 0.5, 'completed blink restores the left expression');
 near(parameters.get('right'), 0.3, 'completed blink restores the right expression');
 
+// 完整 LAppModel 更新流程；SDK 傳輸／曲線求值為替身，合成順序使用實際 runtime。
+let nativeDeltaSec = 1 / 60;
+const nativeLoad = createLoader({
+  ...Object.fromEntries(sdkNames.map(name => [`@framework/${name}`, {}])),
+  '@framework/model/cubismusermodel': { CubismUserModel: class {} },
+  '@framework/math/cubismmodelmatrix': { CubismModelMatrix: class {} },
+  '@framework/cubismdefaultparameterid': { CubismDefaultParameterId: new Proxy({}, { get: (_, id) => id }) },
+  '@framework/live2dcubismframework': { CubismFramework: { getIdManager: () => ({ getId: id => id }) } },
+  '@framework/motion/cubismmotionqueuemanager': { InvalidMotionQueueEntryHandleValue: -1 },
+  '@framework/motion/cubismmotion': { CubismMotion: { create(buffer) {
+    const data = JSON.parse(new TextDecoder().decode(buffer));
+    return { data, setFadeInTime() {}, setFadeOutTime() {}, setEffectIds() {}, setLoop(loop) { this.loop = loop; },
+      getDuration: () => data.Meta.Duration };
+  } } },
+  './LAppPal': { LAppPal: { getDeltaTime: () => nativeDeltaSec, log() {}, printWarning() {} } },
+  './LAppTextureManager': { LAppTextureManager: class {} }, './LAppDelegate': {},
+}, {
+  performance: { now: () => modelNowMs }, TextDecoder,
+  fetch: async file => ({ ok: !file.includes('missing'), status: 404,
+    arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(file.includes('exp3')
+      ? { Parameters: [{ Id: 'ParamBrowLY' }] }
+      : { Meta: { Duration: 3.6, Loop: file.includes('loop') }, Curves: [
+        { Target: 'Parameter', Id: 'ParamEyeLOpen' }, { Target: 'Parameter', Id: 'ParamBrowLY' },
+        { Target: 'Parameter', Id: 'ParamMouthOpenY' }, { Target: 'Parameter', Id: 'ParamAngleZ' },
+        { Target: 'Parameter', Id: 'ParamEyeBallX' }, { Target: 'Parameter', Id: 'ParamEyeBallY' },
+        { Target: 'Parameter', Id: 'ParamAngleX' }, { Target: 'Parameter', Id: 'ParamAngleY' },
+      ] })).buffer }),
+});
+const { LAppModel: NativeModel } = nativeLoad('src/live2d/LAppModel.ts');
+const nativeModel = new NativeModel();
+const nativeValues = new Map();
+let savedNativeValues = new Map();
+const nativeIds = ['ParamEyeLOpen', 'ParamBrowLY', 'ParamMouthOpenY', 'ParamAngleZ',
+  'ParamEyeBallX', 'ParamEyeBallY', 'ParamAngleX', 'ParamAngleY'];
+const defaultValue = id => id.includes('Eye') && id.includes('Open') ? 1 : 0;
+nativeModel._model = {
+  setParameterValueById: (id, value) => nativeValues.set(id, value),
+  getParameterValueById: id => nativeValues.get(id) ?? defaultValue(id),
+  addParameterValueById: (id, value) => nativeValues.set(id, (nativeValues.get(id) ?? defaultValue(id)) + value),
+  getParameterIndex: id => nativeIds.indexOf(id), getParameterCount: () => nativeIds.length,
+  getParameterDefaultValue: index => defaultValue(nativeIds[index]),
+  saveParameters() { savedNativeValues = new Map(nativeValues); },
+  loadParameters() { nativeValues.clear(); for (const [id, value] of savedNativeValues) nativeValues.set(id, value); },
+  update() {},
+};
+let currentEntry = null;
+let currentMotion = null;
+let queueTime = 0;
+nativeModel._motionManager = {
+  startMotionPriority(motion) { currentMotion = motion; currentEntry = { finished: false,
+    setIsFinished(value) { this.finished = value; }, getStateTime: () => queueTime, getStartTime: () => 0 };
+    queueTime = 0; return currentEntry; },
+  isFinished: () => !currentEntry || currentEntry.finished,
+  isFinishedByHandle: handle => !handle || handle.finished,
+  getCubismMotionQueueEntry: handle => handle,
+  updateMotion(_, delta) { queueTime += delta;
+    for (const [id, value] of [['ParamEyeLOpen', 0.15], ['ParamBrowLY', 0.7], ['ParamMouthOpenY', 0.8], ['ParamAngleZ', 9],
+      ['ParamEyeBallX', -0.65], ['ParamEyeBallY', 0.35], ['ParamAngleX', -11], ['ParamAngleY', 4]])
+      nativeValues.set(id, value);
+    if (!currentMotion.loop && queueTime >= currentMotion.data.Meta.Duration) currentEntry.finished = true;
+  },
+};
+nativeModel._dragManager = { update() {}, getX: () => 0, getY: () => 0 };
+nativeModel._modelSetting = {
+  getJson: () => ({ getRoot: () => ({ getValueByString: () => ({ getValueByString: () => ({
+    getValueByString: () => ({ getValueByIndex: index => ({ getValueByString: () => ({
+      isString: () => index === 1,
+      getRawString: () => ' 思考 · 專注點頭 ',
+    }) }) }),
+  }) }) }) }),
+  getMotionGroupCount: () => 1, getMotionGroupName: () => 'Action', getMotionCount: () => 3,
+  getMotionFileName: (_, index) => ['missing.motion3.json', 'nod.motion3.json', 'loop.motion3.json'][index],
+  getMotionFadeInTimeValue: () => -1, getMotionFadeOutTimeValue: () => -1,
+  getExpressionCount: () => 1, getExpressionName: () => 'happy', getExpressionFileName: () => 'happy.exp3.json',
+};
+nativeModel.loadExpression = () => ({ expression: true });
+nativeModel._modelHomeDir = '/assets/';
+await nativeModel.loadMotions();
+await nativeModel.loadExpressions();
+const nativeCatalog = nativeModel.getNativeMotionCatalog();
+assert.equal(nativeCatalog[1].name, '思考 · 專注點頭', 'native labels use the authored manifest name');
+assert.equal(nativeCatalog[2].name, 'loop', 'unnamed native motions retain their filename label');
+assert.deepEqual(Array.from(nativeCatalog, entry => [entry.index, entry.status]), [[0, 'failed'], [1, 'loaded'], [2, 'loaded']],
+  'failed loading retains manifest index and remains visible');
+assert.equal(nativeModel.getMotionCount('Action'), 3);
+assert.equal(nativeModel.startMotion('Action', 0, 3), -1, 'failed manifest slot cannot play the next asset');
+assert.equal(nativeModel.getNativeExpressionCatalog()[0].status, 'loaded');
+nativeModel.setAutoMotionSuspended(false);
+nativeModel.startMotion('Action', 2, 1);
+assert.equal(nativeModel.getNativeActionState(), null, 'automatic Idle never owns preview parameters');
+assert.equal(currentMotion.loop, true, 'manifest loop is explicitly applied to the SDK runtime');
+nativeModel.setAutoMotionSuspended(true);
+assert.equal(currentEntry.finished, true, 'preview stops an already running automatic motion');
+assert.equal(nativeModel.startMotion('Action', 2, 1), -1, 'automatic timers cannot restart motion during preview');
+nativeModel._nativeReleaseValues.clear();
+nativeModel._dragManager = { update() {}, getX: () => 1, getY: () => -1 };
+nativeModel.applyBasePose({ params: { ...createNeutralTargetParams(), eyeBallX: 0.8, eyeBallY: -0.7 }, durationSec: 10 });
+nativeModel.startMotion('Action', 1, 3);
+let physicsFrames = 0;
+nativeModel._physics = { evaluate() { physicsFrames++; nativeValues.set('hair', 0.4); } };
+nativeModel._breath = { updateParameters() { nativeValues.set('ParamAngleZ', -5); } };
+nativeModel.setAutoEffectsEnabled(true);
+for (let frame = 0; frame < 24; frame++) { modelNowMs += nativeDeltaSec * 1000; nativeModel.update(); }
+near(nativeValues.get('ParamEyeLOpen'), 0.15, 'native eye curve survives procedural blink composition');
+near(nativeValues.get('ParamBrowLY'), 0.7, 'native brow curve survives expression composition');
+near(nativeValues.get('ParamMouthOpenY'), 0.8, 'native mouth curve works without TTS');
+near(nativeValues.get('ParamAngleZ'), 9, 'native pose survives breathing before physics');
+near(nativeValues.get('ParamEyeBallX'), -0.65, 'Force-owned horizontal gaze survives opposite pointer and intent');
+near(nativeValues.get('ParamEyeBallY'), 0.35, 'Force-owned vertical gaze survives opposite pointer and intent');
+near(nativeValues.get('ParamAngleX'), -11, 'Force-owned head yaw survives the procedural gaze-follow layer');
+near(nativeValues.get('ParamAngleY'), 4, 'Force-owned head pitch survives the procedural gaze-follow layer');
+assert.ok(physicsFrames > 0, 'physics keeps updating during preview');
+nativeModel.setSpeaking(true);
+nativeModel.setLipSyncValue(0.35);
+nativeModel.update();
+near(nativeValues.get('ParamMouthOpenY'), 0.35, 'TTS overrides the native mouth opening');
+nativeModel._nativeParamOverrides.set('ParamBrowLY', { value: -0.4, lastSetAt: modelNowMs });
+nativeModel.update();
+near(nativeValues.get('ParamBrowLY'), -0.4, 'manual override has final parameter ownership');
+nativeModel._nativeParamOverrides.clear();
+nativeModel.setSpeaking(false);
+nativeModel.setLipSyncValue(0);
+nativeModel.update();
+nativeModel.stopNativeMotion();
+nativeDeltaSec = 0.1;
+nativeModel.update();
+assert.ok(nativeValues.get('ParamAngleZ') > 0 && nativeValues.get('ParamAngleZ') < 9,
+  'cancellation smoothly releases toward the underlying breathing pose');
+for (let frame = 0; frame < 5; frame++) nativeModel.update();
+near(nativeValues.get('ParamMouthOpenY'), 0, 'cancelled mouth curve leaves no residue');
+assert.equal(nativeModel.getNativePlaybackState().status, 'cancelled');
+assert.equal(nativeModel._nativeReleaseValues.size, 0, 'the release layer is removed after blending');
+nativeModel.cancelExpressionAction();
+nativeModel._dragManager = { update() {}, getX: () => 0, getY: () => 0 };
+nativeDeltaSec = 1 / 60;
+
+let expressionValue = 0.4;
+const expressionEntries = [];
+nativeModel._expressionManager = {
+  startMotionPriority() { const entry = { setIsFinished() {}, release() {} }; expressionEntries.push(entry); return entry; },
+  getCubismMotionQueueEntries: () => expressionEntries,
+  getCubismMotionQueueEntry: handle => handle,
+  updateMotion() { nativeValues.set('ParamBrowLY', (nativeValues.get('ParamBrowLY') ?? 0) + expressionValue); },
+};
+assert.equal(nativeModel.setExpression('happy'), true);
+for (let frame = 0; frame < 60; frame++) nativeModel.update();
+near(nativeValues.get('ParamBrowLY'), 0.4, 'native Add expression is applied to the current base without accumulation');
+nativeModel._expressions.set('sleepy', { expression: true });
+nativeModel._nativeExpressionCatalog.push({ id: 'sleepy', parameters: ['ParamBrowLY'], status: 'loaded' });
+expressionValue = -0.5;
+assert.equal(nativeModel.setExpression('sleepy'), true);
+nativeModel.update();
+assert.ok(nativeValues.get('ParamBrowLY') > 0.35, 'expression switching starts from the last rendered pose');
+for (let frame = 0; frame < 24; frame++) nativeModel.update();
+near(nativeValues.get('ParamBrowLY'), -0.5, 'expression crossfade reaches the new target within 300 ms');
+assert.equal(expressionEntries.length, 1, 'replaced expression entries cannot keep modifying the new preview');
+nativeModel.clearNativeExpression();
+for (let frame = 0; frame < 24; frame++) nativeModel.update();
+near(nativeValues.get('ParamBrowLY'), 0, 'cleared native expression returns to the procedural baseline');
+assert.equal(expressionEntries.length, 0);
+
+// 眼球與頭部使用完整 update()/applyBasePose()/cancel 流程，只替換 Core 參數邊界。
+function gazeHarness() {
+  const gazeModel = new NativeModel();
+  const values = new Map();
+  let savedValues = new Map();
+  let pointer = { x: 0, y: 0 };
+  gazeModel._model = {
+    setParameterValueById: (id, value) => values.set(id, value),
+    getParameterValueById: id => values.get(id) ?? defaultValue(id),
+    addParameterValueById: (id, value) => values.set(id, (values.get(id) ?? defaultValue(id)) + value),
+    loadParameters() { values.clear(); for (const [id, value] of savedValues) values.set(id, value); },
+    saveParameters() { savedValues = new Map(values); }, update() {},
+  };
+  gazeModel._motionManager = { isFinished: () => true };
+  gazeModel._dragManager = { update() {}, getX: () => pointer.x, getY: () => pointer.y };
+  const advance = (frames, delta = 1 / 60) => {
+    nativeDeltaSec = delta;
+    for (let index = 0; index < frames; index++) { modelNowMs += delta * 1000; gazeModel.update(); }
+    nativeDeltaSec = 1 / 60;
+  };
+  return { model: gazeModel, values, advance,
+    pointer(x, y) { pointer = { x, y }; },
+    intent(x, y) { gazeModel.applyBasePose({ params: { ...createNeutralTargetParams(), eyeBallX: x, eyeBallY: y }, durationSec: 10 }); },
+  };
+}
+{
+  const h = gazeHarness();
+  // 待機的輕微方向偏移不能使滑鼠向右時仍看向左側。
+  h.intent(-0.2, 0);
+  h.pointer(1, 0);
+  h.advance(60);
+  assert.ok(h.values.get('ParamEyeBallX') > 0.4, 'a right target remains visibly right despite a quiet left glance');
+  h.pointer(-1, 0);
+  h.advance(60);
+  assert.ok(h.values.get('ParamEyeBallX') < -0.7, 'a left target yields a visible left gaze');
+  h.intent(0, 0);
+  h.pointer(0, 1);
+  h.advance(60);
+  assert.ok(h.values.get('ParamEyeBallY') > 0.5, 'an upper target produces clear upward gaze during an active plan');
+  h.pointer(0, -1);
+  h.advance(60);
+  assert.ok(h.values.get('ParamEyeBallY') < -0.5, 'a lower target produces clear downward gaze');
+  h.model.setEyeTrackingEnabled(false);
+  h.intent(-0.7, 0.4);
+  h.pointer(1, -1);
+  h.advance(60);
+  near(h.values.get('ParamEyeBallX'), -0.7, 'disabling pointer tracking preserves the authored horizontal target', 1e-6);
+  near(h.values.get('ParamEyeBallY'), 0.4, 'disabling pointer tracking preserves the authored vertical target', 1e-6);
+  h.model.setEyeTrackingEnabled(true);
+  h.advance(60);
+  near(h.values.get('ParamEyeBallX'), -0.7, 'strong authored attention owns direction despite an opposing pointer', 1e-6);
+}
+{
+  const h = gazeHarness();
+  h.pointer(1, -1);
+  h.advance(120);
+  const eyeX = h.values.get('ParamEyeBallX');
+  const eyeY = h.values.get('ParamEyeBallY');
+  const headX = h.values.get('ParamAngleX');
+  h.advance(120);
+  near(h.values.get('ParamEyeBallX'), eyeX, 'constant pointer input cannot accumulate horizontal gaze');
+  near(h.values.get('ParamEyeBallY'), eyeY, 'constant pointer input cannot accumulate vertical gaze');
+  near(h.values.get('ParamAngleX'), headX, 'constant pointer input cannot accumulate head rotation');
+  h.pointer(0, 0);
+  h.advance(1);
+  near(h.values.get('ParamEyeBallX'), 0, 'returning the pointer to center clears the previous gaze');
+  near(h.values.get('ParamEyeBallY'), 0, 'neutral input overwrites the previous vertical gaze');
+}
+{
+  const h = gazeHarness();
+  h.pointer(1, 1);
+  h.model.applyEyeMotionPlan({ style: 'dizzy_dart', intensity: 1, amplitudeX: 1, amplitudeY: 1,
+    durationMs: 6000, blendInMs: 50, blendOutMs: 100, frequencyHz: 0.7, phaseSeed: 0.3 });
+  let reachedLimit = false;
+  for (let frame = 0; frame < 120; frame++) {
+    h.advance(1);
+    for (const id of ['ParamEyeBallX', 'ParamEyeBallY']) {
+      const value = h.values.get(id);
+      assert.ok(Number.isFinite(value) && value >= -1 && value <= 1, 'pointer plus eye-motion offset remains within moc3 bounds');
+      reachedLimit ||= Math.abs(value) === 1;
+    }
+  }
+  assert.equal(reachedLimit, true, 'bounds are tested with a composition that actually reaches the limit');
+  near(h.values.get('ParamAngleX'), 6, 'eye micro-motion does not introduce head jitter');
+  near(h.values.get('ParamAngleY'), 4, 'head motion follows attention rather than the saccade offset');
+}
+for (const fps of [30, 60]) {
+  const h = gazeHarness();
+  h.model.setEyeTrackingEnabled(false);
+  h.intent(0.7, -0.4);
+  h.advance(fps / 10, 1 / fps);
+  const eyeProgress = h.values.get('ParamEyeBallX') / 0.7;
+  const headProgress = h.values.get('ParamAngleX') / (0.7 * 14);
+  assert.ok(eyeProgress > 0.8 && headProgress > 0 && headProgress < 0.4,
+    `eyes acquire attention before the head follows at ${fps} FPS`);
+  assert.ok(eyeProgress > headProgress * 2, 'the eyes and head must not drift toward the target as one block');
+  h.advance(fps, 1 / fps);
+  const beforeCancel = h.values.get('ParamAngleX');
+  h.model.cancelExpressionAction();
+  h.advance(1, 1 / fps);
+  assert.ok(h.values.get('ParamEyeBallX') > 0 && h.values.get('ParamEyeBallX') < 0.7, 'intent release moves the eyes toward center');
+  assert.ok(h.values.get('ParamAngleX') > 0 && h.values.get('ParamAngleX') >= beforeCancel * 0.85,
+    'head release remains smooth after the eyes start returning');
+  h.advance(fps * 2, 1 / fps);
+  near(h.values.get('ParamEyeBallX'), 0, 'released attention leaves no eye residue', 1e-6);
+  near(h.values.get('ParamAngleX'), 0, 'released attention eventually centers the head', 0.002);
+  near(h.values.get('ParamAngleY'), 0, 'released attention eventually centers head pitch', 0.002);
+}
+
 class FakeClock {
   now = 10000;
   nextId = 1;
@@ -183,7 +453,7 @@ class FakeClock {
   }
 }
 
-function schedulerHarness() {
+function schedulerHarness(nativeModel = null) {
   const clock = new FakeClock();
   const reports = [];
   const applied = [];
@@ -209,7 +479,7 @@ function schedulerHarness() {
   const schedulerLoad = createLoader({
     '../store/appStore': { useAppStore },
     '../live2d/LAppLive2DManager': {
-      LAppLive2DManager: { getInstance: () => ({ getActiveModel: () => ({ cancelExpressionAction() {} }) }) },
+      LAppLive2DManager: { getInstance: () => ({ getActiveModel: () => nativeModel ?? ({ cancelExpressionAction() {} }) }) },
     },
   }, {
     performance: { now: () => clock.now },
@@ -339,6 +609,86 @@ for (const steps of [sequence, [
     ['started', 'active-disconnect'], ['cancelled', 'active-disconnect'],
   ], 'the actual WebSocket close callback must cancel before stopping speech can start pending work');
   assert.equal(h.applied.length, 1, 'disconnect must never apply the queued expression');
+}
+
+// 原生保護由 renderer 的真實完成狀態解除，長動作與 loop 不受 3 秒截斷。
+function nativeSchedulerHarness(loop = false) {
+  let nativeState = null;
+  let suspended = false;
+  let cancelled = 0;
+  let blink = { paused: true, intervalMin: 2.5, intervalMax: 4.5 };
+  const nativeModel = {
+    getNativeMotionCatalog: () => [{ group: 'Shake', index: 2, name: 'shake', status: 'loaded', durationSec: 3.6, loop }],
+    getNativeExpressionCatalog: () => [{ id: 'sleepy', status: 'loaded' }],
+    getNativePlaybackState: () => nativeState,
+    isAutoMotionSuspended: () => suspended,
+    setAutoMotionSuspended: value => { suspended = value; },
+    getBlinkState: () => ({ ...blink }),
+    setBlinkInterval(min, max) { blink = { ...blink, intervalMin: min, intervalMax: max }; },
+    pauseAutoBlink() { blink.paused = true; }, resumeAutoBlink() { blink.paused = false; },
+    startMotion() { nativeState = { status: 'playing', elapsedSec: 0 }; },
+    setExpression: () => true,
+    cancelExpressionAction() { cancelled++; blink.paused = false; nativeState = { status: 'cancelled', elapsedSec: 1 }; },
+  };
+  const harness = schedulerHarness(nativeModel);
+  return { ...harness, suspended: () => suspended, cancelled: () => cancelled, blink: () => blink,
+    finish: () => { nativeState = { status: 'finished', elapsedSec: 3.6 }; } };
+}
+{
+  const h = nativeSchedulerHarness();
+  const notifications = [];
+  const unsubscribe = h.scheduler.subscribePlaybackState(state => notifications.push(state.status));
+  assert.equal(h.scheduler.playNativeMotion('Shake', 2), true);
+  assert.equal(h.suspended(), true, 'preview isolates both automatic Idle entrances');
+  h.scheduler.submit(makePlan(), 'chat', 'native-pending');
+  h.clock.advance(3300);
+  assert.equal(h.applied.length, 0, 'a motion longer than 3 seconds keeps chat queued');
+  assert.equal(h.scheduler.getPlaybackState().kind, 'native-motion', 'queued chat cannot relabel the playing native preview');
+  h.finish();
+  h.clock.advance(40);
+  assert.equal(h.applied.length, 1, 'renderer completion releases the pending plan');
+  h.clock.advance(300);
+  assert.equal(h.suspended(), false, 'automatic motion resumes after the release blend');
+  assert.ok(notifications.includes('finished'), 'native completion is observable separately from compilation');
+  unsubscribe();
+}
+{
+  const h = nativeSchedulerHarness(true);
+  assert.equal(h.scheduler.playNativeMotion('Shake', 2), true);
+  h.clock.advance(15000);
+  assert.equal(h.scheduler.getPlaybackState().status, 'playing', 'loop keeps protection until explicit stop');
+  h.scheduler.stopPreview();
+  assert.equal(h.scheduler.getPlaybackState().status, 'cancelled');
+  h.clock.advance(300);
+  assert.equal(h.suspended(), false);
+  assert.equal(h.blink().paused, true, 'native preview restores a pause captured before cancellation');
+  near(h.blink().intervalMin, 2.5, 'native preview restores the previous blink interval');
+  assert.equal(h.clock.jobs.size, 0, 'cancel must remove native polling and release timers');
+  assert.equal(h.scheduler.playNativeMotion('Missing', 0), false);
+  assert.equal(h.scheduler.getPlaybackState().status, 'failed', 'missing native item produces a visible failure');
+  assert.equal(h.scheduler.playNativeExpression('sleepy'), true);
+  assert.equal(h.scheduler.getPlaybackState().durationMs, undefined, 'held expression must not claim a clip duration');
+  h.scheduler.clearNativeExpression();
+  h.clock.advance(300);
+  assert.equal(h.suspended(), false);
+}
+{
+  const h = nativeSchedulerHarness();
+  const revision = h.scheduler.getPreviewRevision();
+  h.scheduler.submit(makePlan({ idlePlan: { enterAfterMs: 500, settlePose: { durationSec: 12 } } }), 'debug');
+  assert.ok(h.scheduler.getPreviewRevision() > revision, 'debug submission invalidates older asynchronous compilation');
+  h.clock.advance(15000);
+  const playback = h.scheduler.getPlaybackState();
+  assert.equal(playback.status, 'idle', 'debug loop does not report finished while it keeps playing');
+  assert.equal(playback.loop, true);
+  assert.equal(playback.durationMs, 500, 'settlePose duration is not an invented loop completion boundary');
+  assert.equal(h.suspended(), true, 'automatic motion stays isolated throughout debug idle');
+  const idleRevision = h.scheduler.getPreviewRevision();
+  h.scheduler.stopPreview();
+  assert.ok(h.scheduler.getPreviewRevision() > idleRevision, 'stop invalidates pending asynchronous compilation');
+  h.clock.advance(300);
+  assert.equal(h.suspended(), false);
+  assert.equal(h.blink().paused, true);
 }
 
 function deferred() {
@@ -474,4 +824,4 @@ function audioHarness(suspended = false) {
   assert.equal(h.frames.size, 0, 'the completed mouth close must not leave an animation frame queued');
 }
 
-console.log('Rushia runtime checks passed: fixed model, framing, mouth/eye composition, action timing and cancelled TTS.');
+console.log('Rushia runtime checks passed: framing, native metadata/index/loop, curve ownership/release, preview lifecycle/idle/blink restoration and cancelled TTS.');

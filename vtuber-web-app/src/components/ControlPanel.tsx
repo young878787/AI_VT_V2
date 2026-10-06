@@ -6,9 +6,8 @@ import { useAppStore } from '@store/appStore';
 import { useBackgroundStore, type BackgroundType, type BackgroundFit } from '../store/backgroundStore';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { MotionController } from '../live2d/MotionController';
-import { Priority } from '../live2d/LAppDefine';
 import { LipSyncManager } from '../audio/LipSyncManager';
-import { actionScheduler } from '../services/actionScheduler';
+import { NativePreviewPanel } from './NativePreviewPanel';
 import './ControlPanel.css';
 
 /** 可折疊區塊 key */
@@ -30,7 +29,7 @@ const SECTION_ICONS: Record<SectionKey, string> = {
   motion:     '▶',
 };
 
-export const ControlPanel = () => {
+export const ControlPanel = ({ debugApiBaseUrl }: { debugApiBaseUrl?: string }) => {
   const {
     microphoneEnabled,
     microphonePermission,
@@ -65,11 +64,6 @@ export const ControlPanel = () => {
   const toggleSection = (key: SectionKey) =>
     setCollapsed(prev => ({ ...prev, [key]: !prev[key] }));
 
-  // 動作測試狀態
-  const [preferredMotionGroup, setSelectedMotionGroup] = useState('Idle');
-  const model = modelLoaded ? LAppLive2DManager.getInstance().getActiveModel() : null;
-  const motionGroups = model?.getMotionGroupNames() ?? [];
-  const selectedMotionGroup = motionGroups.includes(preferredMotionGroup) ? preferredMotionGroup : (motionGroups[0] ?? 'Idle');
   const [lipSyncVolume, setLipSyncVolume] = useState<number>(0);
 
   // 眨眼控制狀態
@@ -161,19 +155,6 @@ export const ControlPanel = () => {
     }
   }, [microphoneEnabled, toggleMicrophone, setMicrophonePermission]);
 
-  // 動作播放
-  const handlePlayMotion = (index: number) => {
-    actionScheduler.manualControl();
-    const model = LAppLive2DManager.getInstance().getActiveModel();
-    if (model) model.startMotion(selectedMotionGroup, index, Priority.Force);
-  };
-
-  const handlePlayRandomMotion = () => {
-    actionScheduler.manualControl();
-    const model = LAppLive2DManager.getInstance().getActiveModel();
-    if (model) model.startRandomMotion(selectedMotionGroup, Priority.Force);
-  };
-
   // 眨眼控制
   const handleForceBlink = useCallback(() => {
     const model = LAppLive2DManager.getInstance().getActiveModel();
@@ -227,8 +208,6 @@ export const ControlPanel = () => {
       setBackgroundType('image');
     }
   }, [imageUrlInput, setBackgroundImageUrl, setBackgroundType]);
-
-  const motionCount = model ? model.getMotionCount(selectedMotionGroup) : 0;
 
   /** 區塊標題 */
   const sectionHeader = (id: SectionKey, extra?: React.ReactNode) => (
@@ -568,41 +547,10 @@ export const ControlPanel = () => {
 
         {/* ━━ 動作測試 ━━ */}
         <div className="ctrl-section">
-          {sectionHeader('motion', motionCount > 0 ? <span className="cp-badge">{motionCount}</span> : undefined)}
+          {sectionHeader('motion')}
           {!collapsed.motion && (
             <div className="ctrl-section__content">
-              <div className="cp-row">
-                <select
-                  className="cp-select"
-                  value={selectedMotionGroup}
-                  onChange={e => setSelectedMotionGroup(e.target.value)}
-                  disabled={!modelLoaded || motionGroups.length === 0}
-                >
-                  {motionGroups.map(g => <option key={g} value={g}>{g}</option>)}
-                </select>
-                <button
-                  className="cp-btn cp-btn--primary"
-                  onClick={handlePlayRandomMotion}
-                  disabled={!modelLoaded || motionCount === 0}
-                >🎲 隨機</button>
-              </div>
-
-              {motionCount > 0 && (
-                <div className="cp-motion-grid">
-                  {Array.from({ length: motionCount }, (_, i) => (
-                    <button
-                      key={i}
-                      className="cp-motion-btn"
-                      onClick={() => handlePlayMotion(i)}
-                      disabled={!modelLoaded}
-                    >
-                      {i + 1}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              <div className="cp-hint">建議關閉自動播放再測試特定動作</div>
+              <NativePreviewPanel apiBaseUrl={debugApiBaseUrl} />
             </div>
           )}
         </div>

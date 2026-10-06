@@ -91,19 +91,18 @@ bun run dev
 
 ## Rushia 表情設計
 
-目前共有 **13 個家族、32 個變體**，定義集中於 `rushia_expression_profile.py` 的 `FAMILY_POSES` 與 `FAMILY_VARIANTS`。
+目前共有 **11 個家族、32 個變體**，定義集中於 `rushia_expression_profile.py` 的 `FAMILY_POSES` 與 `FAMILY_VARIANTS`。專注聆聽併入思考，挑釁併入調皮；原有姿態與變體保留。
 
 | 家族 | 變體數 | 表現重點 |
 | --- | ---: | --- |
 | `calm` | 3 | 平靜、輕微偏視與確認反應 |
-| `listening` | 3 | 溫和抬眉、專注與回正視線 |
-| `thinking` | 3 | 左右／下方偏視、眉毛與眼睛不對稱 |
+| `thinking` | 6 | 溫和抬眉、專注、左右／下方思考與回正視線 |
 | `soft_smile` | 3 | 微笑、輕微臉紅與身體變化 |
 | `closed_smile` | 3 | 短暫閉眼笑，接著恢復睜眼 |
-| `playful` | 3 | 偷看、左眼或右眼 wink |
-| `teasing`、`angry`、`sad`、`gloomy`、`shy`、`surprised`、`conflicted` | 各 2 | 各情緒的視線、眉嘴及局部反應 |
+| `playful` | 5 | 偷看、左右 wink、左右逗弄 |
+| `angry`、`sad`、`gloomy`、`shy`、`surprised`、`conflicted` | 各 2 | 各情緒的視線、眉嘴及局部反應 |
 
-選擇家族時先套用主題保護及負面情緒規則，再處理指定家族與互動態度。例如一般 neutral 回覆使用 `calm`；`awkward`／`tense_hold` 可映射為聆聽，開心可使用柔和微笑或閉眼笑。工作室的 `thinking` 預覽與前端等待回覆時的輕微思考姿態是不同入口；新增家族不代表 JEV 已新增同名分類。
+選擇家族時先套用主題保護及負面情緒規則，再處理指定家族與互動態度。例如一般 neutral 回覆使用 `calm`；`awkward`／`tense_hold` 映射為思考，`smug` 映射為調皮，開心可使用柔和微笑或閉眼笑。舊 `listening`／`teasing` 輸入在 Rushia compiler 正規化到新家族，JEV 原始情緒與態度仍保留。工作室的 `thinking` 預覽與前端等待回覆時的輕微思考姿態是不同入口。
 
 變體使用局部亂數產生器。相同 intent、seed 與 previous state 可重現相同編譯結果；帶入上一輪 `carryState` 時避開立即重複的變體。這是有範圍的姿態選擇，不是任意抖動原生參數。
 

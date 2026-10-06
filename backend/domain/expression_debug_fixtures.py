@@ -7,16 +7,17 @@ import random
 from copy import deepcopy
 from typing import Any
 
+from domain.expression_motion_library import MOTION_BRANCH_LIBRARY
+from domain.rushia_expression_profile import canonical_rushia_family
+
 
 DEBUG_EXPRESSION_KINDS = (
     "calm",
-    "listening",
     "thinking",
     "soft_smile",
     "closed_smile",
     "happy",
     "playful",
-    "teasing",
     "angry",
     "sad",
     "gloomy",
@@ -75,21 +76,6 @@ DEBUG_EXPRESSION_RULES: dict[str, dict[str, Any]] = {
         "arc": "pop_then_settle",
         "hold_ms": 1700,
         "speaking_rate": 1.1,
-        "blink_style": "teasing_pause",
-    },
-    "teasing": {
-        "label": "挑釁",
-        "primary_emotion": "teasing",
-        "emotion": "teasing",
-        "performance_mode": "smug",
-        "intensity": 0.58,
-        "energy": 0.54,
-        "playfulness": 0.72,
-        "warmth": 0.42,
-        "dominance": 0.58,
-        "arc": "steady",
-        "hold_ms": 1900,
-        "speaking_rate": 1.0,
         "blink_style": "teasing_pause",
     },
     "angry": {
@@ -185,7 +171,7 @@ DEBUG_EXPRESSION_RULES: dict[str, dict[str, Any]] = {
 }
 
 for _family, _label in {
-    "calm": "平靜", "listening": "專注聆聽", "thinking": "思考",
+    "calm": "平靜", "thinking": "思考",
     "soft_smile": "柔和微笑", "closed_smile": "閉眼笑",
 }.items():
     DEBUG_EXPRESSION_RULES[_family] = {
@@ -196,42 +182,36 @@ for _family, _label in {
     }
 
 
+DEBUG_MOTION_LABELS = {
+    "buoyant_bounce": "上浮彈跳", "side_sway_bounce": "左右彈跳", "lean_in_pop": "前傾彈出",
+    "swing_tease": "調皮擺動", "peek_shift": "探頭側移", "locked_glare": "瞪視鎖定",
+    "sharp_twist_hold": "俐落轉身停頓", "tuck_side_sway": "縮肩側擺", "peek_return": "探望後收回",
+    "slow_sink": "緩慢低落", "small_recover_bob": "微微回振", "recoil_spring": "驚訝回彈",
+    "uneasy_counter_sway": "不安交錯擺動",
+}
+DEBUG_MOTION_EXPRESSIONS = {
+    "happy_bright_talk": "happy", "playful_tease": "playful", "angry_tension": "angry",
+    "shy_tucked": "shy", "low_mood": "sad", "surprised_recoil": "surprised", "uneasy_shift": "conflicted",
+}
 DEBUG_MOTION_RULES: dict[str, dict[str, str]] = {
-    "buoyant_bounce": {
-        "label": "上浮彈跳",
-        "expression": "happy",
-        "motion_theme": "happy_bright_talk",
-        "motion_variant": "buoyant_bounce",
+    branch["variant"]: {
+        "label": DEBUG_MOTION_LABELS.get(branch["variant"], branch["variant"]),
+        "expression": DEBUG_MOTION_EXPRESSIONS[theme],
+        "motion_theme": theme,
+        "motion_variant": branch["variant"],
+    }
+    for theme, branches in MOTION_BRANCH_LIBRARY.items()
+    for branch in branches
+}
+
+DEBUG_SCENARIOS = {
+    "speaking_micro": {
+        "label": "說話眉毛輕強調",
+        "description": "柔和微笑序列穿插休息與 rushia_phrase_emphasis；不使用舊 microEvents。",
     },
-    "side_sway_bounce": {
-        "label": "左右彈跳",
-        "expression": "happy",
-        "motion_theme": "happy_bright_talk",
-        "motion_variant": "side_sway_bounce",
-    },
-    "lean_in_pop": {
-        "label": "前傾彈出",
-        "expression": "happy",
-        "motion_theme": "happy_bright_talk",
-        "motion_variant": "lean_in_pop",
-    },
-    "swing_tease": {
-        "label": "調皮擺動",
-        "expression": "playful",
-        "motion_theme": "playful_tease",
-        "motion_variant": "swing_tease",
-    },
-    "locked_glare": {
-        "label": "瞪視鎖定",
-        "expression": "angry",
-        "motion_theme": "angry_tension",
-        "motion_variant": "locked_glare",
-    },
-    "tuck_side_sway": {
-        "label": "縮肩側擺",
-        "expression": "shy",
-        "motion_theme": "shy_tucked",
-        "motion_variant": "tuck_side_sway",
+    "brow_eye_micro": {
+        "label": "眉眼側望序列",
+        "description": "Rushia 調皮家族的逗弄眼神與身體側望，依 sequence 淡入淡出並回到基準。",
     },
 }
 
@@ -249,6 +229,7 @@ def _resolve_intensity(intensity: str | None) -> str:
 def _resolve_expression_kind(kind: str | None, randomize: bool, rng) -> str:
     if randomize or not kind or kind == "random":
         return rng.choice(DEBUG_EXPRESSION_KINDS)
+    kind = canonical_rushia_family(kind)
     if kind not in DEBUG_EXPRESSION_RULES:
         raise ValueError(f"Unknown debug expression kind: {kind}")
     return kind
@@ -266,6 +247,10 @@ def build_fake_expression_debug_case(
     """Build a fake Expression Agent JSON reply plus fake spoken text."""
 
     selected_intensity = _resolve_intensity(intensity)
+    if motion_kind and motion_kind not in DEBUG_MOTION_RULES:
+        raise ValueError(f"Unknown debug motion kind: {motion_kind}")
+    if scenario and scenario not in DEBUG_SCENARIOS:
+        raise ValueError(f"Unknown debug scenario: {scenario}")
     selected_motion = DEBUG_MOTION_RULES.get(motion_kind or "")
     selected_kind = selected_motion["expression"] if selected_motion else _resolve_expression_kind(kind, randomize, random.Random(seed))
     rule = deepcopy(DEBUG_EXPRESSION_RULES[selected_kind])
@@ -310,17 +295,13 @@ def build_fake_expression_debug_case(
                 "performance_mode": "bright_talk",
                 "arc": "steady",
                 "hold_ms": 1800,
-                "must_include": [
-                    "brow_micro_dual_lift",
-                    "brow_micro_curve_smile",
-                    "brow_micro_understand_lift",
-                ],
+                "expression_family": "soft_smile",
             }
         )
-        label = "說話微表情"
+        label = DEBUG_SCENARIOS[scenario]["label"]
         spoken_text = (
-            "後端假 AI 回覆：測試說話期間微表情，主要開心表情要維持，"
-            "同時平滑穿插眉毛、笑眼、嘴角、臉紅與呼吸小變化。"
+            "後端假 AI 回覆：維持 Rushia 柔和微笑，以 warm_nod 起手，"
+            "在說話休息後穿插眉毛輕強調，依照 sequence 平滑收回原本姿勢。"
         )
     elif scenario == "brow_eye_micro":
         intent.update(
@@ -328,15 +309,11 @@ def build_fake_expression_debug_case(
                 "emotion": "teasing",
                 "primary_emotion": "teasing",
                 "performance_mode": "smug",
-                "must_include": [
-                    "brow_micro_soft_question",
-                    "brow_micro_dual_lift",
-                    "brow_micro_curve_smile",
-                ],
+                "expression_family": "playful",
             }
         )
-        label = "眉眼微動"
-        spoken_text = "後端假 AI 回覆：測試眉毛與眼神微動，表情保持挑釁但不要突然歸零。"
+        label = DEBUG_SCENARIOS[scenario]["label"]
+        spoken_text = "後端假 AI 回覆：測試 Rushia tease_left 眉眼側望，表情保持挑逗並平滑收回。"
 
     raw_reply = json.dumps(intent, ensure_ascii=False)
     return {
@@ -345,6 +322,7 @@ def build_fake_expression_debug_case(
         "label": label,
         "kind": selected_kind,
         "expressionFamily": intent.get("expression_family"),
+        "expressionVariant": {"speaking_micro": "warm_nod", "brow_eye_micro": "tease_left"}.get(scenario),
         "motionKind": motion_kind or "",
         "scenario": scenario or "",
         "intensity": selected_intensity,

@@ -1,0 +1,19 @@
+.native-preview-panel { display: flex; flex-direction: column; gap: 12px; color: var(--text-primary); min-width: 0; }
+.native-preview-panel__heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; }
+.native-preview-panel h3, .native-preview-panel h4 { font-size: 12px; margin: 0; }
+.native-preview-panel__heading > span, .native-preview-panel__hint { color: var(--text-secondary); font-size: 10px; line-height: 1.6; }
+.native-preview-panel__field { display: flex; align-items: center; gap: 9px; color: var(--text-secondary); font-size: 11px; }
+.native-preview-panel__field select { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; color: var(--text-primary); background: white; }
+.native-preview-panel__catalog { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.native-preview-panel__item { display: flex; flex-direction: column; gap: 5px; text-align: left; min-width: 0; border: 1px solid #dce7df; border-radius: 9px; padding: 10px; background: #ffffffad; color: #607c6b; font-size: 10px; cursor: pointer; }
+.native-preview-panel__item:hover:not(:disabled), .native-preview-panel__item.active { background: #edf5ef; border-color: #88ac96; }
+.native-preview-panel__item:disabled { opacity: .5; cursor: default; }
+.native-preview-panel__item-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; }
+.native-preview-panel__item-heading strong { font-size: 11px; overflow-wrap: anywhere; }
+.native-preview-panel__item-heading > span { color: #7d9587; font-size: 9px; }
+.native-preview-panel__file, .native-preview-panel code { overflow-wrap: anywhere; color: #81968a; font-size: 9px; }
+.native-preview-panel__controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.native-preview-panel__controls button { border: 1px solid #d8e5dc; border-radius: 7px; background: #edf3ee; color: #52715d; padding: 8px 9px; font-size: 10px; cursor: pointer; }
+.native-preview-panel__controls button:disabled { opacity: .5; cursor: default; }
+.native-preview-panel__error { color: var(--error, #ad4b42); font-size: 10px; line-height: 1.6; }
+@media (max-width: 420px) { .native-preview-panel__catalog { grid-template-columns: minmax(0, 1fr); } }

@@ -1,0 +1,6 @@
+.action-playback-status { display: flex; flex-direction: column; gap: 6px; background: #edf4ef; border: 1px solid #d7e4dc; border-radius: 9px; padding: 11px 12px; color: #55765f; font-size: 11px; }
+.action-playback-status__heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.action-playback-status__heading > span { flex-shrink: 0; color: #7a9081; font-size: 10px; font-variant-numeric: tabular-nums; }
+.action-playback-status__label { font-size: 10px; overflow-wrap: anywhere; }
+.action-playback-status progress { width: 100%; height: 5px; accent-color: #729981; border: 0; }
+.action-playback-status--failed, .action-playback-status__error { color: #ad4b42; background: #fdf0ed; }

@@ -694,38 +694,6 @@
   font-weight: 600;
 }
 
-/* ── 動作格 ── */
-.cp-motion-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
-  gap: 4px;
-}
-
-.cp-motion-btn {
-  padding: 5px 4px;
-  border-radius: 0px;
-  background: white;
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: var(--transition);
-  text-align: center;
-}
-
-.cp-motion-btn:hover:not(:disabled) {
-  background: var(--primary-dim);
-  border-color: var(--border-bright);
-  color: var(--primary-strong);
-  transform: translateY(-1px);
-}
-
-.cp-motion-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
 /* ── 眨眼控制 ── */
 .cp-blink-status {
   display: flex;

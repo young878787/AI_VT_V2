@@ -1445,9 +1445,12 @@ def build_model_hints(intent: dict, preset_name: str, model_name: str) -> dict:
     }
 
 
-def compile_expression_plan(intent: dict, model_name: str, previous_state: dict | None, *, seed: int | None = None) -> dict:
+def compile_expression_plan(
+    intent: dict, model_name: str, previous_state: dict | None, *, seed: int | None = None,
+    debug_overrides: dict | None = None,
+) -> dict:
     if model_name == "Rushia":
-        return build_rushia_expression_plan(intent, previous_state, seed=seed)
+        return build_rushia_expression_plan(intent, previous_state, seed=seed, debug_overrides=debug_overrides)
 
     emotion = intent.get("emotion", intent.get("primary_emotion", DEFAULT_INTENT["emotion"]))
     if emotion not in {

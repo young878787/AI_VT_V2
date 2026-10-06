@@ -7,7 +7,7 @@ import random
 from domain.expression_blink_strategies import BLINK_STRATEGIES
 from domain.expression_compiler_rules import MOTION_PARAM_DEFAULTS
 from domain.expression_continuity import build_carry_state
-from domain.expression_eye_motion_library import build_eye_motion_plan
+from domain.expression_eye_motion_library import EYE_MOTION_STYLES, build_eye_motion_plan
 from domain.expression_motion_library import build_motion_plan
 from domain.expression_presets import BASE_POSE_PRESETS
 from domain.expression_visual_signature import resolve_effective_performance_mode
@@ -15,7 +15,7 @@ from domain.expression_visual_signature import resolve_effective_performance_mod
 
 # Rushia has no separate smile-eye parameter. A brief closed-eye pose supplies
 # that silhouette; base and idle poses always reopen the eyes.
-FAMILY_POSES = {
+_SOURCE_FAMILY_POSES = {
     "calm": {"mouthForm": 0.04, "eyeLOpen": 0.96, "eyeROpen": 0.96},
     "listening": {"mouthForm": 0.2, "eyeLOpen": 1.0, "eyeROpen": 1.0,
                   "browLY": 0.22, "browRY": 0.22, "bodyAngleY": 0.05},
@@ -52,21 +52,21 @@ FAMILY_POSES = {
 }
 
 # Each variant has a distinct local gesture, not unrestricted parameter noise.
-FAMILY_VARIANTS = {
+_SOURCE_FAMILY_VARIANTS = {
     "calm": [
         ("small_nod", {"bodyAngleY": 0.09, "browLY": 0.1, "browRY": 0.1}),
-        ("quiet_glance", {"eyeBallX": -0.2, "bodyAngleZ": -0.045}),
+        ("quiet_glance", {"eyeBallX": -0.5, "bodyAngleZ": -0.045}),
         ("gentle_acknowledgement", {"browLY": 0.2, "browRY": 0.2, "mouthForm": 0.2}),
     ],
     "listening": [
         ("attentive_nod", {"bodyAngleY": 0.14, "eyeBallY": -0.05}),
-        ("listen_left", {"bodyAngleZ": -0.09, "eyeBallX": 0.12, "browLY": 0.23}),
-        ("listen_right", {"bodyAngleZ": 0.09, "eyeBallX": -0.12, "browRY": 0.23}),
+        ("listen_left", {"bodyAngleZ": -0.09, "eyeBallX": -0.5, "browLY": 0.23}),
+        ("listen_right", {"bodyAngleZ": 0.09, "eyeBallX": 0.5, "browRY": 0.23}),
     ],
     "thinking": [
-        ("look_up_left", {"eyeBallX": -0.6, "eyeBallY": 0.18, "bodyAngleZ": -0.08}),
-        ("look_up_right", {"eyeBallX": 0.6, "eyeBallY": 0.18, "bodyAngleZ": 0.08}),
-        ("consider_then_return", {"eyeBallX": 0.55, "eyeBallY": -0.2,
+        ("look_up_left", {"eyeBallX": -0.8, "eyeBallY": 0.32, "bodyAngleZ": -0.08}),
+        ("look_up_right", {"eyeBallX": 0.8, "eyeBallY": 0.32, "bodyAngleZ": 0.08}),
+        ("consider_then_return", {"eyeBallX": 0.72, "eyeBallY": -0.3,
                                   "bodyAngleY": -0.09, "browLY": 0.45, "browRY": -0.18}),
     ],
     "soft_smile": [
@@ -79,27 +79,48 @@ FAMILY_VARIANTS = {
         ("closed_smile_left", {"bodyAngleZ": -0.09}),
         ("closed_smile_right", {"bodyAngleZ": 0.09}),
     ],
-    "playful": [("playful_peek", {"eyeBallX": -0.24, "bodyAngleZ": 0.1}),
+    "playful": [("playful_peek", {"eyeBallX": -0.55, "bodyAngleZ": 0.1}),
                 ("playful_wink_left", {"eyeLOpen": 0.0, "eyeROpen": 0.92, "eyeSync": False}),
                 ("playful_wink_right", {"eyeLOpen": 0.92, "eyeROpen": 0.0, "eyeSync": False})],
-    "teasing": [("tease_left", {"eyeBallX": -0.22, "bodyAngleZ": -0.1}),
-                ("tease_right", {"eyeBallX": 0.22, "bodyAngleZ": 0.1})],
+    "teasing": [("tease_left", {"eyeBallX": -0.55, "bodyAngleZ": -0.1}),
+                ("tease_right", {"eyeBallX": 0.55, "bodyAngleZ": 0.1})],
     "angry": [("firm_glare", {"browLY": -0.68, "browRY": -0.68, "bodyAngleY": 0.1}),
               ("restrained_turn", {"bodyAngleX": -0.12, "eyeBallX": 0.14})],
-    "sad": [("lower_gaze", {"eyeBallY": -0.32, "bodyAngleY": -0.12}),
-            ("sad_look_back", {"eyeBallX": 0.18, "browLY": 0.25, "browRY": 0.25})],
-    "gloomy": [("quiet_sink", {"eyeBallY": -0.3, "bodyAngleY": -0.12}),
-               ("quiet_side_glance", {"eyeBallX": -0.2, "bodyAngleZ": -0.055})],
-    "shy": [("shy_look_away", {"eyeBallX": -0.34, "bodyAngleZ": -0.1, "blushLevel": 0.8}),
-            ("shy_peek_back", {"eyeBallX": 0.22, "bodyAngleZ": 0.07, "blushLevel": 0.75})],
+    "sad": [("lower_gaze", {"eyeBallY": -0.5, "bodyAngleY": -0.12}),
+            ("sad_look_back", {"eyeBallX": 0.4, "browLY": 0.25, "browRY": 0.25})],
+    "gloomy": [("quiet_sink", {"eyeBallY": -0.48, "bodyAngleY": -0.12}),
+               ("quiet_side_glance", {"eyeBallX": -0.45, "bodyAngleZ": -0.055})],
+    "shy": [("shy_look_away", {"eyeBallX": -0.65, "bodyAngleZ": -0.1, "blushLevel": 0.8}),
+            ("shy_peek_back", {"eyeBallX": 0.45, "bodyAngleZ": 0.07, "blushLevel": 0.75})],
     "surprised": [("small_gasp", {"mouthOpenBias": 0.48, "bodyAngleY": -0.12}),
                   ("startled_recoil", {"mouthOpenBias": 0.66, "bodyAngleY": -0.2, "browLY": 0.9, "browRY": 0.9})],
-    "conflicted": [("question_left", {"eyeBallX": -0.22, "bodyAngleZ": -0.1}),
-                   ("question_right", {"eyeBallX": 0.22, "bodyAngleZ": 0.1})],
+    "conflicted": [("question_left", {"eyeBallX": -0.5, "bodyAngleZ": -0.1}),
+                   ("question_right", {"eyeBallX": 0.5, "bodyAngleZ": 0.1})],
 }
 
-QUIET_FAMILIES = {"calm", "listening", "thinking", "soft_smile", "closed_smile"}
+FAMILY_ALIASES = {"listening": "thinking", "teasing": "playful"}
+
+
+def canonical_rushia_family(family):
+    return FAMILY_ALIASES.get(family, family)
+
+
+# The catalog exposes canonical families; each variant keeps its authored pose.
+FAMILY_POSES = {name: pose for name, pose in _SOURCE_FAMILY_POSES.items() if name not in FAMILY_ALIASES}
+FAMILY_VARIANTS = {name: list(variants) for name, variants in _SOURCE_FAMILY_VARIANTS.items()
+                   if name not in FAMILY_ALIASES}
+for _source, _canonical in FAMILY_ALIASES.items():
+    FAMILY_VARIANTS[_canonical].extend(_SOURCE_FAMILY_VARIANTS[_source])
+_VARIANT_SOURCE_FAMILIES = {variant: family for family, variants in _SOURCE_FAMILY_VARIANTS.items()
+                          for variant, _patch in variants}
+
+QUIET_FAMILIES = {"calm", "thinking", "soft_smile", "closed_smile"}
 NEGATIVE_FAMILIES = {"sad", "gloomy", "angry", "conflicted"}
+RUSHIA_IDLE_FAMILIES = {
+    "neutral_idle": "calm", "happy_idle": "soft_smile", "crying_idle": "sad",
+    "gloomy_idle": "gloomy", "angry_glare_idle": "angry", "shy_idle": "shy",
+    "surprised_idle": "surprised", "conflicted_idle": "conflicted",
+}
 
 
 def _number(value, default, minimum=0.0, maximum=1.0):
@@ -136,68 +157,7 @@ def _timeline_ms(sequence):
     return total
 
 
-def _family(intent, emotion, mode, rng):
-    guard = intent.get("topic_guard") or {}
-    if guard.get("must_preserve_theme", True) and not guard.get("allow_style_override", False):
-        if guard.get("source_theme") == "crying":
-            return "sad"
-        if guard.get("source_theme") == "gloomy":
-            return "gloomy"
-        if guard.get("source_theme") == "serious_argument" and emotion not in NEGATIVE_FAMILIES:
-            return "listening"
-    if emotion in NEGATIVE_FAMILIES:
-        return emotion
-    requested = intent.get("expression_family")
-    if requested in FAMILY_POSES:
-        return requested
-    if emotion in {"neutral", "happy", "playful", "teasing"}:
-        attitude_family = {
-            "smug": "teasing", "cheeky_wink": "playful", "goofy_face": "playful",
-            "deadpan": "gloomy", "gloomy": "gloomy", "volatile": "conflicted",
-            "meltdown": "angry", "shock_recoil": "surprised",
-            "awkward": "listening", "tense_hold": "listening",
-        }.get(mode)
-        if attitude_family:
-            return attitude_family
-    if emotion == "happy":
-        return rng.choice(["soft_smile", "closed_smile"]) if mode == "bright_talk" else "soft_smile"
-    if emotion == "neutral":
-        return "calm"
-    return emotion if emotion in FAMILY_POSES else "calm"
-
-
-def build_rushia_expression_plan(intent, previous_state, *, seed=None):
-    rng = random.Random(seed)
-    emotion = intent.get("emotion", intent.get("primary_emotion", "neutral"))
-    emotion = emotion if emotion in {*FAMILY_POSES, "happy", "neutral"} else "neutral"
-    original_mode = intent.get("performance_mode", "smile")
-    guard = intent.get("topic_guard")
-    guard = guard if isinstance(guard, dict) else {}
-    intent = {**intent, "emotion": emotion, "topic_guard": guard}
-    mode = resolve_effective_performance_mode(emotion, original_mode, guard)
-    family = _family(intent, emotion, mode, rng)
-    previous_variant = previous_state.get("expressionVariant") if isinstance(previous_state, dict) else None
-    variants = FAMILY_VARIANTS[family]
-    if mode == "cheeky_wink" and family == "playful":
-        variants = [item for item in variants if "wink" in item[0]]
-    variant, accent = rng.choice([item for item in variants if item[0] != previous_variant] or variants)
-    intensity = _number(intent.get("intensity"), 0.35)
-    strength = 0.75 + intensity * 0.3
-    params = {**deepcopy(BASE_POSE_PRESETS["calm_soft"]), **MOTION_PARAM_DEFAULTS,
-              "headIntensity": 0.14, "breathLevel": 0.22, "physicsImpulse": 0.03,
-              "eyeLSmile": 0.0, "eyeRSmile": 0.0, "mouthOpenBias": 0.0,
-              # Values are authored per eye/brow; legacy eyeSync also mirrors
-              # the right brow angle and would overwrite Rushia's native pose.
-              "eyeSync": False}
-    for key, value in FAMILY_POSES[family].items():
-        if key == "eyeSync":
-            params[key] = value
-        else:
-            params[key] += (value - params[key]) * strength
-    if emotion == "neutral" and mode == "deadpan" and family == "gloomy":
-        params.update({"mouthForm": -0.08, "eyeLOpen": 0.72, "eyeROpen": 0.72,
-                       "browLY": -0.08, "browRY": -0.08})
-    params = _bounded(params)
+def _body_profile(family):
     quiet = family in QUIET_FAMILIES
     profile = {"style": "calm_sway", "speed": 0.72 if quiet else 0.85,
                "swayScale": 0.36 if quiet else 0.55, "bobScale": 0.3 if quiet else 0.48,
@@ -208,14 +168,98 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None):
         profile["style"] = "heavy_slow_sink"
     elif family == "surprised":
         profile["style"] = "quick_recoil"
-    base = {"preset": f"rushia_{family}", "params": params, "durationSec": 1.6,
+    return profile
+
+
+def _family(intent, emotion, mode, rng):
+    guard = intent.get("topic_guard") or {}
+    if guard.get("must_preserve_theme", True) and not guard.get("allow_style_override", False):
+        if guard.get("source_theme") == "crying":
+            return "sad"
+        if guard.get("source_theme") == "gloomy":
+            return "gloomy"
+        if guard.get("source_theme") == "serious_argument" and emotion not in NEGATIVE_FAMILIES:
+            return "thinking"
+    if emotion in NEGATIVE_FAMILIES:
+        return emotion
+    requested = canonical_rushia_family(intent.get("expression_family"))
+    if requested in FAMILY_POSES:
+        return requested
+    if emotion in {"neutral", "happy", "playful", "teasing"}:
+        attitude_family = {
+            "smug": "playful", "cheeky_wink": "playful", "goofy_face": "playful",
+            "deadpan": "gloomy", "gloomy": "gloomy", "volatile": "conflicted",
+            "meltdown": "angry", "shock_recoil": "surprised",
+            "awkward": "thinking", "tense_hold": "thinking",
+        }.get(mode)
+        if attitude_family:
+            return attitude_family
+    if emotion == "happy":
+        return rng.choice(["soft_smile", "closed_smile"]) if mode == "bright_talk" else "soft_smile"
+    if emotion == "neutral":
+        return "calm"
+    canonical_emotion = canonical_rushia_family(emotion)
+    return canonical_emotion if canonical_emotion in FAMILY_POSES else "calm"
+
+
+def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_overrides=None):
+    debug_overrides = debug_overrides or {}
+    for key, allowed in (("eyeMotionStyle", EYE_MOTION_STYLES), ("blinkStyle", BLINK_STRATEGIES),
+                         ("idleStyle", RUSHIA_IDLE_FAMILIES)):
+        if key in debug_overrides and debug_overrides[key] not in allowed:
+            raise ValueError(f"Unknown debug {key}: {debug_overrides[key]!r}")
+    rng = random.Random(seed)
+    emotion = intent.get("emotion", intent.get("primary_emotion", "neutral"))
+    emotion = emotion if emotion in {*_SOURCE_FAMILY_POSES, "happy", "neutral"} else "neutral"
+    original_mode = intent.get("performance_mode", "smile")
+    guard = intent.get("topic_guard")
+    guard = guard if isinstance(guard, dict) else {}
+    intent = {**intent, "emotion": emotion, "topic_guard": guard}
+    mode = resolve_effective_performance_mode(emotion, original_mode, guard)
+    family = _family(intent, emotion, mode, rng)
+    previous_variant = previous_state.get("expressionVariant") if isinstance(previous_state, dict) else None
+    variants = FAMILY_VARIANTS[family]
+    if mode == "cheeky_wink" and family == "playful":
+        variants = [item for item in variants if "wink" in item[0]]
+    requested_variant = debug_overrides.get("expressionVariant")
+    if requested_variant is not None:
+        selected = next((item for item in FAMILY_VARIANTS[family] if item[0] == requested_variant), None)
+        if selected is None:
+            raise ValueError(f"Expression variant {requested_variant!r} does not belong to resolved family {family!r}")
+        variant, accent = selected
+    else:
+        variant, accent = rng.choice([item for item in variants if item[0] != previous_variant] or variants)
+    source_family = _VARIANT_SOURCE_FAMILIES[variant]
+    intensity = _number(intent.get("intensity"), 0.35)
+    strength = 0.75 + intensity * 0.3
+    params = {**deepcopy(BASE_POSE_PRESETS["calm_soft"]), **MOTION_PARAM_DEFAULTS,
+              "headIntensity": 0.14, "breathLevel": 0.22, "physicsImpulse": 0.03,
+              "eyeLSmile": 0.0, "eyeRSmile": 0.0, "mouthOpenBias": 0.0,
+              # Values are authored per eye/brow; legacy eyeSync also mirrors
+              # the right brow angle and would overwrite Rushia's native pose.
+              "eyeSync": False}
+    for key, value in _SOURCE_FAMILY_POSES[source_family].items():
+        if key == "eyeSync":
+            params[key] = value
+        else:
+            params[key] += (value - params[key]) * strength
+    if emotion == "neutral" and mode == "deadpan" and family == "gloomy":
+        params.update({"mouthForm": -0.08, "eyeLOpen": 0.72, "eyeROpen": 0.72,
+                       "browLY": -0.08, "browRY": -0.08})
+    params = _bounded(params)
+    quiet = family in QUIET_FAMILIES
+    profile = _body_profile(family)
+    base = {"preset": f"rushia_{source_family}", "params": params, "durationSec": 1.6,
             "bodyMotionProfile": profile}
 
     accent = deepcopy(accent)
     if family == "closed_smile":
         accent.update({"eyeLOpen": 0.0, "eyeROpen": 0.0, "eyeSync": False, "mouthForm": 0.95})
-    reaction_ms = 680 if family in {"closed_smile", "surprised", "playful"} else 1000
+    reaction_ms = 680 if source_family in {"closed_smile", "surprised", "playful"} else 1000
     reaction = _event(f"rushia_{variant}", accent, reaction_ms)
+    if any(accent.get(key, 0) != 0 for key in ("eyeBallX", "eyeBallY")):
+        # A clear glance needs a short held target before the smooth return.
+        reaction.update({"durationMs": 1300, "fadeInMs": 120, "fadeOutMs": 320})
     deliberate_eye_close = accent.get("eyeLOpen") == 0.0 or accent.get("eyeROpen") == 0.0
     if deliberate_eye_close:
         # At the frontend's exponential smoothing rate (8/s), the longer
@@ -225,7 +269,7 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None):
     # A quiet gap is part of the timeline. It prevents repeated emphases from
     # becoming a continuous oscillation even without generated dialogue text.
     sequence.append(_event("rushia_rest", {}, 1300))
-    if family in {"thinking", "listening"}:
+    if family == "thinking":
         sequence.append(_event("rushia_return_attention", {"eyeBallX": 0.0, "eyeBallY": 0.0,
                                                           "bodyAngleY": 0.06}, 800))
     speaking_rate = _number(intent.get("speaking_rate"), 1.0, 0.65, 1.6)
@@ -242,7 +286,7 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None):
 
     motion_theme = {
         "soft_smile": "happy_bright_talk", "closed_smile": "happy_bright_talk",
-        "playful": "playful_tease", "teasing": "playful_tease", "angry": "angry_tension",
+        "playful": "playful_tease", "angry": "angry_tension",
         "sad": "low_mood", "gloomy": "low_mood", "shy": "shy_tucked",
         "surprised": "surprised_recoil", "conflicted": "uneasy_shift",
     }.get(family)
@@ -259,11 +303,18 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None):
         motion = build_motion_plan(family, mode, intensity, 0.35, 0.2, motion_intent, previous_state, rng=rng)
         motion["durationMs"] = min(timeline_ms, 3200)
         motion["body"]["spring"] = min(motion["body"]["spring"], 0.25)
-    eye_motion = build_eye_motion_plan(family if family != "calm" else "neutral", mode,
-                                     intensity * 0.5, 0.2, {}, timeline_ms, rng=rng)
-    eye_motion["amplitudeX"] = min(0.09, eye_motion["amplitudeX"])
-    eye_motion["amplitudeY"] = min(0.035, eye_motion["amplitudeY"])
-    if quiet:
+    eye_override = debug_overrides.get("eyeMotionStyle")
+    eye_intent = {}
+    if eye_override is not None:
+        eye_intent["eye_motion_style"] = eye_override
+    elif quiet:
+        eye_intent["eye_motion_style"] = "soft_saccade"
+    eye_motion = build_eye_motion_plan("neutral" if quiet else family, mode,
+                                     intensity * 0.5, 0.2, eye_intent, timeline_ms, rng=rng)
+    if eye_override is None:
+        eye_motion["amplitudeX"] = min(0.09, eye_motion["amplitudeX"])
+        eye_motion["amplitudeY"] = min(0.035, eye_motion["amplitudeY"])
+    if quiet and eye_override is None:
         eye_motion["style"] = "soft_saccade"
         eye_motion["frequencyHz"] = 0.42
         eye_motion["intensity"] = 0.2
@@ -271,7 +322,15 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None):
     idle_name = {"sad": "crying_idle", "gloomy": "gloomy_idle", "angry": "angry_glare_idle",
                  "shy": "shy_idle", "conflicted": "conflicted_idle", "surprised": "surprised_idle",
                  "soft_smile": "happy_idle", "closed_smile": "happy_idle"}.get(family, "neutral_idle")
+    requested_idle = debug_overrides.get("idleStyle")
+    idle_family = RUSHIA_IDLE_FAMILIES[requested_idle] if requested_idle else family
+    if requested_idle:
+        idle_name = requested_idle
     settle = deepcopy(params)
+    if idle_family != family:
+        settle = {**deepcopy(BASE_POSE_PRESETS["calm_soft"]), **MOTION_PARAM_DEFAULTS,
+                  **FAMILY_POSES[idle_family], "eyeSync": False,
+                  "eyeLSmile": 0.0, "eyeRSmile": 0.0, "mouthOpenBias": 0.0}
     baseline = {**BASE_POSE_PRESETS["calm_soft"], **MOTION_PARAM_DEFAULTS, "mouthOpenBias": 0.0}
     for key in ("mouthForm", "browLY", "browRY", "browLAngle", "browRAngle", "browLForm", "browRForm",
                 "eyeBallX", "eyeBallY", "bodyAngleX", "bodyAngleY", "bodyAngleZ", "blushLevel"):
@@ -283,20 +342,22 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None):
             "interruptible": True,
             "source": {"actionEnterAfterMs": timeline_ms, "speakingEnterAfterMs": speaking_ms,
                        "postSpeechHoldMs": settle_ms},
-            "settlePose": {"preset": f"rushia_{family}_rest", "params": settle, "durationSec": 12,
-                           "bodyMotionProfile": {**profile, "speed": 0.62, "bobScale": 0.2}},
+            "settlePose": {"preset": f"rushia_{idle_family}_rest", "params": settle, "durationSec": 12,
+                           "bodyMotionProfile": {**_body_profile(idle_family), "speed": 0.62, "bobScale": 0.2}},
             "loopEvents": [_event("rushia_idle_attention", {"eyeBallX": 0.08, "bodyAngleZ": 0.025}, 1000)]}
     signature = {"signature_name": f"rushia_{family}"}
     carry = build_carry_state({**intent, "performance_mode": mode}, signature, params, 0.0)
     carry.update({"expressionFamily": family, "expressionVariant": variant,
                   "motionTheme": motion["theme"], "motionVariant": motion["variant"]})
-    blink_style = intent.get("blink_style", "normal")
+    blink_style = debug_overrides.get("blinkStyle", intent.get("blink_style", "normal"))
     blink_style = blink_style if blink_style in BLINK_STRATEGIES else "normal"
     # Reset a preceding shy/slow interval when the new turn requests normal blinking.
     commands = [{"action": "resume"}, {"action": "set_interval", "intervalMin": 2.5, "intervalMax": 5.0}]
+    if "blinkStyle" in debug_overrides:
+        commands.extend(deepcopy(BLINK_STRATEGIES[blink_style]))
     if deliberate_eye_close:
         commands.append({"action": "pause", "durationSec": 0.95})
-    else:
+    elif "blinkStyle" not in debug_overrides:
         commands.extend(deepcopy(BLINK_STRATEGIES[blink_style]))
     return {"type": "expression_plan", "basePose": base, "microEvents": [], "sequence": sequence,
             "motionPlan": motion, "eyeMotionPlan": eye_motion, "idlePlan": idle,

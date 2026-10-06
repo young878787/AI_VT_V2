@@ -93,6 +93,35 @@ function clampEyeBall(value: number): number {
   return Math.max(-1, Math.min(1, value));
 }
 
+export interface NativeMotionInfo {
+  group: string;
+  index: number;
+  name: string;
+  file: string;
+  durationSec: number;
+  loop: boolean;
+  parameters: string[];
+  status: 'loaded' | 'failed';
+  error?: string;
+}
+
+export interface NativeExpressionInfo {
+  id: string;
+  file: string;
+  parameters: string[];
+  status: 'loaded' | 'failed';
+  error?: string;
+}
+
+export interface NativePlaybackState {
+  group: string;
+  index: number;
+  durationSec: number;
+  elapsedSec: number;
+  loop: boolean;
+  status: 'playing' | 'finished' | 'cancelled';
+}
+
 /**
  * LAppModel 類
  * 簡化版的模型管理，適合我們的項目結構
@@ -159,9 +188,35 @@ export class LAppModel extends CubismUserModel {
   private _modelScale: number = 1.0;             // 模型縮放
 
   // 動作和表情
-  private _motions: Map<string, ACubismMotion[]> = new Map();
+  private _motions: Map<string, (ACubismMotion | null)[]> = new Map();
   private _expressions: Map<string, ACubismMotion> = new Map();
+  private _nativeMotionCatalog: NativeMotionInfo[] = [];
+  private _nativeExpressionCatalog: NativeExpressionInfo[] = [];
   private _motionsLoaded: boolean = false;
+  private _actionMotionParameters = new WeakMap<ACubismMotion, CubismIdHandle[]>();
+  private _nativeAction: {
+    handle: CubismMotionQueueEntryHandle;
+    group: string;
+    index: number;
+    durationSec: number;
+    elapsedSec: number;
+    loop: boolean;
+    parameters: CubismIdHandle[];
+    transitionFrom: Map<CubismIdHandle, number>;
+    transitionElapsedSec: number;
+  } | null = null;
+  private _nativePlaybackState: NativePlaybackState | null = null;
+  private _nativeExpression: {
+    id: string;
+    handle: CubismMotionQueueEntryHandle;
+    parameters: CubismIdHandle[];
+    transitionFrom: Map<CubismIdHandle, number>;
+    transitionElapsedSec: number;
+  } | null = null;
+  private _nativeReleaseValues = new Map<CubismIdHandle, number>();
+  private _nativeReleaseElapsedSec = 0;
+  private _autoMotionSuspended = false;
+  private _automaticMotion: { handle: CubismMotionQueueEntryHandle; parameters: CubismIdHandle[] } | null = null;
 
   // AI 控制行為參數 (目標值)
   private _aiHeadIntensity: number = 0;
@@ -217,6 +272,8 @@ export class LAppModel extends CubismUserModel {
   private _currentBrowRX: number = 0.0;
   private _currentEyeBallX: number = 0.0;
   private _currentEyeBallY: number = 0.0;
+  private _gazeHeadX: number = 0.0;
+  private _gazeHeadY: number = 0.0;
 
   // 原生參數手動覆蓋 (NativeParamPanel 使用者手動控制)
   // key = paramId (string), value = { value, lastSetAt (performance.now ms) }
@@ -319,6 +376,7 @@ export class LAppModel extends CubismUserModel {
       // 4. 載入動作
       LAppPal.log('載入動作...');
       await this.loadMotions();
+      await this.loadExpressions();
 
       LAppPal.log('✓ 模型資源載入完成');
     } catch (error) {
@@ -534,6 +592,20 @@ export class LAppModel extends CubismUserModel {
     this._autoEffectsEnabled = enabled;
   }
 
+  public setAutoMotionSuspended(suspended: boolean): void {
+    this._autoMotionSuspended = suspended;
+    if (suspended && this._automaticMotion) {
+      this._motionManager.getCubismMotionQueueEntry(this._automaticMotion.handle)?.setIsFinished(true);
+      this.beginNativeRelease(this._automaticMotion.parameters);
+      this.resetNativeActionParameters(this._automaticMotion.parameters);
+      this._automaticMotion = null;
+    }
+  }
+
+  public isAutoMotionSuspended(): boolean {
+    return this._autoMotionSuspended;
+  }
+
   /**
    * 設置視線追蹤啟用狀態
    */
@@ -744,61 +816,90 @@ export class LAppModel extends CubismUserModel {
   private async loadMotions(): Promise<void> {
     if (!this._modelSetting || this._motionsLoaded) return;
 
-    const motionGroupCount = this._modelSetting.getMotionGroupCount();
-    LAppPal.log(`發現 ${motionGroupCount} 個動作群組`);
-
-    for (let i = 0; i < motionGroupCount; i++) {
-      const groupName = this._modelSetting.getMotionGroupName(i);
-      const motionCount = this._modelSetting.getMotionCount(groupName);
-
-      LAppPal.log(`載入動作群組 "${groupName}"：${motionCount} 個動作`);
-
-      const motions: ACubismMotion[] = [];
-
-      for (let j = 0; j < motionCount; j++) {
-        const motionFileName = this._modelSetting.getMotionFileName(groupName, j);
-        const motionPath = `${this._modelHomeDir}${motionFileName}`;
-
+    for (let groupIndex = 0; groupIndex < this._modelSetting.getMotionGroupCount(); groupIndex++) {
+      const group = this._modelSetting.getMotionGroupName(groupIndex);
+      const count = this._modelSetting.getMotionCount(group);
+      // 保留 manifest index；載入失敗不能使後續項目移位。
+      const motions: (ACubismMotion | null)[] = Array(count).fill(null);
+      this._motions.set(group, motions);
+      for (let index = 0; index < count; index++) {
+        const file = this._modelSetting.getMotionFileName(group, index);
+        const label = this._modelSetting.getJson?.().getRoot()
+          .getValueByString('FileReferences').getValueByString('Motions')
+          .getValueByString(group).getValueByIndex(index).getValueByString('Name');
+        const name = label?.isString() ? label.getRawString().trim() : '';
+        const info: NativeMotionInfo = {
+          group, index, file, name: name || file.split('/').at(-1)?.replace('.motion3.json', '') || file,
+          durationSec: 0, loop: false, parameters: [], status: 'failed',
+        };
+        this._nativeMotionCatalog.push(info);
         try {
-          const response = await fetch(motionPath);
-          if (!response.ok) {
-            LAppPal.printWarning(`動作文件載入失敗: ${motionPath}`);
-            continue;
-          }
-
-          const arrayBuffer = await response.arrayBuffer();
-          const motion = CubismMotion.create(arrayBuffer, arrayBuffer.byteLength);
-
-          if (motion) {
-            // 設置淡入淡出時間
-            const fadeInTime = this._modelSetting.getMotionFadeInTimeValue(groupName, j);
-            const fadeOutTime = this._modelSetting.getMotionFadeOutTimeValue(groupName, j);
-
-            if (fadeInTime >= 0) {
-              motion.setFadeInTime(fadeInTime);
-            }
-            if (fadeOutTime >= 0) {
-              motion.setFadeOutTime(fadeOutTime);
-            }
-
-            // 關鍵：設置眨眼和嘴型同步的效果 ID
-            motion.setEffectIds(this._eyeBlinkIds, this._lipSyncIds);
-
-            motions.push(motion);
-            LAppPal.log(`  ✓ ${motionFileName}`);
-          }
+          const response = await fetch(`${this._modelHomeDir}${file}`);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const buffer = await response.arrayBuffer();
+          const data = JSON.parse(new TextDecoder().decode(buffer)) as {
+            Meta: { Duration: number; Loop: boolean };
+            Curves: Array<{ Target: string; Id: string }>;
+          };
+          info.durationSec = data.Meta.Duration;
+          info.loop = data.Meta.Loop;
+          info.parameters = Array.from(new Set(data.Curves.flatMap(curve => {
+            if (curve.Target === 'Parameter') return [curve.Id];
+            if (curve.Target === 'Model' && curve.Id === 'EyeBlink') return ['ParamEyeLOpen', 'ParamEyeROpen'];
+            if (curve.Target === 'Model' && curve.Id === 'LipSync') return ['ParamMouthOpenY'];
+            return [];
+          })));
+          const motion = CubismMotion.create(buffer, buffer.byteLength);
+          if (!motion) throw new Error('CubismMotion.create failed');
+          const fadeIn = this._modelSetting.getMotionFadeInTimeValue(group, index);
+          const fadeOut = this._modelSetting.getMotionFadeOutTimeValue(group, index);
+          if (fadeIn >= 0) motion.setFadeInTime(fadeIn);
+          if (fadeOut >= 0) motion.setFadeOutTime(fadeOut);
+          motion.setEffectIds(this._eyeBlinkIds, this._lipSyncIds);
+          // SDK 的 runtime loop 預設 false，需明確採用素材宣告。
+          motion.setLoop(info.loop);
+          this._actionMotionParameters.set(motion, info.parameters.map(id => CubismFramework.getIdManager().getId(id)));
+          motions[index] = motion;
+          info.status = 'loaded';
         } catch (error) {
-          LAppPal.printWarning(`動作載入錯誤: ${motionPath} - ${error}`);
+          info.error = error instanceof Error ? error.message : String(error);
+          LAppPal.printWarning(`動作載入失敗: ${file} - ${info.error}`);
         }
       }
+    }
+    this._motionsLoaded = true;
+  }
 
-      if (motions.length > 0) {
-        this._motions.set(groupName, motions);
+  private async loadExpressions(): Promise<void> {
+    if (!this._modelSetting) return;
+    for (let index = 0; index < this._modelSetting.getExpressionCount(); index++) {
+      const id = this._modelSetting.getExpressionName(index);
+      const file = this._modelSetting.getExpressionFileName(index);
+      const info: NativeExpressionInfo = { id, file, parameters: [], status: 'failed' };
+      this._nativeExpressionCatalog.push(info);
+      try {
+        const response = await fetch(`${this._modelHomeDir}${file}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const buffer = await response.arrayBuffer();
+        const data = JSON.parse(new TextDecoder().decode(buffer)) as { Parameters: Array<{ Id: string }> };
+        info.parameters = data.Parameters.map(parameter => parameter.Id);
+        const expression = this.loadExpression(buffer, buffer.byteLength);
+        if (!expression) throw new Error('CubismExpressionMotion.create failed');
+        this._expressions.set(id, expression);
+        info.status = 'loaded';
+      } catch (error) {
+        info.error = error instanceof Error ? error.message : String(error);
+        LAppPal.printWarning(`表情載入失敗: ${file} - ${info.error}`);
       }
     }
+  }
 
-    this._motionsLoaded = true;
-    LAppPal.log(`✓ 動作載入完成，共 ${this._motions.size} 個群組`);
+  public getNativeMotionCatalog(): NativeMotionInfo[] {
+    return this._nativeMotionCatalog.map(info => ({ ...info, parameters: [...info.parameters] }));
+  }
+
+  public getNativeExpressionCatalog(): NativeExpressionInfo[] {
+    return this._nativeExpressionCatalog.map(info => ({ ...info, parameters: [...info.parameters] }));
   }
 
   /**
@@ -965,6 +1066,8 @@ export class LAppModel extends CubismUserModel {
   }
 
   public cancelExpressionAction(): void {
+    this.cancelNativeAction();
+    this.clearNativeExpression();
     this._activeExpressionEvents = [];
     this._activeMotionPlan = null;
     this._activeEyeMotionPlan = null;
@@ -1357,13 +1460,10 @@ export class LAppModel extends CubismUserModel {
   }
 
   private updateMotion(deltaTimeSeconds: number): void {
-    if (this._autoEffectsEnabled) {
-      if (this._motionManager.isFinished()) {
-        this.startRandomMotion('Idle', Priority.Idle);
-      } else {
-        this._motionManager.updateMotion(this._model, deltaTimeSeconds);
-      }
-    } else if (!this._motionManager.isFinished()) {
+    if (this._autoEffectsEnabled && !this._autoMotionSuspended && this._motionManager.isFinished()) {
+      this.startRandomMotion('Idle', Priority.Idle);
+    }
+    if (!this._motionManager.isFinished()) {
       this._motionManager.updateMotion(this._model, deltaTimeSeconds);
     }
   }
@@ -1387,7 +1487,7 @@ export class LAppModel extends CubismUserModel {
   }
 
   private updateExpressionManager(deltaTimeSeconds: number): void {
-    if (this._expressionManager) {
+    if (this._expressionManager && this._nativeExpression) {
       this._expressionManager.updateMotion(this._model, deltaTimeSeconds);
     }
   }
@@ -1397,12 +1497,18 @@ export class LAppModel extends CubismUserModel {
       return;
     }
 
-    const weight = this._activeIdlePlan || this._aiBehaviorTimer > 0 ? 0.35 : 1;
+    // Authored attention temporarily owns the direction; pointer tracking
+    // returns continuously as the gaze settles back toward the viewer.
+    const weight = (this._activeIdlePlan || this._aiBehaviorTimer > 0 ? 0.35 : 1)
+      * this.resolvePointerGazeWeight();
     this._model.addParameterValueById(this._idParamAngleX, this._dragX * 6 * weight);
     this._model.addParameterValueById(this._idParamAngleY, this._dragY * 4 * weight);
     this._model.addParameterValueById(this._idParamAngleZ, this._dragX * this._dragY * -2 * weight);
-    this._model.addParameterValueById(this._idParamEyeBallX, this._dragX * 0.18 * weight);
-    this._model.addParameterValueById(this._idParamEyeBallY, this._dragY * 0.12 * weight);
+  }
+
+  private resolvePointerGazeWeight(): number {
+    const attention = Math.max(Math.abs(this._currentEyeBallX), Math.abs(this._currentEyeBallY));
+    return 1 - smoothStep((attention - 0.12) / 0.33);
   }
 
   private resolveEyeMotionBlend(nowMs: number): number {
@@ -1473,17 +1579,24 @@ export class LAppModel extends CubismUserModel {
     }
   }
 
-  private applyEyeGaze(nowMs: number): void {
+  private applyEyeGaze(nowMs: number, deltaTimeSeconds: number): void {
     const motionOffset = this.resolveEyeMotionOffset(nowMs);
-    const eyeBallX = clampEyeBall(this._currentEyeBallX + motionOffset.x);
-    const eyeBallY = clampEyeBall(this._currentEyeBallY + motionOffset.y);
+    const pointerWeight = this._eyeTrackingEnabled ? this.resolvePointerGazeWeight() : 0;
+    const eyeBallX = clampEyeBall(this._currentEyeBallX + motionOffset.x + this._dragX * 0.8 * pointerWeight);
+    const eyeBallY = clampEyeBall(this._currentEyeBallY + motionOffset.y + this._dragY * 0.55 * pointerWeight);
 
-    if (Math.abs(eyeBallX) < 0.001 && Math.abs(eyeBallY) < 0.001) {
-      return;
-    }
+    // Compose once within moc3 bounds. Native Force motions and manual
+    // overrides still own their authored parameters later in update().
+    this._model.setParameterValueById(this._idParamEyeBallX, eyeBallX);
+    this._model.setParameterValueById(this._idParamEyeBallY, eyeBallY);
 
-    this._model.addParameterValueById(this._idParamEyeBallX, eyeBallX);
-    this._model.addParameterValueById(this._idParamEyeBallY, eyeBallY);
+    // The eyes acquire the target first; the head follows without copying
+    // saccade/tremor offsets or competing with an authored native head turn.
+    const headFollow = 1 - Math.exp(-5 * Math.min(0.1, deltaTimeSeconds));
+    this._gazeHeadX += (this._currentEyeBallX * 14 - this._gazeHeadX) * headFollow;
+    this._gazeHeadY += (this._currentEyeBallY * 9 - this._gazeHeadY) * headFollow;
+    this._model.addParameterValueById(this._idParamAngleX, this._gazeHeadX);
+    this._model.addParameterValueById(this._idParamAngleY, this._gazeHeadY);
   }
 
   private applyLipSync(): void {
@@ -1798,8 +1911,11 @@ export class LAppModel extends CubismUserModel {
     this._currentEyeRSmile += (targets.eyeRSmile - this._currentEyeRSmile) * lerpFactor;
     this._currentBrowLX += (targets.browLX - this._currentBrowLX) * lerpFactor;
     this._currentBrowRX += (targets.browRX - this._currentBrowRX) * lerpFactor;
-    this._currentEyeBallX += (targets.eyeBallX - this._currentEyeBallX) * lerpFactor;
-    this._currentEyeBallY += (targets.eyeBallY - this._currentEyeBallY) * lerpFactor;
+    // Gaze needs a faster acquisition than the brows/body to read as looking
+    // toward something rather than the entire face drifting together.
+    const gazeLerpFactor = 1 - Math.exp(-20 * Math.min(0.1, deltaTimeSeconds));
+    this._currentEyeBallX += (targets.eyeBallX - this._currentEyeBallX) * gazeLerpFactor;
+    this._currentEyeBallY += (targets.eyeBallY - this._currentEyeBallY) * gazeLerpFactor;
 
     if (this._aiEyeSync && (this._aiBehaviorTimer > 0 || targets.eyeLOpen < 0.99)) {
       this._currentBrowRY = this._currentBrowLY;
@@ -1827,6 +1943,30 @@ export class LAppModel extends CubismUserModel {
     this._model.loadParameters();
     this.updateMotion(deltaTimeSeconds);
     this._model.saveParameters();
+    const nativeActionValues = new Map<CubismIdHandle, number>();
+    if (this._nativeAction) {
+      if (this._motionManager.isFinishedByHandle(this._nativeAction.handle)) {
+        this.beginNativeRelease(this._nativeAction.parameters);
+        this.resetNativeActionParameters(this._nativeAction.parameters);
+        this._nativePlaybackState = {
+          group: this._nativeAction.group, index: this._nativeAction.index,
+          durationSec: this._nativeAction.durationSec, elapsedSec: this._nativeAction.durationSec,
+          loop: this._nativeAction.loop, status: 'finished',
+        };
+        this._nativeAction = null;
+      } else {
+        const entry = this._motionManager.getCubismMotionQueueEntry(this._nativeAction.handle);
+        this._nativeAction.elapsedSec = entry ? Math.max(0, entry.getStateTime() - entry.getStartTime()) : 0;
+        this._nativeAction.transitionElapsedSec += deltaTimeSeconds;
+        const blend = smoothStep(this._nativeAction.transitionElapsedSec / 0.3);
+        for (const id of this._nativeAction.parameters) {
+          if (id === this._idParamMouthOpenY && (this._speaking || this._lipSyncValue > 0.01)) continue;
+          const value = this._model.getParameterValueById(id);
+          const from = this._nativeAction.transitionFrom.get(id) ?? value;
+          nativeActionValues.set(id, from + (value - from) * blend);
+        }
+      }
+    }
 
     const nowMs = performance.now();
     const expressionTargets = this.resolveExpressionTargets(deltaTimeSeconds, nowMs);
@@ -1835,23 +1975,55 @@ export class LAppModel extends CubismUserModel {
     this.smoothExpressionTargets(expressionEventResult.targets, deltaTimeSeconds);
 
     this.updateEyeBlink(deltaTimeSeconds);
-    this.updateExpressionManager(deltaTimeSeconds);
     this.applyEyeTracking();
-    this.applyEyeGaze(nowMs);
+    this.applyEyeGaze(nowMs, deltaTimeSeconds);
     this.applyLipSync();
     this.updateBodyMotion(deltaTimeSeconds);
     this.applyCurrentExpressionParameters();
 
-    this.updateBreathPhysicsPose(deltaTimeSeconds);
+    // 原生表情以當幀程序化姿勢為基準，Add／Multiply 不會逐幀累積。
+    this.updateExpressionManager(deltaTimeSeconds);
+    if (this._nativeExpression) {
+      this._nativeExpression.transitionElapsedSec += deltaTimeSeconds;
+      const blend = smoothStep(this._nativeExpression.transitionElapsedSec / 0.3);
+      for (const id of this._nativeExpression.parameters) {
+        const value = this._model.getParameterValueById(id);
+        const from = this._nativeExpression.transitionFrom.get(id) ?? value;
+        nativeActionValues.set(id, from + (value - from) * blend);
+      }
+    }
+    // TTS 的開合優先於原生 Talk／Surprised motion 及 expression。
+    if (this._speaking || this._lipSyncValue > 0.01) {
+      nativeActionValues.delete(this._idParamMouthOpenY);
+      this.applyLipSync();
+    }
+
+    this.updateBreathPhysicsPose(deltaTimeSeconds, nativeActionValues);
     this.applyNativeParamOverrides();
 
     this._model.update();
   }
 
-  private updateBreathPhysicsPose(deltaTimeSeconds: number): void {
+  private updateBreathPhysicsPose(
+    deltaTimeSeconds: number,
+    nativeActionValues: ReadonlyMap<CubismIdHandle, number> = new Map(),
+  ): void {
     if (this._breath && this._autoEffectsEnabled) {
       this._breath.updateParameters(this._model, deltaTimeSeconds);
     }
+
+    // 原生 Action 的姿勢先交給物理；TTS 嘴型及最後的手動覆蓋仍保有控制權。
+    for (const [id, value] of nativeActionValues) {
+      this._model.setParameterValueById(id, value);
+    }
+    this._nativeReleaseElapsedSec += deltaTimeSeconds;
+    const releaseBlend = smoothStep(this._nativeReleaseElapsedSec / 0.3);
+    for (const [id, from] of this._nativeReleaseValues) {
+      if (nativeActionValues.has(id) || (id === this._idParamMouthOpenY && (this._speaking || this._lipSyncValue > 0.01))) continue;
+      const target = this._model.getParameterValueById(id);
+      this._model.setParameterValueById(id, from + (target - from) * releaseBlend);
+    }
+    if (releaseBlend >= 1) this._nativeReleaseValues.clear();
 
     if (this._physics && this._physicsEnabled) {
       this._physics.evaluate(this._model, deltaTimeSeconds);
@@ -1860,6 +2032,35 @@ export class LAppModel extends CubismUserModel {
     if (this._pose) {
       this._pose.updateParameters(this._model, deltaTimeSeconds);
     }
+  }
+
+  private resetNativeActionParameters(parameters: CubismIdHandle[]): void {
+    for (const id of parameters) {
+      const index = this._model.getParameterIndex(id);
+      if (index >= 0 && index < this._model.getParameterCount()) {
+        this._model.setParameterValueById(id, this._model.getParameterDefaultValue(index));
+      }
+    }
+    this._model.saveParameters();
+  }
+
+  private cancelNativeAction(): void {
+    if (!this._nativeAction) return;
+    // 以 queue entry 明確結案，避免 SDK stopAllMotions 留下可再更新的 entry。
+    this._motionManager.getCubismMotionQueueEntry(this._nativeAction.handle)?.setIsFinished(true);
+    this.beginNativeRelease(this._nativeAction.parameters);
+    this._nativePlaybackState = {
+      group: this._nativeAction.group, index: this._nativeAction.index,
+      durationSec: this._nativeAction.durationSec, elapsedSec: this._nativeAction.elapsedSec,
+      loop: this._nativeAction.loop, status: 'cancelled',
+    };
+    this.resetNativeActionParameters(this._nativeAction.parameters);
+    this._nativeAction = null;
+  }
+
+  private beginNativeRelease(parameters: CubismIdHandle[]): void {
+    for (const id of parameters) this._nativeReleaseValues.set(id, this._model.getParameterValueById(id));
+    this._nativeReleaseElapsedSec = 0;
   }
 
   private applyNativeParamOverrides(): void {
@@ -1938,7 +2139,9 @@ export class LAppModel extends CubismUserModel {
       return InvalidMotionQueueEntryHandleValue;
     }
 
-    const no = Math.floor(Math.random() * motions.length);
+    const available = motions.flatMap((motion, index) => motion ? [index] : []);
+    if (available.length === 0) return InvalidMotionQueueEntryHandleValue;
+    const no = available[Math.floor(Math.random() * available.length)];
     return this.startMotion(group, no, priority);
   }
 
@@ -1951,22 +2154,92 @@ export class LAppModel extends CubismUserModel {
     priority: number
   ): CubismMotionQueueEntryHandle {
     const motions = this._motions.get(group);
-    if (!motions || no >= motions.length) {
+    if (!motions || !Number.isInteger(no) || no < 0 || no >= motions.length) {
       return InvalidMotionQueueEntryHandleValue;
     }
 
     const motion = motions[no];
-    return this._motionManager.startMotionPriority(motion, false, priority);
+    if (!motion || (priority < Priority.Force && this._autoMotionSuspended)) {
+      return InvalidMotionQueueEntryHandleValue;
+    }
+    // 自動 Idle 維持一般合成；只有手動 Force 預覽取得曲線控制权。
+    if (priority !== Priority.Force) {
+      const handle = this._motionManager.startMotionPriority(motion, false, priority);
+      this._automaticMotion = handle === InvalidMotionQueueEntryHandleValue ? null
+        : { handle, parameters: this._actionMotionParameters.get(motion) ?? [] };
+      return handle;
+    }
+    const parameters = this._actionMotionParameters.get(motion) ?? [];
+    const transitionFrom = new Map(parameters.map(id => [id,
+      this._nativeAction || this._nativeExpression ? this._model.getParameterValueById(id)
+        : this._nativeReleaseValues.get(id) ?? this._model.getParameterValueById(id)]));
+    this.cancelNativeAction();
+    const handle = this._motionManager.startMotionPriority(motion, false, priority);
+    const info = this._nativeMotionCatalog.find(item => item.group === group && item.index === no);
+    this._nativeAction = handle !== InvalidMotionQueueEntryHandleValue ? {
+      handle, group, index: no, durationSec: info?.durationSec ?? motion.getDuration(),
+      elapsedSec: 0, loop: info?.loop ?? false, parameters, transitionFrom, transitionElapsedSec: 0,
+    } : null;
+    if (this._nativeAction) this._nativePlaybackState = { group, index: no,
+      durationSec: this._nativeAction.durationSec, elapsedSec: 0, loop: this._nativeAction.loop, status: 'playing' };
+    return handle;
+  }
+
+  /** 原生 Action 的實際播放狀態；不改變 expression_plan／action_state 契約。 */
+  public getNativeActionState(): {
+    group: string; index: number; durationSec: number; elapsedSec: number; playing: boolean; loop: boolean;
+  } | null {
+    const action = this._nativeAction;
+    return action ? {
+      group: action.group, index: action.index, durationSec: action.durationSec, elapsedSec: action.elapsedSec, loop: action.loop,
+      playing: !this._motionManager.isFinishedByHandle(action.handle),
+    } : null;
   }
 
   /**
    * 設定表情
    */
-  public setExpression(expressionId: string): void {
-    const motion = this._expressions.get(expressionId);
-    if (!motion) return;
+  public getNativePlaybackState(): NativePlaybackState | null {
+    const action = this._nativeAction;
+    if (action) return { group: action.group, index: action.index, durationSec: action.durationSec,
+      elapsedSec: action.elapsedSec, loop: action.loop,
+      status: this._motionManager.isFinishedByHandle(action.handle) ? 'finished' : 'playing' };
+    return this._nativePlaybackState ? { ...this._nativePlaybackState } : null;
+  }
 
-    this._expressionManager.startMotionPriority(motion, false, 3);
+  public stopNativeMotion(): void {
+    this.cancelNativeAction();
+  }
+
+  public setExpression(expressionId: string): boolean {
+    const motion = this._expressions.get(expressionId);
+    if (!motion) return false;
+
+    const info = this._nativeExpressionCatalog.find(item => item.id === expressionId);
+    const parameters = (info?.parameters ?? []).map(id => CubismFramework.getIdManager().getId(id));
+    const transitionFrom = new Map(parameters.map(id => [id,
+      this._nativeAction || this._nativeExpression ? this._model.getParameterValueById(id)
+        : this._nativeReleaseValues.get(id) ?? this._model.getParameterValueById(id)]));
+    this.clearNativeExpression();
+    const handle = this._expressionManager.startMotionPriority(motion, false, Priority.Force);
+    if (handle === InvalidMotionQueueEntryHandleValue) return false;
+    this._nativeExpression = { id: expressionId, handle, parameters, transitionFrom, transitionElapsedSec: 0 };
+    return true;
+  }
+
+  public clearNativeExpression(): void {
+    if (!this._nativeExpression) return;
+    this.beginNativeRelease(this._nativeExpression.parameters);
+    // Expression manager 保留最後一筆，即使標記 finished 仍計算它；從公開 queue 移除。
+    const entries = this._expressionManager.getCubismMotionQueueEntries();
+    const entry = this._expressionManager.getCubismMotionQueueEntry(this._nativeExpression.handle);
+    if (entry) {
+      entry.setIsFinished(true);
+      entry.release();
+      const index = entries.indexOf(entry);
+      if (index >= 0) entries.splice(index, 1);
+    }
+    this._nativeExpression = null;
   }
 
   /**
@@ -2010,6 +2283,8 @@ export class LAppModel extends CubismUserModel {
    * 釋放資源
    */
   public release(): void {
+    this.cancelNativeAction();
+    this.clearNativeExpression();
     this._textureManager.release();
     this._expressions.clear();
     this._motions.clear();
