@@ -9,10 +9,27 @@ import { NativeParamPanel } from '@components/NativeParamPanel';
 import { EmotionSidebar } from '@components/EmotionSidebar';
 import { MemoryLibrary } from '@components/MemoryLibrary';
 import { useAppStore } from '@store/appStore';
+import type { ActionPlaybackState } from './services/actionScheduler';
+import { useActionPlaybackState } from './services/useActionPlaybackState';
 import './App.css';
 
 type Drawer = 'settings' | 'expressions' | null;
 type SettingsTab = 'appearance' | 'parameters' | 'emotion';
+
+function getActionStageText(playback: ActionPlaybackState) {
+  if (!playback.kind || playback.status === 'cancelled' || playback.status === 'finished') return null;
+  if (playback.status === 'failed') return { status: '表情播放遇到問題', caption: '露西亞的表情暫時無法播放，請再試一次。' };
+  if (playback.status === 'idle' || playback.phase === 'idle') {
+    return { status: '安靜陪伴', caption: '露西亞在這裡，安靜陪著你。' };
+  }
+  if (playback.status === 'settling' || playback.phase === 'settling' || playback.responsePhase === 'settling') {
+    return { status: '慢慢放鬆', caption: '露西亞慢慢放鬆，陪著你…' };
+  }
+  if (playback.status === 'queued') return { status: '準備回應', caption: '露西亞正準備回應你…' };
+  if (playback.responsePhase === 'waiting') return { status: '準備回應', caption: '露西亞正準備接著回應你…' };
+  if (playback.responsePhase === 'speaking') return { status: '正在回應你', caption: '露西亞正隨著回覆，用表情陪你聊…' };
+  return { status: '正在回應你', caption: '露西亞正用表情回應你…' };
+}
 
 function App() {
   const modelLoaded = useAppStore(s => s.modelLoaded);
@@ -20,6 +37,7 @@ function App() {
   const modelError = useAppStore(s => s.modelError);
   const isAiTyping = useAppStore(s => s.isAiTyping);
   const isSpeaking = useAppStore(s => s.isSpeaking);
+  const playback = useActionPlaybackState();
   const resetModelTransform = useAppStore(s => s.resetModelTransform);
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [memoryLibraryOpen, setMemoryLibraryOpen] = useState(false);
@@ -46,7 +64,12 @@ function App() {
     setDrawer(current => current === next ? null : next);
   };
 
-  const status = modelError ? '載入遇到問題' : modelLoading ? '準備中' : isSpeaking ? '正在說話' : isAiTyping ? '思考中' : modelLoaded ? '已就緒' : '等待載入';
+  const stageText = modelError ? { status: '載入遇到問題', caption: '露西亞暫時無法出現在舞台，請稍後再試。' }
+    : modelLoading ? { status: '準備中', caption: '露西亞正在準備與你見面…' }
+    : isSpeaking ? { status: '正在說話', caption: '露西亞正在說話…' }
+    : isAiTyping ? { status: '思考中', caption: '正在想要怎麼回覆你…' }
+    : modelLoaded ? getActionStageText(playback) ?? { status: '已就緒', caption: '今天，想聊些什麼？' }
+    : { status: '等待載入', caption: '正在等待露西亞來到舞台…' };
 
   return (
     <div className="app-layout">
@@ -57,7 +80,7 @@ function App() {
         </div>
         <div className="room-header__actions">
           <span className={`room-status ${modelError ? 'room-status--error' : ''}`} role="status">
-            <span className={modelLoaded ? 'room-status__dot room-status__dot--ready' : 'room-status__dot'} />{status}
+            <span className={modelLoaded ? 'room-status__dot room-status__dot--ready' : 'room-status__dot'} />{stageText.status}
           </span>
           <button type="button" className={`room-button ${drawer === 'expressions' ? 'room-button--active' : ''}`}
             aria-expanded={drawer === 'expressions'} aria-controls="room-tools"
@@ -76,7 +99,7 @@ function App() {
         <HitAreaOverlay />
         <div className="stage-caption" aria-hidden="true"><span>RUSHIA</span><span>STAY A LITTLE LONGER</span></div>
         <div className="stage-footer">
-          <span className="stage-footer__state" role="status">{isSpeaking ? '露西亞正在說話…' : isAiTyping ? '正在想要怎麼回覆你…' : '今天，想聊些什麼？'}</span>
+          <span className="stage-footer__state" role="status">{stageText.caption}</span>
           <button type="button" className="stage-reset" onClick={resetModelTransform} disabled={!modelLoaded}>重置構圖</button>
         </div>
       </main>

@@ -24,6 +24,7 @@ from domain.emotion_state import (
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay
 from backend.tests.chat_session_fakes import FakeChatSessionRepository, make_chat_session_service
 from services.chat_session_service import ChatSessionService
+from services.expression_compiler import compile_expression_plan
 
 
 def emotion_answers(score=0.6):
@@ -162,6 +163,66 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertGreater(metrics["output_tokens"], 0)
         self.assertGreater(metrics["tokens_per_second"], 0)
 
+    def test_stream_end_declares_voice_expectation_without_loading_tts(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), patch("api.routes.chat_ws.TTS_ENABLED", enabled), \
+                    patch("tts_service.get_tts_service") as get_service:
+                socket, _ = self._run([{"content": "測試語音"}], [jev_answers()])
+            stream_end = next(item for item in socket.payloads if item["type"] == "stream_end")
+            self.assertIs(stream_end["voice_expected"], enabled)
+            get_service.assert_not_called()
+
+    def test_late_voice_events_from_cancelled_turn_are_not_sent(self):
+        first_tts_started = asyncio.Event()
+        second_tts_finished = asyncio.Event()
+
+        class Socket(FakeWebSocket):
+            async def receive_text(self):
+                if len(self.frames) == 1:
+                    await first_tts_started.wait()
+                if not self.frames:
+                    await second_tts_finished.wait()
+                return await super().receive_text()
+
+        socket = Socket([{"content": "第一句", "turn_id": "turn_1"},
+                         {"content": "第二句", "turn_id": "turn_2"}])
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=SimpleNamespace(
+                accept=AsyncMock(side_effect=[uuid4(), uuid4()]),
+                retrieve=AsyncMock(return_value=({}, "")), route_background=Mock(),
+            ), chat_session_service=make_chat_session_service(),
+        ))
+
+        async def fake_chat(messages, send_chunk):
+            await send_chunk("回覆")
+            return "回覆"
+
+        async def fake_tts(websocket, text, speaking_rate, turn_id, send, **kwargs):
+            if turn_id == "turn_1":
+                first_tts_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    await send({"type": "voice_unavailable", "turn_id": "turn_1", "reason": "empty"})
+            else:
+                await send({"type": "voice", "turn_id": "turn_1", "audio": "stale"})
+                await send({"type": "voice_unavailable", "turn_id": "turn_2", "reason": "empty"})
+                second_tts_finished.set()
+
+        async def run():
+            with patch("api.routes.chat_ws.call_jev", return_value=jev_answers()), \
+                    patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
+                    patch("api.routes.chat_ws.broadcast_to_displays"), \
+                    patch("api.routes.chat_ws.log_turn"), \
+                    patch("api.routes.chat_ws.synthesize_and_send_voice", side_effect=fake_tts):
+                await asyncio.wait_for(websocket_endpoint(socket), timeout=2)
+
+        asyncio.run(run())
+        voices = [item for item in socket.payloads if item["type"] in {"voice", "voice_unavailable"}]
+        self.assertEqual(voices, [{"type": "voice_unavailable", "turn_id": "turn_2", "reason": "empty"}])
+        types = [item["type"] for item in socket.payloads]
+        self.assertLess(types.index("stream_end"), types.index("voice_unavailable"))
+
     def test_persistence_failure_stops_session_before_next_turn(self):
         class FailingRepository(FakeChatSessionRepository):
             async def append_user(self, session_id, generation, message):
@@ -294,6 +355,157 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(len(captured["jev_states"][1]["recent_dialogue"]), 2)
         plans = [item for item in socket.payloads if item["type"] == "expression_plan"]
         self.assertEqual(plans[-1]["debug"]["jevDecisionSource"], "jev")
+
+    def test_started_action_carry_survives_text_interrupt_and_cancelled_report(self):
+        plan_delivery_started = asyncio.Event()
+        first_partial_sent = asyncio.Event()
+        completed = asyncio.Event()
+        contexts = []
+        compiled_previous_states = []
+
+        class Socket:
+            index = 0
+
+            def __init__(self):
+                self.payloads = []
+
+            async def accept(self):
+                pass
+
+            async def receive_text(self):
+                self.index += 1
+                if self.index == 1:
+                    return json.dumps({"content": "第一句", "turn_id": "turn_1"})
+                if self.index == 2:
+                    await plan_delivery_started.wait()
+                    return json.dumps({"type": "action_state", "status": "started",
+                                       "action_id": "action_1", "turn_id": "turn_1"})
+                if self.index == 3:
+                    return json.dumps({"type": "action_state", "status": "cancelled",
+                                       "action_id": "action_1", "turn_id": "turn_1"})
+                if self.index == 4:
+                    await first_partial_sent.wait()
+                    return json.dumps({"content": "插話", "turn_id": "turn_2"})
+                await completed.wait()
+                raise WebSocketDisconnect()
+
+            async def send_json(self, payload):
+                self.payloads.append(payload)
+                if payload.get("type") == "expression_plan" and payload.get("turn_id") == "turn_1":
+                    plan_delivery_started.set()
+                    # The renderer can ACK before send_json returns or display broadcast completes.
+                    await asyncio.Event().wait()
+                if payload.get("type") == "stream_end" and payload.get("turn_id") == "turn_2":
+                    completed.set()
+
+        async def fake_jev(context, questions):
+            contexts.append(context)
+            return jev_answers()
+
+        async def fake_chat(messages, send_chunk):
+            if messages[-1]["content"] == "第一句":
+                await send_chunk("只送出的半句")
+                first_partial_sent.set()
+                await asyncio.Event().wait()
+            await asyncio.sleep(0)
+            await send_chunk("第二句回覆")
+            return "第二句回覆"
+
+        def seeded_compile(intent, model_name, previous_state):
+            compiled_previous_states.append(previous_state)
+            return compile_expression_plan(intent, model_name, previous_state, seed=7)
+
+        socket = Socket()
+        chat_sessions = make_chat_session_service()
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=SimpleNamespace(
+                accept=AsyncMock(side_effect=[uuid4(), uuid4()]),
+                retrieve=AsyncMock(return_value=({}, "")), route_background=Mock(),
+            ),
+            chat_session_service=chat_sessions,
+        ))
+
+        async def run():
+            with patch("api.routes.chat_ws.call_jev", side_effect=fake_jev), \
+                    patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
+                    patch("api.routes.chat_ws.compile_expression_plan", side_effect=seeded_compile), \
+                    patch("api.routes.chat_ws.broadcast_to_displays"), \
+                    patch("api.routes.chat_ws.log_turn"), \
+                    patch("api.routes.chat_ws.synthesize_and_send_voice"):
+                await asyncio.wait_for(websocket_endpoint(socket), timeout=2)
+
+        asyncio.run(run())
+        plans = [item for item in socket.payloads if item["type"] == "expression_plan"]
+        self.assertEqual(len(plans), 2)
+        self.assertIsNone(compiled_previous_states[0])
+        self.assertEqual(compiled_previous_states[1], plans[0]["carryState"])
+        self.assertEqual(contexts[1]["previous_expression_carry_state"], plans[0]["carryState"])
+        self.assertNotEqual(plans[1]["carryState"]["expressionVariant"], plans[0]["carryState"]["expressionVariant"])
+        self.assertNotIn("current_action", contexts[1])
+        self.assertEqual([item["turn_id"] for item in socket.payloads if item["type"] == "stream_end"], ["turn_2"])
+        cancelled = next(item for item in socket.payloads if item["type"] == "turn_cancelled")
+        self.assertEqual(cancelled["partial_text"], "只送出的半句")
+
+    def test_completed_text_without_started_ack_does_not_update_action_carry(self):
+        for terminal_status in (None, "finished", "cancelled"):
+            with self.subTest(terminal_status=terminal_status):
+                frames = [{"content": "第一句", "turn_id": "turn_1"}]
+                if terminal_status:
+                    frames.append({"type": "action_state", "status": terminal_status,
+                                   "action_id": "queued_action", "turn_id": "turn_1"})
+                frames.append({"content": "第二句", "turn_id": "turn_2"})
+                with patch("api.routes.chat_ws.compile_expression_plan", side_effect=lambda *args, **kwargs:
+                           compile_expression_plan(*args, **kwargs, seed=7)):
+                    socket, captured = self._run(frames, [jev_answers(), jev_answers()])
+                plans = [item for item in socket.payloads if item["type"] == "expression_plan"]
+                self.assertNotIn("previous_expression_carry_state", captured["jev_states"][1])
+                self.assertEqual(plans[1]["carryState"]["expressionVariant"], plans[0]["carryState"]["expressionVariant"])
+
+    def test_started_after_text_completion_updates_carry_without_finished_ack(self):
+        with patch("api.routes.chat_ws.compile_expression_plan", side_effect=lambda *args, **kwargs:
+                   compile_expression_plan(*args, **kwargs, seed=7)):
+            socket, captured = self._run([
+                {"content": "第一句", "turn_id": "turn_1"},
+                {"type": "action_state", "status": "started", "action_id": "action_1", "turn_id": "turn_1"},
+                {"content": "第二句", "turn_id": "turn_2"},
+            ], [jev_answers(), jev_answers()])
+        plans = [item for item in socket.payloads if item["type"] == "expression_plan"]
+        self.assertEqual(captured["jev_states"][1]["previous_expression_carry_state"], plans[0]["carryState"])
+        self.assertNotEqual(plans[1]["carryState"]["expressionVariant"], plans[0]["carryState"]["expressionVariant"])
+
+    def test_queued_plan_and_stale_started_ack_keep_last_played_carry(self):
+        with patch("api.routes.chat_ws.compile_expression_plan", side_effect=lambda *args, **kwargs:
+                   compile_expression_plan(*args, **kwargs, seed=7)):
+            socket, captured = self._run([
+                {"content": "第一句", "turn_id": "turn_1"},
+                {"type": "action_state", "status": "started", "action_id": "action_1", "turn_id": "turn_1"},
+                {"content": "第二句", "turn_id": "turn_2"},
+                {"type": "action_state", "status": "started", "action_id": "late_action_1", "turn_id": "turn_1"},
+                {"content": "第三句", "turn_id": "turn_3"},
+            ], [jev_answers(), jev_answers(), jev_answers()])
+        plans = [item for item in socket.payloads if item["type"] == "expression_plan"]
+        self.assertEqual(captured["jev_states"][2]["previous_expression_carry_state"], plans[0]["carryState"])
+        self.assertNotEqual(plans[0]["carryState"]["expressionVariant"], plans[1]["carryState"]["expressionVariant"])
+        self.assertEqual(plans[1]["carryState"]["expressionVariant"], plans[2]["carryState"]["expressionVariant"])
+
+    def test_reset_discards_started_carry_and_unstarted_plan(self):
+        for started in (False, True):
+            with self.subTest(started=started):
+                frames = [{"content": "第一句", "turn_id": "turn_1"}]
+                if started:
+                    frames.append({"type": "action_state", "status": "started",
+                                   "action_id": "action_1", "turn_id": "turn_1"})
+                frames.extend([
+                    {"type": "reset_session"},
+                    {"type": "action_state", "status": "started", "action_id": "late_action_1", "turn_id": "turn_1"},
+                    {"content": "第二句", "turn_id": "turn_2"},
+                ])
+                with patch("api.routes.chat_ws.compile_expression_plan", side_effect=lambda *args, **kwargs:
+                           compile_expression_plan(*args, **kwargs, seed=7)):
+                    socket, captured = self._run(frames, [jev_answers(), jev_answers()])
+                plans = [item for item in socket.payloads if item["type"] == "expression_plan"]
+                self.assertNotIn("previous_expression_carry_state", captured["jev_states"][1])
+                self.assertEqual(plans[1]["carryState"]["expressionVariant"], plans[0]["carryState"]["expressionVariant"])
 
     def test_action_failure_uses_neutral_plan_and_chat_still_finishes(self):
         socket, _ = self._run([{"content": "嗨"}], [None])

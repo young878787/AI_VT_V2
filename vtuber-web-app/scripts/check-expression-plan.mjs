@@ -368,4 +368,40 @@ if (isExpressionPlanPayload(invalidMotionPlan)) {
   throw new Error('Expected motionPlan with negative head lag to be rejected');
 }
 
+const speechPlan = {
+  ...makePayload([{ action: 'resume' }]), stage: 'speech',
+  speech: { durationMs: 3000, timingSource: 'audio', segments: [
+    { id: 0, startMs: 0, endMs: 1500 }, { id: 1, startMs: 1500, endMs: 3000 },
+  ] },
+  microEvents: [{ kind: 'speech_nod', atMs: 900, durationMs: 600,
+    patch: { headPitchOffset: -0.3 }, returnToBase: true }],
+};
+for (const payload of [speechPlan, { ...speechPlan, speech: { ...speechPlan.speech, timingSource: 'estimated' } },
+  { ...makePayload([]), stage: 'reaction' }]) {
+  if (!isExpressionPlanPayload(payload)) throw new Error('Expected valid reaction/speech timeline');
+}
+for (const [name, payload] of [
+  ['unknown stage', { ...speechPlan, stage: 'other' }],
+  ['missing speech', { ...speechPlan, speech: undefined }],
+  ['unexpected speech', { ...speechPlan, stage: 'reaction' }],
+  ['invalid duration', { ...speechPlan, speech: { ...speechPlan.speech, durationMs: 0 } }],
+  ['unknown clock', { ...speechPlan, speech: { ...speechPlan.speech, timingSource: 'wall' } }],
+  ['missing segments', { ...speechPlan, speech: { ...speechPlan.speech, segments: [] } }],
+  ['overlapping segments', { ...speechPlan, speech: { ...speechPlan.speech, segments: [
+    { id: 0, startMs: 0, endMs: 1500 }, { id: 1, startMs: 1200, endMs: 3000 },
+  ] } }],
+  ['duplicate segment ids', { ...speechPlan, speech: { ...speechPlan.speech, segments: [
+    { id: 0, startMs: 0, endMs: 1500 }, { id: 0, startMs: 1500, endMs: 3000 },
+  ] } }],
+  ['segment past audio', { ...speechPlan, speech: { ...speechPlan.speech, segments: [
+    { id: 0, startMs: 0, endMs: 3001 },
+  ] } }],
+  ['negative cue offset', { ...speechPlan, microEvents: [{ ...speechPlan.microEvents[0], atMs: -1 }] }],
+  ['invalid nod range', { ...speechPlan, microEvents: [{ ...speechPlan.microEvents[0], patch: { headPitchOffset: 1.01 } }] }],
+  ['invalid base nod range', { ...speechPlan, basePose: { ...speechPlan.basePose,
+    params: { ...speechPlan.basePose.params, headPitchOffset: -1.01 } } }],
+]) {
+  if (isExpressionPlanPayload(payload)) throw new Error(`Expected ${name} to be rejected`);
+}
+
 console.log('expressionPlan validator smoke test passed.');

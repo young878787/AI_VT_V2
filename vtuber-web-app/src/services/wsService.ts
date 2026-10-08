@@ -39,7 +39,7 @@ class WSService {
             actionScheduler.setReporter((status, action) => {
                 if (this.ws?.readyState === WebSocket.OPEN) {
                     this.ws.send(JSON.stringify({ type: 'action_state', status,
-                        action_id: action.id, turn_id: action.turnId }));
+                        action_id: action.id, turn_id: action.turnId, stage: action.stage }));
                 }
             });
         };
@@ -61,7 +61,7 @@ class WSService {
                         }
                         this.assistantMessageIds.delete(cancelledTurnId);
                         if (cancelledTurnId === this.activeTurnId) {
-                            actionScheduler.cancel();
+                            actionScheduler.cancelTurn(cancelledTurnId);
                             this.ttsPlayer.stop();
                             this.currentAssistantMessageId = null;
                             this.activeTurnStartedAt = null;
@@ -72,6 +72,9 @@ class WSService {
                 }
                 if (typeof data.turn_id === 'string' && data.turn_id !== this.activeTurnId
                     && data.type !== 'memory_status') return;
+                if (data.speech_unavailable === true && typeof data.turn_id === 'string') {
+                    actionScheduler.skipSpeechPlan(data.turn_id);
+                }
 
                 if (data.type === 'text_stream') {
                     if (store.chatPerformance.firstTokenLatencyMs === null && this.activeTurnStartedAt !== null) {
@@ -156,9 +159,14 @@ class WSService {
                     }
                     this.activeTurnStartedAt = null;
                     store.setAiTyping(false);
+                    if (typeof data.turn_id === 'string') {
+                        actionScheduler.completeText(data.turn_id, data.voice_expected === true, data.speech_expected === true);
+                    }
                 } else if (data.type === 'voice') {
                     // TTS 語音播放
-                    this.playVoice(data.audio, data.format || 'wav');
+                    void this.playVoice(data.audio, data.format || 'wav', data.turn_id);
+                } else if (data.type === 'voice_unavailable') {
+                    if (typeof data.turn_id === 'string') actionScheduler.completeVoice(data.turn_id);
                 } else if (data.type === 'compressing') {
                     store.setCompressing(true);
                 } else if (data.type === 'compress_done') {
@@ -174,6 +182,8 @@ class WSService {
                         console.warn('Received invalid emotion_update payload:', data);
                     }
                 } else if (data.type === 'error') {
+                    if (this.activeTurnId) actionScheduler.cancelTurn(this.activeTurnId);
+                    this.ttsPlayer.stop();
                     store.appendChatMessage({ role: 'system', content: data.content });
                     store.setAiTyping(false);
                     this.currentAssistantMessageId = null;
@@ -228,11 +238,11 @@ class WSService {
         store.clearChatPerformance();
 
         if (isConnected) {
-            actionScheduler.cancel();
             store.setAiTyping(true);
             this.currentAssistantMessageId = null;
             this.activeTurnId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
                 ? crypto.randomUUID() : `turn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+            actionScheduler.beginTurn(this.activeTurnId);
             this.activeTurnStartedAt = performance.now();
             this.appliedPlanTurnId = null;
             // 送出訊息前停止當前 TTS 播放
@@ -254,12 +264,16 @@ class WSService {
     /**
      * 播放 TTS 語音
      */
-    private async playVoice(audioBase64: string, format: string): Promise<void> {
+    private async playVoice(audioBase64: string, format: string, turnId?: string): Promise<void> {
         try {
             console.log(`[TTS] 開始播放語音 | 格式: ${format}`);
-            await this.ttsPlayer.play(audioBase64, format);
+            await this.ttsPlayer.play(audioBase64, format, clock => {
+                if (turnId) actionScheduler.startVoice(turnId, clock);
+            });
         } catch (error) {
             console.error('[TTS] 播放失敗:', error);
+        } finally {
+            if (turnId) actionScheduler.completeVoice(turnId);
         }
     }
 

@@ -1448,9 +1448,15 @@ def build_model_hints(intent: dict, preset_name: str, model_name: str) -> dict:
 def compile_expression_plan(
     intent: dict, model_name: str, previous_state: dict | None, *, seed: int | None = None,
     debug_overrides: dict | None = None,
+    speech_segments: list[dict] | None = None, speech_timing_source: str = "audio",
 ) -> dict:
     if model_name == "Rushia":
-        return build_rushia_expression_plan(intent, previous_state, seed=seed, debug_overrides=debug_overrides)
+        return build_rushia_expression_plan(
+            intent, previous_state, seed=seed, debug_overrides=debug_overrides,
+            speech_segments=speech_segments, speech_timing_source=speech_timing_source,
+        )
+    if speech_segments is not None:
+        raise ValueError("Speech expression plans require Rushia")
 
     emotion = intent.get("emotion", intent.get("primary_emotion", DEFAULT_INTENT["emotion"]))
     if emotion not in {

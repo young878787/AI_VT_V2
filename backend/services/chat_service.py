@@ -308,32 +308,71 @@ async def collect_agent_a(messages: list) -> str:
 # ============================================================
 # TTS 合成轉發
 # ============================================================
+_TTS_TIMEOUT_SEC = 30.0
+_SPEECH_PLAN_TIMEOUT_SEC = 1.0
+
+
+def _load_tts_service():
+    from tts_service import get_tts_service
+
+    return get_tts_service()
+
+
 async def synthesize_and_send_voice(
-    websocket: WebSocket, text: str, speaking_rate: float, turn_id: str | None = None, send_func=None
+    websocket: WebSocket, text: str, speaking_rate: float, turn_id: str | None = None, send_func=None,
+    *, expression_context: asyncio.Task | None = None, model_name: str = "Rushia",
 ) -> None:
-    """背景執行 TTS，避免阻塞文字串流完成事件。"""
-    from tts_service import get_tts_service  # 延遲匯入，避免啟動時強制 TTS 初始化
-
-    tts_service = get_tts_service()
-    if not tts_service.is_enabled():
-        return
-
+    """背景執行有界 TTS，成功或不可用都明確結束前端的語音等待。"""
+    payload = {"type": "voice_unavailable", "reason": "disabled"}
+    tts_result = None
     try:
-        tts_result = await tts_service.synthesize(
-            text=text, speaking_rate=speaking_rate
-        )
-        if tts_result:
-            payload = {
+        async with asyncio.timeout(_TTS_TIMEOUT_SEC):
+            tts_service = await asyncio.to_thread(_load_tts_service)
+            if tts_service.is_enabled():
+                tts_result = await tts_service.synthesize(text=text, speaking_rate=speaking_rate)
+                payload = {
                     "type": "voice",
                     "audio": tts_result["audio_base64"],
                     "durationMs": tts_result["duration_ms"],
                     "format": tts_result["format"],
-                }
-            if turn_id:
-                payload["turn_id"] = turn_id
-            await (send_func or websocket.send_json)(payload)
+                } if tts_result else {"type": "voice_unavailable", "reason": "empty"}
+    except TimeoutError:
+        payload = {"type": "voice_unavailable", "reason": "timeout"}
     except Exception as tts_error:
-        print(f"[TTS] 合成錯誤（不影響文字回覆）: {tts_error}")
+        print(f"[TTS] 合成錯誤（不影響文字回覆）: {type(tts_error).__name__}")
+        payload = {"type": "voice_unavailable", "reason": "error"}
+
+    # CancelledError 直接向外傳遞，不替已取消的回合送出 terminal event。
+    send = send_func or websocket.send_json
+    if expression_context is not None:
+        from domain.speech_segments import estimate_speech_segments
+        from services.expression_compiler import compile_expression_plan
+
+        try:
+            # The original JEV decision is reused; no extra model request is made for speech.
+            # A slow display subscriber must not hold already prepared audio indefinitely.
+            context = await asyncio.wait_for(asyncio.shield(expression_context), _SPEECH_PLAN_TIMEOUT_SEC)
+            intent = {**context["intent"], "spoken_text": text}
+            timings = tts_result.get("segments") if tts_result else None
+            timing_source = "audio" if timings else "estimated"
+            if not timings:
+                timings = estimate_speech_segments(text, speaking_rate)
+            plan = compile_expression_plan(
+                intent, model_name, context["plan"].get("carryState"),
+                speech_segments=timings, speech_timing_source=timing_source,
+            )
+            plan.update({"turn_id": turn_id, "stage": "speech"})
+            # Keep raw JEV evidence separate from deterministic, dialogue-paced performance.
+            plan["debug"].update({key: value for key, value in context["plan"].get("debug", {}).items()
+                                 if key.startswith("jev")})
+            await send(plan)
+        except Exception as expression_error:
+            # Voice/text can finish even when expression compilation is unavailable.
+            print(f"[Speech expression] fallback: {type(expression_error).__name__}")
+            payload["speech_unavailable"] = True
+    if turn_id:
+        payload["turn_id"] = turn_id
+    await send(payload)
 
 
 # ============================================================

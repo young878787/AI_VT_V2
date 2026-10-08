@@ -285,6 +285,11 @@ def build_jev_context(
     return state
 
 
+def _answer_number(answer: dict, key: str) -> float:
+    value = answer.get(key)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else -1.0
+
+
 def map_answers_to_intent(answers: dict) -> dict:
     """Jev answers → raw intent dict。
 
@@ -292,44 +297,47 @@ def map_answers_to_intent(answers: dict) -> dict:
     用 DEFAULT_INTENT 兜底；主表情無效時由呼叫端回退上一輪表情。
     """
     intent: dict = {}
+    # A malformed optional answer must not discard independently valid emotion/attitude answers.
+    answers = {key: value for key, value in answers.items() if isinstance(value, dict)}
 
     base_emotion = answers.get("base_emotion") or {}
-    if base_emotion.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
+    if CONFIDENCE_THRESHOLD <= _answer_number(base_emotion, "confidence") <= 1:
         choice = base_emotion.get("choice")
-        if choice in BASE_EMOTION_CRITERIA:
+        if isinstance(choice, str) and choice in BASE_EMOTION_CRITERIA:
             intent["emotion"] = choice
 
     attitude = answers.get("interaction_attitude") or {}
-    if attitude.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
+    if CONFIDENCE_THRESHOLD <= _answer_number(attitude, "confidence") <= 1:
         choice = attitude.get("choice")
-        if choice in INTERACTION_ATTITUDE_CRITERIA:
+        if isinstance(choice, str) and choice in INTERACTION_ATTITUDE_CRITERIA:
             intent["performance_mode"] = choice
 
     arc = answers.get("arc") or {}
-    if arc.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
-        intent["arc"] = arc.get("choice")
+    if (CONFIDENCE_THRESHOLD <= _answer_number(arc, "confidence") <= 1
+            and isinstance(arc.get("choice"), str) and arc["choice"] in ALLOWED_ARCS):
+        intent["arc"] = arc["choice"]
 
     # Score 0–4 → 0.0–1.0（score 可落在兩級之間，如 2.4 → 0.6）
     intensity = answers.get("intensity") or {}
-    if intensity.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
+    if CONFIDENCE_THRESHOLD <= _answer_number(intensity, "confidence") <= 1:
         score = intensity.get("score")
         if isinstance(score, (int, float)) and not isinstance(score, bool) and math.isfinite(score):
             intent["intensity"] = round(max(0.0, min(1.0, float(score) / 4.0)), 3)
 
     energy = answers.get("energy") or {}
-    if energy.get("confidence", 0.0) >= CONFIDENCE_THRESHOLD:
+    if CONFIDENCE_THRESHOLD <= _answer_number(energy, "confidence") <= 1:
         score = energy.get("score")
         if isinstance(score, (int, float)) and not isinstance(score, bool) and math.isfinite(score):
             intent["energy"] = round(max(0.0, min(1.0, float(score) / 4.0)), 3)
 
     # Noul 觸發器：超過閾值才影響 intent（Noul 無 confidence 欄位）
     goofy = answers.get("wants_goofy") or {}
-    if float(goofy.get("noul", 0.0)) > NOUL_GOOFY_THRESHOLD:
+    if NOUL_GOOFY_THRESHOLD < _answer_number(goofy, "noul") <= 1:
         intent["must_include"] = ["goofy_eye_cross_bias"]
         # performance_mode 強制候選交給規則層決定，避免覆蓋高信心 Choice
 
     blink = answers.get("needs_special_blink") or {}
-    if float(blink.get("noul", 0.0)) > NOUL_BLINK_THRESHOLD:
+    if NOUL_BLINK_THRESHOLD < _answer_number(blink, "noul") <= 1:
         intent["blink_style"] = _map_special_blink(intent.get("emotion"))
 
     return intent

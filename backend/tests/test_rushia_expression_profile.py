@@ -12,9 +12,11 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from api.routes.expression_debug_router import ExpressionPlanDebugRequest, compile_debug_expression_plan
 from domain.expression_eye_motion_library import EYE_MOTION_PRESETS
+from domain.expression_intent_schema import ALLOWED_ARCS
 from domain.input_event import normalize_chat_input
 from domain.jev_questions import map_answers_to_intent
 from domain.rushia_expression_profile import FAMILY_POSES, FAMILY_VARIANTS, canonical_rushia_family
+from domain.speech_segments import estimate_speech_segments
 from services.expression_compiler import compile_expression_plan
 
 
@@ -50,6 +52,7 @@ class RushiaExpressionProfileTests(unittest.TestCase):
             with self.subTest(family=family):
                 plan = self.compile(family, intensity=1.0, spoken_text="這是一段較長的回覆。" * 10)
                 poses = [plan["basePose"]["params"], plan["idlePlan"]["settlePose"]["params"]]
+                poses.extend(state["params"] for state in plan["idlePlan"]["ambientPlan"]["states"])
                 events = plan["microEvents"] + plan["sequence"] + plan["idlePlan"]["loopEvents"]
                 poses.extend(event["patch"] for event in events)
                 for pose in poses:
@@ -100,6 +103,256 @@ class RushiaExpressionProfileTests(unittest.TestCase):
                 self.assertNotIn("closed_smile", str(plan["sequence"]))
         plan = self.compile("soft_smile", topic_guard={"source_theme": "crying", "must_preserve_theme": True})
         self.assertEqual(plan["debug"]["expressionFamily"], "sad")
+
+    def test_arcs_change_visible_sequence_and_preserve_negative_emotion(self):
+        for family in ("calm", "playful", "sad", "gloomy", "angry", "conflicted"):
+            with self.subTest(family=family):
+                sequences = []
+                for arc in sorted(ALLOWED_ARCS):
+                    plan = self.compile(family, arc=arc)
+                    # Event labels alone do not prove a different performance.
+                    sequences.append([(event["durationMs"], event["patch"]) for event in plan["sequence"]])
+                    self.assertEqual(plan["debug"]["arc"], arc)
+                    self.assertEqual(plan["debug"]["expressionFamily"], family)
+                    timeline = sum(event["durationMs"] for event in plan["sequence"])
+                    timeline -= sum(min(left["fadeOutMs"], right["fadeInMs"])
+                                    for left, right in zip(plan["sequence"], plan["sequence"][1:]))
+                    self.assertEqual(plan["idlePlan"]["source"]["actionEnterAfterMs"], timeline)
+                    self.assertGreater(plan["idlePlan"]["enterAfterMs"], timeline)
+                    if family in {"sad", "gloomy", "angry", "conflicted"}:
+                        mouth = plan["basePose"]["params"]["mouthForm"]
+                        for event in plan["sequence"]:
+                            self.assertLess(event["patch"].get("mouthForm", mouth), 0)
+                for index, sequence in enumerate(sequences):
+                    self.assertNotIn(sequence, sequences[:index])
+
+    def test_energy_changes_speed_amplitude_and_timing_without_changing_face(self):
+        for family, variant in (("calm", "small_nod"), ("angry", "firm_glare"),
+                                ("soft_smile", "warm_nod")):
+            with self.subTest(family=family):
+                low = self.compile(family, variant=variant, energy=0)
+                high = self.compile(family, variant=variant, energy=1)
+                self.assertEqual(low["basePose"]["params"], high["basePose"]["params"])
+                low_profile = low["basePose"]["bodyMotionProfile"]
+                high_profile = high["basePose"]["bodyMotionProfile"]
+                for key in ("speed", "swayScale", "bobScale", "headScale"):
+                    self.assertGreater(high_profile[key], low_profile[key])
+                    self.assertLessEqual(high_profile[key], 1.2)
+                self.assertLess(high["sequence"][0]["durationMs"], low["sequence"][0]["durationMs"])
+                self.assertGreater(high["sequence"][0]["patch"]["bodyAngleY"],
+                                   low["sequence"][0]["patch"]["bodyAngleY"])
+                self.assertLess(high["idlePlan"]["ambientSwitchIntervalMs"],
+                                low["idlePlan"]["ambientSwitchIntervalMs"])
+        self.assertEqual(self.compile(), self.compile(energy=0.35))
+
+    def test_delayed_closed_eye_arcs_keep_blink_paused_until_reopening(self):
+        for arc in ALLOWED_ARCS:
+            for energy in (0, 1):
+                with self.subTest(arc=arc, energy=energy):
+                    plan = self.compile("playful", variant="playful_wink_left", arc=arc, energy=energy)
+                    reaction_index = next(index for index, event in enumerate(plan["sequence"])
+                                          if event["kind"] == "rushia_playful_wink_left")
+                    reaction = plan["sequence"][reaction_index]
+                    self.assertEqual(reaction["durationMs"], 780)
+                    self.assertEqual(reaction["patch"]["eyeLOpen"], 0)
+                    start_ms = sum(event["durationMs"] - min(event["fadeOutMs"], next_event["fadeInMs"])
+                                   for event, next_event in zip(plan["sequence"][:reaction_index],
+                                                               plan["sequence"][1:reaction_index + 1]))
+                    pause = max(command["durationSec"] for command in plan["blinkPlan"]["commands"]
+                                if command["action"] == "pause")
+                    self.assertGreaterEqual(pause * 1000, start_ms + reaction["durationMs"])
+
+    def test_idle_varies_gaze_and_posture_while_retaining_emotional_face(self):
+        for family in FAMILY_POSES:
+            with self.subTest(family=family):
+                idle = self.compile(family)["idlePlan"]
+                states = idle["ambientPlan"]["states"]
+                self.assertEqual(len(states), 3)
+                self.assertEqual({state["kind"] for state in states},
+                                 {"ambient_idle_breath", "ambient_idle_look_around", "ambient_idle_active_shift"})
+                self.assertGreater(idle["ambientEnterAfterMs"], idle["enterAfterMs"])
+                self.assertGreaterEqual(idle["ambientSwitchIntervalMs"], 4000)
+                self.assertLessEqual(idle["ambientSwitchIntervalMs"], 7000)
+                self.assertGreater(max(state["params"]["eyeBallX"] for state in states) -
+                                   min(state["params"]["eyeBallX"] for state in states), 0.3)
+                self.assertEqual(len({state["params"]["bodyAngleZ"] for state in states}), 3)
+                for state in states:
+                    params = state["params"]
+                    for key in ("mouthForm", "browLY", "browRY", "browLAngle", "browRAngle"):
+                        self.assertEqual(params[key], idle["settlePose"]["params"][key])
+                    self.assertFalse(params["eyeSync"])
+                    self.assertEqual(params["mouthOpenBias"], 0)
+                    if family in {"sad", "gloomy", "angry", "conflicted"}:
+                        # Leave room for the renderer's +/- 0.04 mouth jitter.
+                        self.assertLess(params["mouthForm"] + 0.04, 0)
+        intervals = {self.compile(seed=seed)["idlePlan"]["ambientSwitchIntervalMs"] for seed in range(8)}
+        self.assertGreater(len(intervals), 1)
+        deadpan = self.compile("gloomy", emotion="neutral", performance_mode="deadpan")["idlePlan"]
+        for state in deadpan["ambientPlan"]["states"]:
+            self.assertLess(state["params"]["mouthForm"] + 0.04, 0)
+
+    def test_arc_energy_extremes_keep_events_and_poses_bounded(self):
+        for family in FAMILY_POSES:
+            for arc in ALLOWED_ARCS:
+                for energy in (0, 1):
+                    with self.subTest(family=family, arc=arc, energy=energy):
+                        plan = self.compile(family, arc=arc, energy=energy, intensity=1)
+                        for event in plan["sequence"]:
+                            self.assertGreaterEqual(event["durationMs"], event["fadeInMs"] + event["fadeOutMs"])
+                            self.assertGreater(event["durationMs"], 0)
+                            for key, value in event["patch"].items():
+                                if key == "eyeSync":
+                                    continue
+                                self.assertTrue(math.isfinite(value))
+                                self.assertGreaterEqual(value, 0 if key in {"eyeLOpen", "eyeROpen", "mouthOpenBias",
+                                                                          "blushLevel"} else -1)
+                                self.assertLessEqual(value, 1)
+
+    def test_hold_ms_respects_existing_intent_bounds_and_idle_timing(self):
+        for requested, expected in ((500, 500), (3500, 3500), (-1, 300), (12000, 4000)):
+            with self.subTest(requested=requested):
+                plan = self.compile(hold_ms=requested)
+                self.assertEqual(plan["basePose"]["durationSec"], expected / 1000)
+                self.assertEqual(plan["timingHints"]["holdMs"], expected)
+                self.assertGreater(plan["idlePlan"]["enterAfterMs"], expected)
+
+    def test_speech_preserves_reaction_face_and_does_not_replay_initial_wink_or_arc(self):
+        segments = [{"id": 0, "startMs": 0, "endMs": 5000}, {"id": 1, "startMs": 5000, "endMs": 11000}]
+        for family in FAMILY_POSES:
+            with self.subTest(family=family):
+                emotion = "happy" if family in {"soft_smile", "closed_smile"} else family
+                if family in {"calm", "thinking"}:
+                    emotion = "neutral"
+                intent = {"emotion": emotion, "expression_family": family, "arc": "pop_then_settle"}
+                reaction = compile_expression_plan(intent, "Rushia", None, seed=12)
+                speech = compile_expression_plan(intent, "Rushia", reaction["carryState"], seed=21,
+                                                 speech_segments=segments)
+                self.assertEqual(speech["stage"], "speech")
+                self.assertEqual(speech["speech"], {"durationMs": 11000, "timingSource": "audio", "segments": segments})
+                self.assertEqual(speech["basePose"]["params"], reaction["basePose"]["params"])
+                self.assertEqual(speech["basePose"]["preset"], reaction["basePose"]["preset"])
+                self.assertEqual(speech["sequence"], [])
+                self.assertNotIn("motionPlan", speech)
+                for event in speech["microEvents"]:
+                    self.assertTrue(event["returnToBase"])
+                    self.assertNotIn("wink", event["kind"])
+                    self.assertNotIn("mouthForm", event["patch"])
+                    self.assertNotIn("mouthOpenBias", event["patch"])
+                self.assertTrue(all(command["action"] not in {"pause", "force_blink"}
+                                    for command in speech["blinkPlan"]["commands"]))
+
+    def test_long_speech_keeps_varied_bounded_gestures_after_initial_reaction_window(self):
+        segments = [{"id": index, "startMs": index * 10000, "endMs": (index + 1) * 10000} for index in range(6)]
+        speech = compile_expression_plan({"emotion": "sad", "energy": 0.4}, "Rushia", None, seed=7,
+                                         speech_segments=segments)
+        events = speech["microEvents"]
+        self.assertGreater(len(events), 10)
+        self.assertGreater(events[-1]["atMs"], 55000)
+        self.assertGreaterEqual(events[0]["atMs"], 650)
+        self.assertEqual(len({event["kind"] for event in events}), 4)
+        nods = [event for event in events if "headPitchOffset" in event["patch"]]
+        self.assertTrue(nods, "speech must include real head-pitch events, not only body bobbing")
+        for event in events:
+            self.assertLessEqual(event["atMs"] + event["durationMs"], 59600)
+            self.assertGreaterEqual(event["durationMs"], event["fadeInMs"] + event["fadeOutMs"])
+            for key, value in event["patch"].items():
+                self.assertGreaterEqual(value, -1)
+                self.assertLessEqual(value, 1)
+        for previous, current in zip(events, events[1:]):
+            self.assertNotEqual(previous["kind"], current["kind"])
+            self.assertGreaterEqual(current["atMs"] - previous["atMs"], 2500)
+            self.assertLessEqual(current["atMs"] - previous["atMs"], 5000)
+        self.assertEqual(speech["idlePlan"]["source"]["speakingEnterAfterMs"], 60000)
+        self.assertGreater(speech["idlePlan"]["enterAfterMs"], 60000)
+
+    def test_speech_seed_replays_and_energy_changes_pacing_without_reversing_mood(self):
+        segments = [{"id": 0, "startMs": 0, "endMs": 60000}]
+        plans = [compile_expression_plan({"emotion": "angry", "energy": energy}, "Rushia", None, seed=42,
+                                         speech_segments=segments) for energy in (0, 1)]
+        self.assertLess(len(plans[0]["microEvents"]), len(plans[1]["microEvents"]))
+        for plan in plans:
+            self.assertLess(plan["basePose"]["params"]["mouthForm"], 0)
+            self.assertLess(plan["idlePlan"]["settlePose"]["params"]["mouthForm"], 0)
+        self.assertEqual(plans[1], compile_expression_plan({"emotion": "angry", "energy": 1}, "Rushia", None,
+                                                         seed=42, speech_segments=segments))
+
+    def test_speech_punctuation_changes_rhythm_without_guessing_a_new_emotion(self):
+        timing = [{"id": 0, "startMs": 0, "endMs": 4500}]
+        plans = {}
+        for text, kind in (("我會繼續聽你說。", None), ("你願意繼續說嗎？", "rushia_speech_question"),
+                           ("我會繼續聽你說！", "rushia_speech_emphasis"),
+                           ("但是我們可以慢慢說。", "rushia_speech_transition"),
+                           ("我…會繼續聽你說。", "rushia_speech_pause_return")):
+            plan = compile_expression_plan({"emotion": "sad", "spoken_text": text}, "Rushia", None,
+                                           seed=42, speech_segments=timing)
+            plans[text] = plan
+            if kind:
+                self.assertEqual([event["kind"] for event in plan["microEvents"]], [kind])
+            for event in plan["microEvents"]:
+                self.assertNotIn("mouthForm", event["patch"])
+                self.assertNotIn("mouthOpenBias", event["patch"])
+            self.assertEqual(plan["debug"]["expressionFamily"], "sad")
+        base = plans["我會繼續聽你說。"]["basePose"]["params"]
+        self.assertTrue(all(plan["basePose"]["params"] == base for plan in plans.values()))
+        self.assertGreater(plans["但是我們可以慢慢說。"]["microEvents"][0]["atMs"],
+                           plans["你願意繼續說嗎？"]["microEvents"][0]["atMs"])
+        self.assertGreater(plans["我…會繼續聽你說。"]["microEvents"][0]["atMs"],
+                           plans["你願意繼續說嗎？"]["microEvents"][0]["atMs"])
+
+    def test_sentence_cues_replace_nearby_micro_gestures_and_skip_tiny_phrases(self):
+        timing = [{"id": index, "startMs": index * 2000, "endMs": (index + 1) * 2000} for index in range(8)]
+        speech = compile_expression_plan({"emotion": "neutral", "spoken_text": "真的嗎？" * 8}, "Rushia", None,
+                                         seed=4, speech_segments=timing)
+        self.assertTrue(any(event["kind"] == "rushia_speech_question" for event in speech["microEvents"]))
+        for left, right in zip(speech["microEvents"], speech["microEvents"][1:]):
+            self.assertGreaterEqual(right["atMs"] - left["atMs"], 2500)
+        tiny = compile_expression_plan({"emotion": "sad", "spoken_text": "嗯？"}, "Rushia", None,
+                                       speech_segments=[{"id": 0, "startMs": 0, "endMs": 500}])
+        self.assertEqual(tiny["microEvents"], [])
+
+    def test_repeated_transition_cues_leave_room_for_varied_speech_gestures(self):
+        for duration_ms, segment_count in ((9670, 3), (36000, 12)):
+            with self.subTest(duration_ms=duration_ms):
+                timings = [{"id": index, "startMs": index * duration_ms / segment_count,
+                            "endMs": (index + 1) * duration_ms / segment_count}
+                           for index in range(segment_count)]
+                intent = {"emotion": "sad", "energy": 0.3,
+                          "spoken_text": "不過我們可以慢慢把這件事情說清楚，等你準備好了再接著聊。" * segment_count}
+                plan = compile_expression_plan(intent, "Rushia", None, seed=42,
+                                               speech_segments=timings)
+                events = plan["microEvents"]
+                kinds = [event["kind"] for event in events]
+                self.assertEqual(kinds.count("rushia_speech_transition"), 1)
+                self.assertEqual(kinds[0], "rushia_speech_transition")
+                self.assertGreater(len(set(kinds)), 1)
+                for left, right in zip(events, events[1:]):
+                    self.assertGreaterEqual(right["atMs"] - left["atMs"], 2500)
+                self.assertLess(plan["basePose"]["params"]["mouthForm"], 0)
+                self.assertTrue(all("mouthForm" not in event["patch"] for event in events))
+
+    def test_estimated_speech_is_finite_and_short_audio_does_not_invent_an_event(self):
+        timing = estimate_speech_segments("這一段文字只是讓表情自然收尾。" * 20)
+        plan = compile_expression_plan({"emotion": "neutral"}, "Rushia", None, seed=2,
+                                       speech_segments=timing, speech_timing_source="estimated")
+        self.assertEqual(plan["speech"]["timingSource"], "estimated")
+        self.assertLessEqual(plan["speech"]["durationMs"], 8000)
+        short = compile_expression_plan({"emotion": "neutral"}, "Rushia", None, seed=2,
+                                        speech_segments=[{"id": 0, "startMs": 0, "endMs": 300}])
+        self.assertEqual(short["microEvents"], [])
+        self.assertEqual(short["basePose"]["durationSec"], 0.3)
+
+    def test_invalid_speech_timelines_fail_before_they_can_schedule_events(self):
+        invalid = [[], [{"id": 0, "startMs": -1, "endMs": 2}],
+                   [{"id": 0, "startMs": 0, "endMs": float("inf")}],
+                   [{"id": 0, "startMs": 0, "endMs": 20}, {"id": 1, "startMs": 19, "endMs": 30}],
+                   [{"id": 0, "startMs": 0, "endMs": 20}, {"id": 0, "startMs": 20, "endMs": 30}]]
+        for segments in invalid:
+            with self.subTest(segments=segments):
+                with self.assertRaises(ValueError):
+                    compile_expression_plan({}, "Rushia", None, speech_segments=segments)
+        with self.assertRaises(ValueError):
+            compile_expression_plan({}, "Rushia", None, speech_segments=[{"id": 0, "startMs": 0, "endMs": 10}],
+                                    speech_timing_source="unknown")
 
     def test_debug_route_fixed_model_and_seed_support_new_families(self):
         for family in ("calm", "listening", "thinking", "soft_smile", "closed_smile"):
@@ -255,6 +508,16 @@ class RushiaExpressionProfileTests(unittest.TestCase):
                 self.assertLessEqual(event["fadeInMs"] + event["fadeOutMs"], duration)
         restrained = self.compile("angry", variant="restrained_turn")["sequence"][0]
         self.assertEqual(restrained["patch"]["eyeBallX"], 0.14)
+
+    def test_named_nods_have_an_explicit_head_pitch_envelope(self):
+        for family, variant in (("calm", "small_nod"), ("thinking", "attentive_nod"),
+                                ("soft_smile", "warm_nod"), ("closed_smile", "closed_smile_nod")):
+            with self.subTest(variant=variant):
+                event = self.compile(family, variant=variant)["sequence"][0]
+                self.assertLess(event["patch"]["headPitchOffset"], 0)
+                self.assertGreaterEqual(event["patch"]["headPitchOffset"], -0.4)
+                self.assertTrue(event["returnToBase"])
+                self.assertGreater(event["fadeOutMs"], 0)
 
     def test_directional_glance_does_not_become_permanent_base_or_carry(self):
         for family, variant in (("calm", "quiet_glance"), ("listening", "listen_left"),

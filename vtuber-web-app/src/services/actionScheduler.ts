@@ -1,6 +1,7 @@
 import { useAppStore } from '../store/appStore';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
-import type { ExpressionPlanPayload } from '../types/expressionPlan';
+import type { ExpressionPlanPayload, ExpressionStage } from '../types/expressionPlan';
+import type { AudioPlaybackClock } from '../audio/TTSPlayer';
 import type { LAppModel } from '../live2d/LAppModel';
 
 export interface ActionPlaybackState {
@@ -14,6 +15,11 @@ export interface ActionPlaybackState {
   loop: boolean;
   error?: string;
   phase?: 'base' | 'sequence' | 'settling' | 'idle';
+  stage?: ExpressionStage;
+  responsePhase?: 'reaction' | 'waiting' | 'speaking' | 'settling' | 'idle';
+  timingSource?: 'audio' | 'estimated';
+  segmentId?: number;
+  activeEvents?: string[];
 }
 
 type Source = 'chat' | 'debug';
@@ -26,10 +32,66 @@ type Action = {
   priority: number;
   interruptible: boolean;
   durationMs: number;
+  idleAtMs?: number;
   startedAt?: number;
+  stage: ExpressionStage;
 };
 
+type Response = {
+  turnId: string;
+  pending: boolean;
+  textDone: boolean;
+  speechExpected: boolean;
+  voiceExpected: boolean;
+  voiceEnded: boolean;
+  voiceStarted: boolean;
+  speechAction: Action | null;
+  clock: AudioPlaybackClock | null;
+  timingSource?: 'audio' | 'estimated';
+};
+
+function fitSpeechDuration(plan: ExpressionPlanPayload, durationMs: number, timingSource: 'audio' | 'estimated'): ExpressionPlanPayload {
+  const speech = plan.speech!;
+  const scale = durationMs / speech.durationMs;
+  let microEvents = plan.microEvents.map(event => {
+    const atMs = (event.atMs ?? 0) * scale;
+    const duration = Math.max(0, Math.min(event.durationMs, durationMs - atMs));
+    return { ...event, atMs, durationMs: duration,
+      fadeInMs: event.fadeInMs === undefined ? undefined : Math.min(event.fadeInMs, duration / 2),
+      fadeOutMs: event.fadeOutMs === undefined ? undefined : Math.min(event.fadeOutMs, duration / 2) };
+  }).filter(event => event.durationMs > 0);
+  if (timingSource === 'estimated' && scale < 1) {
+    let nextCueAtMs = 0;
+    microEvents = microEvents.sort((left, right) => left.atMs - right.atMs).filter(event => {
+      if (event.atMs < nextCueAtMs) return false;
+      // Drop crowded cues instead of delaying them or stretching a short gesture.
+      nextCueAtMs = Math.max(event.atMs + 2500, event.atMs + event.durationMs + 500);
+      return true;
+    });
+  }
+  return {
+    ...plan,
+    speech: { durationMs, timingSource, segments: speech.segments.map(segment => ({
+      ...segment, startMs: segment.startMs * scale, endMs: segment.endMs * scale,
+    })) },
+    microEvents,
+    idlePlan: plan.idlePlan ? { ...plan.idlePlan,
+      enterAfterMs: durationMs + (plan.idlePlan.source?.postSpeechHoldMs ?? 300),
+      ambientEnterAfterMs: plan.idlePlan.ambientEnterAfterMs === undefined ? undefined
+        : durationMs + (plan.idlePlan.ambientEnterAfterMs - speech.durationMs),
+    } : undefined,
+  };
+}
+
 class Live2DAdapter {
+  setClock(clock: (() => number) | null): void {
+    LAppLive2DManager.getInstance().getActiveModel()?.setExpressionClock(clock);
+  }
+
+  setResponseActive(active: boolean, releaseDelayMs = 0): void {
+    LAppLive2DManager.getInstance().getActiveModel()?.setResponseActive(active, releaseDelayMs);
+  }
+
   apply(plan: ExpressionPlanPayload): void {
     const store = useAppStore.getState();
     store.setExpressionPlan(plan);
@@ -40,7 +102,9 @@ class Live2DAdapter {
 
   cancel(): void {
     LAppLive2DManager.getInstance().getActiveModel()?.cancelExpressionAction();
-    useAppStore.getState().setBlinkControl('resume');
+    const store = useAppStore.getState();
+    store.clearExpressionPlan();
+    store.setBlinkControl('resume');
   }
 }
 
@@ -54,7 +118,8 @@ export class ActionScheduler {
   private readonly lastStartByKind = new Map<string, number>();
   private report: ((status: Status, action: Action) => void) | null = null;
   private manualUntil = 0;
-  private awaitingSpeechEnd = false;
+  private response: Response | null = null;
+  private responseTimer: ReturnType<typeof setTimeout> | null = null;
   private native: { model: LAppModel; group?: string; index?: number; expressionId?: string } | null = null;
   private nativeTimer: ReturnType<typeof setTimeout> | null = null;
   private previewReleaseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -65,13 +130,134 @@ export class ActionScheduler {
   private readonly playbackListeners = new Set<(state: ActionPlaybackState) => void>();
   private previewRevision = 0;
 
-  constructor() {
-    useAppStore.subscribe((state, previous) => {
-      if (previous.isSpeaking && !state.isSpeaking && this.awaitingSpeechEnd) this.finishCurrent();
-    });
+  beginTurn(turnId: string): void {
+    this.cancel();
+    this.response = { turnId, pending: true, textDone: false, speechExpected: false,
+      voiceExpected: false, voiceEnded: false, voiceStarted: false, speechAction: null, clock: null };
   }
 
-  setReporter(report: ((status: Status, action: { id: string; turnId?: string }) => void) | null): void {
+  completeText(turnId: string, voiceExpected: boolean, speechExpected = false): void {
+    const response = this.response;
+    if (response?.turnId !== turnId) return;
+    response.textDone = true;
+    response.voiceExpected = voiceExpected;
+    response.speechExpected ||= speechExpected;
+    if (!response.speechExpected) {
+      if (!voiceExpected) this.completeResponse();
+      return;
+    }
+    this.tryStartSpeech();
+  }
+
+  startVoice(turnId: string, clock: AudioPlaybackClock): void {
+    const response = this.response;
+    if (response?.turnId !== turnId || !response.pending || response.clock) return;
+    response.voiceStarted = true;
+    response.clock = clock;
+    response.timingSource = 'audio';
+    this.tryStartSpeech();
+  }
+
+  completeVoice(turnId: string): void {
+    const response = this.response;
+    if (response?.turnId !== turnId || !response.pending) return;
+    response.voiceEnded = true;
+    if (!response.speechExpected || response.voiceStarted) this.completeResponse();
+    else this.tryStartSpeech();
+  }
+
+  skipSpeechPlan(turnId: string): void {
+    const response = this.response;
+    if (response?.turnId !== turnId) return;
+    response.speechExpected = false;
+    response.speechAction = null;
+    if (response.textDone && (!response.voiceExpected || response.voiceEnded)) this.completeResponse();
+  }
+
+  private completeResponse(): void {
+    const response = this.response;
+    if (!response?.pending) return;
+    response.pending = false;
+    if (this.responseTimer) clearTimeout(this.responseTimer);
+    this.responseTimer = null;
+    const action = this.current;
+    if (action?.source !== 'chat' || action.turnId !== response.turnId) return;
+    const elapsedMs = performance.now() - (action.startedAt ?? performance.now());
+    const settleMs = action.plan.idlePlan?.source?.postSpeechHoldMs ?? 300;
+    this.adapter.setResponseActive(false, settleMs);
+    this.adapter.setClock(null);
+    action.durationMs = action.stage === 'speech' ? elapsedMs + settleMs : Math.max(action.durationMs, elapsedMs + settleMs);
+    if (action.idleAtMs !== undefined) action.idleAtMs = action.stage === 'speech'
+      ? elapsedMs + settleMs : Math.max(action.idleAtMs, elapsedMs + settleMs);
+    this.publishPlayback({ ...this.playbackState, durationMs: action.durationMs, responsePhase: 'settling' });
+    this.scheduleFinish(action);
+  }
+
+  private tryStartSpeech(): boolean {
+    const response = this.response;
+    if (!response?.pending || !response.speechAction || !response.textDone) return false;
+    if (!response.clock) {
+      if (response.voiceExpected && !response.voiceEnded) return false;
+      const durationMs = Math.min(8000, response.speechAction.plan.speech!.durationMs);
+      const startedAt = performance.now();
+      response.clock = { durationMs, readElapsedMs: () => Math.min(durationMs, performance.now() - startedAt) };
+      response.timingSource = 'estimated';
+      this.responseTimer = setTimeout(() => {
+        this.responseTimer = null;
+        if (this.response === response) this.completeResponse();
+      }, durationMs);
+    }
+    if (this.native || performance.now() < this.manualUntil || this.current?.source === 'debug') return false;
+    if (this.current === response.speechAction) return true;
+    const action = response.speechAction;
+    const elapsedMs = response.clock.readElapsedMs();
+    if (elapsedMs >= response.clock.durationMs) return false;
+    action.plan = fitSpeechDuration(action.plan, response.clock.durationMs, response.timingSource!);
+    action.durationMs = response.clock.durationMs;
+    action.idleAtMs = action.plan.idlePlan?.enterAfterMs;
+    this.pending = null;
+    this.start(action);
+    return true;
+  }
+
+  private resumeResponse(): boolean {
+    const response = this.response;
+    if (!response?.speechAction || !response.clock) return false;
+    if (response.pending && response.clock.readElapsedMs() < response.clock.durationMs) return this.tryStartSpeech();
+    if (response.pending) this.completeResponse();
+    const plan = response.speechAction.plan;
+    if (plan.idlePlan) {
+      this.adapter.setClock(null);
+      this.adapter.apply({ ...plan, basePose: { ...plan.idlePlan.settlePose, durationSec: 0 },
+        microEvents: [], sequence: [], motionPlan: undefined, eyeMotionPlan: undefined,
+        idlePlan: { ...plan.idlePlan, enterAfterMs: 0, ambientEnterAfterMs: 900 } });
+      this.publishPlayback({ kind: 'procedural', status: 'idle', id: response.speechAction.id, label: plan.idlePlan.settlePose.preset,
+        elapsedMs: 0, startedAtMs: performance.now(), loop: true, phase: 'idle', stage: 'speech', responsePhase: 'idle' });
+    }
+    this.pending = null;
+    return true;
+  }
+
+  private isResponseActive(action: Action): boolean {
+    const response = this.response;
+    return action.source === 'chat' && response !== null && response.turnId === action.turnId && response.pending;
+  }
+
+  cancelTurn(turnId: string): void {
+    if (this.response?.turnId === turnId) {
+      this.response = null;
+      if (this.responseTimer) clearTimeout(this.responseTimer);
+      this.responseTimer = null;
+    }
+    if (this.pending?.source === 'chat' && this.pending.turnId === turnId) {
+      this.pending = null;
+      if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
+      this.cooldownTimer = null;
+    }
+    if (this.current?.source === 'chat' && this.current.turnId === turnId) this.cancelCurrent();
+  }
+
+  setReporter(report: ((status: Status, action: { id: string; turnId?: string; stage: ExpressionStage }) => void) | null): void {
     this.report = report;
   }
 
@@ -91,14 +277,29 @@ export class ActionScheduler {
           : (native?.elapsedSec ?? 0) * 1000 };
     }
     const action = this.current;
-    if (!action) return { ...this.playbackState };
+    const activeEvents = LAppLive2DManager.getInstance().getActiveModel()?.getExpressionPlaybackState?.().activeEvents;
+    if (!action) {
+      const state = this.playbackState;
+      return { ...state, activeEvents, elapsedMs: state.status === 'idle' && state.loop && state.startedAtMs !== undefined
+        ? Math.max(0, performance.now() - state.startedAtMs) : state.elapsedMs };
+    }
     const elapsedMs = Math.max(0, performance.now() - (action.startedAt ?? performance.now()));
-    const idleAt = action.plan.idlePlan?.enterAfterMs;
-    const settling = elapsedMs >= action.durationMs - 300;
-    const inIdle = idleAt !== undefined && elapsedMs >= idleAt;
-    return { ...this.playbackState, elapsedMs,
-      status: action.source === 'debug' && inIdle ? 'idle' : settling ? 'settling' : 'playing',
-      loop: action.source === 'debug' && inIdle,
+    const responseActive = this.isResponseActive(action);
+    const response = action.source === 'chat' && this.response?.turnId === action.turnId ? this.response : null;
+    const speechElapsed = action.stage === 'speech' && responseActive ? response?.clock?.readElapsedMs() : undefined;
+    const idleAt = action.idleAtMs;
+    const settling = !responseActive && elapsedMs >= action.durationMs - 300;
+    const inIdle = !responseActive && idleAt !== undefined && elapsedMs >= idleAt;
+    const segmentId = speechElapsed === undefined ? undefined : action.plan.speech?.segments.find(
+      segment => speechElapsed >= segment.startMs && speechElapsed < segment.endMs)?.id;
+    return { ...this.playbackState, elapsedMs: speechElapsed ?? elapsedMs,
+      durationMs: speechElapsed === undefined ? this.playbackState.durationMs : response?.clock?.durationMs,
+      stage: action.stage, timingSource: action.stage === 'speech' ? response?.timingSource : undefined,
+      segmentId, activeEvents,
+      responsePhase: action.source !== 'chat' ? undefined : inIdle ? 'idle' : !responseActive ? 'settling'
+        : action.stage === 'speech' ? 'speaking' : elapsedMs >= action.durationMs || response?.textDone ? 'waiting' : 'reaction',
+      status: inIdle ? 'idle' : settling ? 'settling' : 'playing',
+      loop: inIdle,
       phase: inIdle ? 'idle' : settling ? 'settling'
         : action.plan.sequence.length > 0 ? 'sequence' : 'base' };
   }
@@ -142,7 +343,7 @@ export class ActionScheduler {
   playNativeMotion(group: string, index: number): boolean {
     const initialModel = LAppLive2DManager.getInstance().getActiveModel();
     if (initialModel) this.isolateAutoMotion(initialModel);
-    this.cancel();
+    this.cancelPlayback();
     const model = LAppLive2DManager.getInstance().getActiveModel();
     const info = model?.getNativeMotionCatalog().find(item => item.group === group && item.index === index);
     if (!model || !info || info.status !== 'loaded') return this.failNative(`無法載入 ${group}[${index}]`, 'native-motion');
@@ -163,7 +364,7 @@ export class ActionScheduler {
   playNativeExpression(id: string): boolean {
     const initialModel = LAppLive2DManager.getInstance().getActiveModel();
     if (initialModel) this.isolateAutoMotion(initialModel);
-    this.cancel();
+    this.cancelPlayback();
     const model = LAppLive2DManager.getInstance().getActiveModel();
     const info = model?.getNativeExpressionCatalog().find(item => item.id === id);
     if (!model || !info || info.status !== 'loaded') return this.failNative(`無法載入表情 ${id}`, 'native-expression');
@@ -181,7 +382,10 @@ export class ActionScheduler {
 
   clearNativeExpression(): void { this.stopPreview(); }
 
-  stopPreview(): void { this.cancel(); }
+  stopPreview(): void {
+    this.cancelPlayback();
+    this.resumeResponse();
+  }
 
   private failNative(error: string, kind: ActionPlaybackState['kind']): false {
     this.publishPlayback({ kind, status: 'failed', elapsedMs: 0, loop: false, error });
@@ -199,6 +403,7 @@ export class ActionScheduler {
       this.publishPlayback({ ...this.playbackState, status: state?.status === 'finished' ? 'finished' : 'cancelled',
         elapsedMs: (state?.elapsedSec ?? 0) * 1000 });
       this.releaseAutoMotion();
+      if (this.resumeResponse()) return;
       const pending = this.pending;
       this.pending = null;
       if (pending) this.start(pending);
@@ -206,16 +411,17 @@ export class ActionScheduler {
   }
 
   submit(plan: ExpressionPlanPayload, source: Source, turnId?: string): string {
+    if (source === 'chat' && this.response && this.response.turnId !== turnId) return '';
     if (source === 'debug') {
       this.previewRevision++;
       const model = LAppLive2DManager.getInstance().getActiveModel();
       if (model) this.isolateAutoMotion(model);
     }
-    if (source === 'debug' && this.native) this.cancel();
+    if (source === 'debug' && this.native) this.cancelPlayback();
     this.pending = null;
     if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
     this.cooldownTimer = null;
-    const emergency = source === 'chat' && (
+    const emergency = source === 'chat' && plan.stage !== 'speech' && (
       plan.basePose.preset === 'shock_recoil' || plan.debug?.intentEmotion === 'surprised'
     );
     let sequenceStart = 0;
@@ -227,19 +433,29 @@ export class ActionScheduler {
     });
     const action: Action = {
       id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `action_${Date.now()}`,
-      plan, turnId, source,
+      plan, turnId, source, stage: plan.stage ?? 'reaction',
+      idleAtMs: plan.idlePlan?.enterAfterMs,
       priority: source === 'debug' ? 100 : emergency ? 80 : 50,
       interruptible: !emergency,
       durationMs: Math.max(emergency ? 500 : 200,
         plan.basePose.durationSec * 1000,
         sequenceEnd,
-        ...plan.microEvents.map(event => event.durationMs),
+        ...plan.microEvents.map(event => (event.atMs ?? 0) + event.durationMs),
         plan.motionPlan?.durationMs ?? 0,
         plan.idlePlan?.enterAfterMs ?? 0,
         source === 'debug' && plan.motionPlan ? plan.motionPlan.durationMs + plan.motionPlan.blendOutMs : 0,
         source === 'debug' && plan.eyeMotionPlan ? plan.eyeMotionPlan.durationMs + plan.eyeMotionPlan.blendOutMs : 0,
       ),
     };
+    if (source === 'chat' && plan.stage === 'speech') {
+      const response = this.response;
+      if (!response || response.turnId !== turnId || !response.pending || response.speechAction) return action.id;
+      response.speechExpected = true;
+      response.speechAction = action;
+      this.tryStartSpeech();
+      return action.id;
+    }
+    if (source === 'chat' && this.response && this.response.turnId === turnId && this.response.speechAction) return action.id;
     if (source === 'chat' && performance.now() < this.manualUntil) {
       this.pending = action;
       if (!this.native && !this.current) this.publishPlayback({ kind: 'procedural', status: 'queued', id: action.id,
@@ -273,6 +489,13 @@ export class ActionScheduler {
   }
 
   cancel(): void {
+    this.response = null;
+    if (this.responseTimer) clearTimeout(this.responseTimer);
+    this.responseTimer = null;
+    this.cancelPlayback();
+  }
+
+  private cancelPlayback(): void {
     this.previewRevision++;
     if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
     this.cooldownTimer = null;
@@ -284,7 +507,7 @@ export class ActionScheduler {
       const elapsedMs = this.getPlaybackState().elapsedMs;
       this.native.model.cancelExpressionAction();
       this.native = null;
-      this.publishPlayback({ ...this.playbackState, status: 'cancelled', elapsedMs });
+      this.publishPlayback({ ...this.playbackState, status: 'cancelled', elapsedMs, loop: false, phase: undefined });
     }
     this.cancelCurrent();
     this.adapter.cancel();
@@ -293,7 +516,7 @@ export class ActionScheduler {
 
   manualControl(durationMs = 3000): void {
     this.previewRevision++;
-    if (this.native) this.cancel();
+    if (this.native) this.cancelPlayback();
     this.pending = null;
     if (this.cooldownTimer) clearTimeout(this.cooldownTimer);
     this.cooldownTimer = null;
@@ -303,6 +526,7 @@ export class ActionScheduler {
     this.timer = setTimeout(() => {
       this.timer = null;
       this.manualUntil = 0;
+      if (this.resumeResponse()) return;
       const pending = this.pending;
       this.pending = null;
       if (pending) this.start(pending);
@@ -310,17 +534,16 @@ export class ActionScheduler {
   }
 
   private cancelCurrent(): void {
-    this.awaitingSpeechEnd = false;
     if (this.timer) clearTimeout(this.timer);
     if (this.unlockTimer) clearTimeout(this.unlockTimer);
     this.timer = null;
     this.unlockTimer = null;
-    if (this.current) {
+    if (this.current || useAppStore.getState().expressionPlan) {
       const elapsedMs = this.getPlaybackState().elapsedMs;
       this.adapter.cancel();
-      this.report?.('cancelled', this.current);
+      if (this.current) this.report?.('cancelled', this.current);
       this.current = null;
-      this.publishPlayback({ ...this.playbackState, status: 'cancelled', elapsedMs });
+      this.publishPlayback({ ...this.playbackState, status: 'cancelled', elapsedMs, loop: false, phase: undefined });
       this.releaseAutoMotion();
     }
   }
@@ -340,6 +563,7 @@ export class ActionScheduler {
       }, 3000 - sinceLast);
       return;
     }
+    this.cancelCurrent();
     action.startedAt = performance.now();
     this.current = action;
     if (action.source === 'debug') {
@@ -350,10 +574,18 @@ export class ActionScheduler {
       }
     }
     this.lastStartByKind.set(action.plan.basePose.preset, performance.now());
-    this.adapter.apply(action.plan);
+    const response = action.stage === 'speech' && this.response?.turnId === action.turnId ? this.response : null;
+    const readElapsedMs = response?.clock?.readElapsedMs;
+    this.adapter.setClock(readElapsedMs ?? null);
+    const elapsedMs = readElapsedMs?.() ?? 0;
+    const plan = readElapsedMs && elapsedMs > 0 ? { ...action.plan,
+      microEvents: action.plan.microEvents.filter(event => (event.atMs ?? 0) >= elapsedMs),
+    } : action.plan;
+    this.adapter.apply(plan);
+    this.adapter.setResponseActive(this.isResponseActive(action));
     this.report?.('started', action);
     this.publishPlayback({ kind: 'procedural', status: 'playing', id: action.id, label: action.plan.basePose.preset,
-      startedAtMs: action.startedAt, durationMs: action.durationMs, elapsedMs: 0, loop: false });
+      startedAtMs: action.startedAt, durationMs: action.durationMs, elapsedMs: 0, loop: false, stage: action.stage });
     if (!action.interruptible) {
       this.unlockTimer = setTimeout(() => {
         this.unlockTimer = null;
@@ -364,6 +596,11 @@ export class ActionScheduler {
         this.start(pending);
       }, 500);
     }
+    this.scheduleFinish(action);
+  }
+
+  private scheduleFinish(action: Action): void {
+    if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       if (this.current?.id !== action.id) return;
       this.timer = null;
@@ -371,22 +608,23 @@ export class ActionScheduler {
         this.publishPlayback({ ...this.playbackState, status: 'idle', elapsedMs: action.durationMs, loop: true, phase: 'idle' });
         return;
       }
-      if (action.source === 'chat' && useAppStore.getState().isSpeaking) {
-        this.awaitingSpeechEnd = true;
-        return;
-      }
+      if (this.isResponseActive(action)) return;
       this.finishCurrent();
-    }, action.durationMs);
+    }, Math.max(0, action.durationMs - (performance.now() - (action.startedAt ?? performance.now()))));
   }
 
   private finishCurrent(): void {
-    this.awaitingSpeechEnd = false;
+    this.adapter.setResponseActive(false);
     const action = this.current;
+    const elapsedMs = this.getPlaybackState().elapsedMs;
     this.current = null;
     if (action) this.report?.('finished', action);
-    if (action) this.publishPlayback({ ...this.playbackState, status: 'finished', elapsedMs: action.durationMs,
-      phase: action.plan.idlePlan ? 'idle' : undefined });
+    // WS 結束有限演出；renderer 的 idle 仍持續，由本地播放狀態呈現。
+    if (action) this.publishPlayback({ ...this.playbackState, status: action.plan.idlePlan ? 'idle' : 'finished', elapsedMs,
+      loop: Boolean(action.plan.idlePlan), phase: action.plan.idlePlan ? 'idle' : undefined,
+      responsePhase: action.source === 'chat' ? 'idle' : undefined });
     this.releaseAutoMotion();
+    if (action?.source === 'debug' && this.resumeResponse()) return;
     const pending = this.pending;
     this.pending = null;
     if (pending) this.start(pending);

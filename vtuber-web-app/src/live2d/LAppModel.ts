@@ -233,8 +233,11 @@ export class LAppModel extends CubismUserModel {
   private _aiMouthForm: number = 0.0;
   private _aiMouthOpenBias = 0;
   private _currentMouthOpenBias = 0;
+  private _currentHeadPitchOffset = 0;
+  private _expressionClock: (() => number) | null = null;
   private _speaking = false;
   private _thinking = false;
+  private _responseActive = false;
   private _aiBrowLY: number = 0.0;
   private _aiBrowRY: number = 0.0;
   private _aiBrowLAngle: number = 0.0;
@@ -933,6 +936,57 @@ export class LAppModel extends CubismUserModel {
     this._thinking = thinking;
   }
 
+  private expressionNow(): number {
+    return this._expressionClock ? Math.max(0, this._expressionClock()) : performance.now();
+  }
+
+  /** Speech uses audio-relative time; returning to wall time preserves the remaining settle. */
+  public setExpressionClock(clock: (() => number) | null): void {
+    if (clock === this._expressionClock) return;
+    const previousNow = this.expressionNow();
+    this._expressionClock = clock;
+    const shift = this.expressionNow() - previousNow;
+    for (const event of this._activeExpressionEvents) event.startedAtMs += shift;
+    if (this._activeMotionPlan) this._motionPlanStartedAtMs += shift;
+    if (this._activeEyeMotionPlan) this._eyeMotionPlanStartedAtMs += shift;
+    if (this._activeIdlePlan) {
+      this._idlePlanActivateAtMs += shift;
+      this._idleLoopNextAtMs += shift;
+      this._ambientIdleStartAtMs += shift;
+      if (this._ambientIdleActiveState) this._ambientIdleNextSwitchAtMs += shift;
+    }
+  }
+
+  public getExpressionPlaybackState(): { activeEvents: string[]; elapsedMs: number | null } {
+    const now = this.expressionNow();
+    return {
+      activeEvents: this._activeExpressionEvents
+        .filter(event => now >= event.startedAtMs && now < event.startedAtMs + event.durationMs
+          && Object.keys(event.patch).length > 0)
+        .map(event => event.kind),
+      elapsedMs: this._expressionClock ? now : null,
+    };
+  }
+
+  /** Scheduler owns the response lifetime, including text and pending audio. */
+  public setResponseActive(active: boolean, releaseDelayMs = 0): void {
+    if (this._responseActive === active) return;
+    this._responseActive = active;
+    if (!active && this._expressionClock) {
+      this._aiBehaviorTimer = 0;
+      this._activeExpressionEvents = [];
+      this._activeMotionPlan = null;
+      this._activeEyeMotionPlan = null;
+    }
+    if (!active && this._activeIdlePlan) {
+      const remaining = this.expressionNow() + releaseDelayMs - this._idlePlanActivateAtMs;
+      const delay = this._expressionClock ? remaining : Math.max(0, remaining);
+      this._idlePlanActivateAtMs += delay;
+      this._idleLoopNextAtMs += delay;
+      this._ambientIdleStartAtMs += delay;
+    }
+  }
+
   /**
    * 取得當前 LipSync 值
    */
@@ -1066,6 +1120,9 @@ export class LAppModel extends CubismUserModel {
   }
 
   public cancelExpressionAction(): void {
+    this.setExpressionClock(null);
+    this._responseActive = false;
+    this._currentHeadPitchOffset = 0;
     this.cancelNativeAction();
     this.clearNativeExpression();
     this._activeExpressionEvents = [];
@@ -1077,7 +1134,7 @@ export class LAppModel extends CubismUserModel {
 
   public applyMotionPlan(motionPlan?: ExpressionMotionPlan): void {
     this._activeMotionPlan = motionPlan ?? null;
-    this._motionPlanStartedAtMs = motionPlan ? performance.now() : 0;
+    this._motionPlanStartedAtMs = motionPlan && !this._expressionClock ? this.expressionNow() : 0;
     if (motionPlan) {
       LAppPal.log(
         `[BodyMotion] motionPlan ${motionPlan.theme}:${motionPlan.variant} `
@@ -1090,7 +1147,7 @@ export class LAppModel extends CubismUserModel {
 
   public applyEyeMotionPlan(eyeMotionPlan?: ExpressionEyeMotionPlan): void {
     this._activeEyeMotionPlan = eyeMotionPlan?.style === 'none' ? null : eyeMotionPlan ?? null;
-    this._eyeMotionPlanStartedAtMs = this._activeEyeMotionPlan ? performance.now() : 0;
+    this._eyeMotionPlanStartedAtMs = this._activeEyeMotionPlan && !this._expressionClock ? this.expressionNow() : 0;
     if (this._activeEyeMotionPlan) {
       LAppPal.log(
         `[EyeMotion] eyeMotionPlan ${this._activeEyeMotionPlan.style} `
@@ -1102,7 +1159,7 @@ export class LAppModel extends CubismUserModel {
   }
 
   public applyIdlePlan(idlePlan: ExpressionIdlePlan): void {
-    const nowMs = performance.now();
+    const nowMs = this._expressionClock ? 0 : this.expressionNow();
     const enterAfterMs = Math.max(0, idlePlan.enterAfterMs);
     const activateAtMs = nowMs + enterAfterMs;
     const ambientEnterAfterMs = idlePlan.ambientEnterAfterMs;
@@ -1230,13 +1287,15 @@ export class LAppModel extends CubismUserModel {
 
   public enqueueMicroEvent(event: {
     kind: string;
+    atMs?: number;
     patch: ExpressionParamPatch;
     durationMs: number;
     fadeInMs?: number;
     fadeOutMs?: number;
     returnToBase: boolean;
   }): void {
-    this.enqueueScheduledMicroEvent(event, performance.now());
+    const origin = this._expressionClock ? 0 : this.expressionNow();
+    this.enqueueScheduledMicroEvent(event, origin + Math.max(0, event.atMs ?? 0));
   }
 
   private enqueueScheduledMicroEvent(
@@ -1264,7 +1323,7 @@ export class LAppModel extends CubismUserModel {
     fadeOutMs?: number;
     returnToBase: boolean;
   }>): void {
-    let startAtMs = performance.now();
+    let startAtMs = this._expressionClock ? 0 : this.expressionNow();
     for (let index = 0; index < sequence.length; index += 1) {
       const step = sequence[index];
       const nextStep = sequence[index + 1];
@@ -1513,7 +1572,7 @@ export class LAppModel extends CubismUserModel {
 
   private resolveEyeMotionBlend(nowMs: number): number {
     const eyeMotionPlan = this._activeEyeMotionPlan;
-    if (!eyeMotionPlan || this._eyeMotionPlanStartedAtMs <= 0) {
+    if (!eyeMotionPlan) {
       return 0;
     }
 
@@ -1605,9 +1664,9 @@ export class LAppModel extends CubismUserModel {
     this._model.setParameterValueById(this._idParamMouthOpenY, opening);
   }
 
-  private resolveMotionPlanBlend(nowMs: number = performance.now()): number {
+  private resolveMotionPlanBlend(nowMs: number = this.expressionNow()): number {
     const motionPlan = this._activeMotionPlan;
-    if (!motionPlan || this._motionPlanStartedAtMs <= 0) {
+    if (!motionPlan) {
       return 0;
     }
 
@@ -1773,8 +1832,9 @@ export class LAppModel extends CubismUserModel {
   private getNeutralTargetParams(): BasePoseParams {
     const params = createNeutralTargetParams();
     if (this._thinking) {
+      params.headIntensity = 0.09;
       params.eyeSync = false;
-      params.eyeBallX = 0.12;
+      params.eyeBallX = 0.12 + Math.sin(this._bodyMotionPhase * 0.6) * 0.06;
       params.eyeBallY = 0.08;
       params.browLY = 0.12;
       params.browRY = 0.22;
@@ -1783,10 +1843,10 @@ export class LAppModel extends CubismUserModel {
   }
 
   private updateAiHeadMotion(deltaTimeSeconds: number): void {
-    this._aiBehaviorTimer -= deltaTimeSeconds;
+    this._aiBehaviorTimer = Math.max(0, this._aiBehaviorTimer - deltaTimeSeconds);
 
     let activeIntensity = this._aiHeadIntensity;
-    if (this._aiBehaviorTimer < 1.0) {
+    if (!this._responseActive && this._aiBehaviorTimer < 1.0) {
       activeIntensity = this._aiHeadIntensity * this._aiBehaviorTimer;
     }
 
@@ -1834,7 +1894,7 @@ export class LAppModel extends CubismUserModel {
   }
 
   private resolveExpressionTargets(deltaTimeSeconds: number, nowMs: number): BasePoseParams {
-    if (this._aiBehaviorTimer > 0) {
+    if (this._aiBehaviorTimer > 0 || this._responseActive) {
       this._activeBodyMotionProfile = this._aiBodyMotionProfile;
       this.updateAiHeadMotion(deltaTimeSeconds);
       return this.getAiTargetParams();
@@ -1878,14 +1938,16 @@ export class LAppModel extends CubismUserModel {
     }
 
     if (this._activeIdlePlan) {
-      this._aiHeadIntensity = 0;
       this._activeBodyMotionProfile = this._aiBodyMotionProfile;
+      this.updateIdleHeadMotion();
       return this.getAiTargetParams();
     }
 
-    this._aiHeadIntensity = 0;
     this._activeBodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
-    return this.getNeutralTargetParams();
+    const neutral = this.getNeutralTargetParams();
+    this._aiHeadIntensity = neutral.headIntensity;
+    this.updateIdleHeadMotion();
+    return neutral;
   }
 
   private smoothExpressionTargets(targets: BasePoseParams, deltaTimeSeconds: number): void {
@@ -1901,6 +1963,7 @@ export class LAppModel extends CubismUserModel {
     this._currentEyeROpen += (targets.eyeROpen - this._currentEyeROpen) * lerpFactor;
     this._currentMouthForm += (targets.mouthForm - this._currentMouthForm) * lerpFactor;
     this._currentMouthOpenBias += ((targets.mouthOpenBias ?? 0) - this._currentMouthOpenBias) * lerpFactor;
+    this._currentHeadPitchOffset += ((targets.headPitchOffset ?? 0) - this._currentHeadPitchOffset) * lerpFactor;
     this._currentBrowLY += (targets.browLY - this._currentBrowLY) * lerpFactor;
     this._currentBrowRY += (targets.browRY - this._currentBrowRY) * lerpFactor;
     this._currentBrowLAngle += (targets.browLAngle - this._currentBrowLAngle) * lerpFactor;
@@ -1968,7 +2031,7 @@ export class LAppModel extends CubismUserModel {
       }
     }
 
-    const nowMs = performance.now();
+    const nowMs = this.expressionNow();
     const expressionTargets = this.resolveExpressionTargets(deltaTimeSeconds, nowMs);
     const expressionEventResult = applyActiveExpressionEvents(expressionTargets, this._activeExpressionEvents, nowMs);
     this._activeExpressionEvents = expressionEventResult.activeEvents;
@@ -2011,6 +2074,9 @@ export class LAppModel extends CubismUserModel {
     if (this._breath && this._autoEffectsEnabled) {
       this._breath.updateParameters(this._model, deltaTimeSeconds);
     }
+
+    // A finite nod owns only head pitch; native actions and manual overrides remain higher priority.
+    this._model.addParameterValueById(this._idParamAngleY, this._currentHeadPitchOffset * 4);
 
     // 原生 Action 的姿勢先交給物理；TTS 嘴型及最後的手動覆蓋仍保有控制權。
     for (const [id, value] of nativeActionValues) {

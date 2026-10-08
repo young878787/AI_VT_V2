@@ -16,11 +16,13 @@ from core.config import (
     CHAT_COMPRESSION_PRESSURE_MESSAGES,
     CHAT_COMPRESSION_TRIGGER_MESSAGES,
     CHAT_CONTEXT_TOKEN_BUDGET,
+    TTS_ENABLED,
 )
 from core.prompt_logger import log_turn, reset_log, trace, trace_event, trace_turn, bind_trace_event
 from domain.agent_a_prompts import build_agent_a_prompt, build_turn_scope_hint
 from domain.emotion_state import EMOTION_FIELDS, resolve_emotion_state, NEUTRAL_EMOTION_STATE
 from domain.expression_intent_schema import (
+    ALLOWED_ARCS,
     ALLOWED_EMOTIONS,
     ALLOWED_PERFORMANCE_MODES,
     normalize_expression_intent,
@@ -103,7 +105,7 @@ def _choice_fallback_reason(answer: object, allowed: set[str]) -> str:
         return "invalid_choice"
     confidence = answer.get("confidence")
     if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
-            or not math.isfinite(confidence)):
+            or not math.isfinite(confidence) or not 0 <= confidence <= 1):
         return "invalid_confidence"
     if confidence < CONFIDENCE_THRESHOLD:
         return "low_confidence"
@@ -142,6 +144,10 @@ def _action_decision_debug(answers: object, previous_state: dict | None, history
     _record_choice_debug(debug, answers, "base_emotion", "BaseEmotion", set(BASE_EMOTION_CRITERIA))
     _record_choice_debug(
         debug, answers, "interaction_attitude", "InteractionAttitude", ALLOWED_PERFORMANCE_MODES,
+    )
+    _record_choice_debug(debug, answers, "arc", "Arc", ALLOWED_ARCS)
+    debug["jevArcFallbackReason"] = _choice_fallback_reason(
+        answers.get("arc") if isinstance(answers, dict) else None, ALLOWED_ARCS,
     )
     return debug
 
@@ -211,7 +217,7 @@ async def _produce_and_send_action_plan(
     print("[JEV Decision] " + json.dumps(decision_debug, ensure_ascii=False), flush=True)
     render = render_legacy_behavior_payload(plan) if legacy_payloads else None
     if turn_id:
-        plan = {**plan, "turn_id": turn_id}
+        plan = {**plan, "turn_id": turn_id, "stage": "reaction"}
     send = send_func or websocket.send_json
     await send(plan)
     await broadcast_to_displays(plan)
@@ -221,7 +227,7 @@ async def _produce_and_send_action_plan(
             await broadcast_to_displays(blink)
         await send(render["behavior_payload"])
         await broadcast_to_displays(render["behavior_payload"])
-    return {"plan": plan, "speaking_rate": plan.get("speakingRate", 1.0)}
+    return {"plan": plan, "intent": normalized, "speaking_rate": plan.get("speakingRate", 1.0)}
 
 
 @router.websocket("/ws/chat")
@@ -248,6 +254,9 @@ async def websocket_endpoint(websocket: WebSocket):
     session_failed = False
     emotion_state: dict | None = session_snapshot["emotion_state"]
     expression_state: dict | None = None
+    pending_expression_plans: dict[str, dict] = {}
+    started_expression_stage: str | None = None
+    resumable_action: dict | None = None
     current_action: dict | None = None
     version = 0
     active_turn_id: str | None = None
@@ -266,10 +275,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
     async def send(payload: dict) -> None:
         async with send_lock:
+            if (payload.get("type") in {"voice", "voice_unavailable", "expression_plan"}
+                    and payload.get("turn_id") != active_turn_id):
+                return
+            if (payload.get("type") == "expression_plan"
+                    and active_turn_id is not None and payload.get("turn_id") == active_turn_id):
+                # Register before awaiting delivery so an immediate started ACK can find its plan.
+                pending_expression_plans[payload.get("stage", "reaction")] = {
+                    "turn_id": active_turn_id, "carryState": payload.get("carryState"),
+                }
             await websocket.send_json(payload)
 
     def consume_task_failure(task: asyncio.Task) -> None:
-        """Retrieve late DB task failures after the caller's timeout path."""
+        """Retrieve failures from background tasks and timed-out durable writes."""
         if not task.cancelled():
             task.exception()
 
@@ -395,6 +413,7 @@ async def websocket_endpoint(websocket: WebSocket):
     async def cancel_active(finalize_memory: bool = True) -> None:
         nonlocal active_task, active_turn_id, active_turn_text, active_turn_partial
         nonlocal active_turn_committed, active_event_id, active_memory_routed
+        nonlocal started_expression_stage, current_action, resumable_action
         if active_task is not None and not active_task.done():
             interrupted_turn_id = active_turn_id
             interrupted_text = active_turn_text
@@ -434,6 +453,10 @@ async def websocket_endpoint(websocket: WebSocket):
         active_turn_committed = False
         active_event_id = None
         active_memory_routed = False
+        pending_expression_plans.clear()
+        started_expression_stage = None
+        resumable_action = None
+        current_action = None
         for task in tts_tasks:
             task.cancel()
         tts_tasks.clear()
@@ -491,7 +514,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool,
                        event_id=None, request_started: float | None = None) -> None:
-        nonlocal messages, emotion_state, expression_state, version, active_turn_partial
+        nonlocal messages, emotion_state, version, active_turn_partial
         nonlocal active_turn_committed, active_memory_routed, session_failed
         action_task: asyncio.Task | None = None
         try:
@@ -604,6 +627,8 @@ async def websocket_endpoint(websocket: WebSocket):
             await send({
                 "type": "stream_end",
                 "turn_id": turn_id,
+                "voice_expected": TTS_ENABLED,
+                "speech_expected": True,
                 "metrics": {
                     "first_token_latency_ms": first_token_latency_ms,
                     "generation_ms": generation_ms,
@@ -615,13 +640,15 @@ async def websocket_endpoint(websocket: WebSocket):
             speaking_rate = 1.0
             if action_task.done() and not action_task.cancelled() and action_task.exception() is None:
                 speaking_rate = action_task.result()["speaking_rate"]
-            task = asyncio.create_task(synthesize_and_send_voice(websocket, reply, speaking_rate, turn_id, send))
+            task = asyncio.create_task(synthesize_and_send_voice(
+                websocket, reply, speaking_rate, turn_id, send,
+                expression_context=action_task, model_name=model_name,
+            ))
             tts_tasks.add(task)
             task.add_done_callback(tts_tasks.discard)
-            result = await action_task
+            task.add_done_callback(consume_task_failure)
+            await action_task
             action_task = None
-            if active_turn_id == turn_id:
-                expression_state = result["plan"].get("carryState")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -828,8 +855,30 @@ async def websocket_endpoint(websocket: WebSocket):
                 action_id = data.get("action_id")
                 if (data.get("turn_id") == active_turn_id and data.get("status") in {"started", "finished", "cancelled"}
                         and isinstance(action_id, str) and 0 < len(action_id) <= 128):
-                    current_action = ({"action_id": action_id, "status": "started"}
-                                      if data["status"] == "started" else None)
+                    stage = data.get("stage", "reaction")
+                    if stage not in ("reaction", "speech"):
+                        continue
+                    if data["status"] == "started":
+                        pending_expression_plan = pending_expression_plans.get(stage)
+                        if (pending_expression_plan is not None
+                                and pending_expression_plan.get("turn_id") == active_turn_id
+                                and not (started_expression_stage == "speech" and stage == "reaction")):
+                            carry = pending_expression_plan.get("carryState")
+                            if isinstance(carry, dict):
+                                expression_state = dict(carry)
+                            current_action = {"action_id": action_id, "status": "started", "stage": stage}
+                            started_expression_stage = stage
+                            resumable_action = None
+                            pending_expression_plans.pop(stage, None)
+                        elif (resumable_action is not None and started_expression_stage == stage
+                              and resumable_action["stage"] == stage and resumable_action["action_id"] == action_id):
+                            # A manual preview can release the same speech action at its current audio position.
+                            current_action = {**resumable_action, "status": "started"}
+                            resumable_action = None
+                    elif (current_action is not None and current_action["action_id"] == action_id
+                          and current_action.get("stage") == stage):
+                        resumable_action = current_action if data["status"] == "cancelled" else None
+                        current_action = None
                 continue
             if control_type == "compress":
                 if short_term_enabled:

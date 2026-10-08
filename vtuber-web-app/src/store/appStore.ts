@@ -77,6 +77,7 @@ interface AppState {
     eyeROpen: number;
   };
   expressionPlan: ExpressionPlanPayload | null;
+  lastExpressionDebug: ExpressionPlanPayload['debug'] | null;
   expressionEvents: ExpressionMicroEvent[];
 
   // 動作
@@ -101,6 +102,7 @@ interface AppState {
   setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number, eyeBallX?: number, eyeBallY?: number) => void;
   setBlinkControl: (action: BlinkAction, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
   setExpressionPlan: (plan: ExpressionPlanPayload) => void;
+  clearExpressionPlan: () => void;
   enqueueExpressionEvents: (events: ExpressionMicroEvent[]) => void;
   clearExpressionEvents: () => void;
 
@@ -162,6 +164,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     eyeROpen: 1
   },
   expressionPlan: null,
+  lastExpressionDebug: null,
   expressionEvents: [],
 
   // JEV 情緒初始狀態
@@ -355,7 +358,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setExpressionPlan: (plan) => {
-    set({ expressionPlan: plan, expressionEvents: plan.microEvents ?? [] });
+    set(state => ({ expressionPlan: plan, expressionEvents: plan.microEvents ?? [],
+      lastExpressionDebug: plan.debug?.jevDecisionSource ? plan.debug : state.lastExpressionDebug }));
 
     const manager = LAppLive2DManager.getInstance();
     const model = manager.getActiveModel();
@@ -378,6 +382,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   enqueueExpressionEvents: (events) =>
     set((state) => ({ expressionEvents: [...state.expressionEvents, ...events] })),
+
+  clearExpressionPlan: () => set({ expressionPlan: null, expressionEvents: [] }),
 
   clearExpressionEvents: () => set({ expressionEvents: [] }),
 }));

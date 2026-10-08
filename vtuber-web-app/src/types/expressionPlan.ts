@@ -64,6 +64,7 @@ export interface ExpressionBasePose {
   preset: string
   params: {
     headIntensity: number
+    headPitchOffset?: number
     blushLevel: number
     eyeSync: boolean
     eyeLOpen: number
@@ -93,6 +94,7 @@ export interface ExpressionBasePose {
 }
 
 export interface ExpressionMicroEventPatch {
+  headPitchOffset?: number
   eyeSync?: boolean
   blushLevel?: number
   eyeLOpen?: number
@@ -120,6 +122,7 @@ export interface ExpressionMicroEventPatch {
 
 export interface ExpressionMicroEvent {
   kind: string
+  atMs?: number
   durationMs: number
   fadeInMs?: number
   fadeOutMs?: number
@@ -163,9 +166,19 @@ export interface BlinkCommand {
 
 export type BlinkAction = BlinkCommand['action']
 
+export type ExpressionStage = 'reaction' | 'speech'
+
+export interface ExpressionSpeechTimeline {
+  durationMs: number
+  timingSource: 'audio' | 'estimated'
+  segments: Array<{ id: number; startMs: number; endMs: number }>
+}
+
 export interface ExpressionPlanPayload {
   type: 'expression_plan'
   turn_id?: string
+  stage?: ExpressionStage
+  speech?: ExpressionSpeechTimeline
   basePose: ExpressionBasePose
   microEvents: ExpressionMicroEvent[]
   sequence: ExpressionMicroEvent[]
@@ -183,6 +196,7 @@ export interface ExpressionPlanPayload {
 }
 
 const EXPRESSION_MICRO_EVENT_PATCH_KEYS = [
+  'headPitchOffset',
   'eyeSync',
   'blushLevel',
   'eyeLOpen',
@@ -303,6 +317,7 @@ function hasExpressionBasePoseParams(value: unknown): value is ExpressionBasePos
 
   return (
     isNumber(value.headIntensity) &&
+    (value.headPitchOffset === undefined || (isNumber(value.headPitchOffset) && Math.abs(value.headPitchOffset) <= 1)) &&
     isNumber(value.blushLevel) &&
     typeof value.eyeSync === 'boolean' &&
     isNumber(value.eyeLOpen) &&
@@ -362,6 +377,7 @@ function isExpressionMicroEventPatch(value: unknown): value is ExpressionMicroEv
 
   return Object.entries(value).every(([key, patchValue]) => (
     EXPRESSION_MICRO_EVENT_PATCH_KEYS.includes(key as keyof ExpressionMicroEventPatch) &&
+    (key !== 'headPitchOffset' || (isNumber(patchValue) && Math.abs(patchValue) <= 1)) &&
     (key !== 'mouthOpenBias' || (isNumber(patchValue) && patchValue >= 0 && patchValue <= 1)) &&
     (key === 'eyeSync' ? typeof patchValue === 'boolean' : isNumber(patchValue))
   ))
@@ -371,6 +387,7 @@ function isExpressionMicroEvent(value: unknown): value is ExpressionMicroEvent {
   return (
     isRecord(value) &&
     typeof value.kind === 'string' &&
+    (value.atMs === undefined || isNonNegativeNumber(value.atMs)) &&
     isExpressionMicroEventPatch(value.patch) &&
     isNonNegativeNumber(value.durationMs) &&
     (value.fadeInMs === undefined || isNonNegativeNumber(value.fadeInMs)) &&
@@ -472,6 +489,23 @@ export function isExpressionPlanPayload(value: unknown): value is ExpressionPlan
   if (!isRecord(value) || value.type !== 'expression_plan') {
     return false
   }
+
+  if (value.stage !== undefined && value.stage !== 'reaction' && value.stage !== 'speech') return false
+  if (value.stage === 'speech') {
+    const speech = value.speech
+    if (!isRecord(speech) || !isNumber(speech.durationMs) || speech.durationMs <= 0 ||
+      (speech.timingSource !== 'audio' && speech.timingSource !== 'estimated') ||
+      !Array.isArray(speech.segments) || speech.segments.length === 0) return false
+    let previousEnd = 0
+    const ids = new Set<number>()
+    for (const segment of speech.segments) {
+      if (!isRecord(segment) || !isNumber(segment.id) || !Number.isInteger(segment.id) || segment.id < 0 ||
+        ids.has(segment.id) || !isNonNegativeNumber(segment.startMs) || !isNumber(segment.endMs) ||
+        segment.startMs < previousEnd || segment.endMs <= segment.startMs || segment.endMs > speech.durationMs) return false
+      ids.add(segment.id)
+      previousEnd = segment.endMs
+    }
+  } else if (value.speech !== undefined) return false
 
   const basePose = value.basePose
   if (!isExpressionBasePose(basePose)) {

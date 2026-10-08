@@ -60,6 +60,18 @@ def combined_answers(score=0.6):
 
 
 class EmotionContractTests(unittest.TestCase):
+    def test_malformed_optional_answers_do_not_discard_valid_emotion(self):
+        invalid = [None, [], "bad", {"confidence": "0.9"}, {"confidence": True},
+                   {"confidence": float("nan")}, {"confidence": 2},
+                   {"choice": [], "confidence": 0.9}]
+        for value in invalid:
+            with self.subTest(value=value):
+                answers = action_answers()
+                for field in ("arc", "energy", "intensity", "wants_goofy", "needs_special_blink"):
+                    answers[field] = value
+                intent = map_answers_to_intent(answers)
+                self.assertEqual(intent, {"emotion": "shy", "performance_mode": "awkward"})
+
     def test_six_independent_noul_questions(self):
         questions = build_emotion_questions()
         self.assertEqual(set(questions), set(EMOTION_FIELDS))

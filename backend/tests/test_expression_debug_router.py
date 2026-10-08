@@ -60,7 +60,17 @@ class ExpressionDebugRouterTests(unittest.TestCase):
                     first = self.compile(**payload)
                     self.assertEqual(first["summary"]["expressionFamily"], family)
                     self.assertEqual(first["summary"]["expressionVariant"], variant)
-                    self.assertEqual(first["plan"]["sequence"][0]["kind"], f"rushia_{variant}")
+                    kinds = [event["kind"] for event in first["plan"]["sequence"]]
+                    reaction = f"rushia_{variant}"
+                    self.assertEqual(kinds.count(reaction), 1)
+                    prelude = {
+                        "pause_then_smirk": "rushia_arc_pause",
+                        "widen_then_tease": "rushia_arc_widen",
+                        "shrink_then_recover": "rushia_arc_shrink",
+                        "glare_then_flatten": "rushia_arc_glare",
+                    }.get(first["plan"]["debug"]["arc"])
+                    expected_start = [prelude, reaction] if prelude else [reaction]
+                    self.assertEqual(kinds[:len(expected_start)], expected_start)
                     self.assertEqual(first, self.compile(**payload))
 
     def test_all_13_motion_kinds_resolve_to_requested_branch(self):

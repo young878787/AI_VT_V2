@@ -7,6 +7,11 @@ import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { LAppPal } from '../live2d/LAppPal';
 import { useAppStore } from '../store/appStore';
 
+export interface AudioPlaybackClock {
+    durationMs: number;
+    readElapsedMs: () => number;
+}
+
 export class TTSPlayer {
     private static s_instance: TTSPlayer | null = null;
     
@@ -17,6 +22,7 @@ export class TTSPlayer {
     private animationFrameId: number | null = null;
     private playbackGeneration = 0;
     private resolvePlayback: (() => void) | null = null;
+    private freezePlaybackClock: (() => void) | null = null;
     
     // 口型同步配置
     private readonly lipSyncConfig = {
@@ -76,26 +82,36 @@ export class TTSPlayer {
      * @param format 音訊格式（本地 Piper 預設 wav）
      * @returns Promise，播放完成時 resolve
      */
-    public async play(audioBase64: string, _format: string = 'wav'): Promise<void> {
+    public async play(audioBase64: string, _format: string = 'wav',
+        onStarted?: (clock: AudioPlaybackClock) => void): Promise<void> {
         void _format;
         // 停止當前播放
         this.stop();
         const generation = this.playbackGeneration;
+        let preparationTimer: ReturnType<typeof setTimeout> | undefined;
         
         try {
-            const context = await this.ensureContext();
-            if (generation !== this.playbackGeneration) return;
-            
-            // 解碼 Base64
-            const binaryString = atob(audioBase64);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-            
-            // 解碼音訊資料
-            const audioBuffer = await context.decodeAudioData(bytes.buffer.slice(0));
-            if (generation !== this.playbackGeneration) return;
+            // 自動播放解鎖與解碼共用上限；成功後不限制語音本身的長度。
+            const prepared = await Promise.race([
+                (async () => {
+                    const context = await this.ensureContext();
+                    if (generation !== this.playbackGeneration) return null;
+                    const binaryString = atob(audioBase64);
+                    const bytes = new Uint8Array(binaryString.length);
+                    for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                    }
+                    const audioBuffer = await context.decodeAudioData(bytes.buffer.slice(0));
+                    return { context, audioBuffer };
+                })(),
+                new Promise<never>((_resolve, reject) => {
+                    preparationTimer = setTimeout(() => reject(new Error('TTS 音訊準備逾時')), 10000);
+                }),
+            ]);
+            clearTimeout(preparationTimer);
+            preparationTimer = undefined;
+            if (!prepared || generation !== this.playbackGeneration) return;
+            const { context, audioBuffer } = prepared;
             
             // 建立音訊節點
             this.currentSource = context.createBufferSource();
@@ -114,7 +130,18 @@ export class TTSPlayer {
             this.startLipSyncAnalysis();
             
             // 播放
-            this.currentSource.start(0);
+            const startSec = context.currentTime;
+            this.currentSource.start(startSec);
+            const durationMs = audioBuffer.duration * 1000;
+            let elapsedMs = 0;
+            const readElapsedMs = () => {
+                if (generation === this.playbackGeneration && this.isPlaying) {
+                    elapsedMs = Math.min(durationMs, Math.max(elapsedMs, (context.currentTime - startSec) * 1000));
+                }
+                return elapsedMs;
+            };
+            this.freezePlaybackClock = () => { readElapsedMs(); };
+            onStarted?.({ durationMs, readElapsedMs });
             
             LAppPal.printLog(`[TTSPlayer] 開始播放 | 時長: ${audioBuffer.duration.toFixed(2)}s`);
             
@@ -124,6 +151,8 @@ export class TTSPlayer {
                 if (this.currentSource) {
                     this.currentSource.onended = () => {
                         if (generation !== this.playbackGeneration) return;
+                        elapsedMs = durationMs;
+                        this.freezePlaybackClock = null;
                         this.onPlaybackEnded();
                         this.resolvePlayback = null;
                         resolve();
@@ -136,8 +165,11 @@ export class TTSPlayer {
         } catch (error) {
             if (generation !== this.playbackGeneration) return;
             LAppPal.printError(`[TTSPlayer] 播放失敗: ${error}`);
-            this.onPlaybackEnded();
+            // 使逾時後才完成的 resume／decode 失效，並釋放本輪口型狀態。
+            this.stop();
             throw error;
+        } finally {
+            clearTimeout(preparationTimer);
         }
     }
     
@@ -145,6 +177,8 @@ export class TTSPlayer {
      * 停止播放
      */
     public stop(): void {
+        this.freezePlaybackClock?.();
+        this.freezePlaybackClock = null;
         this.playbackGeneration++;
         if (this.currentSource) {
             this.currentSource.onended = null;

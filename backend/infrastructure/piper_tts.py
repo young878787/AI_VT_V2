@@ -3,11 +3,11 @@
 port 自 voice_txt/src/voice_txt/tts.py，差異：
   - 移除 sounddevice 播放與 TTSWorker（後端改為合成後經 WebSocket 送前端播放）
   - 合成輸出改為 synthesize_to_wav()：回傳 (wav_bytes, sample_rate)
-  - SentenceSplitter 原樣保留（切句規則經 voice_txt 測試驗證）
+  - SentenceSplitter 與正式句段切分共用 domain/speech_segments
 
 目前聊天鏈路：完整 LLM 回覆 → TTSService → PiperTTS 合成 WAV
 → `voice` 訊息（base64 WAV）→ 前端播放與口型同步。
-`SentenceSplitter` 保留給本地串流切句的獨立測試與後續接線使用。
+正式合成逐段保留樣本時間，再串接成單一 WAV。
 """
 from __future__ import annotations
 
@@ -18,63 +18,10 @@ from pathlib import Path
 
 import numpy as np
 
+from domain.speech_segments import SentenceSplitter as SentenceSplitter, split_speech_segments
+
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL = _BACKEND_DIR / "models" / "zh_TW-multi-voice.onnx"
-
-# 切句標點：長停頓（強切）與短停（句過長時才切；不含空格，避免英文逐字切碎）
-_STRONG_END = "。！？!?\n\r"
-_WEAK_PAUSE = "，、：；—…,;:"
-
-# 短停切句最短門檻：句太短不急著送（「你好呀，」併入下一切點，韻律較自然）
-_MIN_SENT_CHARS = 6
-_MAX_SENT_CHARS = 40
-
-
-class SentenceSplitter:
-    """LLM 串流增量的切句緩衝：feed(增量) → 切好的完整句列表；flush() 收尾。"""
-
-    def __init__(self, min_chars: int = _MIN_SENT_CHARS,
-                 max_chars: int = _MAX_SENT_CHARS) -> None:
-        self._buf = ""
-        self._min = min_chars
-        self._max = max_chars
-
-    def _emit(self, force: bool = False) -> list[str]:
-        """從緩衝切出可送出的句子。force=True 時放寬最短句限制。"""
-        out: list[str] = []
-        while self._buf:
-            cut = -1
-            for i, ch in enumerate(self._buf):
-                if ch in _STRONG_END:
-                    cut = i + 1
-                    break
-                if (not force and i + 1 >= self._min and i + 1 < self._max
-                        and ch in _WEAK_PAUSE):
-                    cut = i + 1
-                    break
-                if i + 1 >= self._max:  # 超長強制切（避免 ONNX 前向過長）
-                    cut = i + 1
-                    break
-            if cut < 0:
-                break
-            sent = self._buf[:cut].strip()
-            self._buf = self._buf[cut:]
-            if sent:
-                out.append(sent)
-        return out
-
-    def feed(self, delta: str) -> list[str]:
-        self._buf += delta
-        return self._emit()
-
-    def flush(self) -> list[str]:
-        """串流結束：剩餘緩衝整句送出（不再等標點）。"""
-        out = []
-        if self._buf.strip():
-            out.append(self._buf.strip())
-        self._buf = ""
-        return out
-
 
 class PiperTTS:
     """piper1-gpl 封裝：載入一次，逐句合成為 16-bit mono WAV bytes。
@@ -131,6 +78,33 @@ class PiperTTS:
     def synthesize_to_wav(self, text: str, length_scale: float | None = None) -> tuple[bytes, int]:
         """合成一句 → (16-bit mono WAV bytes, sample_rate)，可直接餵瀏覽器 decodeAudioData。"""
         audio, sr = self.synthesize_float32(text, length_scale)
+        return self._encode_wav(audio, sr), sr
+
+    def synthesize_to_wav_with_segments(
+        self, text: str, length_scale: float | None = None,
+    ) -> tuple[bytes, int, list[dict]]:
+        """Synthesize each shared segment once and retain its actual WAV sample bounds."""
+        arrays = []
+        segments = []
+        frames = 0
+        for segment_id, segment in enumerate(split_speech_segments(text)):
+            audio, sr = self.synthesize_float32(segment, length_scale)
+            if sr != self.sample_rate:
+                raise ValueError("Piper sample rate changed during synthesis")
+            if not audio.size:
+                continue
+            start_ms = round(frames / sr * 1000, 3)
+            frames += audio.size
+            arrays.append(audio)
+            segments.append({"id": segment_id, "startMs": start_ms,
+                             "endMs": round(frames / sr * 1000, 3)})
+        if not arrays:
+            return b"", self.sample_rate, []
+        audio = np.concatenate(arrays) if len(arrays) > 1 else arrays[0]
+        return self._encode_wav(audio, self.sample_rate), self.sample_rate, segments
+
+    @staticmethod
+    def _encode_wav(audio: np.ndarray, sr: int) -> bytes:
         pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
         buf = io.BytesIO()
         with wave.open(buf, "wb") as w:
@@ -138,4 +112,4 @@ class PiperTTS:
             w.setsampwidth(2)
             w.setframerate(sr)
             w.writeframes(pcm16)
-        return buf.getvalue(), sr
+        return buf.getvalue()

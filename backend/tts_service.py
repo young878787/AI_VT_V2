@@ -46,7 +46,7 @@ class TTSService:
         """檢查本地 TTS 是否可用。"""
         return self.enabled and self.voice is not None
 
-    def _synthesize_sync(self, text: str, speaking_rate: float) -> tuple[bytes, int] | None:
+    def _synthesize_sync(self, text: str, speaking_rate: float) -> tuple[bytes, int, list[dict]] | None:
         voice = self.voice
         if voice is None:
             return None
@@ -56,7 +56,7 @@ class TTSService:
         length_scale = max(0.01, PIPER_LENGTH_SCALE / rate)
         # Piper/ONNX session 以單一模型實例序列化，避免取消中的背景執行緒與下一輪並行前向。
         with self._synthesis_lock:
-            audio_bytes, _sample_rate = voice.synthesize_to_wav(
+            audio_bytes, _sample_rate, segments = voice.synthesize_to_wav_with_segments(
                 text,
                 length_scale=length_scale,
             )
@@ -68,7 +68,7 @@ class TTSService:
             duration_ms = round(
                 wav_file.getnframes() / wav_file.getframerate() * 1000
             )
-        return audio_bytes, duration_ms
+        return audio_bytes, duration_ms, segments
 
     async def synthesize(self, text: str, speaking_rate: float = 1.0) -> dict | None:
         """合成一句本地 WAV，回傳既有 WebSocket voice payload 所需欄位。"""
@@ -84,11 +84,12 @@ class TTSService:
             if result is None:
                 return None
 
-            audio_bytes, duration_ms = result
+            audio_bytes, duration_ms, segments = result
             return {
                 "audio_base64": base64.b64encode(audio_bytes).decode("ascii"),
                 "duration_ms": duration_ms,
                 "format": "wav",
+                "segments": segments,
             }
         except Exception as exc:
             print(f"[TTS] 本地 Piper 合成失敗: {exc}")
@@ -96,13 +97,16 @@ class TTSService:
 
 
 _tts_service: TTSService | None = None
+_tts_initialization_lock = threading.Lock()
 
 
 def get_tts_service() -> TTSService:
     """取得本地 TTS 服務單例。"""
     global _tts_service
-    if _tts_service is None:
-        _tts_service = TTSService()
+    # 取消等待不會停止模型載入的 thread；下一輪必須沿用同一個 singleton。
+    with _tts_initialization_lock:
+        if _tts_service is None:
+            _tts_service = TTSService()
     return _tts_service
 
 

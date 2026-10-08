@@ -8,7 +8,6 @@ import {
 import { actionScheduler } from '../services/actionScheduler';
 import { useActionPlaybackState } from '../services/useActionPlaybackState';
 import { useAppStore } from '../store/appStore';
-import { isExpressionPlanPayload } from '../types/expressionPlan';
 import { ActionPlaybackStatus } from './ActionPlaybackStatus';
 import './ExpressionPlanDebugPanel.css';
 
@@ -44,7 +43,7 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
   const [preview, setPreview] = useState<Preview | null>(null);
   const [selection, setSelection] = useState<{ request: PreviewRequest; label: string } | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
-  const [isCompiling, setIsCompiling] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
   const inFlight = useRef(false);
   const requestVersion = useRef(0);
 
@@ -71,13 +70,13 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
     ...(blinkStyle ? { blinkStyle } : {}),
   });
 
-  const compile = async (request: PreviewRequest, label: string, nextSeed = seed, vary = false) => {
+  const play = async (request: PreviewRequest, label: string, nextSeed = seed, vary = false) => {
     if (inFlight.current || !modelLoaded) return;
     inFlight.current = true;
     const version = ++requestVersion.current;
     const schedulerRevision = actionScheduler.getPreviewRevision();
     setSelection({ request, label });
-    setIsCompiling(true);
+    setIsPreparing(true);
     setLastError(null);
     try {
       const response = await compileDebugExpressionPlan({
@@ -86,31 +85,20 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
       }, apiBaseUrl);
       if (version !== requestVersion.current || !useAppStore.getState().modelLoaded
         || schedulerRevision !== actionScheduler.getPreviewRevision()) return;
-      if (!isExpressionPlanPayload(response.plan)) throw new Error('表情資料格式不完整，請核對前後端版本。');
       const plan = response.plan;
-      const checks = [
-        [request.expressionVariant, plan.debug?.expressionVariant],
-        [request.motionKind, plan.motionPlan?.variant],
-        [request.eyeMotionStyle, plan.eyeMotionPlan?.style],
-        [request.blinkStyle, plan.blinkPlan.style],
-        [request.idleStyle, plan.idlePlan?.name],
-      ];
-      for (const [requested, resolved] of checks) {
-        if (requested && requested !== resolved) throw new Error(`要求 ${requested}，實際編譯為 ${resolved ?? '未提供'}，已停止播放。`);
-      }
       const actionId = actionScheduler.submit(structuredClone(plan), 'debug');
       setPreview({ label, plan, request, seed: nextSeed, intensity, actionId });
       setSeed(nextSeed);
     } catch (error) {
       if (version === requestVersion.current) setLastError(error instanceof Error ? error.message : '目前無法產生表情。');
     } finally {
-      if (version === requestVersion.current) { inFlight.current = false; setIsCompiling(false); }
+      if (version === requestVersion.current) { inFlight.current = false; setIsPreparing(false); }
     }
   };
   const stop = () => {
     requestVersion.current += 1;
     inFlight.current = false;
-    setIsCompiling(false);
+    setIsPreparing(false);
     actionScheduler.stopPreview();
   };
   const replay = () => {
@@ -120,7 +108,7 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
     setLastError(null);
   };
 
-  const disabled = isCompiling || !modelLoaded || !catalog;
+  const disabled = isPreparing || !modelLoaded || !catalog;
   const selectedFamily = catalog?.expressionFamilies.find(item => item.id === family);
   const variantCount = catalog?.expressionFamilies.reduce((total, item) => total + item.variants.length, 0) ?? 0;
   const params = preview?.plan.basePose.params;
@@ -154,7 +142,7 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
           <div className="expression-debug-panel__segmented" role="group" aria-label="表現強度">
             {(['soft', 'normal', 'strong'] as const).map(value => <button key={value} type="button" aria-pressed={intensity === value}
               className={`expression-debug-panel__segment ${intensity === value ? 'expression-debug-panel__segment--active' : ''}`}
-              disabled={isCompiling} onClick={() => setIntensity(value)}>{value === 'soft' ? '輕柔' : value === 'normal' ? '自然' : '鮮明'}</button>)}
+              disabled={isPreparing} onClick={() => setIntensity(value)}>{value === 'soft' ? '輕柔' : value === 'normal' ? '自然' : '鮮明'}</button>)}
           </div>
         </div>
         <div className="expression-debug-panel__tabs" role="group" aria-label="動作分類">
@@ -166,13 +154,13 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
           <div className="expression-debug-panel__preset-grid">
             {catalog.expressionFamilies.map(item => <button key={item.id} type="button" disabled={disabled} aria-pressed={family === item.id}
               className={`expression-debug-panel__emotion-btn ${family === item.id ? 'expression-debug-panel__emotion-btn--active' : ''}`}
-              onClick={() => { setFamily(item.id); setVariant(''); void compile(familyRequest(item.id, ''), item.label); }}>{item.label}</button>)}
+              onClick={() => { setFamily(item.id); setVariant(''); void play(familyRequest(item.id, ''), item.label); }}>{item.label}</button>)}
           </div>
           <div className="expression-debug-panel__variant-heading"><h3>{selectedFamily?.label} · 指定變體</h3><code>{family}</code></div>
           <div className="expression-debug-panel__item-grid">
             {selectedFamily?.variants.map(item => <button key={item.id} type="button" disabled={disabled} aria-pressed={variant === item.id}
               className={`expression-debug-panel__item ${variant === item.id ? 'active' : ''}`}
-              onClick={() => { setVariant(item.id); void compile(familyRequest(family, item.id), `${selectedFamily.label} · ${item.label}`); }}>
+              onClick={() => { setVariant(item.id); void play(familyRequest(family, item.id), `${selectedFamily.label} · ${item.label}`); }}>
               <strong>{item.label}</strong><code>{item.id}</code>
             </button>)}
           </div>
@@ -181,7 +169,7 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
           <h3>身體動作 · {catalog.motions.length}</h3>
           <div className="expression-debug-panel__item-grid">{catalog.motions.map(item => <button key={item.id} type="button" disabled={disabled}
             className={`expression-debug-panel__item ${preview?.request.motionKind === item.id ? 'active' : ''}`}
-            onClick={() => void compile({ ...familyRequest(item.expressionKind, ''), motionKind: item.id }, item.label)}>
+            onClick={() => void play({ ...familyRequest(item.expressionKind, ''), motionKind: item.id }, item.label)}>
             <strong>{item.label}</strong><code>{item.id}</code><span>{item.theme} · {item.expressionKind}</span>
           </button>)}</div>
         </section>}
@@ -197,45 +185,45 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
           <h3>眼神 · {catalog.eyeStyles.length}</h3>
           <div className="expression-debug-panel__item-grid">{catalog.eyeStyles.map(item => <button key={item.id} type="button" disabled={disabled}
             className={`expression-debug-panel__item ${eyeStyle === item.id ? 'active' : ''}`}
-            onClick={() => { setEyeStyle(item.id); void compile({ ...familyRequest(), eyeMotionStyle: item.id }, item.label); }}>
+            onClick={() => { setEyeStyle(item.id); void play({ ...familyRequest(), eyeMotionStyle: item.id }, item.label); }}>
             <strong>{item.label}</strong><code>{item.id}</code>
           </button>)}</div>
           <h3 className="expression-debug-panel__subheading">眨眼 · {catalog.blinkStyles.length}</h3>
           <div className="expression-debug-panel__item-grid">{catalog.blinkStyles.map(item => <button key={item.id} type="button" disabled={disabled}
             className={`expression-debug-panel__item ${blinkStyle === item.id ? 'active' : ''}`}
-            onClick={() => { setBlinkStyle(item.id); void compile({ ...familyRequest(), blinkStyle: item.id }, item.label); }}>
+            onClick={() => { setBlinkStyle(item.id); void play({ ...familyRequest(), blinkStyle: item.id }, item.label); }}>
             <strong>{item.label}</strong><code>{item.id}</code>
           </button>)}</div>
           <button className="expression-debug-panel__action-btn" type="button" disabled={disabled}
-            onClick={() => { setEyeStyle(''); setBlinkStyle(''); void compile({ kind: family, blinkStyle: 'normal' }, '恢復自然眼神與眨眼'); }}>恢復自然眼神與眨眼</button>
+            onClick={() => { setEyeStyle(''); setBlinkStyle(''); void play({ kind: family, blinkStyle: 'normal' }, '恢復自然眼神與眨眼'); }}>恢復自然眼神與眨眼</button>
         </section>}
         {catalog && section === 'idle' && <section className="expression-debug-panel__section" aria-label="序列與待機入口">
           <h3>收尾待機 · {catalog.idleStyles.length}</h3>
           <div className="expression-debug-panel__item-grid">{catalog.idleStyles.map(item => <button key={item.id} type="button" disabled={disabled}
             className={`expression-debug-panel__item ${preview?.request.idleStyle === item.id ? 'active' : ''}`}
-            onClick={() => void compile({ ...familyRequest(item.family, ''), idleStyle: item.id }, item.label)}>
+            onClick={() => void play({ ...familyRequest(item.family, ''), idleStyle: item.id }, item.label)}>
             <strong>{item.label}</strong><code>{item.id}</code><span>搭配 {item.family} · 演出後進入循環</span>
           </button>)}</div>
           <h3 className="expression-debug-panel__subheading">Rushia 序列組合</h3>
           <div className="expression-debug-panel__item-grid">{catalog.scenarios.map(item => <button key={item.id} type="button" disabled={disabled}
-            className="expression-debug-panel__item" onClick={() => void compile({ scenario: item.id }, item.label)}>
+            className="expression-debug-panel__item" onClick={() => void play({ scenario: item.id }, item.label)}>
             <strong>{item.label}</strong><code>{item.id}</code><span>{item.description}</span>
           </button>)}</div>
         </section>}
         <div className="expression-debug-panel__playback" aria-label="統一預覽控制">
           <button type="button" className="expression-debug-panel__action-btn expression-debug-panel__action-btn--primary" disabled={disabled}
-            onClick={() => void compile(selection?.request ?? familyRequest(), selection?.label ?? selectedFamily?.label ?? family)}>播放選定項目</button>
+            onClick={() => void play(selection?.request ?? familyRequest(), selection?.label ?? selectedFamily?.label ?? family)}>播放選定項目</button>
           <button type="button" className="expression-debug-panel__action-btn" disabled={disabled || !preview} onClick={replay}>固定重播</button>
           <button type="button" className="expression-debug-panel__action-btn" disabled={!modelLoaded} onClick={stop}>停止</button>
           <button type="button" className="expression-debug-panel__reset-btn" disabled={disabled}
-            onClick={() => { setFamily('calm'); setVariant(''); setEyeStyle(''); setBlinkStyle(''); void compile({ kind: 'calm', blinkStyle: 'normal' }, '平靜'); }}>回到平靜</button>
+            onClick={() => { setFamily('calm'); setVariant(''); setEyeStyle(''); setBlinkStyle(''); void play({ kind: 'calm', blinkStyle: 'normal' }, '平靜'); }}>回到平靜</button>
         </div>
         <div className="expression-debug-panel__playback-status" role="status">
-          {!modelLoaded ? '等待角色載入' : isCompiling ? '編譯中… 尚未開始播放' : lastError ? '編譯失敗' : preview ? `已編譯 · ${preview.label} · seed ${preview.seed}` : '點選項目，即可編譯並播放。'}
+          {!modelLoaded ? '等待角色載入' : isPreparing ? '準備演出中… 尚未開始播放' : lastError ? '無法準備演出' : preview ? `演出已就緒 · ${preview.label} · seed ${preview.seed}` : '點選項目即可播放；相同設定會重用已準備的演出。'}
         </div>
         <ActionPlaybackStatus state={playback} />
-        {preview && plan && params && <section className="expression-debug-panel__summary" aria-label="編譯結果與演出序列">
-          <div className="expression-debug-panel__summary-heading"><h3>這次編譯結果</h3><span>{plan.idlePlan ? '演出至待機' : '完整演出'} {(fullDurationMs / 1000).toFixed(2)} 秒</span></div>
+        {preview && plan && params && <section className="expression-debug-panel__summary" aria-label="演出計畫與序列">
+          <div className="expression-debug-panel__summary-heading"><h3>本次演出</h3><span>{plan.idlePlan ? '演出至待機' : '完整演出'} {(fullDurationMs / 1000).toFixed(2)} 秒</span></div>
           <div className="expression-debug-panel__summary-row"><span>家族／要求變體</span><strong>{String(plan.debug?.expressionFamily ?? plan.basePose.preset)} / {preview.request.expressionVariant ?? '自動選擇'}</strong></div>
           <div className="expression-debug-panel__summary-row"><span>實際表情變體</span><strong>{String(plan.debug?.expressionVariant ?? '—')}</strong></div>
           <div className="expression-debug-panel__summary-row"><span>實際身體動作</span><strong>{plan.motionPlan?.variant ?? '未使用'}</strong></div>
@@ -245,7 +233,7 @@ export const ExpressionPlanDebugPanel = ({ apiBaseUrl }: { apiBaseUrl?: string }
           <div className="expression-debug-panel__summary-row"><span>眼睛開合 左／右</span><strong>{params.eyeLOpen.toFixed(2)} / {params.eyeROpen.toFixed(2)}</strong></div>
           <div className="expression-debug-panel__summary-row"><span>眉高 左／右・嘴形・臉紅</span><strong>{params.browLY.toFixed(2)} / {params.browRY.toFixed(2)} · {params.mouthForm.toFixed(2)} · {params.blushLevel.toFixed(2)}</strong></div>
           <button type="button" className="expression-debug-panel__action-btn" disabled={disabled}
-            onClick={() => void compile(preview.request, preview.label, seed + 1, true)}>調整演出細節</button>
+            onClick={() => void play(preview.request, preview.label, seed + 1, true)}>調整演出細節</button>
           {sequence.length > 0 && <details className="expression-debug-panel__details" open><summary>演出序列 · {sequence.length} 個片段</summary>
             <ol>{sequence.map(({ event, startMs, endMs }, index) => <li key={`${event.kind}-${index}`}
               className={isCurrentPreview && playback.elapsedMs >= startMs && playback.elapsedMs < endMs ? 'active' : ''}>

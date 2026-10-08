@@ -65,6 +65,7 @@ export function applyActiveExpressionEvents(
     nextTargets.bodyAngleX = applyOverlayValue('bodyAngleX', nextTargets.bodyAngleX, event.patch.bodyAngleX, fade);
     nextTargets.bodyAngleY = applyOverlayValue('bodyAngleY', nextTargets.bodyAngleY, event.patch.bodyAngleY, fade);
     nextTargets.bodyAngleZ = applyOverlayValue('bodyAngleZ', nextTargets.bodyAngleZ, event.patch.bodyAngleZ, fade);
+    nextTargets.headPitchOffset = applyOverlayValue('headPitchOffset', nextTargets.headPitchOffset ?? 0, event.patch.headPitchOffset, fade);
     nextTargets.breathLevel = applyOverlayValue('breathLevel', nextTargets.breathLevel, event.patch.breathLevel, fade);
     nextTargets.physicsImpulse = applyOverlayValue('physicsImpulse', nextTargets.physicsImpulse, event.patch.physicsImpulse, fade);
     nextTargets.eyeLOpen = applyOverlayValue('eyeLOpen', nextTargets.eyeLOpen, event.patch.eyeLOpen, fade);

@@ -25,6 +25,7 @@ export function clampExpressionOverlayValue(key: ExpressionOverlayKey, value: nu
     case 'bodyAngleX':
     case 'bodyAngleY':
     case 'bodyAngleZ':
+    case 'headPitchOffset':
       return Math.max(-1, Math.min(1, value));
     case 'blushLevel':
       return Math.max(-1, Math.min(1, value));

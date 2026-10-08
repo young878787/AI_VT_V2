@@ -8,9 +8,11 @@ from domain.expression_blink_strategies import BLINK_STRATEGIES
 from domain.expression_compiler_rules import MOTION_PARAM_DEFAULTS
 from domain.expression_continuity import build_carry_state
 from domain.expression_eye_motion_library import EYE_MOTION_STYLES, build_eye_motion_plan
+from domain.expression_intent_schema import ALLOWED_ARCS
 from domain.expression_motion_library import build_motion_plan
 from domain.expression_presets import BASE_POSE_PRESETS
 from domain.expression_visual_signature import resolve_effective_performance_mode
+from domain.speech_segments import split_speech_segments
 
 
 # Rushia has no separate smile-eye parameter. A brief closed-eye pose supplies
@@ -54,12 +56,12 @@ _SOURCE_FAMILY_POSES = {
 # Each variant has a distinct local gesture, not unrestricted parameter noise.
 _SOURCE_FAMILY_VARIANTS = {
     "calm": [
-        ("small_nod", {"bodyAngleY": 0.09, "browLY": 0.1, "browRY": 0.1}),
+        ("small_nod", {"bodyAngleY": 0.09, "headPitchOffset": -0.35, "browLY": 0.1, "browRY": 0.1}),
         ("quiet_glance", {"eyeBallX": -0.5, "bodyAngleZ": -0.045}),
         ("gentle_acknowledgement", {"browLY": 0.2, "browRY": 0.2, "mouthForm": 0.2}),
     ],
     "listening": [
-        ("attentive_nod", {"bodyAngleY": 0.14, "eyeBallY": -0.05}),
+        ("attentive_nod", {"bodyAngleY": 0.14, "eyeBallY": -0.05, "headPitchOffset": -0.4}),
         ("listen_left", {"bodyAngleZ": -0.09, "eyeBallX": -0.5, "browLY": 0.23}),
         ("listen_right", {"bodyAngleZ": 0.09, "eyeBallX": 0.5, "browRY": 0.23}),
     ],
@@ -70,12 +72,12 @@ _SOURCE_FAMILY_VARIANTS = {
                                   "bodyAngleY": -0.09, "browLY": 0.45, "browRY": -0.18}),
     ],
     "soft_smile": [
-        ("warm_nod", {"bodyAngleY": 0.12, "mouthForm": 0.87}),
+        ("warm_nod", {"bodyAngleY": 0.12, "mouthForm": 0.87, "headPitchOffset": -0.32}),
         ("smile_left", {"bodyAngleZ": -0.1, "blushLevel": 0.25}),
         ("smile_right", {"bodyAngleZ": 0.1, "browLY": 0.24, "browRY": 0.24}),
     ],
     "closed_smile": [
-        ("closed_smile_nod", {"bodyAngleY": 0.1}),
+        ("closed_smile_nod", {"bodyAngleY": 0.1, "headPitchOffset": -0.3}),
         ("closed_smile_left", {"bodyAngleZ": -0.09}),
         ("closed_smile_right", {"bodyAngleZ": 0.09}),
     ],
@@ -157,7 +159,7 @@ def _timeline_ms(sequence):
     return total
 
 
-def _body_profile(family):
+def _body_profile(family, energy=0.35):
     quiet = family in QUIET_FAMILIES
     profile = {"style": "calm_sway", "speed": 0.72 if quiet else 0.85,
                "swayScale": 0.36 if quiet else 0.55, "bobScale": 0.3 if quiet else 0.48,
@@ -168,7 +170,66 @@ def _body_profile(family):
         profile["style"] = "heavy_slow_sink"
     elif family == "surprised":
         profile["style"] = "quick_recoil"
+    profile["speed"] = round(profile["speed"] * (1 + (energy - 0.35) * 0.45), 3)
+    for key in ("swayScale", "bobScale", "twistScale", "headScale"):
+        profile[key] = round(profile[key] * (1 + (energy - 0.35) * 0.65), 3)
     return profile
+
+
+def _arc_sequence(reaction, params, arc, family):
+    rest = _event("rushia_rest", {}, 1300)
+    sequence = [reaction, rest]
+    if arc == "pop_then_settle":
+        reaction["patch"] = _bounded({**reaction["patch"],
+                                     "browLY": params["browLY"] + 0.12,
+                                     "browRY": params["browRY"] + 0.12,
+                                     "bodyAngleY": params["bodyAngleY"] - 0.12})
+        rest.update(_event("rushia_arc_settle", {"bodyAngleY": params["bodyAngleY"],
+                                                "browLY": params["browLY"],
+                                                "browRY": params["browRY"]}, 1100))
+    elif arc == "pause_then_smirk":
+        sequence.insert(0, _event("rushia_arc_pause", {"eyeBallX": 0.0, "bodyAngleZ": 0.0}, 720))
+        if family in {"calm", "soft_smile", "closed_smile", "playful", "shy"}:
+            reaction["patch"]["mouthForm"] = min(1.0, max(params["mouthForm"], 0.0) + 0.16)
+    elif arc == "widen_then_tease":
+        sequence.insert(0, _event("rushia_arc_widen", {
+            "eyeLOpen": params["eyeLOpen"] + 0.15, "eyeROpen": params["eyeROpen"] + 0.15,
+            "browLY": params["browLY"] + 0.1, "browRY": params["browRY"] + 0.1,
+        }, 680))
+    elif arc == "shrink_then_recover":
+        sequence.insert(0, _event("rushia_arc_shrink", {
+            "bodyAngleY": params["bodyAngleY"] - 0.12, "eyeBallY": params["eyeBallY"] - 0.18,
+            "eyeLOpen": params["eyeLOpen"] - 0.08, "eyeROpen": params["eyeROpen"] - 0.08,
+        }, 950))
+        rest.update(_event("rushia_arc_recover", {"eyeBallY": params["eyeBallY"],
+                                                 "bodyAngleY": params["bodyAngleY"]}, 1100))
+    elif arc == "glare_then_flatten":
+        sequence.insert(0, _event("rushia_arc_glare", {
+            "browLY": params["browLY"] - 0.12, "browRY": params["browRY"] - 0.12,
+            "eyeLOpen": params["eyeLOpen"] - 0.09, "eyeROpen": params["eyeROpen"] - 0.09,
+            "bodyAngleY": params["bodyAngleY"] + 0.08,
+        }, 900))
+        rest.update(_event("rushia_arc_relax", {"browLY": params["browLY"] * 0.75,
+                                               "browRY": params["browRY"] * 0.75,
+                                               "bodyAngleY": params["bodyAngleY"]}, 1100))
+    return sequence
+
+
+def _ambient_states(settle, family, energy, rng):
+    # Keep the current emotional face in all three existing ambient states.
+    # Shared ambient templates contain neutral/smiling mouths and would erase it.
+    direction = rng.choice((-1, 1))
+    gaze = (0.22 + energy * 0.12) * direction
+    lowered = family in {"sad", "gloomy", "shy"}
+    patches = [
+        ("ambient_idle_breath", {"eyeBallX": 0.0, "bodyAngleZ": 0.0,
+                                 "breathLevel": 0.26 + energy * 0.08}),
+        ("ambient_idle_look_around", {"eyeBallX": gaze, "bodyAngleZ": 0.045 * direction,
+                                      "eyeBallY": settle["eyeBallY"] - (0.05 if lowered else 0.0)}),
+        ("ambient_idle_active_shift", {"eyeBallX": -gaze * 0.65, "bodyAngleZ": -0.06 * direction,
+                                       "bodyAngleY": settle["bodyAngleY"] + (-0.045 if lowered else 0.055)}),
+    ]
+    return [{"kind": kind, "params": _bounded({**settle, **patch})} for kind, patch in patches]
 
 
 def _family(intent, emotion, mode, rng):
@@ -202,7 +263,117 @@ def _family(intent, emotion, mode, rng):
     return canonical_emotion if canonical_emotion in FAMILY_POSES else "calm"
 
 
-def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_overrides=None):
+def _speech_rhythm_events(text, timings, params, energy):
+    texts = split_speech_segments(text)
+    cues = []
+    for timing in timings:
+        if timing["id"] >= len(texts):
+            continue
+        segment = texts[timing["id"]].strip().strip('「」『』“”"')
+        transition = segment.startswith(("不過", "但是", "其實", "然而", "可是"))
+        pause = "…" in segment or "..." in segment
+        delay_ms = 900 if pause else 750 if transition else 500
+        if segment.endswith(("？", "?")):
+            kind, patch = "rushia_speech_question", {"browLY": params["browLY"] + 0.09,
+                                                    "browRY": params["browRY"] + 0.09,
+                                                    "eyeBallY": params["eyeBallY"] + 0.04}
+        elif segment.endswith(("！", "!")):
+            kind, patch = "rushia_speech_emphasis", {"headPitchOffset": -0.4 - energy * 0.12}
+        elif transition or pause:
+            kind = "rushia_speech_transition" if transition else "rushia_speech_pause_return"
+            patch = {"eyeBallX": 0.0, "eyeBallY": params["eyeBallY"], "headPitchOffset": -0.2}
+        else:
+            continue
+        at_ms = timing["startMs"] + delay_ms
+        # Avoid a gesture running into the next phrase or the final quiet tail.
+        if at_ms + 1120 > timing["endMs"]:
+            continue
+        event = _event(kind, patch, 720)
+        event["atMs"] = at_ms
+        # Repeated punctuation should leave room for the shuffled small gestures.
+        if not cues or (kind != cues[-1]["kind"] and at_ms - cues[-1]["atMs"] >= 2500):
+            cues.append(event)
+    return cues
+
+
+def _speech_plan(plan, segments, timing_source, energy, rng, text):
+    if timing_source not in {"audio", "estimated"} or not isinstance(segments, list) or not segments:
+        raise ValueError("Speech requires segments and an audio or estimated timing source")
+    timings = []
+    previous_end = 0
+    previous_id = -1
+    for segment in segments:
+        if not isinstance(segment, dict):
+            raise ValueError("Invalid speech segment")
+        segment_id, start, end = segment.get("id"), segment.get("startMs"), segment.get("endMs")
+        if (isinstance(segment_id, bool) or not isinstance(segment_id, int) or segment_id <= previous_id
+                or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       or not math.isfinite(value) for value in (start, end))
+                or start < previous_end or end <= start):
+            raise ValueError("Speech segments must have increasing IDs and finite nonoverlapping times")
+        timings.append({"id": segment_id, "startMs": start, "endMs": end})
+        previous_id, previous_end = segment_id, end
+    duration_ms = timings[-1]["endMs"]
+    params = plan["basePose"]["params"]
+    family = plan["debug"]["expressionFamily"]
+    lowered = family in {"sad", "gloomy", "shy"}
+    gestures = [
+        ("rushia_speech_nod", {"headPitchOffset": -0.3 - energy * 0.15}),
+        ("rushia_speech_glance_left", {"eyeBallX": -0.22, "bodyAngleZ": -0.035}),
+        ("rushia_speech_glance_right", {"eyeBallX": 0.22, "bodyAngleZ": 0.035}),
+        ("rushia_speech_attention", {"browLY": params["browLY"] + 0.05,
+                                     "browRY": params["browRY"] + 0.05,
+                                     "eyeBallY": params["eyeBallY"] + (-0.05 if lowered else 0.04)}),
+    ]
+    # Keep the current face; punctuation boundaries time small gestures, not
+    # inferred new emotions. Never repeat the initial wink or open-mouth shock.
+    events = []
+    choices = []
+    at_ms = rng.randint(750, 1100)
+    last_kind = None
+    while at_ms + 1300 <= duration_ms:
+        if not choices:
+            choices = list(gestures)
+            rng.shuffle(choices)
+            if choices[-1][0] == last_kind:
+                choices[0], choices[-1] = choices[-1], choices[0]
+        kind, patch = choices.pop()
+        nearby = [timing["startMs"] + 250 for timing in timings
+                  if abs(timing["startMs"] + 250 - at_ms) <= 400]
+        if nearby:
+            candidate = min(nearby, key=lambda point: abs(point - at_ms))
+            if (not events or candidate - events[-1]["atMs"] >= 2500) and candidate + 1300 <= duration_ms:
+                at_ms = candidate
+        event = _event(kind, patch, 850 if "glance" in kind else 720)
+        event["atMs"] = round(at_ms, 3)
+        events.append(event)
+        last_kind = kind
+        at_ms += round(rng.uniform(3300, 4600) * (1 - energy * 0.2))
+    cues = _speech_rhythm_events(text, timings, params, energy)
+    if cues:
+        events = [event for event in events if all(abs(event["atMs"] - cue["atMs"]) >= 2500 for cue in cues)]
+        events = sorted(events + cues, key=lambda event: event["atMs"])
+    plan["stage"] = "speech"
+    plan["speech"] = {"durationMs": duration_ms, "timingSource": timing_source, "segments": timings}
+    plan["sequence"] = []
+    plan["microEvents"] = events
+    plan.pop("motionPlan", None)
+    plan["eyeMotionPlan"]["durationMs"] = duration_ms
+    plan["basePose"]["durationSec"] = min(1.6, duration_ms / 1000)
+    plan["blinkPlan"]["commands"] = [command for command in plan["blinkPlan"]["commands"]
+                                       if command["action"] in {"resume", "set_interval"}]
+    idle = plan["idlePlan"]
+    idle["source"].update({"actionEnterAfterMs": max((event["atMs"] + event["durationMs"] for event in events), default=0),
+                           "speakingEnterAfterMs": duration_ms})
+    idle["enterAfterMs"] = duration_ms + idle["source"]["postSpeechHoldMs"]
+    idle["ambientEnterAfterMs"] = idle["enterAfterMs"] + 900
+    plan["timingHints"].update({"holdMs": plan["basePose"]["durationSec"] * 1000,
+                                "basePoseDurationSec": plan["basePose"]["durationSec"], "sequenceSteps": 0})
+    return plan
+
+
+def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_overrides=None,
+                                speech_segments=None, speech_timing_source="audio"):
     debug_overrides = debug_overrides or {}
     for key, allowed in (("eyeMotionStyle", EYE_MOTION_STYLES), ("blinkStyle", BLINK_STRATEGIES),
                          ("idleStyle", RUSHIA_IDLE_FAMILIES)):
@@ -216,12 +387,19 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_ove
     guard = guard if isinstance(guard, dict) else {}
     intent = {**intent, "emotion": emotion, "topic_guard": guard}
     mode = resolve_effective_performance_mode(emotion, original_mode, guard)
+    continuing_speech = (speech_segments is not None and isinstance(previous_state, dict)
+                         and previous_state.get("emotion") == emotion
+                         and previous_state.get("performanceMode") == mode)
+    if continuing_speech and previous_state.get("expressionFamily") in FAMILY_POSES:
+        intent["expression_family"] = previous_state["expressionFamily"]
     family = _family(intent, emotion, mode, rng)
     previous_variant = previous_state.get("expressionVariant") if isinstance(previous_state, dict) else None
     variants = FAMILY_VARIANTS[family]
     if mode == "cheeky_wink" and family == "playful":
         variants = [item for item in variants if "wink" in item[0]]
     requested_variant = debug_overrides.get("expressionVariant")
+    if continuing_speech and requested_variant is None and any(item[0] == previous_variant for item in variants):
+        requested_variant = previous_variant
     if requested_variant is not None:
         selected = next((item for item in FAMILY_VARIANTS[family] if item[0] == requested_variant), None)
         if selected is None:
@@ -231,6 +409,10 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_ove
         variant, accent = rng.choice([item for item in variants if item[0] != previous_variant] or variants)
     source_family = _VARIANT_SOURCE_FAMILIES[variant]
     intensity = _number(intent.get("intensity"), 0.35)
+    energy = _number(intent.get("energy"), 0.35)
+    arc = intent.get("arc", "steady")
+    arc = arc if isinstance(arc, str) and arc in ALLOWED_ARCS else "steady"
+    hold_ms = int(_number(intent.get("hold_ms"), 1600, 300, 4000))
     strength = 0.75 + intensity * 0.3
     params = {**deepcopy(BASE_POSE_PRESETS["calm_soft"]), **MOTION_PARAM_DEFAULTS,
               "headIntensity": 0.14, "breathLevel": 0.22, "physicsImpulse": 0.03,
@@ -248,27 +430,30 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_ove
                        "browLY": -0.08, "browRY": -0.08})
     params = _bounded(params)
     quiet = family in QUIET_FAMILIES
-    profile = _body_profile(family)
-    base = {"preset": f"rushia_{source_family}", "params": params, "durationSec": 1.6,
+    profile = _body_profile(family, energy)
+    base = {"preset": f"rushia_{source_family}", "params": params, "durationSec": hold_ms / 1000,
             "bodyMotionProfile": profile}
 
     accent = deepcopy(accent)
+    for key in ("bodyAngleX", "bodyAngleY", "bodyAngleZ"):
+        if key in accent:
+            accent[key] = params[key] + (accent[key] - params[key]) * (1 + (energy - 0.35) * 0.6)
     if family == "closed_smile":
         accent.update({"eyeLOpen": 0.0, "eyeROpen": 0.0, "eyeSync": False, "mouthForm": 0.95})
-    reaction_ms = 680 if source_family in {"closed_smile", "surprised", "playful"} else 1000
+    tempo_scale = 1 - (energy - 0.35) * 0.22
+    reaction_ms = round((680 if source_family in {"closed_smile", "surprised", "playful"} else 1000) * tempo_scale)
     reaction = _event(f"rushia_{variant}", accent, reaction_ms)
     if any(accent.get(key, 0) != 0 for key in ("eyeBallX", "eyeBallY")):
         # A clear glance needs a short held target before the smooth return.
-        reaction.update({"durationMs": 1300, "fadeInMs": 120, "fadeOutMs": 320})
+        reaction.update({"durationMs": max(1300, round(1300 * tempo_scale)), "fadeInMs": 120, "fadeOutMs": 320})
     deliberate_eye_close = accent.get("eyeLOpen") == 0.0 or accent.get("eyeROpen") == 0.0
     if deliberate_eye_close:
         # At the frontend's exponential smoothing rate (8/s), the longer
         # plateau reaches < 0.02 openness before the eyes begin reopening.
         reaction.update({"durationMs": 780, "fadeInMs": 100, "fadeOutMs": 150})
-    sequence = [reaction]
     # A quiet gap is part of the timeline. It prevents repeated emphases from
     # becoming a continuous oscillation even without generated dialogue text.
-    sequence.append(_event("rushia_rest", {}, 1300))
+    sequence = _arc_sequence(reaction, params, arc, family)
     if family == "thinking":
         sequence.append(_event("rushia_return_attention", {"eyeBallX": 0.0, "eyeBallY": 0.0,
                                                           "bodyAngleY": 0.06}, 800))
@@ -282,7 +467,7 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_ove
         sequence.append(_event("rushia_phrase_emphasis", follow_patch, 800))
     timeline_ms = _timeline_ms(sequence)
     settle_ms = rng.randint(500, 850)
-    enter_ms = max(timeline_ms, speaking_ms, 1600) + settle_ms
+    enter_ms = max(timeline_ms, speaking_ms, hold_ms) + settle_ms
 
     motion_theme = {
         "soft_smile": "happy_bright_talk", "closed_smile": "happy_bright_talk",
@@ -300,7 +485,7 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_ove
         motion_intent = {"motion_theme": motion_theme}
         if requested_motion:
             motion_intent["motion_variant"] = intent.get("motion_variant")
-        motion = build_motion_plan(family, mode, intensity, 0.35, 0.2, motion_intent, previous_state, rng=rng)
+        motion = build_motion_plan(family, mode, intensity, energy, 0.2, motion_intent, previous_state, rng=rng)
         motion["durationMs"] = min(timeline_ms, 3200)
         motion["body"]["spring"] = min(motion["body"]["spring"], 0.25)
     eye_override = debug_overrides.get("eyeMotionStyle")
@@ -337,14 +522,21 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_ove
         settle[key] = baseline[key] + (settle[key] - baseline[key]) * 0.6
     settle.update({"eyeLOpen": max(0.78, settle["eyeLOpen"]), "eyeROpen": max(0.78, settle["eyeROpen"]),
                    "mouthOpenBias": 0.0, "physicsImpulse": 0.015, "headIntensity": 0.1})
+    if settle["mouthForm"] < 0:
+        # The existing ambient renderer jitters mouthForm by +/- 0.04.
+        settle["mouthForm"] = min(-0.06, settle["mouthForm"])
     settle = _bounded(settle)
-    idle = {"name": idle_name, "mode": "loop", "enterAfterMs": enter_ms, "loopIntervalMs": 6500,
+    ambient_interval_ms = round(rng.randint(4600, 6200) * (1 - (energy - 0.35) * 0.18))
+    idle = {"name": idle_name, "mode": "loop", "enterAfterMs": enter_ms,
+            "loopIntervalMs": ambient_interval_ms, "ambientEnterAfterMs": enter_ms + 900,
+            "ambientSwitchIntervalMs": ambient_interval_ms,
             "interruptible": True,
             "source": {"actionEnterAfterMs": timeline_ms, "speakingEnterAfterMs": speaking_ms,
                        "postSpeechHoldMs": settle_ms},
             "settlePose": {"preset": f"rushia_{idle_family}_rest", "params": settle, "durationSec": 12,
                            "bodyMotionProfile": {**_body_profile(idle_family), "speed": 0.62, "bobScale": 0.2}},
-            "loopEvents": [_event("rushia_idle_attention", {"eyeBallX": 0.08, "bodyAngleZ": 0.025}, 1000)]}
+            "loopEvents": [],
+            "ambientPlan": {"states": _ambient_states(settle, idle_family, energy, rng)}}
     signature = {"signature_name": f"rushia_{family}"}
     carry = build_carry_state({**intent, "performance_mode": mode}, signature, params, 0.0)
     carry.update({"expressionFamily": family, "expressionVariant": variant,
@@ -356,13 +548,17 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_ove
     if "blinkStyle" in debug_overrides:
         commands.extend(deepcopy(BLINK_STRATEGIES[blink_style]))
     if deliberate_eye_close:
-        commands.append({"action": "pause", "durationSec": 0.95})
+        reaction_index = sequence.index(reaction)
+        reaction_start_ms = _timeline_ms(sequence[:reaction_index])
+        if reaction_index:
+            reaction_start_ms -= min(sequence[reaction_index - 1]["fadeOutMs"], reaction["fadeInMs"])
+        commands.append({"action": "pause", "durationSec": round((reaction_start_ms + 950) / 1000, 3)})
     elif "blinkStyle" not in debug_overrides:
         commands.extend(deepcopy(BLINK_STRATEGIES[blink_style]))
-    return {"type": "expression_plan", "basePose": base, "microEvents": [], "sequence": sequence,
+    plan = {"type": "expression_plan", "basePose": base, "microEvents": [], "sequence": sequence,
             "motionPlan": motion, "eyeMotionPlan": eye_motion, "idlePlan": idle,
             "blinkPlan": {"style": blink_style, "commands": commands}, "speakingRate": speaking_rate,
-            "timingHints": {"holdMs": 1600, "basePoseDurationSec": 1.6, "sequenceSteps": len(sequence),
+            "timingHints": {"holdMs": hold_ms, "basePoseDurationSec": hold_ms / 1000, "sequenceSteps": len(sequence),
                             "settleMs": settle_ms},
             "modelHints": {"modelName": "Rushia", "preset": base["preset"], "variationRuleCount": len(variants)},
             "carryState": carry,
@@ -371,7 +567,10 @@ def build_rushia_expression_plan(intent, previous_state, *, seed=None, debug_ove
                       "selectedBasePreset": base["preset"], "expressionFamily": family,
                       "expressionVariant": variant, "sourceTheme": guard.get("source_theme", "daily_talk"),
                       "guardActive": guard.get("must_preserve_theme", True), "modeDowngraded": mode != original_mode,
-                      "arc": intent.get("arc", "steady"), "signature": signature["signature_name"],
+                      "arc": arc, "signature": signature["signature_name"],
                       "bodyMotionProfile": profile["style"], "bodyMotionProfileSource": "rushia_profile",
                       "motionTheme": motion["theme"], "motionVariant": motion["variant"],
                       "eyeMotionStyle": eye_motion["style"], "idlePlan": idle_name}}
+    if speech_segments is not None:
+        return _speech_plan(plan, speech_segments, speech_timing_source, energy, rng, spoken_text)
+    return plan
