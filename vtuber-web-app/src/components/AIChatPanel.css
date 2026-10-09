@@ -308,6 +308,13 @@
   line-height: 1.4;
 }
 
+.context-note {
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 @media (max-width: 560px) {
   .chat-performance {
     gap: 4px;

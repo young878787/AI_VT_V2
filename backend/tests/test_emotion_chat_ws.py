@@ -89,7 +89,7 @@ class EmotionWebSocketTests(unittest.TestCase):
         socket.app = SimpleNamespace(state=SimpleNamespace(
             memory_runtime=runtime, chat_session_service=chat_sessions,
         ))
-        captured = {"jev_states": [], "chat_states": [], "prompts": [], "runtime": runtime,
+        captured = {"jev_states": [], "chat_states": [], "prompts": [], "contexts": [], "runtime": runtime,
                     "chat_sessions": chat_sessions}
         responses = iter(jev_responses)
 
@@ -97,13 +97,14 @@ class EmotionWebSocketTests(unittest.TestCase):
             captured["jev_states"].append(state)
             return next(responses)
 
-        def fake_prompt(profile, notes, state, model_name):
+        def fake_prompt(profile, notes, state, model_name, **kwargs):
             captured["chat_states"].append(state)
-            prompt = build_agent_a_prompt(profile, notes, state, model_name)
+            prompt = build_agent_a_prompt(profile, notes, state, model_name, **kwargs)
             captured["prompts"].append(prompt)
             return prompt
 
-        async def fake_chat(messages, send_chunk):
+        async def fake_chat(messages, send_chunk, **kwargs):
+            captured["contexts"].append(messages)
             await asyncio.sleep(0)
             await send_chunk("露西亞的回覆")
             return "露西亞的回覆"
@@ -114,11 +115,33 @@ class EmotionWebSocketTests(unittest.TestCase):
                 patch("api.routes.chat_ws.build_agent_a_prompt", side_effect=fake_prompt), \
                 patch("api.routes.chat_ws.broadcast_to_displays"), \
                 patch("api.routes.chat_ws.log_turn"), \
+                patch("api.routes.chat_ws.reset_log"), \
                 patch("api.routes.chat_ws.synthesize_and_send_voice"):
                 await websocket_endpoint(socket)
 
         asyncio.run(run())
         return socket, captured
+
+    def test_runtime_snapshots_are_rebuilt_and_do_not_become_memory_sources(self):
+        from services.context_tools import ContextTools
+        from domain.runtime_context import make_turn_snapshot, result
+        tools = ContextTools()
+        tools.snapshot = AsyncMock(side_effect=[make_turn_snapshot(str(index), index, result("ok", {
+            "foreground": {"status": "ok", "app": app},
+            "open_apps": {"status": "ok", "apps": [app], "truncated": False},
+        })) for index, app in enumerate(("first.exe", "second.exe"))])
+        with patch("api.routes.chat_ws.ContextTools", return_value=tools):
+            _, captured = self._run([{"content": "你好"}, {"content": "再聊一下"}], [jev_answers(), jev_answers()])
+        self.assertEqual(tools.snapshot.await_count, 2)
+        self.assertIn("first.exe", captured["contexts"][0][-2]["content"])
+        self.assertIn("second.exe", captured["contexts"][1][-2]["content"])
+        self.assertNotIn("first.exe", json.dumps(captured["contexts"][1], ensure_ascii=False))
+        memory_args = str(captured["runtime"].accept.await_args_list)
+        self.assertNotIn("first.exe", memory_args)
+        self.assertNotIn("second.exe", memory_args)
+        self.assertNotIn("first.exe", str(captured["jev_states"]))
+        self.assertNotIn("second.exe", str(captured["jev_states"]))
+        self.assertNotIn("first.exe", captured["prompts"][0])
 
     def test_single_jev_call_precedes_chat_and_drives_both_axes(self):
         answers = jev_answers(0.8)
@@ -258,7 +281,7 @@ class EmotionWebSocketTests(unittest.TestCase):
             memory_runtime=runtime, chat_session_service=make_chat_session_service(),
         ))
 
-        async def fake_chat(messages, send_chunk):
+        async def fake_chat(messages, send_chunk, **kwargs):
             await send_chunk("知道了")
             return "知道了"
 

@@ -136,7 +136,7 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                 await asyncio.Event().wait()
             return jev_answers(0.7)
 
-        async def fake_chat(messages, send_chunk):
+        async def fake_chat(messages, send_chunk, **kwargs):
             await send_chunk("第二句回覆")
             return "第二句回覆"
 
@@ -201,7 +201,7 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                 await release_jev.wait()
             return jev_answers(0.7)
 
-        async def fake_chat(messages, send_chunk):
+        async def fake_chat(messages, send_chunk, **kwargs):
             current_input = messages[-1]["content"]
             if current_input == "第一句":
                 await send_chunk("只送出的半句")

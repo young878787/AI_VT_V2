@@ -17,6 +17,7 @@ from api.routes.voice_ws import initialize_voice_runtime, router as voice_router
 from infrastructure.chat_session_repository import ChatSessionRepository
 from services.chat_session_service import ChatSessionService
 from services.memory_runtime import MemoryRuntime
+from services.context_tools import close_desktop_reader
 
 
 @asynccontextmanager
@@ -31,6 +32,7 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
+        close_desktop_reader()
         await application.state.chat_session_service.stop_compression()
         await runtime.close()
 

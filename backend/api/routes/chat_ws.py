@@ -26,6 +26,7 @@ from domain.expression_intent_schema import (
     normalize_expression_intent,
 )
 from domain.input_event import normalize_chat_input
+from domain.runtime_context import desktop_access_allowed, project_snapshot
 from domain.chat_test_mode import resolve_test_mode
 from domain.memory_routing import instruction_policy, POLICY_VERSION
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
@@ -55,6 +56,7 @@ from services.chat_service import (
 from services.expression_compiler import compile_expression_plan
 from services.expression_legacy_renderer import render_legacy_behavior_payload
 from services.chat_session_service import ChatSessionInUseError
+from services.context_tools import ContextTools
 from services.memory_events import recent_memory_events, subscribe_memory_events
 
 
@@ -227,6 +229,10 @@ async def _produce_and_send_action_plan(
 @router.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    context_tools = ContextTools(desktop_allowed=desktop_access_allowed(websocket))
+    tool_schema_tokens = estimate_token_count([{
+        "role": "system", "content": json.dumps(context_tools.schemas, ensure_ascii=False),
+    }])
     app = getattr(websocket, "app", None)
     memory_runtime = getattr(getattr(app, "state", None), "memory_runtime", None)
     chat_sessions = getattr(getattr(app, "state", None), "chat_session_service", None)
@@ -535,13 +541,17 @@ async def websocket_endpoint(websocket: WebSocket):
             await send({"type": "emotion_update", "state": next_emotion, "source": source,
                         "turn_id": turn_id, "version": version})
 
-            prompt = build_agent_a_prompt(snapshot["profile"], snapshot["memory"], next_emotion, model_name=model_name)
+            prompt = build_agent_a_prompt(snapshot["profile"], snapshot["memory"], next_emotion, model_name=model_name,
+                                          message_timestamp=snapshot["message_timestamp"],
+                                          tools_enabled=snapshot["tools_enabled"])
             if snapshot["summary"]:
                 prompt += "\n\n本 session 已完成的對話摘要：\n" + snapshot["summary"][:4000]
             scope_hint = build_turn_scope_hint(text, snapshot["messages"])
             if scope_hint:
                 prompt += "\n\n本輪對象約束：\n" + scope_hint
-            chat_messages = build_chat_context(prompt, snapshot["messages"], text)
+            chat_messages = build_chat_context(prompt, snapshot["messages"], text,
+                runtime_context=project_snapshot(snapshot["runtime_context"]),
+                tools=context_tools.schemas if snapshot["tools_enabled"] else None)
             profile_marker = "<untrusted_user_profile>\n"
             profile_marker_start = prompt.find(profile_marker)
             profile_start = (profile_marker_start + len(profile_marker)
@@ -584,7 +594,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         active_turn_partial += piece
 
             generation_started = time.monotonic()
-            reply = await stream_agent_a(chat_messages, send_chunk)
+            context_tools.used_names.clear()
+            context_tools.user_context = [item["content"] for item in snapshot["messages"]
+                if item.get("role") == "user" and isinstance(item.get("content"), str)] + [text]
+            reply = await stream_agent_a(chat_messages, send_chunk,
+                context_tools=context_tools if snapshot["tools_enabled"] else None)
             if not reply:
                 reply = "嗯……"
                 await send_chunk(reply)
@@ -597,7 +611,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await chat_sessions.ensure_compression(compress_once)
             log_turn(turn_count=sum(item.get("role") == "user" for item in messages),
                      system_prompt=prompt, user_message=text, dialogue_agent_output=reply,
-                     tool_names=[], output_tokens=estimate_token_count([{"role": "assistant", "content": reply}]))
+                     tool_names=list(context_tools.used_names),
+                     output_tokens=estimate_token_count([{"role": "assistant", "content": reply}]))
             generation_ms = round((time.monotonic() - generation_started) * 1000, 1)
             output_tokens = estimate_token_count([{"role": "assistant", "content": reply}])
             tokens_per_second = round(output_tokens / max(generation_ms / 1000, 0.001), 1)
@@ -640,6 +655,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     async def prepare_and_run_turn(
         turn_id: str, text: str, model_name: str, legacy: bool, user_message: dict, mode=None,
+        *, message_timestamp: float,
     ) -> None:
         """將記憶接收／檢索與生成放在同一個可取消的回合 task。"""
         nonlocal active_event_id
@@ -654,6 +670,7 @@ async def websocket_endpoint(websocket: WebSocket):
         turn_action = current_action
         trace_turn.set(turn_id)
         trace_event.set(None)
+        runtime_context = await (context_tools if mode is None else ContextTools()).snapshot(turn_id, message_timestamp)
         write_enabled = mode is None or mode.memory_write
         read_enabled = mode is None or mode.memory_read
         trace("test_mode", {"mode": mode.value if mode else "normal",
@@ -717,6 +734,9 @@ async def websocket_endpoint(websocket: WebSocket):
             "memory": relevant_memory,
             "summary": summary,
             "user_message": user_message,
+            "message_timestamp": message_timestamp,
+            "runtime_context": runtime_context,
+            "tools_enabled": mode is None and CHAT_CONTEXT_TOKEN_BUDGET >= tool_schema_tokens + 512,
         }
         await run_turn(
             turn_id, text, model_name, snapshot, legacy, event_id,
@@ -896,6 +916,7 @@ async def websocket_endpoint(websocket: WebSocket):
             active_task = asyncio.create_task(prepare_and_run_turn(
                 turn_id, text, model_name, data.get("legacy_payloads") is True,
                 next_user_message, mode,
+                message_timestamp=input_event["timestamp"],
             ))
     except WebSocketDisconnect:
         print("Client disconnected")

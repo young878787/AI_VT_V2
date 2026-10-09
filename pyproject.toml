@@ -19,6 +19,9 @@ dependencies = [
     "sherpa-onnx>=1.12",
     "sherpa-onnx-core>=1.12",
     "piper-tts[zh]",
+    "pillow>=11.2.1",
+    "psutil>=7",
+    "tzdata>=2026.5 ; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

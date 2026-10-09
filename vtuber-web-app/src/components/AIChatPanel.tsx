@@ -229,6 +229,7 @@ export const AIChatPanel = () => {
                 </div>
             </div>
             <div className="ai-chat-panel__footer">
+                <p className="context-note">露西亞會按對話需要查詢現況、臺灣天氣或擷取單張畫面；本機應用與畫面資料會傳給聊天模型，不持續監控。</p>
                 <div className="input-area">
                     <button
                         type="button"
