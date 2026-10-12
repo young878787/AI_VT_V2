@@ -9,6 +9,7 @@
     "generate": "node scripts/generate-tools-ts.js",
     "check:expression-plan": "node scripts/check-expression-plan.mjs",
     "check:emotion-state": "node scripts/check-emotion-state.mjs",
+    "check:context-status": "bun test scripts/check-context-status.test.ts",
     "check:rushia-runtime": "node scripts/check-rushia-runtime.mjs",
     "check:rushia-assets": "node scripts/check-rushia-assets.mjs",
     "build": "bun run generate && tsc -b && vite build",

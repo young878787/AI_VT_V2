@@ -2,6 +2,7 @@
 import asyncio
 import ctypes
 import io
+import hashlib
 import os
 import sys
 import threading
@@ -12,7 +13,8 @@ from domain.runtime_context import MAX_OPEN_APPS, result
 
 
 class WindowsDesktop:
-    def __init__(self):
+    def __init__(self, *, screenshot_fixture=None):
+        self.screenshot_fixture = screenshot_fixture
         self.user32 = ctypes.WinDLL("user32", use_last_error=True) if sys.platform == "win32" else None
         if self.user32 is None:
             return
@@ -94,6 +96,14 @@ class WindowsDesktop:
         return result("ok", {"foreground": foreground, "open_apps": opened})
 
     def screenshot(self, target="foreground") -> dict:
+        if getattr(self, "screenshot_fixture", None) is not None:
+            from PIL import Image
+            payload = self.screenshot_fixture.read_bytes()
+            with Image.open(io.BytesIO(payload)) as image:
+                return self._encode_screenshot(image, target, {
+                    "kind": "fixture_image", "ref": "sample/擷取.JPG",
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                })
         unavailable = self._available()
         if unavailable:
             return unavailable
@@ -104,6 +114,10 @@ class WindowsDesktop:
         image = ImageGrab.grab(window=window) if window else ImageGrab.grab(all_screens=True)
         if window and window != self.user32.GetForegroundWindow():
             return result("unavailable", reason="changed_during_capture")
+        return self._encode_screenshot(image, target, {"kind": "windows_desktop"})
+
+    @staticmethod
+    def _encode_screenshot(image, target, source) -> dict:
         image = image.convert("RGB")
         if not image.width or not image.height or all(high == 0 for _low, high in image.getextrema()):
             return result("unavailable", reason="empty_capture")
@@ -114,7 +128,8 @@ class WindowsDesktop:
         if len(payload) > 2 * 1024 * 1024:
             return result("error", reason="image_too_large")
         receipt = result("ok", {"target": target, "width": image.width, "height": image.height,
-                                "mime_type": "image/jpeg"})
+                                "mime_type": "image/jpeg", "source": source,
+                                "image_sha256": hashlib.sha256(payload).hexdigest()})
         receipt["image"] = payload
         return receipt
 

@@ -6,6 +6,7 @@ import json
 import random
 import time
 from pathlib import Path
+from domain.runtime_context import CONTEXT_TOOL_NAMES
 
 CORE_PATH = Path(__file__).with_name("memory_test_cases.json")
 MAX_STEPS = 24
@@ -53,13 +54,21 @@ def validate_cases(cases: object, *, source: str, count: int) -> list[dict]:
         seen_sessions = set()
         for index, step in enumerate(steps, 1):
             if not isinstance(step, dict) or not {"phase", "session"} <= step.keys() or step.keys() - {
-                    "phase", "session", "input", "action", "expected_result", "evidence", "memory_expectation", "versions"}:
+                    "phase", "session", "input", "action", "expected_result", "evidence", "memory_expectation", "versions", "expected_tools"}:
                 raise ValueError("步驟只接受 user input 或 compress 與有界驗收條件")
+            if "expected_tools" in step:
+                tools = step["expected_tools"]
+                if (source != "Gold" or "action" in step or not isinstance(tools, list) or len(tools) > 2
+                        or any(not isinstance(name, str) or name not in CONTEXT_TOOL_NAMES for name in tools)
+                        or len(set(tools)) != len(tools) or not step.get("expected_result")):
+                    raise ValueError("expected_tools 必須為固定聊天的有界唯讀工具驗收條件")
             session = step["session"]
             if not isinstance(session, str) or not 1 <= len(session) <= 40:
                 raise ValueError("session 別名錯誤")
             step_mode(case, step)
             if "action" in step:
+                if source == "generated":
+                    raise ValueError("生成步驟只接受 user input；compress 由固定案例驗證")
                 if "input" in step or step["action"] != "compress" or session not in seen_sessions or step["phase"] != "context":
                     raise ValueError("compress 必須在已有對話的 context session")
                 continue
@@ -149,6 +158,19 @@ def validate_generated(cases, specifications):
         minimum = {"distractor_retrieval": 4, "memory_update": 2, "multi_memory_synthesis": 4}.get(case["case_type"], 1)
         if len(setups) < minimum:
             raise ValueError("生成前置事實不足")
+        if case["case_group"] == "short_term" and len(steps) > 6:
+            raise ValueError("短期改寫限六步，壓縮／摘要來源由固定案例驗證")
+        for index, step in enumerate(steps, 1):
+            if step["phase"] == "probe":
+                allowed_sources = {"history", "context"} if case["case_group"] == "short_term" else {"db"}
+                if any(fact["source"] not in allowed_sources for fact in step.get("evidence", [])):
+                    raise ValueError("生成 probe 來源必須符合短期 history/context 或長期 db")
+                reference = step.get("expected_result", case["expected_result"])
+                missing = next((fact["fragments"] for fact in step.get("evidence", [])
+                                if not any(fragment in reference for fragment in fact["fragments"])), None)
+                if missing:
+                    raise ValueError(f"{case['case_id']} step {index} 參考答案缺少新事實片段 {missing}；"
+                                     "請將 fragments 拆成原樣短實體／值，並在新參考答案保留至少一項，不沿用 base 答案")
         ordered.append(case)
     return ordered
 
@@ -180,23 +202,30 @@ async def generate_cases(core: list[dict], diagnostics: dict) -> list[dict]:
         specifications.append({"case_id": f"random_{index:03}", "case_type": kind,
             "base_case": base["case_id"], "case_group": route,
             "memory_goal": base["expected_focus"], "difficulty": "moderate",
-            "required_behavior": {"short_term": "context 與 probe 同 session；正常對話，不加禁止記憶前綴",
+            "required_behavior": {"short_term": "2–6 步同 session 的短期改寫，來源只用 history/context；compress／摘要由固定案例驗證，不複製其證據條件",
                 "long_term": "memory_setup 建立新事實；probe 每次使用不同的新 session"}[route],
-            "base_conversation": base["conversation"]})
+            "base_conversation": [{key: value for key, value in step.items()
+                if key in {"phase", "session", "input"}}
+                for step in base["conversation"] if "input" in step]})
     prompt = (
         "你是測試資料作者。只回傳 JSON array，恰好五筆繁體中文案例。改寫主體、事實與干擾，"
         "保留指定 case_id/case_type/base_case/case_group。source 固定 generated。"
         "每筆只有 case_id,case_group,case_type,base_case,source,expected_focus,expected_result,conversation。"
         "expected_focus 為 1–8 筆方向；expected_result 為自然語言參考答案，包含應回答事實與不可推定內容。"
-        "conversation 為 2–24 步，每步有 phase,session,input。短期 phase=context/probe，長期=memory_setup/probe。"
+        "conversation 短期為 2–6 步，長期為 2–24 步，每步有 phase,session,input。短期 phase=context/probe，長期=memory_setup/probe。"
         "input 是 user 文字，1–1000 字。不要提供 assistant reply、SQL、工具或執行指令。"
         "每個 probe 必須提供 expected_result 與 evidence array；每筆 evidence 只有 source_step(從1起算的先前user setup步號),"
         "source(短期為history或context，長期為db),fragments(1–8個原樣存在於該user setup輸入的事實片段)。"
-        "參考答案只能引用這些 setup 事實，不得憑空寫標準答案。短期全部同 session，不加禁止保存前綴。"
+        "fragments 優先使用短實體、值與關鍵詞，拆開主體與值，不用含目前／改成等語法的整句；"
+        "例如來源『API 路由現在改成 FastAPI 負責』的 fragments 用 ['API 路由','FastAPI']，不要整句複製。"
+        "參考答案只能引用改寫後的 setup 事實，不得複製 base 的舊答案；每筆 evidence 至少一個原樣片段"
+        "須出現在該 probe 的參考答案，並依新主體與新值重建 case-level 答案。短期全部同 session，不加禁止保存前綴。"
         "長期每個 probe 必須使用全新 session。memory_setup 的持久事實設 memory_expectation=stored。"
         "干擾至少四筆 setup（目標與三個不同領域）；更新至少兩筆 setup（同主體舊值、新值），"
         "並在probe加入versions:[{old_step,new_step,old,new,allowed_operations:[SUPERSEDE,MERGE,ARCHIVE,CREATE]}]，"
         "old/new為各setup原樣片段。整合至少四筆不同原子事實 setup，probe evidence 必須引用所有必要事實。"
+        "多事實整合的每筆 setup 與 probe 都要明確寫出同一個專案或系統名稱，確定事實適用於同一主體；"
+        "不要只寫無主體的日誌、部署或設定，並假設它們屬於同一個專案。"
     )
     diagnostics.update(prompt_sha256=fingerprint(prompt), specifications_sha256=fingerprint(specifications),
                        configured_model=CHAT_MODEL_NAME, attempts=[], status="running")

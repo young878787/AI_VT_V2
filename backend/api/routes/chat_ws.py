@@ -26,7 +26,7 @@ from domain.expression_intent_schema import (
     normalize_expression_intent,
 )
 from domain.input_event import normalize_chat_input
-from domain.runtime_context import desktop_access_allowed, project_snapshot
+from domain.runtime_context import context_status, desktop_access_allowed, project_snapshot, snapshot_context_status
 from domain.chat_test_mode import resolve_test_mode
 from domain.memory_routing import instruction_policy, POLICY_VERSION
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
@@ -500,6 +500,18 @@ async def websocket_endpoint(websocket: WebSocket):
         nonlocal messages, emotion_state, expression_state, version, active_turn_partial
         nonlocal active_turn_committed, active_memory_routed, session_failed
         action_task: asyncio.Task | None = None
+        confirmed_context_kinds: set[str] = set()
+
+        async def send_context_status(payload: dict) -> None:
+            if active_turn_id != turn_id:
+                return
+            kind = payload["kind"]
+            if kind in confirmed_context_kinds and payload["status"] != "sent":
+                return
+            await send({"type": "context_status", "turn_id": turn_id, **payload})
+            if payload["status"] == "sent":
+                confirmed_context_kinds.add(kind)
+
         try:
             context = build_jev_context(
                 text,
@@ -549,14 +561,18 @@ async def websocket_endpoint(websocket: WebSocket):
             scope_hint = build_turn_scope_hint(text, snapshot["messages"])
             if scope_hint:
                 prompt += "\n\n本輪對象約束：\n" + scope_hint
+            context_diagnostics = {}
             chat_messages = build_chat_context(prompt, snapshot["messages"], text,
                 runtime_context=project_snapshot(snapshot["runtime_context"]),
-                tools=context_tools.schemas if snapshot["tools_enabled"] else None)
+                tools=context_tools.schemas if snapshot["tools_enabled"] else None, diagnostics=context_diagnostics)
             profile_marker = "<untrusted_user_profile>\n"
             profile_marker_start = prompt.find(profile_marker)
             profile_start = (profile_marker_start + len(profile_marker)
                              if profile_marker_start >= 0 else prompt.find("使用者資料：\n") + len("使用者資料：\n"))
             trace("chat_context", {"messages": chat_messages, "session_id": session_id,
+                "message_origins": context_diagnostics["message_origins"],
+                "runtime_context": snapshot["runtime_context"],
+                "tools_available": [schema["function"]["name"] for schema in context_tools.schemas] if snapshot["tools_enabled"] else [],
                 "token_budget": CHAT_CONTEXT_TOKEN_BUDGET, "history_limit": len(snapshot["messages"]),
                 "history_count": len(snapshot["messages"]), "history": snapshot["messages"],
                 "summary": snapshot["summary"],
@@ -598,7 +614,8 @@ async def websocket_endpoint(websocket: WebSocket):
             context_tools.user_context = [item["content"] for item in snapshot["messages"]
                 if item.get("role") == "user" and isinstance(item.get("content"), str)] + [text]
             reply = await stream_agent_a(chat_messages, send_chunk,
-                context_tools=context_tools if snapshot["tools_enabled"] else None)
+                context_tools=context_tools if snapshot["tools_enabled"] else None,
+                context_diagnostics=context_diagnostics, on_context_status=send_context_status)
             if not reply:
                 reply = "嗯……"
                 await send_chunk(reply)
@@ -670,7 +687,11 @@ async def websocket_endpoint(websocket: WebSocket):
         turn_action = current_action
         trace_turn.set(turn_id)
         trace_event.set(None)
-        runtime_context = await (context_tools if mode is None else ContextTools()).snapshot(turn_id, message_timestamp)
+        await send({"type": "context_status", "turn_id": turn_id, **context_status("desktop", "reading")})
+        runtime_context = await context_tools.snapshot(turn_id, message_timestamp)
+        if active_turn_id != turn_id:
+            return
+        await send({"type": "context_status", "turn_id": turn_id, **snapshot_context_status(runtime_context)})
         write_enabled = mode is None or mode.memory_write
         read_enabled = mode is None or mode.memory_read
         trace("test_mode", {"mode": mode.value if mode else "normal",
@@ -736,7 +757,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "user_message": user_message,
             "message_timestamp": message_timestamp,
             "runtime_context": runtime_context,
-            "tools_enabled": mode is None and CHAT_CONTEXT_TOKEN_BUDGET >= tool_schema_tokens + 512,
+            "tools_enabled": CHAT_CONTEXT_TOKEN_BUDGET >= tool_schema_tokens + 512,
         }
         await run_turn(
             turn_id, text, model_name, snapshot, legacy, event_id,

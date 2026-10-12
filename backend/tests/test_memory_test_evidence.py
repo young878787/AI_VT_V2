@@ -12,18 +12,23 @@ from tools import memory_testset as testset
 from tools import chat_test_cli as cli
 from tools.memory_test_evidence import check_turn, answer_result
 from domain.chat_test_mode import ChatTestMode
+from domain.runtime_context import CONTEXT_TOOL_NAMES, make_turn_snapshot, project_snapshot, result
 
 
 def fixture(mode='short_only'):
     mode = ChatTestMode(mode)
+    snapshot = make_turn_snapshot('turn', 0, result('unavailable', reason='test_source'))
     context = dict(stage='chat_context', history=[], summary='', jev_recent_dialogue=[],
-                   messages=[dict(role='system',content='system'),dict(role='user',content='query')],
+                   messages=[dict(role='system',content='1970-01-01 08:00:00 +0800'),dict(role='user',content=project_snapshot(snapshot)),dict(role='user',content='query')],
+                   message_origins=['system','runtime_context','input'], runtime_context=snapshot,
+                   tools_available=list(CONTEXT_TOOL_NAMES),
                    injected_memory_ids=[], memory_fragments=[], system_retained_ranges=[])
     record = dict(turn=2, errors=[], reply='任何模型措辭都原樣保留', stream_complete=True,
                   emotion_source='jev', expression='neutral', db_unchanged=True, memory_changes={}, memory_audit=[],
                   trace=[dict(stage='test_mode', mode=mode.value, short_term_enabled=mode.short_term,
                               memory_read_enabled=mode.memory_read, memory_write_enabled=mode.memory_write),
-                         dict(stage='jev',error=None),dict(stage='chat'),context])
+                         dict(stage='jev',error=None),dict(stage='chat'),
+                         dict(stage='chat_request', tools=list(CONTEXT_TOOL_NAMES)),dict(stage='context_tool_selection'),context])
     if mode.memory_read:
         record['trace'].append(dict(stage='retrieval',candidates=[],projections=[],errors=[]))
     return record, context
@@ -47,6 +52,7 @@ class MemoryTestEvidenceTests(unittest.TestCase):
                            system_retained_ranges=[[100,110]] if retained else [[0,50]])
             if restated:
                 context['messages'].insert(1,dict(role='assistant',content='記得要修阻尼'))
+                context['message_origins'].insert(1,'history')
             check_turn(case,step,record,[dict(turn=1)],{})
             check=next(c for c in record['hard_checks'] if c['name']=='source_step_1_summary')
             self.assertEqual(check['passed'],valid)
@@ -129,6 +135,7 @@ class MemoryTestEvidenceTests(unittest.TestCase):
     def test_update_workflow_allows_its_written_fact_in_both_sources(self):
         record, context = fixture('mixed_read')
         context['messages'].insert(1, dict(role='user', content='現在 JEV 負責'))
+        context['message_origins'].insert(1, 'history')
         context['memory_fragments'] = [dict(id='item', text='現在 JEV 負責')]
         step = dict(phase='probe', evidence=[dict(source_step=1, source='history', fragments=['JEV'])])
         check_turn(dict(case_group='mixed', case_type='recall_continue_update'), step, record, [dict(turn=1)], {})

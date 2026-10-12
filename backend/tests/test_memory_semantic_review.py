@@ -50,6 +50,24 @@ class SemanticReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.record["semantic_review"]["attempts"], 2)
         self.assertNotIn("error", self.record["semantic_review"])
 
+    async def test_context_tool_turn_is_reviewed_with_only_current_receipts_and_structured_time(self):
+        self.record.update(phase="context", turn=1, expected_tools=[], expected_result="確認縣市",
+                           tools=[dict(name="get_weather", backend_reason="ambiguous_region")])
+        self.record["trace"][0]["runtime_context"] = dict(message_time="2026-10-09T10:02:03+08:00")
+        with patch("infrastructure.ai_client.chat_create_with_fallback", new=AsyncMock(return_value=response(self.correct))) as call:
+            await evaluate_semantics([self.case], [self.record], {})
+        material = json.loads(call.await_args.kwargs["messages"][1]["content"])
+        self.assertEqual(material["system_date"], "2026-10-09T10:02:03+08:00")
+        self.assertEqual(material["tools"][0]["backend_reason"], "ambiguous_region")
+        self.assertEqual(len(material["user_dialogue"]), 1)
+
+    async def test_probe_free_tool_calls_are_visible_to_reviewer_without_gold_expectation(self):
+        self.record["tools"] = [dict(name="get_datetime", backend_status="ok", receipt_delivered=True)]
+        with patch("infrastructure.ai_client.chat_create_with_fallback", new=AsyncMock(return_value=response(self.correct))) as call:
+            await evaluate_semantics([self.case], [self.record], {})
+        material = json.loads(call.await_args.kwargs["messages"][1]["content"])
+        self.assertEqual(material["tools"][0]["name"], "get_datetime")
+
     async def test_multiple_probes_keep_earlier_failure_and_scope_each_input(self):
         self.case["conversation"].append(dict(phase="recall_probe", input="現在喜歡什麼？"))
         later = {**self.record, "phase": "recall_probe", "turn": 4, "reply": "新偏好", "expected_result": "新偏好"}

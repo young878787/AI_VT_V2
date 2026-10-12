@@ -29,6 +29,8 @@ def generated_cases(core):
         case = copy.deepcopy(core[bases[0] - 1])
         case.update(case_id=f'random_{i:03}', case_type=kind, source='generated',
                     base_case=case['case_id'], case_group=route)
+        if kind == 'multi_memory_synthesis':
+            case['expected_result'] += '，包含即時計畫與收尾。'
         result.append(case)
     return result
 
@@ -41,6 +43,20 @@ class MemoryTestsetTests(unittest.TestCase):
         self.assertIn('compress', [s.get('action') for s in core[2]['conversation']])
         self.assertTrue(core[16]['event_date'].endswith('+08:00'))
         self.assertEqual(len([s for s in core[19]['conversation'] if s['phase'] == 'memory_setup']), 6)
+
+    def test_six_replacements_are_gold_expectations_without_new_turns_or_capability_switches(self):
+        core = core_cases()
+        expected = [(c['case_id'], i, s['expected_tools']) for c in core
+                    for i, s in enumerate(c['conversation'], 1) if 'expected_tools' in s]
+        self.assertEqual(expected, [('case_003', 4, ['get_weather']), ('case_003', 6, ['get_activity_context']),
+                                   ('case_003', 7, ['get_computer_status']), ('case_003', 9, ['get_datetime']),
+                                   ('case_003', 20, []), ('case_004', 3, ['capture_screenshot'])])
+        self.assertEqual(core[3]['conversation'][2]['input'], '你看到什麼？')
+        for invalid in (['shell'], ['get_datetime', 'get_datetime'], ['get_weather'] * 3, 'capture_screenshot'):
+            changed = copy.deepcopy(core)
+            changed[3]['conversation'][2]['expected_tools'] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                testset.validate_cases(changed, source='Gold', count=23)
 
     def test_validator_rejects_answers_unknown_tools_and_unsafe_session_structure(self):
         for change in ('assistant', 'input', 'session', 'action'):
@@ -65,6 +81,32 @@ class MemoryTestsetTests(unittest.TestCase):
         generated[-1]['conversation'] = generated[-1]['conversation'][:1]
         generated[-1]['conversation'].append(dict(phase='probe',session='fresh',input='query',evidence=[dict(source_step=1,source='db',fragments=['Live2D'])]))
         with self.assertRaisesRegex(ValueError, '前置事實不足'):
+            testset.validate_generated(generated, specs)
+
+    def test_generated_reference_cannot_keep_old_subject_after_rewriting_source(self):
+        core = core_cases()
+        generated = generated_cases(core)
+        specs = [{k: case[k] for k in ('case_id', 'case_type', 'base_case', 'case_group')} for case in generated]
+        step = generated[0]['conversation'][-1]
+        step['expected_result'] = '角色的頭髮物理'
+        generated[0]['conversation'][0]['input'] = '我正在調整角色衣服的布料物理。'
+        step['evidence'] = [dict(source_step=1, source='history', fragments=['衣服', '布料物理'])]
+        with self.assertRaisesRegex(ValueError, '新事實片段'):
+            testset.validate_generated(generated, specs)
+
+    def test_generated_short_probe_cannot_claim_summary_provenance(self):
+        generated = generated_cases(core_cases())
+        specs = [{k: case[k] for k in ('case_id', 'case_type', 'base_case', 'case_group')} for case in generated]
+        generated[0]['conversation'][-1]['evidence'][0]['source'] = 'summary'
+        with self.assertRaisesRegex(ValueError, '生成 probe 來源'):
+            testset.validate_generated(generated, specs)
+        generated = generated_cases(core_cases())
+        generated[0]['conversation'][1:1] = [dict(phase='context', session='context', input='干擾') for _ in range(5)]
+        with self.assertRaisesRegex(ValueError, '六步'):
+            testset.validate_generated(generated, specs)
+        generated = generated_cases(core_cases())
+        generated[0]['conversation'].insert(1, dict(phase='context', session='context', action='compress'))
+        with self.assertRaisesRegex(ValueError, '生成步驟只接受 user input'):
             testset.validate_generated(generated, specs)
 
     def test_snapshot_is_exact_replay_and_incomplete_snapshot_rejected(self):
@@ -198,7 +240,9 @@ class MemoryTestsetTests(unittest.TestCase):
             finally:
                 prompt_logger.trace_event.reset(token)
             self.assertEqual(reply, '回覆')
-            diagnostic = json.loads((Path(directory) / 'trace.jsonl').read_text())
+            diagnostic = next(item for item in reversed([
+                json.loads(line) for line in (Path(directory) / 'trace.jsonl').read_text().splitlines()
+            ]) if item['stage'] == 'chat')
             self.assertEqual(diagnostic['model'], 'actual-chat')
             self.assertEqual(diagnostic['usage'], {'prompt_tokens': 11, 'completion_tokens': 3})
             self.assertEqual(diagnostic['finish_reason'], 'stop')

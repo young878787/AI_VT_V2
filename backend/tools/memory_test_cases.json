@@ -89,7 +89,9 @@
       {
         "phase": "context",
         "session": "context",
-        "input": "最近天氣有點熱。"
+        "input": "我晚點要去新北板橋散步，穿外套和帶傘你會怎麼建議？",
+        "expected_tools": ["get_weather"],
+        "expected_result": "應使用新北市板橋區的本輪預報，依溫度與有效時段給出建議；沒有降雨機率或降水資料時，不能保證不用帶傘。"
       },
       {
         "phase": "probe",
@@ -111,12 +113,16 @@
       {
         "phase": "context",
         "session": "context",
-        "input": "換個話題，我今天整理了桌面。"
+        "input": "先換個話題，我目前前景視窗的標題是什麼？",
+        "expected_tools": ["get_activity_context"],
+        "expected_result": "應讀取當輪前景視窗標題；成功時回答實際標題，不可用時保留未知，不用 app 名稱或舊歷史猜標題。"
       },
       {
         "phase": "context",
         "session": "context",
-        "input": "我想替鍵盤清潔一下。"
+        "input": "電腦有點卡，你幫我看看現在 CPU、記憶體使用量，還有系統磁碟剩多少？",
+        "expected_tools": ["get_computer_status"],
+        "expected_result": "應依本輪 CPU、RAM 與系統磁碟讀取結果回答；不可猜 GPU 或將單次取樣當成已確定的卡頓原因。"
       },
       {
         "phase": "context",
@@ -126,7 +132,9 @@
       {
         "phase": "context",
         "session": "context",
-        "input": "我晚上可能散步。"
+        "input": "我正在比對電腦時鐘，給我讀取當下的日期時間，精確到秒。",
+        "expected_tools": ["get_datetime"],
+        "expected_result": "應依 get_datetime 讀取時間回答日期、時分秒與 Asia/Taipei，不能用舊訊息時間代替新的讀取結果。"
       },
       {
         "phase": "context",
@@ -181,7 +189,9 @@
       {
         "phase": "context",
         "session": "context",
-        "input": "明天出門要帶傘。"
+        "input": "中正區現在天氣怎麼樣？",
+        "expected_tools": [],
+        "expected_result": "應先確認臺北市或基隆市的中正區；允許直接詢問或查工具候選，不擅自選縣市，不報未知的氣溫或天氣。"
       },
       {
         "phase": "context",
@@ -235,7 +245,9 @@
       {
         "phase": "context",
         "session": "context",
-        "input": "剛才程式的 TypeScript 錯誤已修好。"
+        "input": "你看到什麼？",
+        "expected_tools": ["capture_screenshot"],
+        "expected_result": "應描述至少兩項可見內容：VS Code／AGENTS.md 文件、左側 Git 版本圖、下方套件列表終端機、右側 Codex 對話、綠髮動漫角色背景；至少一項不能僅由 app 名稱或非圖片工具推知。可說看起來在看文件或與 AI 討論，但不能斷言正在修改程式、修好錯誤或完成工作。"
       },
       {
         "phase": "probe",
@@ -254,7 +266,7 @@
       }
     ],
     "case_group": "short_term",
-    "expected_result": "應回答正在調 Live2D 角色的眼睛參數，不把午餐或 TypeScript 錯誤當成模型部位。"
+    "expected_result": "應回答正在調 Live2D 角色的眼睛參數，不把午餐或剛看過的桌面畫面當成模型部位。"
   },
   {
     "case_id": "case_005",

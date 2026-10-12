@@ -4,6 +4,7 @@
 def check_turn(case: dict, step: dict, record: dict, previous: list[dict], state: dict) -> None:
     from uuid import UUID
     from tools.memory_testset import step_mode
+    from tools.context_test_evidence import check_context_tools
 
     def own_source_ids(row):
         event_id = row.get('memory_event_id')
@@ -43,8 +44,9 @@ def check_turn(case: dict, step: dict, record: dict, previous: list[dict], state
     if not mode.short_term:
         actual = {k: context.get(k) for k in ('history', 'summary', 'jev_recent_dialogue')}
         check('isolation_status', 'empty_short_term', actual, 'history／summary／JEV recent dialogue 全空',
-              bool(context) and not any(actual.values()) and len(context.get('messages', [])) == 2,
+              bool(context) and not any(actual.values()) and "history" not in context.get("message_origins", []),
               '長期 probe 的 history／summary／JEV recent dialogue 非空')
+    check_context_tools(step, record, context, mode, check)
     if mode.memory_read:
         check('memory_evidence_status', 'retrieval_errors', retrieval.get('errors', []), [],
               not retrieval.get('errors'), 'DB／embedding 召回執行失敗')
@@ -92,7 +94,8 @@ def check_turn(case: dict, step: dict, record: dict, previous: list[dict], state
         if expectation in {'ignored', 'buffered'}:
             check('memory_evidence_status', 'expected_job_status', status, expectation, status == expectation, '工作狀態不符合案例允許結果')
 
-    history = '\n'.join(m.get('content', '') for m in context.get('messages', [])[1:-1])
+    history = '\n'.join(m['content'] for m, origin in zip(context.get('messages', []), context.get('message_origins', []))
+                        if origin == 'history' and isinstance(m.get('content'), str))
     # 使用 summary 原始來源區間，排除裁切後已移除的摘要；不從整份 system 猜來源。
     summary = context.get('summary', '')[:4000]
     start = context.get('summary_section_start')
@@ -160,7 +163,7 @@ def check_turn(case: dict, step: dict, record: dict, previous: list[dict], state
     record['source_evidence'] = source_locations
     record['hard_checks'] = checks
     record['hard_status'] = {layer: 'failed' if any(not c['passed'] for c in checks if c['layer'] == layer) else 'passed'
-                             for layer in ('execution_status', 'isolation_status', 'memory_evidence_status', 'context_evidence_status')}
+                             for layer in ('execution_status', 'isolation_status', 'memory_evidence_status', 'context_evidence_status', 'tool_evidence_status')}
 
 
 def answer_result(record: dict) -> str:

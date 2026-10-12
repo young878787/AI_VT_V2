@@ -240,6 +240,8 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
                                          AsyncMock(side_effect=pieces.append), context_tools=tools)
         final = create.await_args_list[1].kwargs
         self.assertNotIn("tools", final)
+        self.assertEqual(create.await_args_list[0].kwargs["temperature"], 0.35)
+        self.assertEqual(final["temperature"], 0.35)
         self.assertEqual(final["messages"][-2]["tool_calls"][0]["id"], final["messages"][-1]["tool_call_id"])
         self.assertEqual(reply, "查詢完成")
         self.assertEqual(pieces, ["查詢完成"])
@@ -253,6 +255,17 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
             reply = await stream_agent_a([{"role": "system", "content": "規則"}, {"role": "user", "content": "你好"}],
                                          AsyncMock(), context_tools=tools)
         self.assertEqual(reply, "工具不可用")
+        tools.execute_batch.assert_not_awaited()
+
+    async def test_malformed_native_metadata_falls_back_without_execution(self):
+        tools = ContextTools()
+        tools.execute_batch = AsyncMock()
+        malformed = SimpleNamespace(model_dump=lambda **_: {"id": "call1", "type": "function", "function": None})
+        with patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+                selection([malformed], finish="tool_calls"), FakeStream("工具要求無效")])):
+            reply = await stream_agent_a([dict(role="system", content="角色"), dict(role="user", content="任務")],
+                                         AsyncMock(), context_tools=tools)
+        self.assertEqual(reply, "工具要求無效")
         tools.execute_batch.assert_not_awaited()
 
     async def test_vision_rejection_removes_image_and_replaces_success_receipt(self):
@@ -301,3 +314,38 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
         final = create.await_args_list[-1].kwargs["messages"]
         self.assertLessEqual(estimate_token_count(final), 8192)
         self.assertIn("最新問題", [m["content"] for m in final if isinstance(m.get("content"), str)])
+
+    async def test_image_budget_cannot_truncate_current_user_input(self):
+        tools = ContextTools(desktop_allowed=True)
+        receipt = result("ok", {"width": 1600, "height": 900, "mime_type": "image/jpeg"})
+        receipt["image"] = b"synthetic-image"
+        tools.execute_batch = AsyncMock(return_value=[receipt])
+        user = "請看這張圖：" + "🦊" * 900
+        messages = [dict(role="system", content="規則" * 800), dict(role="user", content=user)]
+        with patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+                selection([native("capture_screenshot")], finish="tool_calls"), FakeStream("圖片因預算不足未提供")])) as create:
+            await stream_agent_a(messages, AsyncMock(), context_tools=tools)
+        final = create.await_args_list[-1].kwargs["messages"]
+        self.assertIn(user, [m["content"] for m in final if isinstance(m.get("content"), str)])
+        self.assertNotIn("image_url", json.dumps(final))
+        self.assertIn("image_context_budget", final[-1]["content"])
+        self.assertLessEqual(estimate_token_count(final), 8192)
+
+    async def test_unfittable_tool_context_falls_back_without_claiming_delivery(self):
+        tools = ContextTools()
+        tools.execute_batch = AsyncMock(return_value=[result("ok", {"datetime": "2026-10-09T12:00:00+08:00"})])
+        messages = [dict(role="system", content="規則"), dict(role="user", content="現在時間？")]
+        with patch("services.chat_service._tool_context", side_effect=ValueError("tool_context_budget")), \
+                patch("services.chat_service.trace") as trace, \
+                patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+                    selection([native()], finish="tool_calls"), FakeStream("查詢結果無法提供")])) as create:
+            reply = await stream_agent_a(messages, AsyncMock(), context_tools=tools)
+        final = create.await_args_list[-1].kwargs["messages"]
+        self.assertEqual(final[-1], messages[-1])
+        self.assertNotIn("tool", [message["role"] for message in final])
+        self.assertIn("沒有結果或圖片交付", final[0]["content"])
+        delivery = next(call.args[1] for call in trace.call_args_list if call.args[0] == "context_tool_delivery")
+        self.assertEqual(delivery["receipt_ids"], [])
+        self.assertFalse(delivery["image_accepted"])
+        self.assertEqual(delivery["reason"], "tool_context_budget")
+        self.assertEqual(reply, "查詢結果無法提供")

@@ -77,7 +77,7 @@ class FakeWebSocket:
 
 
 class EmotionWebSocketTests(unittest.TestCase):
-    def _run(self, frames, jev_responses, persistence=False, storage=None, chat_sessions=None):
+    def _run(self, frames, jev_responses, persistence=False, storage=None, chat_sessions=None, chat=None):
         socket = FakeWebSocket(frames)
         runtime = SimpleNamespace(
             retrieve=AsyncMock(return_value=({}, "")),
@@ -111,7 +111,7 @@ class EmotionWebSocketTests(unittest.TestCase):
 
         async def run():
             with patch("api.routes.chat_ws.call_jev", side_effect=fake_call_jev), \
-                patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
+                patch("api.routes.chat_ws.stream_agent_a", side_effect=chat or fake_chat), \
                 patch("api.routes.chat_ws.build_agent_a_prompt", side_effect=fake_prompt), \
                 patch("api.routes.chat_ws.broadcast_to_displays"), \
                 patch("api.routes.chat_ws.log_turn"), \
@@ -151,7 +151,9 @@ class EmotionWebSocketTests(unittest.TestCase):
             [{"content": "妳今天好可愛"}], [answers],
         )
         types = [payload["type"] for payload in socket.payloads]
-        self.assertEqual(types[:3], ["session_ready", "input_accepted", "emotion_update"])
+        self.assertEqual(types[:5], ["session_ready", "context_status", "context_status", "input_accepted", "emotion_update"])
+        self.assertEqual([payload["status"] for payload in socket.payloads if payload["type"] == "context_status"],
+                         ["reading", "unavailable"])
         self.assertEqual(types.count("expression_plan"), 1)
         self.assertNotIn("behavior", types)
         self.assertNotIn("blink_control", types)

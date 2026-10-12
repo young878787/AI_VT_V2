@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.memory_test_evidence import check_turn, answer_result
 from tools.memory_semantic_review import evaluate_semantics
 from tools.memory_testset import CORE_PATH, fingerprint, generate_cases, load_snapshot, validate_cases, step_mode
+from tools.context_test_evidence import collect_tools, summarize_tools
 from services.memory_agent_client import CUMULATIVE_DIAGNOSTIC_FIELDS
 
 
@@ -231,9 +232,13 @@ def start_backend(run_dir: Path, port: int, database_url: str, schema: str,
     child_env["MEMORY_DATABASE_SCHEMA"] = schema
     child_env["MEMORY_DEFAULT_USER_ID"] = str(user_id)
     child_env["MEMORY_DEFAULT_CHARACTER_ID"] = str(character_id)
+    command = [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(port)]
+    if sys.platform == "win32":
+        # psycopg async 不支援 Windows 的 ProactorEventLoop。
+        command.extend(["--loop", "asyncio:SelectorEventLoop"])
     try:
         process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(port)],
+            command,
             cwd=BACKEND_ROOT, env=child_env, stdout=log_file, stderr=subprocess.STDOUT,
         )
     except Exception:
@@ -261,7 +266,9 @@ async def connect_backend(url: str, process: subprocess.Popen, timeout: float):
         if process.poll() is not None:
             raise RuntimeError(f"測試後端啟動失敗（exit {process.returncode}），請查看 server.log")
         try:
-            return await asyncio.wait_for(websockets.connect(url, max_size=10 * 1024 * 1024), timeout=2)
+            front_port = os.environ.get("FRONTEND_PORT", dotenv_values(ENV_PATH).get("FRONTEND_PORT") or "5173")
+            return await asyncio.wait_for(websockets.connect(url, max_size=10 * 1024 * 1024,
+                origin=f"http://localhost:{front_port}"), timeout=2)
         except (OSError, TimeoutError, websockets.InvalidHandshake):
             await asyncio.sleep(0.2)
     raise TimeoutError(f"測試後端在 {timeout:g} 秒內未就緒，請查看 server.log")
@@ -468,6 +475,10 @@ def read_turn_trace(run_dir: Path, turn_id: str | None) -> list[dict]:
         except (ValueError, KeyError):
             continue  # 程序中斷留下的未完成一行不當成證據。
     context = next((item for item in records if item["stage"] == "chat_context"), None)
+    requests = [item for item in records if item["stage"] == "chat_request"]
+    if context is not None and requests:
+        final = requests[-1]
+        context.update({key: final[key] for key in ("messages", "message_origins", "system_retained_ranges", "token_estimate")})
     retrieval = next((item for item in records if item["stage"] == "retrieval"), None)
     if context is not None:
         context["injected_memory_ids"] = []
@@ -686,6 +697,21 @@ def write_memory_report(records: list[dict], path: Path, metadata: dict, status:
     def cell(value):
         return markdown_cell(value, limit=100000)
 
+    tools_summary = summarize_tools(records)
+    lines.extend(["## Tools 與後端取得", "",
+        f"- 選擇／實際執行 {tools_summary['selected_calls']}/{tools_summary['executed_calls']} 次；工具覆蓋 {cell(tools_summary['names'])}。",
+        f"- 後端狀態 {cell(tools_summary['backend_statuses'])}；receipt 交付 {tools_summary['receipts_delivered']}；圖片接受 {tools_summary['images_accepted']}。",
+        "- 截圖測試來源為後端載入 sample/擷取.JPG；此項不代表原生 Windows 當下螢幕擷取。", "",
+        "| Case／Step | 快照／工具提供 | AI 自由選擇 | 後端取得 | 模型交付 | 語意驗收 |",
+        "|---|---|---|---|---|---|"])
+    for record in records:
+        if record.get("action") == "compress":
+            continue
+        context = next((item for item in record.get("trace", []) if item.get("stage") == "chat_context"), {})
+        tools = record.get("tools", collect_tools(record))
+        origins = context.get("message_origins", [])
+        lines.append(f"| {record.get('case_id', 'legacy')} / {record['turn']} | {'已注入' if 'runtime_context' in origins else '未提供'} / {cell(context.get('tools_available', []))} | {cell([t['name'] for t in tools]) if tools else '未呼叫'} | {cell([t['backend_status'] for t in tools])} | {cell([dict(receipt=t['receipt_delivered'], image=t['image_accepted']) for t in tools])} | {cell(record.get('semantic_review', {}).get('verdict', '未評分'))} |")
+    lines.append("")
     for group in ("short_term", "long_term", "mixed", None):
         selected = [c for c in materials if c.get("case_group") == group]
         if not selected:
@@ -728,14 +754,23 @@ def write_memory_report(records: list[dict], path: Path, metadata: dict, status:
             if record.get("action") == "compress":
                 continue
             lines.extend(["", f"### Step {record['turn']}", ""])
-            if record.get("phase") in {"probe", "recall_probe"} or not any(s["phase"] in {"probe", "recall_probe"} for s in case.get("conversation", [])):
+            if record.get("phase") in {"probe", "recall_probe"} or "expected_tools" in record or not any(s["phase"] in {"probe", "recall_probe"} for s in case.get("conversation", [])):
                 lines.extend(["回答結果：" + cell(answer_result(record)), "",
                     "最終應該答案／對話：" + cell(record.get("expected_result", case.get("expected_result"))), ""])
             context = next((t for t in record.get("trace", []) if t.get("stage") == "chat_context"), {})
             retrieval = next((t for t in record.get("trace", []) if t.get("stage") == "retrieval"), {})
             lines.extend(["短期來源（裁切後）：", "",
                           "- Summary：" + cell(context.get("retained_summary")),
-                          "- History：" + cell(" / ".join(f"{m['role']}: {m['content']}" for m in context.get("messages", [])[1:-1])), ""])
+                          "- History：" + cell(" / ".join(f"{m['role']}: {m['content']}" for m, origin in
+                              zip(context.get("messages", []), context.get("message_origins", [])) if origin == "history")),
+                          "- 當輪快照：" + cell(context.get("runtime_context")), ""])
+            for tool in record.get("tools", []):
+                data = tool["result"].get("data") or {}
+                lines.extend(["- Tool：" + cell(tool["name"]) + "；call ID：" + cell(tool["call_id"]),
+                    "  - 後端參數／取得：" + cell(tool["arguments"]) + " / " + cell([tool["executed"], tool["backend_status"], tool["backend_reason"]]),
+                    "  - 耗時／後端結果：" + cell(tool["duration_sec"]) + " 秒 / " + cell(tool["result"]),
+                    "  - 來源／圖片：" + cell(data.get("source")) + " / " + cell({key: data.get(key) for key in ("width", "height", "image_sha256")}) + f" / {tool['image_bytes']} bytes",
+                    "  - receipt／圖片交付：" + cell([tool["receipt_delivered"], tool["delivery_status"], tool["delivery_reason"], tool["image_accepted"]])])
             for fact in record.get("source_evidence", []):
                 source = case["conversation"][fact["source_step"] - 1]["input"]
                 lines.append(f"- 來源 Step {fact['source_step']} / {fact['source']}：{cell(source)}；實際位置：{cell(fact['actual'])}")
@@ -847,9 +882,10 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
 
     def persist(*, render_reports: bool = False):
         metadata["memory_stability"] = summarize_memory_stability(records)
+        metadata["tools"] = summarize_tools(records)
         metadata["hard_checks"] = {layer: dict(Counter(r.get("hard_status", {}).get(layer, "not_checked")
             for r in records if r.get("action") != "compress")) for layer in
-            ("execution_status", "isolation_status", "memory_evidence_status", "context_evidence_status")}
+            ("execution_status", "isolation_status", "memory_evidence_status", "context_evidence_status", "tool_evidence_status")}
         metadata.update(status=status, error=error, executed_cases=len({r["case_id"] for r in records}),
                         executed_turns=sum(r.get("action") != "compress" for r in records), updated_at=timestamp())
         (run_dir / "run.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -923,7 +959,11 @@ async def run(args: argparse.Namespace) -> tuple[Path, str]:
                     db_state = record.pop("_db_state", None) or {}
                     if not legacy:
                         record["expected_result"] = step.get("expected_result", case["expected_result"])
+                        if "expected_tools" in step:
+                            record["expected_tools"] = step["expected_tools"]
                         check_turn(case, step, record, [r for r in records if r.get("case_id") == case["case_id"]], db_state)
+                    else:
+                        record["tools"] = collect_tools(record)
                 record.update(case_id=case["case_id"], phase=step["phase"], case_group=case["case_group"],
                               test_mode=step_mode(case, step).value if not legacy else "normal")
                 if record["errors"] or any(v == "failed" for v in record.get("hard_status", {}).values()):

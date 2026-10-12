@@ -6,6 +6,7 @@ import re
 import json
 import time
 import base64
+import hashlib
 from collections.abc import Awaitable, Callable
 from difflib import SequenceMatcher
 
@@ -20,7 +21,8 @@ from core.config import (
 )
 from core.utils import strip_thinking, get_msg_field
 from infrastructure.ai_client import chat_create_with_fallback, no_thinking_extra_body
-from core.prompt_logger import trace
+from core.prompt_logger import trace, test_log_dir
+from domain.runtime_context import DESKTOP_TOOL_KINDS, context_status, safe_tool_result, snapshot_context_status
 
 import tiktoken
 
@@ -127,7 +129,8 @@ def _trim_structured_prompt(prompt: str, token_budget: int) -> str:
 
 
 def build_chat_context(prompt: str, history: list[dict], user_text: str, budget: int = CHAT_CONTEXT_TOKEN_BUDGET,
-                       *, runtime_context: str | None = None, tools: list | None = None) -> list[dict]:
+                       *, runtime_context: str | None = None, tools: list | None = None,
+                       diagnostics: dict | None = None) -> list[dict]:
     """保留本輪輸入，從最新已完成對話往前納入，固定總 token 預算。"""
     system = {"role": "system", "content": prompt}
     user = {"role": "user", "content": user_text}
@@ -184,6 +187,16 @@ def build_chat_context(prompt: str, history: list[dict], user_text: str, budget:
         if estimate_token_count([system, dialogue_item, *selected, *external, user]) > budget:
             break
         selected.insert(0, dialogue_item)
+    if diagnostics is not None:
+        diagnostics.pop("desktop_context", None)
+        diagnostics.update(system_prompt=prompt, message_origins=["system", *["history"] * len(selected),
+                           *["runtime_context"] * len(external), "input"])
+        if runtime_context:
+            try:
+                projection = json.loads(external[0]["content"].split("\n", 1)[1])
+                diagnostics["desktop_context"] = snapshot_context_status(projection)
+            except (IndexError, ValueError, KeyError, TypeError):
+                diagnostics["desktop_context"] = context_status("desktop", "omitted", reason="context_budget")
     return [system, *selected, *external, user]
 
 
@@ -280,10 +293,85 @@ class _VisibleTextFilter:
         return tail if "<" not in tail else ""
 
 
-async def stream_agent_a(messages: list, send_chunk: Callable[[str], Awaitable[None]], *, context_tools=None) -> str:
+def _trace_request(messages, diagnostics, *, tool_names=()):
+    """記錄真正送出的 context；圖片保留雜湊，標題保留長度／雜湊。"""
+    if test_log_dir() is None:
+        return
+    safe = []
+    for message in messages:
+        item = dict(message)
+        if item.get("role") == "tool":
+            item["content"] = json.dumps(safe_tool_result(json.loads(item["content"])), ensure_ascii=False)
+        elif isinstance(item.get("content"), list):
+            content = []
+            for part in item["content"]:
+                if part.get("type") == "image_url":
+                    payload = base64.b64decode(part["image_url"]["url"].split(",", 1)[1])
+                    content.append({"type": "image_url", "image_bytes": len(payload),
+                                    "image_sha256": hashlib.sha256(payload).hexdigest()})
+                else:
+                    content.append(dict(part))
+            item["content"] = content
+        safe.append(item)
+    original = (diagnostics or {}).get("system_prompt", messages[0].get("content", ""))
+    trace("chat_request", {"messages": safe, "message_origins": (diagnostics or {}).get("message_origins", []),
+        "system_retained_ranges": retained_prompt_ranges(original, messages[0].get("content", "")),
+        "token_estimate": estimate_token_count(messages), "tools": list(tool_names)})
+
+
+def _request_context_statuses(messages: list, diagnostics=None) -> list[dict]:
+    """從真正的 request 投影狀態；擷取成功不代表圖片／工具結果仍在 request。"""
+    statuses = {}
+    if (diagnostics or {}).get("desktop_context"):
+        statuses["desktop"] = diagnostics["desktop_context"]
+    calls = {call["id"]: call["function"]["name"] for message in messages
+             for call in message.get("tool_calls", [])}
+    has_image = any(isinstance(message.get("content"), list) and any(
+        part.get("type") == "image_url" for part in message["content"]) for message in messages)
+    for message in messages:
+        kind = DESKTOP_TOOL_KINDS.get(calls.get(message.get("tool_call_id")))
+        if message.get("role") != "tool" or kind is None:
+            continue
+        receipt = json.loads(message["content"])
+        reason = receipt.get("reason")
+        status = "ready" if receipt["status"] == "ok" else "unavailable"
+        if reason in {"tool_result_budget", "image_context_budget", "tool_context_budget"}:
+            status = "omitted"
+        if kind == "screenshot" and status == "ready" and not has_image:
+            status, reason = "omitted", "image_not_in_request"
+        # 同一批次的超限／重複呼叫不能遮蔽合法成功結果。
+        if kind not in statuses or status == "ready" or statuses[kind]["status"] != "ready":
+            statuses[kind] = context_status(kind, status, receipt, reason=reason)
+    return list(statuses.values())
+
+
+async def _create_context_request(messages, diagnostics, on_status, **kwargs):
+    statuses = _request_context_statuses(messages, diagnostics) if on_status is not None else []
+    for payload in statuses:
+        await on_status({**payload, "status": "sending" if payload["status"] == "ready" else payload["status"]})
+    try:
+        response = await chat_create_with_fallback(messages=messages, **kwargs)
+    except Exception:
+        for payload in statuses:
+            if payload["status"] == "ready":
+                await on_status({**payload, "status": "unconfirmed", "reason": "request_failed"})
+        raise
+    try:
+        for payload in statuses:
+            if payload["status"] == "ready":
+                await on_status({**payload, "status": "sent"})
+    except BaseException:
+        if kwargs.get("stream") and hasattr(response, "close"):
+            await response.close()
+        raise
+    return response
+
+
+async def stream_agent_a(messages: list, send_chunk: Callable[[str], Awaitable[None]], *, context_tools=None,
+                         context_diagnostics=None, temperature: float = 0.85, on_context_status=None) -> str:
     """安全地逐段轉送 Chat 可見文字，完整結果供歷史與 TTS 使用。"""
     if context_tools is not None:
-        return await _run_context_tools(messages, send_chunk, context_tools)
+        return await _run_context_tools(messages, send_chunk, context_tools, context_diagnostics, on_context_status)
     started = time.monotonic()
     diagnostic = {"configured_model": CHAT_MODEL_NAME, "model": None, "usage": None,
                   "finish_reason": None, "error": None}
@@ -291,9 +379,10 @@ async def stream_agent_a(messages: list, send_chunk: Callable[[str], Awaitable[N
     chunks: list[str] = []
     visible_filter = _VisibleTextFilter()
     try:
-        stream = await chat_create_with_fallback(
-            model=CHAT_MODEL_NAME, role="chat", messages=messages,
-            temperature=0.85, extra_body=no_thinking_extra_body(CHAT_PROVIDER),
+        _trace_request(messages, context_diagnostics)
+        stream = await _create_context_request(messages, context_diagnostics, on_context_status,
+            model=CHAT_MODEL_NAME, role="chat",
+            temperature=temperature, extra_body=no_thinking_extra_body(CHAT_PROVIDER),
             max_tokens=400, stream=True,
         )
         async for chunk in stream:
@@ -334,15 +423,17 @@ def _visible_reply(text: str) -> str:
     return (filtered.feed(text) + filtered.finish()).strip()
 
 
-def _tool_context(messages: list, assistant: dict, receipts: list[dict], images: list[dict]) -> list:
+def _tool_context(messages: list, assistant: dict, receipts: list[dict], images: list[dict],
+                  *, initial_diagnostics=None, final_diagnostics=None) -> list:
     extension = [assistant, *receipts, *images]
     remaining = CHAT_CONTEXT_TOKEN_BUDGET - estimate_token_count(extension)
     if remaining < 512:
         raise ValueError("tool_context_budget")
-    history = list(messages[1:-1])
-    runtime = None
-    if history and history[-1].get("content", "").startswith("本輪暫時桌面資料"):
-        runtime = history.pop()["content"]
+    origins = (initial_diagnostics or {}).get("message_origins", [])
+    history = [message for index, message in enumerate(messages[1:-1], 1)
+               if not origins or origins[index] == "history"]
+    runtime = next((message["content"] for index, message in enumerate(messages)
+                    if origins and origins[index] == "runtime_context"), None)
     prompt = "本輪工具批次已結束，不會在回覆後繼續執行；依成功結果回答，失敗／未知內容不可捏造。"
     for call, receipt in zip(assistant["tool_calls"], receipts):
         data = json.loads(receipt["content"])
@@ -356,28 +447,39 @@ def _tool_context(messages: list, assistant: dict, receipts: list[dict], images:
                 prompt += "\n本輪氣象資料是格點預報，不是實測；未提供降水量／機率，不能宣稱完全不下雨或一定不用帶傘。"
         elif name == "capture_screenshot" and data.get("status") != "ok":
             prompt += "\n本輪沒有可判讀的圖片；不能宣稱看見畫面、辨認錯誤或已完成畫面檢查。"
+        elif name == "capture_screenshot":
+            prompt += "\n簡短描述至少兩項互相獨立的可見線索，例如主要視窗內容與另一個區塊或背景細節；不只列應用名稱。對使用者正在做什麼的感覺只能保留為看起來或可能，不斷言意圖或工作已完成。"
+            prompt += "文字太小或內容不清楚時，只描述可辨識的外觀；不要猜精確文字、檔名、指令或用途。"
+        elif name == "get_activity_context" and data.get("status") == "ok":
+            prompt += "\nforeground.title 是本輪實際取得的視窗標題；使用者詢問標題時完整報出原文，不能只猜應用、概括內容或拒絕提供已知答案。標題本身不能證明使用者意圖或操作經過。"
     prompt += "\n" + messages[0]["content"]
     base = build_chat_context(prompt, history, messages[-1]["content"],
-                              remaining, runtime_context=runtime)
+                              remaining, runtime_context=runtime, diagnostics=final_diagnostics)
+    if base[-1]["content"] != messages[-1]["content"]:
+        raise ValueError("tool_context_budget")
+    if final_diagnostics is not None:
+        final_diagnostics["system_prompt"] = (initial_diagnostics or {}).get("system_prompt", messages[0]["content"])
+        final_diagnostics["message_origins"] += ["tool_call", *["tool_result"] * len(receipts), *["tool_image"] * len(images)]
     return [*base, *extension]
 
 
-async def _run_context_tools(messages, send_chunk, tools) -> str:
+async def _run_context_tools(messages, send_chunk, tools, diagnostics=None, on_context_status=None) -> str:
     schemas = tools.schemas
     schema_tokens = estimate_token_count([{"role": "system", "content": json.dumps(schemas, ensure_ascii=False)}])
     if estimate_token_count(messages) + schema_tokens > CHAT_CONTEXT_TOKEN_BUDGET:
-        return await stream_agent_a(messages, send_chunk)
+        return await stream_agent_a(messages, send_chunk, context_diagnostics=diagnostics, on_context_status=on_context_status)
     started = time.monotonic()
     try:
-        response = await chat_create_with_fallback(
-            model=CHAT_MODEL_NAME, role="chat", messages=messages, tools=schemas,
-            tool_choice="auto", parallel_tool_calls=False, temperature=0.85,
+        _trace_request(messages, diagnostics, tool_names=[schema["function"]["name"] for schema in schemas])
+        response = await _create_context_request(messages, diagnostics, on_context_status,
+            model=CHAT_MODEL_NAME, role="chat", tools=schemas,
+            tool_choice="auto", parallel_tool_calls=False, temperature=0.35,
             max_tokens=512, stream=False, timeout=35,
         )
     except BadRequestError:
         fallback = [dict(message) for message in messages]
         fallback[0]["content"] += "\n本輪 provider 未接受工具請求，無工具已執行；不可宣稱查詢成功。"
-        return await stream_agent_a(fallback, send_chunk)
+        return await stream_agent_a(fallback, send_chunk, context_diagnostics=diagnostics, on_context_status=on_context_status)
     trace("context_tool_selection", {
         "duration_sec": round(time.monotonic() - started, 4),
         "model": getattr(response, "model", None),
@@ -389,19 +491,28 @@ async def _run_context_tools(messages, send_chunk, tools) -> str:
         reply = _visible_reply(choice.message.content or getattr(choice.message, "refusal", None) or "")
         if reply:
             await send_chunk(reply)
+            trace("chat", {"configured_model": CHAT_MODEL_NAME, "model": getattr(response, "model", None), "finish_reason": choice.finish_reason,
+                "duration_sec": round(time.monotonic() - started, 4), "error": None,
+                "output_token_estimate": estimate_token_count([{"role": "assistant", "content": reply}]),
+                "usage": response.usage.model_dump() if getattr(response, "usage", None) else None})
             return reply
     if not choice or choice.finish_reason == "length" or not calls:
         fallback = [dict(message) for message in messages]
         fallback[0]["content"] += "\n本輪工具選擇未完成，沒有工具已執行。"
-        return await stream_agent_a(fallback, send_chunk)
+        return await stream_agent_a(fallback, send_chunk, context_diagnostics=diagnostics, on_context_status=on_context_status)
     native_calls = [call.model_dump(exclude_none=True) for call in calls]
     ids = [call.get("id") for call in native_calls]
     if (len(native_calls) > 8 or any(not isinstance(value, str) or not 0 < len(value) <= 128 for value in ids)
             or len(set(ids)) != len(ids) or any(call.get("type") != "function" for call in native_calls)
+            or any(not isinstance(call.get("function"), dict)
+                   or not isinstance(call["function"].get("name"), str)
+                   or not isinstance(call["function"].get("arguments"), str) for call in native_calls)
             or estimate_token_count([{"role": "assistant", "tool_calls": native_calls}]) > 1500):
         fallback = [dict(message) for message in messages]
         fallback[0]["content"] += "\n本輪收到不合法工具要求，沒有工具已執行。"
-        return await stream_agent_a(fallback, send_chunk)
+        return await stream_agent_a(fallback, send_chunk, context_diagnostics=diagnostics, on_context_status=on_context_status)
+    trace("context_tool_calls", {"calls": [{"id": call["id"], "name": call["function"]["name"]}
+                                          for call in native_calls]})
     from domain.runtime_context import result
     assistant = {"role": "assistant", "content": None, "tool_calls": native_calls}
     minimal_receipts = [{"role": "tool", "tool_call_id": call["id"],
@@ -411,11 +522,17 @@ async def _run_context_tools(messages, send_chunk, tools) -> str:
     if estimate_token_count(minimal_receipts) > result_budget:
         fallback = [dict(message) for message in messages]
         fallback[0]["content"] += "\n本輪工具要求超過結果預算，沒有工具已執行。"
-        return await stream_agent_a(fallback, send_chunk)
-    outputs = await tools.execute_batch(native_calls)
+        return await stream_agent_a(fallback, send_chunk, context_diagnostics=diagnostics, on_context_status=on_context_status)
+    if on_context_status is not None:
+        outputs = await tools.execute_batch(native_calls, on_status=on_context_status)
+    else:
+        outputs = await tools.execute_batch(native_calls)
     receipts, images, image_receipt_indices = [], [], []
+    activity_titles = {}
     for index, (call, output) in enumerate(zip(native_calls, outputs)):
         image = output.pop("image", None)
+        if call["function"]["name"] == "get_activity_context" and output.get("status") == "ok":
+            activity_titles[call["id"]] = (output.get("data") or {}).get("foreground", {}).get("title")
         serialized = json.dumps(output, ensure_ascii=False, separators=(",", ":"))
         receipt = {"role": "tool", "tool_call_id": call["id"], "content": serialized}
         cost = estimate_token_count([receipt])
@@ -435,26 +552,55 @@ async def _run_context_tools(messages, send_chunk, tools) -> str:
                     "detail": "low",
                 }},
             ]})
-        trace("context_tool", {"name": call["function"]["name"], "status": output["status"],
-                               "reason": output.get("reason"), "image_bytes": len(image) if image else 0})
+        trace("context_tool", {"call_id": call["id"], "name": call["function"]["name"], "status": output["status"],
+                               "reason": output.get("reason"), "image_bytes": len(image) if image else 0,
+                               "result": safe_tool_result(output)})
     def discard_images(reason):
-        trace("context_tool_image", {"status": "unsupported", "reason": reason})
+        trace("context_tool_image", {"call_ids": [receipts[index]["tool_call_id"] for index in image_receipt_indices],
+                                     "status": "unsupported", "reason": reason})
         for index in image_receipt_indices:
             receipts[index]["content"] = json.dumps(result("unsupported", reason=reason), ensure_ascii=False)
         images.clear()
 
+    final_diagnostics = {}
+    def final_context():
+        return _tool_context(messages, assistant, receipts, images,
+                             initial_diagnostics=diagnostics, final_diagnostics=final_diagnostics)
     try:
-        final_messages = _tool_context(messages, assistant, receipts, images)
+        final_messages = final_context()
     except ValueError:
-        discard_images("image_context_budget")
-        final_messages = _tool_context(messages, assistant, receipts, images)
+        final_messages = None
+        if images:
+            discard_images("image_context_budget")
+            try:
+                final_messages = final_context()
+            except ValueError:
+                pass
+        if final_messages is None:
+            trace("context_tool_delivery", {"call_ids": [call["id"] for call in native_calls],
+                "receipt_ids": [], "image_accepted": False, "image_call_ids": [], "reason": "tool_context_budget"})
+            fallback = [dict(message) for message in messages]
+            fallback[0]["content"] += "\n工具已嘗試執行，但結果超出本輪預算，沒有結果或圖片交付；不能宣稱已看見或採用結果。"
+            if on_context_status is not None:
+                for call in native_calls:
+                    kind = DESKTOP_TOOL_KINDS.get(call["function"]["name"])
+                    if kind is not None:
+                        await on_context_status(context_status(kind, "omitted", reason="tool_context_budget"))
+            return await stream_agent_a(fallback, send_chunk, context_diagnostics=diagnostics, on_context_status=on_context_status)
     try:
-        return await stream_agent_a(final_messages, send_chunk)
+        reply = await stream_agent_a(final_messages, send_chunk, context_diagnostics=final_diagnostics,
+                                     temperature=0.35, on_context_status=on_context_status)
     except BadRequestError:
         if not images:
             raise
         discard_images("vision_not_supported")
-        return await stream_agent_a(_tool_context(messages, assistant, receipts, images), send_chunk)
+        reply = await stream_agent_a(final_context(), send_chunk, context_diagnostics=final_diagnostics,
+                                     temperature=0.35, on_context_status=on_context_status)
+    trace("context_tool_delivery", {"call_ids": [call["id"] for call in native_calls],
+        "image_accepted": bool(images), "image_call_ids": [receipts[index]["tool_call_id"] for index in image_receipt_indices] if images else [],
+        "receipt_ids": [receipt["tool_call_id"] for receipt in receipts],
+        "title_in_answer": {call_id: title in reply for call_id, title in activity_titles.items() if title}})
+    return reply
 
 async def collect_agent_a(messages: list) -> str:
     """保留既有收集介面供隔離測試與非串流呼叫。"""
