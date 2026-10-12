@@ -75,10 +75,10 @@ cp .env.example .env
 # OPENROUTER_API_KEY=your_openrouter_key  # JEV_AI_API_KEY 留空時沿用
 # CHAT_AI_API_KEY=your_chat_key
 # CHAT_AI_BASE_URL=https://api.openai.com/v1
-# CHAT_AI_MODEL=gpt-4o-mini
+# CHAT_AI_MODEL=gpt-6-luna
 # MEMORY_AI_API_KEY=your_memory_key
 # MEMORY_AI_BASE_URL=https://api.openai.com/v1
-# MEMORY_AI_MODEL=gpt-4o-mini
+# MEMORY_AI_MODEL=gpt-6-luna
 # BACKEND_PORT=9000
 # FRONTEND_PORT=5287
 # JEV 固定使用 SystemOne 請求格式；可用 JEV_AI_BASE_URL、JEV_AI_MODEL 覆寫預設。

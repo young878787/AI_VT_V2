@@ -18,7 +18,9 @@ class AIRequestParamsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(no_thinking_extra_body(provider),
                              {"chat_template_kwargs": {"enable_thinking": False}})
         self.assertEqual(no_thinking_extra_body("qwen"), {"enable_thinking": False})
-        for provider in ("openai", "openrouter", "google"):
+        self.assertEqual(provider_from_url("https://api.openai.com/v1"), "openai")
+        self.assertEqual(no_thinking_extra_body("openai"), {"reasoning_effort": "none"})
+        for provider in ("openrouter", "google"):
             self.assertEqual(no_thinking_extra_body(provider), {})
 
     async def test_chat_and_summary_disable_thinking_without_losing_parameters(self):
@@ -43,7 +45,7 @@ class AIRequestParamsTests(unittest.IsolatedAsyncioTestCase):
             await ai_client.chat_create_with_fallback(role="chat", model="test", max_tokens=400)
         self.assertEqual(create.call_args.kwargs["max_completion_tokens"], 400)
         self.assertNotIn("max_tokens", create.call_args.kwargs)
-        self.assertNotIn("extra_body", create.call_args.kwargs)
+        self.assertEqual(create.call_args.kwargs["extra_body"], {"reasoning_effort": "none"})
 
     async def test_memory_agent_disables_thinking_and_keeps_single_tool_budget(self):
         settings = SimpleNamespace(memory_base_url="https://remote.example/v1", memory_api_key="test-key", memory_model="test-model")
@@ -61,5 +63,20 @@ class AIRequestParamsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request["tool_choice"], "required")
             self.assertFalse(request["parallel_tool_calls"])
             self.assertEqual(request["max_completion_tokens"], 1024)
+        finally:
+            await agent.client.close()
+
+    async def test_openai_memory_agent_disables_reasoning(self):
+        settings = SimpleNamespace(memory_base_url="https://api.openai.com/v1", memory_api_key="test-key", memory_model="gpt-6-luna")
+        tools = [{"type": "function", "function": {"name": "finish", "parameters": {"type": "object", "properties": {}}}}]
+        response = SimpleNamespace(choices=[SimpleNamespace(finish_reason="tool_calls", message=SimpleNamespace(tool_calls=[
+            SimpleNamespace(id="call1", function=SimpleNamespace(name="finish", arguments='{}'))]))], usage=None)
+        agent = MemoryAgentClient(settings)
+        diagnostic = {"calls": 0, "latency_ms": 0, "input_token_estimate": 0}
+        try:
+            with patch.object(agent.client.chat.completions, "create", AsyncMock(return_value=response)) as create:
+                await agent.call([{"role": "user", "content": "synthetic"}], tools, diagnostic)
+            self.assertEqual(create.call_args.kwargs["extra_body"], {"reasoning_effort": "none"})
+            self.assertEqual(create.call_args.kwargs["max_completion_tokens"], 1024)
         finally:
             await agent.client.close()

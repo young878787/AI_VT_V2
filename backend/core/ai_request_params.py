@@ -27,4 +27,6 @@ def no_thinking_extra_body(provider: str) -> dict:
         return {"chat_template_kwargs": {"enable_thinking": False}}
     if provider == "qwen":
         return {"enable_thinking": False}
+    if provider == "openai":
+        return {"reasoning_effort": "none"}
     return {}
