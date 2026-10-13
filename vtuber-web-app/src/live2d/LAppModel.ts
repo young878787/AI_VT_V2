@@ -434,7 +434,7 @@ export class LAppModel extends CubismUserModel {
       const texturePath = `${this._modelHomeDir}${textureFileName}`;
       console.log(`[Live2D] 載入紋理 ${modelTextureNumber}: ${texturePath}`);
 
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
         this._textureManager.createTextureFromPngFile(
           texturePath,
           usePremultiply,
@@ -446,10 +446,12 @@ export class LAppModel extends CubismUserModel {
                 textureInfo.id
               );
             } else {
-              console.warn(`[Live2D] ✗ 紋理 ${modelTextureNumber} 綁定失敗`);
+              reject(new Error(`紋理 ${modelTextureNumber} 綁定失敗`));
+              return;
             }
             resolve();
-          }
+          },
+          reject,
         );
       });
 
@@ -618,6 +620,10 @@ export class LAppModel extends CubismUserModel {
     this._modelPositionX = x;
     this._modelPositionY = y;
     this.updateModelMatrix();
+  }
+
+  public getModelPosition(): { x: number; y: number } {
+    return { x: this._modelPositionX, y: this._modelPositionY };
   }
 
   /**

@@ -18,19 +18,20 @@ bun run dev
 | 路徑（相對本目錄） | 用途 |
 | --- | --- |
 | `public/Resources/Rushia/RushiaHD.model3.json` | 模型入口，引用 Moc、貼圖、物理、原生動作與表情 |
+| `public/Resources/Rushia_hd/RushiaHD.model3.json` | 工作室可切換的新版模型入口 |
 | `public/Core/live2dcubismcore.js` | Cubism Core，由 `index.html` 載入 |
 | `public/MotionSyncCore/live2dcubismmotionsynccore.js` | `index.html` 引用的 MotionSync Core；目前 TTS 口型由 `TTSPlayer` 音量分析控制 |
 | `public/Shaders/WebGL/` | WebGL shader 資源 |
 | `src/live2d/framework/` | Cubism Framework；不直接修改 SDK 原始碼 |
 
-模型固定為 **Rushia**，前端沒有選模型、匯入或刪除模型功能。[LAppDefine.ts](src/live2d/LAppDefine.ts) 的 `FixedModel` 與 [LAppLive2DManager.ts](src/live2d/LAppLive2DManager.ts) 負責唯一模型的載入；載入失敗會顯示錯誤，不切換到其他角色。後端聊天輸入及表情 debug API 也固定使用 Rushia。
+角色固定為 **Rushia**；表情工作室可切換 `Rushia`、`Rushia_hd` 兩份資源，預設使用 `Rushia`。[LAppDefine.ts](src/live2d/LAppDefine.ts) 的 `AvailableModels` 與 [LAppLive2DManager.ts](src/live2d/LAppLive2DManager.ts) 管理同一個舞台實例；新資源完整載入後才替換並釋放原模型，失敗時保留原模型並可重新選擇重試。後端聊天輸入及表情 debug API 共用 `Rushia` 角色名稱與 compiler，沒有分開的參數管線。
 
 ## 畫面與操作
 
 - **主舞台**：桌機為角色與右側對話，窄螢幕改為上下排列。取景由 [modelFraming.ts](src/live2d/modelFraming.ts) 依畫布比例計算，以頭頂留白為縮放錨點；手動縮放為預設構圖的 `0.75～1.25` 倍。
 - **重置構圖**：回復預設位置與縮放。模型拖移預設關閉，可在設定中開啟；開啟後可拖移及使用滾輪縮放。
 - **設定**：包含畫面與互動、原生參數、情緒狀態。抽屜開關不改變舞台畫布尺寸。
-- **表情工作室**：預覽日常表情、情緒及動作，提供輕柔／自然／鮮明三種強度。
+- **表情工作室**：切換 `Rushia`／`Rushia_hd`，預覽日常表情、情緒及動作，提供輕柔／自然／鮮明三種強度。切換保留構圖並重播同一份表情計畫，供比較相同參數的表現；目前選擇不跨重新整理保存。
 - **記憶圖書館**：查看 owner-scoped 長期記憶、版本與來源摘要，以及已保存的聊天 session；可匯出 JSONL 向量、刪除指定記憶／session，或在危險區清空長期資料。後端未開啟聊天持久化時，聊天紀錄分頁會保持空白。
 
 記憶圖書館的管理 API 預設只接受 localhost 請求（`MEMORY_LIBRARY_LOCAL_ONLY=true`）。它使用目前後端固定的 `MEMORY_DEFAULT_USER_ID`／`MEMORY_DEFAULT_CHARACTER_ID`，前端不能切換 owner；遠端部署前需先加入正式認證層。
@@ -119,7 +120,7 @@ bun run dev
 
 ### 原生資源與參數限制
 
-`RushiaHD.model3.json` 引用的 `.motion3.json`／`.exp3.json` 會被載入，但聊天演出主要使用上面的程序化 plan。`motionPlan` 不是原生 motion 檔名；新增這些表情不需要另外產生 `.exp3.json`，也不代表聊天會自動選播模型附帶的原生動作。
+`RushiaHD.model3.json` 引用的 `.motion3.json` 會被載入；目前 runtime 尚未載入原生 `.exp3.json`，工作室與聊天演出共用上面的程序化 plan。`motionPlan` 不是原生 motion 檔名；新增這些表情不需要另外產生 `.exp3.json`，也不代表聊天會自動選播模型附帶的原生動作。`Rushia_hd` 新增的嘟嘴參數可由原生參數面板調整，目前尚未接入共用表情計畫。
 
 - Rushia 沒有 `ParamEyeLSmile`、`ParamEyeRSmile`、`ParamTere`。笑眼透過短暫閉合眼睛表現，臉紅使用 `ParamCheek`；契約中的 `eyeLSmile`／`eyeRSmile` 目前保留且 Rushia 輸出為 `0`。
 - 眼睛開合與 `mouthOpenBias` 為 `0～1`，嘴形為 `-1～1`。設計新參數時須核對模型實際原生範圍。

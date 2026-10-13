@@ -2,7 +2,7 @@
  * 應用程式狀態管理 - 使用 Zustand
  */
 import { create } from 'zustand';
-import { FixedModel } from '../live2d/LAppDefine';
+import { getDefaultModel } from '../live2d/LAppDefine';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import type { BlinkAction, ExpressionEyeMotionPlan, ExpressionIdlePlan, ExpressionMicroEvent, ExpressionMotionPlan, ExpressionPlanPayload } from '../types/expressionPlan';
 import type { EmotionSource, EmotionState } from '../types/emotionState';
@@ -49,6 +49,7 @@ interface AppState {
 
   // 固定角色名稱，供聊天與表情除錯識別模型。
   readonly currentModelName: string;
+  readonly currentModelDirectory: string;
 
   // 視線追蹤狀態
   eyeTrackingEnabled: boolean;
@@ -176,7 +177,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   emotionState: null,
   emotionSource: null,
 
-  currentModelName: FixedModel.name,
+  currentModelName: getDefaultModel().name,
+  currentModelDirectory: getDefaultModel().directory,
 
   // 動作實作
   toggleMicrophone: () =>

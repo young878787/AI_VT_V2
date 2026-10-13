@@ -3,6 +3,12 @@
 .expression-debug-panel__intro p { font-size: 13px; font-weight: 500; }
 .expression-debug-panel__intro > span { display: block; margin-top: 7px; color: var(--text-secondary); font-size: 10px; line-height: 1.6; }
 .expression-debug-panel__body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 22px 24px; display: flex; flex-direction: column; gap: 20px; }
+.expression-debug-panel__model-control { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px 12px; padding-top: 4px; }
+.expression-debug-panel__model-control label { color: #496557; font-size: 12px; }
+.expression-debug-panel__model-control select { width: 100%; min-height: 38px; border: 1px solid #a8c3b1; border-radius: 8px; padding: 7px 10px; background: #fff; color: #496557; font: inherit; font-size: 12px; }
+.expression-debug-panel__model-control select:focus-visible { outline: 2px solid #486d5b; outline-offset: 3px; }
+.expression-debug-panel__model-control select:disabled { color: #5f7667; background: #ecf2ed; cursor: wait; }
+.expression-debug-panel__model-control > span { grid-column: 1 / -1; color: #496557; font-size: 11px; }
 .expression-debug-panel__controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .expression-debug-panel__controls > span { font-size: 11px; color: var(--text-secondary); }
 .expression-debug-panel__segmented { display: flex; padding: 3px; background: #ecf2ed; border-radius: 9px; }

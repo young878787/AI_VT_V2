@@ -49,7 +49,11 @@ const { createNeutralTargetParams } = load('src/live2d/expression/expressionStat
 const defines = load('src/live2d/LAppDefine.ts');
 const fixedModel = defines.getDefaultModel();
 assert.equal(defines.getModelJsonPath(fixedModel), '/Resources/Rushia/RushiaHD.model3.json');
-assert.equal(defines.AvailableModels, undefined, 'the frontend must have no selectable model list');
+assert.deepEqual(Array.from(defines.AvailableModels, config => config.displayName), ['Rushia', 'Rushia_hd']);
+for (const config of defines.AvailableModels) {
+  assert.equal(config.name, 'Rushia', 'both resources must use the same Chat and expression compiler identity');
+  assert.equal(defines.getModelJsonPath(config), `/Resources/${config.directory}/RushiaHD.model3.json`);
+}
 
 // 縮放只改變取景大小；頭頂仍位於畫面頂部內側，且 Retina 不改構圖。
 const viewports = [[1280, 800], [768, 1024], [390, 400], [375, 700]];
@@ -192,6 +196,7 @@ function schedulerHarness() {
     isSpeaking: false,
     setAiTyping() {},
     setCompressing() {},
+    resetChatContext() {},
     appendChatMessage() {},
     setBlinkControl() {},
     setExpressionPlan(plan) {
@@ -474,4 +479,196 @@ function audioHarness(suspended = false) {
   assert.equal(h.frames.size, 0, 'the completed mouth close must not leave an animation frame queued');
 }
 
-console.log('Rushia runtime checks passed: fixed model, framing, mouth/eye composition, action timing and cancelled TTS.');
+// 模型切換採用真實 manager；只替換 WebGL／模型檔案邊界。
+{
+  const instances = [];
+  let textureGate = null;
+  let textureError = null;
+  class FakeModel {
+    released = 0;
+    width = 800;
+    height = 600;
+    scale = 1;
+    position = { x: 0, y: 0 };
+    constructor() { instances.push(this); }
+    async loadAssets(home, fileName, config) { this.home = home; this.config = config; }
+    setupRenderer(gl) { this.gl = gl; }
+    async setupTextures() {
+      if (textureGate) await textureGate.promise;
+      if (textureError) throw textureError;
+    }
+    getModelConfig() { return this.config; }
+    getCanvasWidth() { return this.width; }
+    getCanvasHeight() { return this.height; }
+    setCanvasSize(width, height) { this.width = width; this.height = height; }
+    getModelScale() { return this.scale; }
+    setModelScale(scale) { this.scale = scale; }
+    getModelPosition() { return this.position; }
+    setModelPosition(x, y) { this.position = { x, y }; }
+    release() { this.released++; }
+  }
+  const managerLoad = createLoader({
+    './LAppModel': { LAppModel: FakeModel },
+    './LAppPal': { LAppPal: { printLog() {}, printError() {} } },
+  });
+  const { LAppLive2DManager } = managerLoad('src/live2d/LAppLive2DManager.ts');
+  const manager = LAppLive2DManager.getInstance();
+  await assert.rejects(manager.loadDefaultModel(), /WebGL/);
+  manager.setGLContext({});
+  await assert.rejects(manager.loadModel('../other'), /不支援/);
+  const original = await manager.loadDefaultModel();
+  original.setCanvasSize(1200, 900);
+  original.setModelScale(1.15);
+  original.setModelPosition(0.12, -0.08);
+  assert.equal(await manager.loadDefaultModel(), original, 'selecting the active resource must not allocate another model');
+
+  textureGate = deferred();
+  const switchToHd = manager.loadModel('Rushia_hd');
+  await flushMicrotasks();
+  assert.equal(manager.getActiveModel(), original, 'the original stays visible while the new textures load');
+  assert.equal(original.released, 0);
+  await assert.rejects(manager.loadModel('Rushia'), /正在載入/);
+  textureGate.resolve();
+  const hd = await switchToHd;
+  textureGate = null;
+  assert.equal(manager.getActiveModel(), hd);
+  assert.equal(hd.home, '/Resources/Rushia_hd/');
+  assert.equal(hd.config.name, 'Rushia');
+  assert.equal(original.released, 1, 'the previous model is released after the new model is ready');
+  assert.equal(hd.width, 1200);
+  assert.equal(hd.height, 900);
+  assert.equal(hd.scale, 1.15);
+  assert.equal(hd.position.x, 0.12);
+  assert.equal(hd.position.y, -0.08);
+
+  textureError = new Error('missing texture');
+  await assert.rejects(manager.loadModel('Rushia'), /missing texture/);
+  assert.equal(manager.getActiveModel(), hd, 'failed switching keeps the working model');
+  assert.equal(hd.released, 0);
+  assert.equal(instances.at(-1).released, 1, 'a failed candidate releases its resources');
+  textureError = null;
+  const restored = await manager.loadModel('Rushia');
+  assert.equal(hd.released, 1);
+  assert.equal(manager.getActiveModel(), restored, 'switching back uses the same manager');
+
+  textureGate = deferred();
+  const cancelled = manager.loadModel('Rushia_hd');
+  await flushMicrotasks();
+  manager.release();
+  textureGate.resolve();
+  await assert.rejects(cancelled, /取消/);
+  assert.equal(manager.getActiveModel(), null, 'a late completion cannot revive a released stage');
+  assert.equal(instances.at(-1).released, 1);
+}
+
+// 切換服務使用真實 store 與 Scheduler，確認表情計畫與角色身份共用。
+{
+  const clock = new FakeClock();
+  const applied = [];
+  const models = [];
+  let gate = null;
+  let failure = null;
+  const makeModel = () => ({
+    setModelScale(value) { this.scale = value; },
+    setEyeTrackingEnabled(value) { this.tracking = value; },
+    setAutoEffectsEnabled(value) { this.autoEffects = value; },
+    setSpeaking(value) { this.speaking = value; },
+    setThinking(value) { this.thinking = value; },
+    cancelExpressionAction() {},
+    resumeAutoBlink() {},
+    applyBasePose(pose) { applied.push(pose); },
+    enqueueSequence() {},
+  });
+  let active = makeModel();
+  const manager = {
+    getActiveModel: () => active,
+    async loadModel() {
+      if (gate) await gate.promise;
+      if (failure) throw failure;
+      active = makeModel();
+      models.push(active);
+      return active;
+    },
+  };
+  const create = initializer => {
+    let state;
+    const listeners = [];
+    const getState = () => state;
+    const setState = patch => {
+      const previous = state;
+      state = { ...state, ...(typeof patch === 'function' ? patch(state) : patch) };
+      listeners.forEach(listener => listener(state, previous));
+    };
+    state = initializer(setState, getState);
+    return { getState, setState, subscribe: listener => listeners.push(listener) };
+  };
+  const serviceLoad = createLoader({
+    zustand: { create },
+    '../live2d/LAppLive2DManager': { LAppLive2DManager: { getInstance: () => manager } },
+  }, {
+    structuredClone,
+    performance: { now: () => clock.now },
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+  });
+  const { useAppStore: store } = serviceLoad('src/store/appStore.ts');
+  const { switchModel } = serviceLoad('src/services/modelService.ts');
+  const plan = makePlan();
+  store.setState({ modelLoaded: true, expressionPlan: plan, modelScale: 1.2, eyeTrackingEnabled: false, isSpeaking: true });
+  gate = deferred();
+  const switching = switchModel('Rushia_hd');
+  assert.equal(store.getState().modelLoading, true);
+  assert.equal(store.getState().modelLoaded, false);
+  await switchModel('Rushia_hd');
+  gate.resolve();
+  await switching;
+  gate = null;
+  assert.equal(models.length, 1, 'duplicate clicks during loading cannot allocate another model');
+  assert.equal(store.getState().currentModelDirectory, 'Rushia_hd');
+  assert.equal(store.getState().currentModelName, 'Rushia');
+  assert.equal(store.getState().modelLoaded, true);
+  assert.equal(store.getState().modelLoading, false);
+  assert.equal(active.scale, 1.2);
+  assert.equal(active.tracking, false);
+  assert.equal(active.speaking, true);
+  // VM 邊界的原型不同；以同一 realm 的 structured clone 比較完整資料。
+  assert.deepEqual(structuredClone(applied.at(-1)), structuredClone(plan.basePose),
+    'switching replays the same expression through the shared Scheduler');
+  assert.deepEqual(structuredClone(store.getState().expressionPlan), structuredClone(plan),
+    'switching must not change shared parameter values');
+  await switchModel('Rushia_hd');
+  await switchModel('../other');
+  assert.equal(models.length, 1);
+
+  failure = new Error('missing texture');
+  await switchModel('Rushia');
+  assert.equal(store.getState().currentModelDirectory, 'Rushia_hd');
+  assert.equal(store.getState().modelLoaded, true);
+  assert.match(store.getState().modelError, /仍使用 Rushia_hd/);
+  assert.deepEqual(structuredClone(applied.at(-1)), structuredClone(plan.basePose),
+    'failed switching restores the shared expression on the original model');
+  failure = null;
+  await switchModel('Rushia');
+  assert.equal(store.getState().currentModelDirectory, 'Rushia');
+  assert.equal(store.getState().modelError, null);
+  assert.equal(store.getState().currentModelName, 'Rushia');
+}
+
+// 圖片缺檔須讓 setupTextures 拒絕，避免切換永久停在載入中。
+{
+  const images = [];
+  const textureLoad = createLoader({}, {
+    Image: class { constructor() { images.push(this); } },
+    console: { error() {} },
+  });
+  const { LAppTextureManager } = textureLoad('src/live2d/LAppTextureManager.ts');
+  const textureModel = Object.create(LAppModel.prototype);
+  textureModel._modelHomeDir = '/Resources/Rushia_hd/';
+  textureModel._modelSetting = { getTextureCount: () => 1, getTextureFileName: () => 'missing.png' };
+  textureModel._textureManager = new LAppTextureManager({});
+  const result = textureModel.setupTextures();
+  images[0].onerror();
+  await assert.rejects(result, /無法載入圖片/);
+}
+
+console.log('Rushia runtime checks passed: shared model switching, failure recovery, framing, expression composition, action timing and cancelled TTS.');
