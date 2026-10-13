@@ -115,6 +115,28 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[-2], 1 - MIN_RETRIEVAL_SIMILARITY)
         self.assertEqual(args[-3], "same-contract")
 
+    async def test_alias_anchors_survive_context_truncation_without_reversing_categories(self):
+        connection = _RecordingConnection()
+        repository = MemoryRepository(SimpleNamespace(connection=lambda: connection),
+            MemoryScope(uuid4(), uuid4(), "test_" + uuid4().hex))
+        query = build_retrieval_query("依照我的喜好和今晚的安排，現在喝什麼好？",
+            [dict(role="user", content="我今晚要早睡，今天暫時避開咖啡因。")])
+        for text, expected, absent in (
+            (query.lexical_text, {"咖啡", "coffee"}, set()),
+            ("我平常喜歡COFFEE嗎？", {"咖啡", "coffee"}, set()),
+            ("coffeetable", {"coffeetable"}, {"咖啡", "coffee"}),
+            ("甜點", {"甜點", "dessert"}, {"蛋糕"}),
+        ):
+            with self.subTest(query=text):
+                await repository.related_items(text, None)
+                statement, args = connection.calls[-1]
+                terms = next(arg for arg in args if isinstance(arg, list))
+                self.assertTrue(expected <= set(terms))
+                self.assertFalse(absent & set(terms))
+                self.assertLessEqual(len(terms), 24)
+                self.assertEqual(len(terms), len(set(terms)))
+                self.assertEqual(statement.as_string().count("%s"), len(args))
+
     async def test_no_candidates_returns_empty_memory_and_profile(self):
         repository = SimpleNamespace(related_items=AsyncMock(return_value=[]))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))

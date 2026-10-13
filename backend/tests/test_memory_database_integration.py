@@ -450,6 +450,38 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(traces[1]["excluded_candidates"][0]["similarity"])
         self.assertEqual(traces[2]["excluded_candidates"], [])
 
+    async def test_coffee_preference_recalled_with_temporary_context_below_similarity_gate(self):
+        canonical = "使用者平常很喜歡咖啡。"
+        job = await self._job("coffee-preference", "請記住我平常很喜歡咖啡。")
+        self.assertTrue(await self._apply(job, [{
+            "action": "CREATE", "canonical_text": canonical, "memory_type": "preference",
+            "subject_key": "user", "search_terms": ["咖啡", "咖啡偏好", "喜歡咖啡"],
+            "target_memory_ids": [], "reason": "user preference",
+        }], set(), {0: VECTOR}))
+        similarity = 0.48741912766809126
+        below = [similarity, math.sqrt(1 - similarity ** 2)] + [0.0] * 1022
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=below))
+        with patch("services.memory_retriever.trace") as retrieval_trace:
+            _, relevant = await MemoryRetriever(self.repo, embedding).retrieve(
+                "依照我的喜好和今晚的安排，現在喝什麼好？",
+                recent_dialogue=[dict(role="user", content="我今晚要早睡，今天暫時避開咖啡因。")],
+            )
+        self.assertIn("fact=" + canonical, relevant)
+        candidate, = retrieval_trace.call_args.args[1]["candidates"]
+        self.assertTrue(candidate["exact_match"])
+        self.assertAlmostEqual(candidate["similarity"], similarity, places=5)
+        self.assertEqual(candidate["projection"], "selected")
+        keywords = (await self._query("SELECT keywords FROM memory_items WHERE id = %s",
+                                      (candidate["id"],)))[0][0]
+        self.assertNotIn("coffee", keywords)
+        for query in ("我平常喜歡coffee嗎？", "我平常喜歡COFFEE嗎？"):
+            with self.subTest(query=query):
+                rows = await self.repo.related_items(query, below)
+                self.assertEqual([row["canonical_text"] for row in rows], [canonical])
+                self.assertTrue(rows[0]["exact_match"])
+        for query in ("coffeetable", "無關主題"):
+            self.assertEqual(await self.repo.related_items(query, below), [])
+
     async def test_chinese_category_query_matches_ascii_subject_and_rejects_unrelated_facts(self):
         for turn, canonical, subject in (
             ("diet", "飲食計畫以高蛋白質為主", "health.diet_plan"),

@@ -375,8 +375,11 @@ class MemoryRepository:
             for word in parts:
                 if word not in _GENERIC_QUERY_WORDS and word not in words:
                     words.append(word)
-        aliases = {word: alias for word, alias in _QUERY_CATEGORY_ALIASES.items() if word in text}
-        words = list(dict.fromkeys([*aliases.values(), *words]))[:24]
+        # 原詞與 alias 都優先保留，避免長情境截掉真正可命中的中文主題。
+        # 英文以完整 token 反查；蛋糕→甜點等中文分類關係仍維持單向。
+        aliases = {word: alias for word, alias in _QUERY_CATEGORY_ALIASES.items()
+                   if word in text or (alias.isascii() and alias in tokens)}
+        words = list(dict.fromkeys([*aliases.keys(), *aliases.values(), *words]))[:24]
         term_sql = sql.SQL(" OR ").join(
             sql.SQL("canonical_text ILIKE %s OR COALESCE(subject_key, '') ILIKE %s") for _ in words
         )
