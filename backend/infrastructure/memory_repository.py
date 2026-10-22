@@ -15,6 +15,9 @@ from core.prompt_logger import test_log_dir, trace, trace_event, trace_turn
 
 
 MIN_RETRIEVAL_SIMILARITY = 0.75
+# Chat 候選取得與背景整理分開校準；不要求候選池直接達成回答精確率。
+CHAT_RETRIEVAL_MIN_SIMILARITY = 0.50
+CHAT_RETRIEVAL_LIMIT = 5
 _GENERIC_QUERY_WORDS = {"喜歡", "記得", "以前", "之前", "曾經", "過去", "使用者", "什麼", "知道", "我的", "你的", "使用", "用者", "現在", "平常", "最近", "幫我", "記住", "記憶", "這件", "件事", "更正", "只有", "相關", "的人"}
 _QUERY_CATEGORY_ALIASES = {"健康": "health", "甜點": "dessert", "甜食": "sweet",
                            "咖啡": "coffee", "飲料": "drink", "飲品": "飲料", "蛋糕": "甜點", "遊戲": "game"}
@@ -363,10 +366,18 @@ class MemoryRepository:
                 await execute(own_connection)
 
     async def related_items(self, text: str, embedding: list[float] | None, limit: int = 20,
-                            mode: str = "current", subject_keys: tuple[str, ...] = ()) -> list[dict]:
+                            mode: str = "current", subject_keys: tuple[str, ...] = (),
+                            *, min_similarity: float | None = None) -> list[dict]:
         """同 owner 的有界相關記憶；目前事實與歷史分開篩選。"""
-        if mode not in {"current", "history", "future", "management"}:
+        if mode not in {"current", "history", "future", "management", "chat"}:
             raise ValueError("Memory query mode 無效")
+        if min_similarity is not None and mode != "chat":
+            raise ValueError("只有 Chat 候選搜尋可指定召回門檻")
+        threshold = MIN_RETRIEVAL_SIMILARITY
+        if mode == "chat":
+            threshold = CHAT_RETRIEVAL_MIN_SIMILARITY if min_similarity is None else min_similarity
+        if not -1 <= threshold <= 1:
+            raise ValueError("Memory similarity 門檻無效")
         owner = (self.scope.user_id, self.scope.character_id)
         tokens = re.findall(r"[a-z0-9_.-]{2,}|[\u3400-\u9fff]{2,}", text.lower())
         words = []
@@ -410,6 +421,9 @@ class MemoryRepository:
             "future": sql.SQL("status IN ('active', 'conflict') AND valid_from > now() AND (expires_at IS NULL OR expires_at > now())"),
             "history": sql.SQL("status IN ('active', 'conflict', 'superseded', 'expired', 'archived')"),
             "management": sql.SQL("status IN ('active', 'conflict', 'superseded', 'expired', 'archived')"),
+            # 不從原文時間詞推定記憶範圍；保留版本供 Chat 判讀，排除已到期的保留資料。
+            "chat": sql.SQL("status IN ('active', 'conflict', 'superseded', 'expired', 'archived') "
+                            "AND (expires_at IS NULL OR expires_at > now())"),
         }[mode]
         query_template = sql.SQL(
             """SELECT id, group_id, memory_type, canonical_text, subject_key, keywords,
@@ -427,10 +441,15 @@ class MemoryRepository:
             ) AS ranked WHERE {}
             ORDER BY exact_match DESC, distance ASC NULLS LAST, importance DESC LIMIT %s"""
         )
+        if mode == "chat":
+            # 詞面是候選資格，不先於向量相關性；避免共用詞擠掉低分但靠前的事實。
+            query_template = sql.SQL(query_template.as_string().replace(
+                "ORDER BY exact_match DESC, distance ASC NULLS LAST, importance DESC",
+                "ORDER BY distance ASC NULLS LAST, exact_match DESC, importance DESC, id"))
         query = query_template.format(exact_sql, ranking, status_sql,
             sql.SQL("exact_match OR ({} AND distance <= %s)").format(vector_sql))
         args = (*exact_args, *ranking_args, *owner, *vector_args,
-                1 - MIN_RETRIEVAL_SIMILARITY, min(max(limit, 1), 20))
+                1 - threshold, min(max(limit, 1), 20))
         async with self.pool.connection() as connection:
             async with connection.transaction():
                 await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
@@ -466,7 +485,7 @@ class MemoryRepository:
                         )
                     trace("retrieval_filter", {"query": text, "mode": mode, "query_terms": words,
                         "category_aliases": aliases,
-                        "min_similarity": MIN_RETRIEVAL_SIMILARITY, "excluded_limit": min(max(limit, 1), 20),
+                        "min_similarity": threshold, "excluded_limit": min(max(limit, 1), 20),
                         "excluded_candidates": excluded})
                 return selected
 

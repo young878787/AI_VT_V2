@@ -450,6 +450,32 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(traces[1]["excluded_candidates"][0]["similarity"])
         self.assertEqual(traces[2]["excluded_candidates"], [])
 
+    async def test_chat_candidates_include_temporal_versions_without_lowering_management_gate(self):
+        item = await self._create()
+        medium = [.6, .8] + [0.0] * 1022
+        self.assertEqual(await self.repo.related_items("無關主題", medium, mode="management"), [])
+        for status, start_days, end_days in (("active", 7, None), ("superseded", -60, -7)):
+            await self._query("UPDATE memory_items SET status=%s, valid_from=now() + %s * interval '1 day', "
+                              "valid_to=CASE WHEN %s::integer IS NULL THEN NULL ELSE now() + %s * interval '1 day' END "
+                              "WHERE id=%s", (status, start_days, end_days, end_days, item["id"]))
+            rows = await self.repo.related_items("無關主題", medium, mode="chat", limit=3)
+            self.assertEqual([r["id"] for r in rows], [item["id"]])
+            self.assertEqual(rows[0]["status"], status)
+        await self._query("UPDATE memory_items SET expires_at=now()-interval '1 day' WHERE id=%s", (item["id"],))
+        self.assertEqual(await self.repo.related_items("無關主題", medium, mode="chat"), [])
+
+    async def test_chat_vector_ranking_precedes_low_similarity_lexical_match(self):
+        first = await self._create()
+        job = await self._job("other-topic", "請記住我平常喜歡天文觀測")
+        await self._apply(job, [{"action":"CREATE", "canonical_text":"使用者平常喜歡天文觀測",
+            "memory_type":"preference", "target_memory_ids":[], "reason":"explicit"}], set(), {0:[0.0, 1.0]+[0.0]*1022})
+        rows = await self.repo.related_items("天文", VECTOR, mode="chat", limit=3)
+        self.assertEqual(rows[0]["id"], first["id"])
+        self.assertFalse(rows[0]["exact_match"])
+        self.assertTrue(rows[1]["exact_match"])
+        legacy = await self.repo.related_items("天文", VECTOR, mode="management", limit=3)
+        self.assertTrue(legacy[0]["exact_match"] or legacy[0]["similarity"] >= .75)
+
     async def test_coffee_preference_recalled_with_temporary_context_below_similarity_gate(self):
         canonical = "使用者平常很喜歡咖啡。"
         job = await self._job("coffee-preference", "請記住我平常很喜歡咖啡。")
@@ -466,7 +492,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "依照我的喜好和今晚的安排，現在喝什麼好？",
                 recent_dialogue=[dict(role="user", content="我今晚要早睡，今天暫時避開咖啡因。")],
             )
-        self.assertIn("fact=" + canonical, relevant)
+        self.assertIn(canonical, relevant)
         candidate, = retrieval_trace.call_args.args[1]["candidates"]
         self.assertTrue(candidate["exact_match"])
         self.assertAlmostEqual(candidate["similarity"], similarity, places=5)

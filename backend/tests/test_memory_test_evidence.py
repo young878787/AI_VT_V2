@@ -35,6 +35,19 @@ def fixture(mode='short_only'):
 
 
 class MemoryTestEvidenceTests(unittest.TestCase):
+    def test_qualification_uses_runtime_threshold_and_five_candidate_cap(self):
+        for score, exact, count, expected in ((.6244, False, 1, True), (.49, False, 1, False),
+                                             (.49, True, 1, True), (.8, False, 5, True),
+                                             (.8, False, 6, False)):
+            with self.subTest(score=score, exact=exact, count=count):
+                record, _ = fixture('memory_probe')
+                record['trace'][-1]['candidates'] = [dict(id=str(i), exact_match=exact, similarity=score)
+                                                    for i in range(count)]
+                check_turn(dict(case_group='long_term', case_type='semantic_recall'),
+                           dict(phase='probe'), record, [], {})
+                check = next(c for c in record['hard_checks'] if c['name'] == 'qualified_candidates')
+                self.assertEqual(check['passed'], expected)
+
     def test_actual_reply_is_not_semantically_scored(self):
         case=dict(case_group='short_term',case_type='reference')
         step=dict(phase='probe')

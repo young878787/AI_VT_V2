@@ -9,9 +9,10 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.memory_retriever import MemoryRetriever, build_retrieval_query
+from services.memory_retriever import MemoryRetriever, build_retrieval_query, _format_memory_projection
 from domain.memory_scope import MemoryScope
 from infrastructure.memory_repository import MemoryRepository, MIN_RETRIEVAL_SIMILARITY
+from infrastructure.memory_repository import CHAT_RETRIEVAL_MIN_SIMILARITY, CHAT_RETRIEVAL_LIMIT
 
 
 class _EmptyCursor:
@@ -78,13 +79,16 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(query.lexical_text, raw)
                 self.assertEqual(query.semantic_text, expected)
 
-    async def test_context_does_not_change_current_history_mode(self):
+    async def test_time_words_do_not_exclude_current_facts(self):
         repository = SimpleNamespace(related_items=AsyncMock(return_value=[]))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
-        await MemoryRetriever(repository, embedding).retrieve("依照我的口味怎麼選？",
-            recent_dialogue=[dict(role="user", content="之前討論生日蛋糕")])
-        self.assertEqual(repository.related_items.await_args.kwargs["mode"], "current")
+        for question in ("上個月聚餐訂哪間餐廳？", "明天照我的習慣怎麼安排？", "依照我的口味怎麼選？"):
+            await MemoryRetriever(repository, embedding).retrieve(question,
+                recent_dialogue=[dict(role="user", content="之前討論生日蛋糕")])
+            self.assertEqual(repository.related_items.await_args.kwargs["mode"], "chat")
+            self.assertEqual(repository.related_items.await_args.kwargs["limit"], CHAT_RETRIEVAL_LIMIT)
         self.assertIn("生日蛋糕", repository.related_items.await_args.args[0])
+        self.assertNotIn("當前對話情境", repository.related_items.await_args.args[0])
         self.assertIn("相關使用者情境", embedding.embed.await_args.args[0])
         self.assertNotEqual(embedding.embed.await_args.args[0], repository.related_items.await_args.args[0])
 
@@ -144,6 +148,21 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((profile, relevant), ({}, ""))
         repository.related_items.assert_awaited_once()
 
+    async def test_cancelled_embedding_does_not_continue_to_repository(self):
+        import asyncio
+        started = asyncio.Event()
+        async def slow_embed(*_args, **_kwargs):
+            started.set()
+            await asyncio.Event().wait()
+        repo = SimpleNamespace(related_items=AsyncMock(return_value=[]))
+        retriever = MemoryRetriever(repo, SimpleNamespace(embed=slow_embed))
+        task = asyncio.create_task(retriever.retrieve("問題"))
+        await started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        repo.related_items.assert_not_awaited()
+
     async def test_only_matched_profile_and_memory_are_projected(self):
         profile_id, memory_id = uuid4(), uuid4()
         rows = [
@@ -159,12 +178,12 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         profile, relevant = await MemoryRetriever(repository, embedding).retrieve("我的喜好")
         self.assertEqual(profile, {"recent_interests": ["喜歡天文"]})
         self.assertEqual(relevant,
-                         "- fact=喜歡拿鐵（type=preference; subject_key=未標註; status=active）")
+                         "- 喜歡拿鐵（status=active）")
 
     async def test_projection_never_marks_partial_record_as_selected(self):
         rows = [{"id": uuid4(), "group_id": uuid4(), "memory_type": "project", "status": "active",
-                 "subject_key": "project", "canonical_text": "事實" + str(index) + "字" * 130,
-                 "similarity": .9, "exact_match": True} for index in range(8)]
+                 "subject_key": "project", "canonical_text": "事實" + str(index) + "字" * 250,
+                 "similarity": .9, "exact_match": True} for index in range(5)]
         repository = SimpleNamespace(related_items=AsyncMock(return_value=rows))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
         with patch("services.memory_retriever.trace") as trace:
@@ -174,6 +193,7 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(relevant), 800)
         self.assertTrue(all(projection["text"].endswith("status=active）")
                             for projection in evidence["projections"]))
+        self.assertLess(len(selected), len(rows))
         self.assertEqual(
             [candidate["projection"] for candidate in evidence["candidates"]],
             ["selected" if str(candidate["id"]) in selected else "memory_budget_exhausted"
@@ -194,7 +214,79 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([str(row["id"]) for row in evidence["candidates"]], [str(row["id"]) for row in rows])
         self.assertEqual([row["projection"] for row in evidence["candidates"]], ["profile_overwritten", "selected"])
         self.assertEqual([row["id"] for row in evidence["projections"]], [str(rows[-1]["id"])])
-        self.assertEqual((evidence["limit"], evidence["memory_limit"], evidence["min_similarity"]), (20, 8, .75))
+        self.assertEqual((evidence["limit"], evidence["memory_limit"], evidence["min_similarity"]),
+                         (CHAT_RETRIEVAL_LIMIT, 5, CHAT_RETRIEVAL_MIN_SIMILARITY))
+
+    async def test_five_complete_facts_reach_single_long_term_prompt_section(self):
+        from datetime import datetime, timezone
+        from domain.agent_a_prompts import build_agent_a_prompt
+        from domain.emotion_state import NEUTRAL_EMOTION_STATE
+        from services.chat_service import build_chat_context
+        facts = ["星舟助手使用 3D Avatar 顯示角色。", "星舟助手由 Emotion Engine 維護情緒。",
+                 "星舟助手由 Emotion Engine 負責即時、規劃中與結束時的動作。",
+                 "星舟助手的核心對話由 Dialogue Model 產生。", "星舟助手的 Recall Store 在背景運行。"]
+        rows = [{"id": uuid4(), "memory_type": "project", "status": "active",
+                 "subject_key": "xingzhou_virtual_assistant", "canonical_text": fact,
+                 "valid_from": datetime(2026, 10, 14, 23, 50, 1, 123456, tzinfo=timezone.utc),
+                 "valid_to": None, "similarity": .8, "exact_match": True} for fact in facts]
+        repo = SimpleNamespace(related_items=AsyncMock(return_value=rows))
+        with patch("services.memory_retriever.trace") as trace:
+            profile, notes = await MemoryRetriever(repo, SimpleNamespace(embed=AsyncMock(return_value=[1.0]))).retrieve("整體架構")
+        self.assertEqual(repo.related_items.await_args.kwargs["limit"], 5)
+        self.assertEqual(len(trace.call_args.args[1]["projections"]), 5)
+        self.assertLess(len(notes), 600)
+        for noise in ("type=", "subject_key=", "None", ".123456", "fact="):
+            self.assertNotIn(noise, notes)
+        prompt = build_agent_a_prompt(emotion_state=NEUTRAL_EMOTION_STATE, user_profile=profile, memory_notes=notes)
+        messages = build_chat_context(prompt, [], "整體架構", budget=8192)
+        self.assertEqual(prompt.count("\n長期記憶：\n"), 1)
+        self.assertLess(prompt.index("長期記憶："), prompt.index("使用者資料："))
+        for fact in facts:
+            self.assertIn(fact, messages[0]["content"])
+
+    def test_temporal_and_uncertain_metadata_remains_without_internal_fields(self):
+        from datetime import datetime, timedelta, timezone
+        start = datetime(2026, 10, 14, 9, 0, tzinfo=timezone(timedelta(hours=8)))
+        for status in ("active", "superseded", "expired", "archived", "conflict"):
+            with self.subTest(status=status):
+                text = _format_memory_projection({"canonical_text": "使用者的朋友偏好茶。",
+                    "status": status, "valid_from": start, "valid_to": start + timedelta(hours=1),
+                    "has_conflict": True, "pending_change": True}, "chat")
+                self.assertIn("使用者的朋友偏好茶。", text)
+                self.assertIn(f"status={status}", text)
+                self.assertIn("valid_from=2026-10-14T09:00:00+08:00", text)
+                self.assertIn("valid_to=2026-10-14T10:00:00+08:00", text)
+                self.assertIn("conflict=true", text)
+                self.assertIn("pending_change=true", text)
+
+    async def test_chat_policy_keeps_owner_contract_and_retention_filter(self):
+        connection = _RecordingConnection()
+        scope = MemoryScope(uuid4(), uuid4(), "test_" + uuid4().hex)
+        repo = MemoryRepository(SimpleNamespace(connection=lambda: connection), scope, embedding_contract="contract")
+        await repo.related_items("主題", [1.0] + [0.0] * 1023, limit=3, mode="chat")
+        query, args = connection.calls[-1]
+        statement = query.as_string()
+        self.assertEqual(statement.count("%s"), len(args))
+        self.assertIn("ORDER BY distance ASC", statement)
+        self.assertIn("expires_at > now()", statement)
+        self.assertNotIn("valid_from > now()", statement)
+        self.assertIn(scope.user_id, args)
+        self.assertIn(scope.character_id, args)
+        self.assertEqual(args[-3:], ("contract", 1 - CHAT_RETRIEVAL_MIN_SIMILARITY, 3))
+        with self.assertRaises(ValueError):
+            await repo.related_items("主題", None, mode="management", min_similarity=.5)
+
+    async def test_future_profile_is_timestamped_memory_not_current_profile(self):
+        from datetime import datetime, timedelta, timezone
+        row = {"id": uuid4(), "memory_type": "profile", "status": "active",
+               "subject_key": "profile.communication_style", "canonical_text": "下週開始請詳細回答",
+               "valid_from": datetime.now(timezone.utc) + timedelta(days=7), "valid_to": None,
+               "similarity": .8, "exact_match": True}
+        repo = SimpleNamespace(related_items=AsyncMock(return_value=[row]))
+        profile, notes = await MemoryRetriever(repo, SimpleNamespace(embed=AsyncMock(return_value=[1.0]))).retrieve("回覆習慣")
+        self.assertEqual(profile, {})
+        self.assertIn(row["canonical_text"], notes)
+        self.assertIn("valid_from=", notes)
 
 
 if __name__ == "__main__":

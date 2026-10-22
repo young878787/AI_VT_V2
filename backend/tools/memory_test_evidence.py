@@ -1,5 +1,7 @@
 """只檢查執行、來源隔離與 DB／prompt 證據，不對回答做語意評分。"""
 
+from infrastructure.memory_repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
+
 
 def check_turn(case: dict, step: dict, record: dict, previous: list[dict], state: dict) -> None:
     from uuid import UUID
@@ -51,10 +53,13 @@ def check_turn(case: dict, step: dict, record: dict, previous: list[dict], state
         check('memory_evidence_status', 'retrieval_errors', retrieval.get('errors', []), [],
               not retrieval.get('errors'), 'DB／embedding 召回執行失敗')
         candidates = retrieval.get('candidates', [])
-        qualified = all(c.get('exact_match') or isinstance(c.get('similarity'), (int, float)) and c['similarity'] >= .75 for c in candidates)
+        qualified = len(candidates) <= CHAT_RETRIEVAL_LIMIT and all(
+            c.get('exact_match') or isinstance(c.get('similarity'), (int, float))
+            and c['similarity'] >= CHAT_RETRIEVAL_MIN_SIMILARITY for c in candidates)
         check('memory_evidence_status', 'qualified_candidates',
               [{k: c.get(k) for k in ('id', 'similarity', 'exact_match')} for c in candidates],
-              '詞面命中或 cosine >= 0.75', qualified, 'Chat 召回包含不合格候選')
+              f'最多 {CHAT_RETRIEVAL_LIMIT} 筆，詞面命中或 cosine >= {CHAT_RETRIEVAL_MIN_SIMILARITY}',
+              qualified, 'Chat 召回包含不合格候選或超出數量上限')
     if case['case_type'] == 'unknown_memory' and step['phase'] == 'probe':
         check('memory_evidence_status', 'unknown_memory',
               [len(retrieval.get('candidates', [])), context.get('injected_memory_ids', [])], [0, []],
