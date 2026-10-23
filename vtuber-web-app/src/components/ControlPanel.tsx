@@ -116,9 +116,8 @@ export const ControlPanel = () => {
   // 自動播放控制
   useEffect(() => {
     const mc = MotionController.getInstance();
-    if (autoPlayEnabled && modelLoaded) mc.startAutoPlay();
-    else mc.stopAutoPlay();
-    return () => mc.stopAutoPlay();
+    mc.setEnabled(modelLoaded);
+    LAppLive2DManager.getInstance().getActiveModel()?.setAutoEffectsEnabled(autoPlayEnabled);
   }, [autoPlayEnabled, modelLoaded]);
 
   // 視線追蹤控制
@@ -326,11 +325,11 @@ export const ControlPanel = () => {
               <div className="cp-toggle-row">
                 <div className="cp-toggle-info">
                   <span className="cp-toggle-icon">🎬</span>
-                  <span className="cp-toggle-label">自動播放動作</span>
+                  <span className="cp-toggle-label">自主活動</span>
                 </div>
                 <button
                   className={`cp-toggle ${autoPlayEnabled ? 'active' : ''}`}
-                  role="switch" aria-label="自動播放動作" aria-checked={autoPlayEnabled}
+                  role="switch" aria-label="自主活動" aria-checked={autoPlayEnabled}
                   onClick={toggleAutoPlay}
                   disabled={!modelLoaded}
                 >

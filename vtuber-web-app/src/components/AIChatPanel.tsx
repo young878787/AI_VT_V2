@@ -41,6 +41,7 @@ export const AIChatPanel = () => {
     }, []);
 
     const stopVoiceCapture = useCallback(() => {
+        wsService.setAvatarListening(false);
         voiceCaptureRef.current = false;
         voiceHasSoundRef.current = false;
         if (voiceMonitorRef.current !== null) {
@@ -63,6 +64,12 @@ export const AIChatPanel = () => {
         if (!useAppStore.getState().microphoneEnabled) microphone.disable();
         setVoiceState('idle');
     }, []);
+
+    useEffect(() => useAppStore.subscribe((state, previous) => {
+        if (state.chatContext.phase === 'disconnected' && previous.chatContext.phase !== 'disconnected') {
+            stopVoiceCapture();
+        }
+    }), [stopVoiceCapture]);
 
     useEffect(() => {
         const removeHandlers = voiceWsService.setHandlers({
@@ -166,6 +173,7 @@ export const AIChatPanel = () => {
         }
 
         voiceWsService.setGate(true);
+        wsService.setAvatarListening(true);
         setVoiceState('listening');
 
         noSpeechTimerRef.current = window.setTimeout(() => {

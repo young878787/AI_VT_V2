@@ -191,9 +191,12 @@ function schedulerHarness() {
   const clock = new FakeClock();
   const reports = [];
   const applied = [];
+  const ambientUpdates = [];
   const listeners = [];
   let state = {
     isSpeaking: false,
+    disconnectAmbient() {},
+    setAmbientPlan(plan) { ambientUpdates.push(plan); },
     setAiTyping() {},
     setCompressing() {},
     resetChatContext() {},
@@ -214,7 +217,9 @@ function schedulerHarness() {
   const schedulerLoad = createLoader({
     '../store/appStore': { useAppStore },
     '../live2d/LAppLive2DManager': {
-      LAppLive2DManager: { getInstance: () => ({ getActiveModel: () => ({ cancelExpressionAction() {} }) }) },
+      LAppLive2DManager: { getInstance: () => ({ getActiveModel: () => ({
+        cancelExpressionAction() {}, finishExpressionAction() {}, setManualControl() {},
+      }) }) },
     },
   }, {
     performance: { now: () => clock.now },
@@ -225,7 +230,7 @@ function schedulerHarness() {
   const { actionScheduler: scheduler } = schedulerLoad('src/services/actionScheduler.ts');
   scheduler.setReporter((status, action) => reports.push({ status, turnId: action.turnId, at: clock.now }));
   return {
-    scheduler, clock, applied, reports, useAppStore,
+    scheduler, clock, applied, reports, ambientUpdates, useAppStore,
     speak(value) {
       const previous = state;
       state = { ...state, isSpeaking: value };
@@ -323,6 +328,7 @@ for (const steps of [sequence, [
   }
   const wsLoad = createLoader({
     '../store/appStore': { useAppStore: h.useAppStore },
+    '../live2d/LAppLive2DManager': { LAppLive2DManager: { getInstance: () => ({ getActiveModel: () => null }) } },
     '../audio/TTSPlayer': { TTSPlayer: { getInstance: () => ({ stop: () => h.speak(false) }) } },
     './actionScheduler': { actionScheduler: h.scheduler },
   }, {
@@ -337,6 +343,15 @@ for (const steps of [sequence, [
     basePose: { ...makePlan().basePose, preset: 'shock_recoil', durationSec: 0.8 },
   }), 'chat', 'active-disconnect');
   h.scheduler.submit(makePlan(), 'chat', 'pending-disconnect');
+  const ambientUpdate = { type: 'ambient_plan', sequence: 1, state: 'idle', moveMs: 900,
+    target: { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyY: 0, bodyZ: 0, gazeX: 0, gazeY: 0 },
+    breath: { periodSec: 4, amplitude: 0.5, rootAmplitude: 0.02 } };
+  sockets[0].onmessage({ data: JSON.stringify({ ...ambientUpdate, turn_id: 'unrelated-old-turn' }) });
+  assert.equal(h.ambientUpdates.length, 1, 'autonomous updates are independent of Chat turn filtering');
+  sockets[0].onmessage({ data: JSON.stringify({ ...ambientUpdate, sequence: -1 }) });
+  assert.equal(h.ambientUpdates.length, 1, 'WebSocket rejects malformed autonomous updates');
+  assert.deepEqual(h.reports.map(event => event.status), ['started'],
+    'autonomous updates cannot submit, finish or cancel the active Chat action');
   h.clock.advance(1000);
   sockets[0].readyState = 3;
   sockets[0].onclose();
@@ -505,6 +520,10 @@ function audioHarness(suspended = false) {
     setModelScale(scale) { this.scale = scale; }
     getModelPosition() { return this.position; }
     setModelPosition(x, y) { this.position = { x, y }; }
+    inheritAmbientBaseline(previous) {
+      this.inheritedFrom = previous;
+      this.previousReleasedAtInheritance = previous.released;
+    }
     release() { this.released++; }
   }
   const managerLoad = createLoader({
@@ -520,6 +539,7 @@ function audioHarness(suspended = false) {
   original.setCanvasSize(1200, 900);
   original.setModelScale(1.15);
   original.setModelPosition(0.12, -0.08);
+  original.connected = false;
   assert.equal(await manager.loadDefaultModel(), original, 'selecting the active resource must not allocate another model');
 
   textureGate = deferred();
@@ -540,6 +560,8 @@ function audioHarness(suspended = false) {
   assert.equal(hd.scale, 1.15);
   assert.equal(hd.position.x, 0.12);
   assert.equal(hd.position.y, -0.08);
+  assert.equal(hd.inheritedFrom, original, 'offline resource switching still inherits the existing ambient baseline');
+  assert.equal(hd.previousReleasedAtInheritance, 0, 'the baseline is inherited before releasing the previous resource');
 
   textureError = new Error('missing texture');
   await assert.rejects(manager.loadModel('Rushia'), /missing texture/);
@@ -565,6 +587,7 @@ function audioHarness(suspended = false) {
 {
   const clock = new FakeClock();
   const applied = [];
+  const settled = [];
   const models = [];
   let gate = null;
   let failure = null;
@@ -573,10 +596,13 @@ function audioHarness(suspended = false) {
     setEyeTrackingEnabled(value) { this.tracking = value; },
     setAutoEffectsEnabled(value) { this.autoEffects = value; },
     setSpeaking(value) { this.speaking = value; },
-    setThinking(value) { this.thinking = value; },
     cancelExpressionAction() {},
+    finishExpressionAction() {},
+    setManualControl() {},
     resumeAutoBlink() {},
     applyBasePose(pose) { applied.push(pose); },
+    applyIdlePlan(plan) { settled.push(plan.settlePose); },
+    applyAmbientPlan(plan) { this.ambient = plan; this.ambientApplications = (this.ambientApplications ?? 0) + 1; },
     enqueueSequence() {},
   });
   let active = makeModel();
@@ -613,8 +639,17 @@ function audioHarness(suspended = false) {
   });
   const { useAppStore: store } = serviceLoad('src/store/appStore.ts');
   const { switchModel } = serviceLoad('src/services/modelService.ts');
-  const plan = makePlan();
-  store.setState({ modelLoaded: true, expressionPlan: plan, modelScale: 1.2, eyeTrackingEnabled: false, isSpeaking: true });
+  assert.equal(store.getState().eyeTrackingEnabled, false, 'autonomous gaze defaults to the calibrated forward target');
+  const plan = makePlan({
+    sequence: [mouthEvent],
+    idlePlan: { enterAfterMs: 700, settlePose: { preset: 'happy_soft', durationSec: 0.3,
+      params: { ...createNeutralTargetParams(), mouthForm: 0.4, blushLevel: 0.2 } } },
+  });
+  const ambient = { type: 'ambient_plan', sequence: 4, state: 'idle', moveMs: 900,
+    target: { headX: 0.2, headY: 0, headZ: 0, bodyX: 0, bodyY: 0, bodyZ: 0, gazeX: 0, gazeY: 0 },
+    breath: { periodSec: 4, amplitude: 0.5, rootAmplitude: 0.02 } };
+  store.setState({ modelLoaded: true, expressionPlan: plan, ambientPlan: ambient,
+    modelScale: 1.2, eyeTrackingEnabled: false, isSpeaking: true });
   gate = deferred();
   const switching = switchModel('Rushia_hd');
   assert.equal(store.getState().modelLoading, true);
@@ -632,8 +667,18 @@ function audioHarness(suspended = false) {
   assert.equal(active.tracking, false);
   assert.equal(active.speaking, true);
   // VM 邊界的原型不同；以同一 realm 的 structured clone 比較完整資料。
-  assert.deepEqual(structuredClone(applied.at(-1)), structuredClone(plan.basePose),
-    'switching replays the same expression through the shared Scheduler');
+  assert.equal(applied.length, 0, 'switching never replays a completed or interrupted short action');
+  assert.deepEqual(structuredClone(settled.at(-1)), structuredClone(plan.idlePlan.settlePose),
+    'switching restores the current settled emotion');
+  assert.deepEqual(structuredClone(active.ambient), structuredClone(ambient),
+    'switching restores the latest Python autonomous target');
+  store.getState().setAmbientPlan(ambient);
+  store.getState().setAmbientPlan({ ...ambient, sequence: 3 });
+  assert.equal(active.ambientApplications, 1, 'store discards duplicate and stale autonomous sequences');
+  const latestAmbient = { ...ambient, sequence: 5 };
+  store.getState().setAmbientPlan(latestAmbient);
+  assert.equal(active.ambientApplications, 2, 'store forwards each new autonomous sequence once');
+  assert.equal(applied.length, 0, 'autonomous store updates never reapply the current Chat expression plan');
   assert.deepEqual(structuredClone(store.getState().expressionPlan), structuredClone(plan),
     'switching must not change shared parameter values');
   await switchModel('Rushia_hd');
@@ -645,8 +690,9 @@ function audioHarness(suspended = false) {
   assert.equal(store.getState().currentModelDirectory, 'Rushia_hd');
   assert.equal(store.getState().modelLoaded, true);
   assert.match(store.getState().modelError, /仍使用 Rushia_hd/);
-  assert.deepEqual(structuredClone(applied.at(-1)), structuredClone(plan.basePose),
-    'failed switching restores the shared expression on the original model');
+  assert.equal(applied.length, 0, 'failed switching cannot replay short actions on the original model');
+  assert.deepEqual(structuredClone(active.ambient), structuredClone(latestAmbient),
+    'failed switching keeps the working autonomous target');
   failure = null;
   await switchModel('Rushia');
   assert.equal(store.getState().currentModelDirectory, 'Rushia');
@@ -671,4 +717,620 @@ function audioHarness(suspended = false) {
   await assert.rejects(result, /無法載入圖片/);
 }
 
-console.log('Rushia runtime checks passed: shared model switching, failure recovery, framing, expression composition, action timing and cancelled TTS.');
+// 真實 LAppModel + Matrix／Mixer；只替換 Core／WebGL 邊界。
+{
+  const { CubismMatrix44 } = load('src/live2d/framework/math/cubismmatrix44.ts');
+  const { CubismModelMatrix } = load('src/live2d/framework/math/cubismmodelmatrix.ts');
+  const defaults = load('src/live2d/framework/cubismdefaultparameterid.ts');
+  const { ParameterMixer } = load('src/live2d/runtime/ParameterMixer.ts');
+  let now = 10000;
+  const integrationLoad = createLoader({
+    ...Object.fromEntries(sdkNames.map(name => [`@framework/${name}`, {}])),
+    '@framework/math/cubismmatrix44': { CubismMatrix44 },
+    '@framework/math/cubismmodelmatrix': { CubismModelMatrix },
+    '@framework/cubismdefaultparameterid': defaults,
+    '@framework/live2dcubismframework': { CubismFramework: { getIdManager: () => ({ getId: id => ({ getString: () => id }) }) } },
+    '@framework/model/cubismusermodel': { CubismUserModel: class {} },
+    './LAppTextureManager': { LAppTextureManager: class {} },
+    './LAppDelegate': { LAppDelegate: { getInstance: () => ({ getFrameBuffer: () => null }) } },
+    './LAppPal': { LAppPal: { getDeltaTime: () => 1 / 60, log() {}, printLog() {}, printError() {} } },
+  }, { performance: { now: () => now }, console: { log() {}, warn() {}, error() {} } });
+  const { LAppModel: RuntimeModel } = integrationLoad('src/live2d/LAppModel.ts');
+  const ids = [
+    'ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
+    'ParamEyeBallX', 'ParamEyeBallY', 'ParamBreath', 'ParamEyeLOpen', 'ParamEyeROpen',
+    'ParamCheek', 'ParamMouthOpenY', 'ParamMouthForm', 'ParamBrowLY', 'ParamBrowRY',
+    'ParamBrowLAngle', 'ParamBrowRAngle', 'ParamBrowLForm', 'ParamBrowRForm', 'ParamBrowLX', 'ParamBrowRX',
+  ];
+  const controlled = ids.slice(0, 8);
+  const values = new Map(ids.map(id => [id, id.endsWith('Open') ? 1 : 0]));
+  const parameterName = id => typeof id === 'string' ? id : id.getString();
+  let saved = new Map(values);
+  let writes = [];
+  let physicsSnapshot = null;
+  let renderedMatrix = null;
+  let meshTop = 0.1;
+  const core = {
+    getParameterCount: () => ids.length,
+    getParameterId: index => ({ getString: () => ids[index] }),
+    getParameterDefaultValue: index => ids[index].endsWith('Open') ? 1 : 0,
+    getParameterMinimumValue: index => ids[index].includes('Angle') ? -30 : -1,
+    getParameterMaximumValue: index => ids[index].includes('Angle') ? 30 : 1,
+    getParameterValueByIndex: index => values.get(ids[index]) ?? 0,
+    getParameterValueById: id => values.get(parameterName(id)) ?? 0,
+    setParameterValueByIndex(index, value) { values.set(ids[index], value); writes.push({ kind: 'mixer', id: ids[index], value }); },
+    setParameterValueById(id, value) { id = parameterName(id); values.set(id, value); writes.push({ kind: 'parameter', id, value }); },
+    addParameterValueById(id, value) {
+      id = parameterName(id);
+      const next = (values.get(id) ?? 0) + value;
+      values.set(id, next); writes.push({ kind: 'source', id, value: next });
+    },
+    loadParameters() { for (const [id, value] of saved) values.set(id, value); },
+    saveParameters() { saved = new Map(values); },
+    update() { writes.push({ kind: 'core' }); },
+    getDrawableCount: () => 1,
+    getDrawableVertexCount: () => 4,
+    getDrawableOpacity: () => 1,
+    getDrawableVertices: () => [-0.1, -0.1, 0.1, -0.1, 0.1, meshTop, -0.1, meshTop],
+  };
+  const runtime = new RuntimeModel();
+  runtime._model = core;
+  runtime._modelMatrix = new CubismModelMatrix(2, 2);
+  runtime._parameterMixer = new ParameterMixer(core);
+  runtime._dragManager = { update() {}, getX: () => 0.8, getY: () => 0.7 };
+  runtime._motionManager = { isFinished: () => true };
+  runtime._physics = { evaluate() {
+    physicsSnapshot = new Map(values);
+    writes.push({ kind: 'physics' });
+  } };
+  runtime.getRenderer = () => ({
+    setRenderState() {}, setMvpMatrix(matrix) { renderedMatrix = matrix; }, drawModel() {},
+  });
+  runtime.setCanvasSize(1280, 800);
+  assert.equal(runtime.getAmbientDiagnostics().pointer, false, 'LAppModel pointer tracking defaults off');
+  assert.equal(typeof runtime.setThinking, 'undefined', 'generation no longer starts a second autonomous animation policy');
+  const plan = { type: 'ambient_plan', sequence: 1, state: 'idle', moveMs: 900,
+    target: { headX: 0.6, headY: -0.25, headZ: 0.3, bodyX: 0.4, bodyY: -0.2, bodyZ: 0.3, gazeX: -0.6, gazeY: 0.2 },
+    breath: { periodSec: 4, amplitude: 0.6, rootAmplitude: 0.04 } };
+  runtime.applyAmbientPlan(plan);
+  const tick = (frames = 1) => {
+    for (let frame = 0; frame < frames; frame++) {
+      now += 1000 / 60;
+      writes = [];
+      runtime.update();
+      assert.ok([...values.values()].every(Number.isFinite), 'complete LAppModel frames keep all Core values finite');
+    }
+  };
+  tick(120);
+  for (const id of controlled) {
+    const final = writes.filter(write => write.id === id);
+    assert.equal(final.filter(write => write.kind === 'mixer').length, 1, `${id} has one final mixer write per frame`);
+    assert.equal(final.at(-1).kind, 'mixer', `${id} is finalized by ParameterMixer`);
+    near(physicsSnapshot.get(id), values.get(id), `${id} enters Physics with its final mixed value`);
+  }
+  assert.ok(writes.findIndex(write => write.kind === 'physics') > writes.findLastIndex(write => write.kind === 'mixer'),
+    'Physics evaluates after controlled channel composition');
+  assert.ok(values.get('ParamAngleX') > 10 && values.get('ParamEyeBallX') < -0.4,
+    'Python targets drive the actual Core head and gaze despite a displaced pointer');
+
+  const matrixBefore = Array.from(runtime.getModelMatrix().getArray());
+  for (let repeat = 0; repeat < 100; repeat++) runtime.updateModelMatrix();
+  assert.deepEqual(Array.from(runtime.getModelMatrix().getArray()), matrixBefore, 'Root is always composed from framing, never accumulated');
+  const projection = new CubismMatrix44();
+  runtime.draw(projection);
+  assert.deepEqual(Array.from(renderedMatrix.getArray()), matrixBefore, 'render uses the current Root model matrix');
+  const matrix = runtime.getModelMatrix();
+  const hitX = matrix.transformX(0);
+  const hitY = matrix.transformY(0);
+  assert.equal(runtime.hitTest(hitX, hitY, 'Body'), true, 'hit testing follows the rendered Root translation');
+  assert.equal(runtime.hitTest(matrix.transformX(0.4), hitY, 'Body'), false, 'hit testing still rejects points outside the rendered mesh');
+  const root = runtime.getAmbientDiagnostics().rootOffset;
+  assert.ok(root > 0 && root < 0.13, 'actual model Root includes the bounded breathing contribution');
+  runtime.setModelPosition(0.1, 0.05);
+  near(runtime.getModelPosition().x, 0.1, 'Root never changes the user X baseline');
+  near(runtime.getModelPosition().y, 0.05, 'Root never changes the user Y baseline');
+  tick();
+  near(runtime.getAmbientDiagnostics().rootOffset,
+    Math.max(0, Math.min(runtime.getAmbientDiagnostics().sample.rootY,
+      (1 - (resolveHalfBodyFraming(1280, 800).y + 0.05 + 0.1 * resolveHalfBodyFraming(1280, 800).scale)) / 2 - 0.02)) * 2,
+    'Root safety recomputes after user movement');
+  const framing = resolveHalfBodyFraming(1280, 800);
+  runtime.setModelPosition(0.1, 0.91 - framing.y - meshTop * framing.scale);
+  tick();
+  near(runtime.getAmbientDiagnostics().rootOffset, 0.05,
+    'current drawable bounds limit Root to the remaining viewport headroom', 1e-6);
+  assert.ok(runtime.getModelMatrix().transformY(meshTop) <= 0.960001,
+    'root translation retains the required top margin');
+  meshTop = 0.3;
+  tick();
+  near(runtime.getAmbientDiagnostics().rootOffset, 0,
+    'a changed animated mesh recomputes the safety limit instead of using a fixed head calibration');
+  meshTop = 0.1;
+  runtime.setModelPosition(0, 0);
+
+  runtime._eyeBlink = CubismEyeBlink.create();
+  runtime._eyeBlink.setParameterIds(['ParamEyeLOpen', 'ParamEyeROpen']);
+  runtime._eyeBlink.pause();
+  runtime._nativeMotionParameters = new Set(['ParamAngleX', 'ParamEyeBallX', 'ParamBreath', 'ParamEyeLOpen', 'ParamMouthOpenY']);
+  runtime._motionManager = { isFinished: () => false, updateMotion() {
+    core.setParameterValueById('ParamAngleX', 27);
+    core.setParameterValueById('ParamEyeBallX', 0.95);
+    core.setParameterValueById('ParamBreath', 0.9);
+    core.setParameterValueById('ParamEyeLOpen', 0.2);
+    core.setParameterValueById('ParamMouthOpenY', 0.65);
+  } };
+  tick(60);
+  near(values.get('ParamAngleX'), 27, 'native head motion retains the valid Core range beyond autonomous limits', 1e-4);
+  near(values.get('ParamEyeBallX'), 0.95, 'native gaze retains the valid Core range beyond autonomous limits', 1e-7);
+  near(values.get('ParamBreath'), 0.9, 'native breathing ownership suppresses autonomous breath writes');
+  near(values.get('ParamEyeLOpen'), 0.2, 'native eye opening is not overwritten by the blink layer');
+  near(values.get('ParamMouthOpenY'), 0.65, 'native mouth remains in control without active speech');
+  runtime.setSpeaking(true);
+  runtime.setLipSyncValue(0.8);
+  tick();
+  near(values.get('ParamMouthOpenY'), 0.8, 'actual speech mouth playback has explicit priority');
+  runtime.setSpeaking(false);
+  runtime.setLipSyncValue(0);
+  tick();
+  near(values.get('ParamMouthOpenY'), 0.65, 'speech ending releases the mouth back to native motion');
+  runtime._motionManager = { isFinished: () => true };
+  tick(90);
+  near(values.get('ParamAngleX'), 13.2, 'finished native motion smoothly releases back to the latest Python target', 1e-4);
+  assert.ok(values.get('ParamEyeBallX') < -0.4, 'finished native gaze releases back to the current autonomous gaze');
+
+  const emotion = { ...createNeutralTargetParams(), mouthForm: 0.45, blushLevel: 0.3, browLY: 0.2,
+    bodyAngleX: 0.25, bodyAngleY: -0.2, bodyAngleZ: 0.15,
+    eyeLOpen: 0.75, eyeROpen: 0.75, eyeBallX: 0.6, mouthOpenBias: 0.8 };
+  const idlePlan = { enterAfterMs: 1000, settlePose: { preset: 'happy_soft', durationSec: 0.3, params: emotion },
+    ambientEnterAfterMs: 1000, ambientSwitchIntervalMs: 500,
+    ambientPlan: { states: [{ kind: 'legacy', params: { mouthForm: -1 } }] } };
+  runtime.applyIdlePlan(idlePlan);
+  runtime.applyBasePose({ preset: 'reaction', durationSec: 3, params: { ...emotion, mouthForm: -0.5,
+    bodyAngleX: 0, bodyAngleY: 0, bodyAngleZ: 0, eyeBallX: 0, eyeBallY: 0 } });
+  runtime.enqueueMicroEvent(mouthEvent);
+  tick(30);
+  const faceOnly = runtime.getAmbientDiagnostics().sample;
+  assert.ok(faceOnly.headX > 0.5 && faceOnly.bodyX > 0.3 && faceOnly.rootY > 0.001,
+    'a face-only expression keeps autonomous head, body and Root activity running');
+  assert.ok(values.get('ParamAngleX') > 10 && values.get('ParamBodyAngleX') > 2,
+    'face-only expression does not claim unrelated Core head/body channels');
+  const timerBefore = runtime._aiBehaviorTimer;
+  const eventsBefore = runtime._activeExpressionEvents;
+  const breathBefore = runtime.getAmbientDiagnostics().sample.breath;
+  runtime.applyAmbientPlan({ ...plan, sequence: 2, target: { ...plan.target, headX: -0.5 } });
+  runtime.applyAmbientMotion(0, now);
+  assert.equal(runtime._aiBehaviorTimer, timerBefore, 'ambient updates cannot restart or cancel a Chat action');
+  assert.equal(runtime._activeExpressionEvents, eventsBefore, 'ambient updates preserve pending explicit events');
+  near(runtime.getAmbientDiagnostics().sample.breath, breathBefore, 'ambient updates preserve the visible breathing phase');
+  runtime.cancelExpressionAction();
+  assert.equal(runtime.getAmbientDiagnostics().action, false);
+  assert.equal(runtime._activeExpressionEvents.length, 0, 'cancel removes short action events');
+  tick(180);
+  near(values.get('ParamMouthForm'), emotion.mouthForm, 'cancel returns to the settled emotion', 1e-7);
+  near(values.get('ParamCheek'), emotion.blushLevel, 'cancel preserves settled blush', 1e-7);
+  near(values.get('ParamMouthOpenY'), 0, 'settle clears transient surprised mouth opening', 1e-7);
+  near(runtime._ambientBase.eyeBallX, 0, 'a past gaze offset cannot redefine the calibrated forward target');
+  const leaningBody = ['ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ'].map(id => values.get(id));
+  runtime.applyIdlePlan({ ...idlePlan, settlePose: { ...idlePlan.settlePose,
+    params: { ...emotion, bodyAngleX: 0, bodyAngleY: 0, bodyAngleZ: 0 } } });
+  tick(120);
+  const neutralBody = ['ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ'].map(id => values.get(id));
+  assert.ok(leaningBody[0] - neutralBody[0] > 0.5 && leaningBody[1] - neutralBody[1] < -0.3 &&
+    leaningBody[2] - neutralBody[2] > 0.2, 'settled body lean remains visible alongside the same autonomous target');
+  runtime.applyIdlePlan(idlePlan);
+  tick(120);
+  const adoptedBase = structuredClone(runtime._ambientBase);
+  runtime.applyBasePose({ preset: 'reaction', durationSec: 1, params: { ...emotion, mouthForm: -0.7 } });
+  runtime.finishExpressionAction();
+  tick(180);
+  near(values.get('ParamMouthForm'), emotion.mouthForm, 'finish preserves the same settled emotion', 1e-7);
+  assert.deepEqual(structuredClone(runtime._ambientBase), adoptedBase,
+    'retired frontend idle timers never replace the settled emotion');
+  runtime.setManualControl(300);
+  assert.ok(runtime._manualUntilMs > now, 'manual controls obtain a bounded runtime ownership window');
+  runtime.setAiBehavior(0, 0.8, 1, 1, 0.3, -0.4);
+  tick(10);
+  assert.ok(values.get('ParamMouthForm') < 0 && values.get('ParamCheek') > 0.5,
+    'the existing manual parameter panel can apply setAiBehavior during its ownership window');
+  tick(120);
+  near(values.get('ParamMouthForm'), emotion.mouthForm, 'manual ownership expiry returns to the settled emotion', 1e-5);
+
+  runtime.applyAmbientPlan({ ...plan, sequence: 3, target: { ...plan.target, headX: 0 } });
+  runtime.setNativeParamOverride('ParamAngleX', 22);
+  const expiryFrames = [];
+  for (let frame = 1; frame <= 302; frame++) {
+    tick();
+    if (frame >= 299) expiryFrames.push({ value: values.get('ParamAngleX'), physics: physicsSnapshot.get('ParamAngleX') });
+  }
+  near(expiryFrames[0].value, 22, 'the native override remains effective before its five-second expiry');
+  near(expiryFrames[0].physics, 22, 'Physics reads the active native override, not the earlier autonomous value');
+  for (let index = 1; index < expiryFrames.length; index++) {
+    assert.ok(expiryFrames[index].value > 16 && Math.abs(expiryFrames[index].value - expiryFrames[index - 1].value) < 3,
+      'override expiry preserves the current rendered position across frames 299–302');
+    near(expiryFrames[index].physics, expiryFrames[index].value, 'released override values remain consistent before Physics');
+  }
+  assert.equal(runtime.getNativeParamOverrides().has('ParamAngleX'), false, 'expired overrides are removed');
+  tick(120);
+  near(values.get('ParamAngleX'), 0, 'expired native override smoothly returns to the autonomous target', 1e-4);
+
+  runtime.setAiBehavior(0, 0, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0.8, 0, 0, 0);
+  tick(60);
+  const explicitBreath = values.get('ParamBreath');
+  assert.ok(explicitBreath > 0.7, 'direct setAiBehavior can explicitly claim breathLevel above the default');
+  runtime.cancelExpressionAction();
+  tick();
+  assert.ok(Math.abs(values.get('ParamBreath') - explicitBreath) < 0.25 &&
+    values.get('ParamBreath') > runtime.getAmbientDiagnostics().sample.breath + 0.05,
+    'breath cancellation smoothly releases ownership instead of jumping to the autonomous curve');
+  tick(120);
+  near(values.get('ParamBreath'), runtime.getAmbientDiagnostics().sample.breath,
+    'released breathing follows the continuously running autonomous phase', 0.04);
+
+  saved.set('ParamEyeBallX', 0);
+  saved.set('ParamEyeBallY', 0);
+  runtime.enqueueScheduledMicroEvent({ kind: 'gaze', patch: { eyeBallX: 0.8 }, durationMs: 1500,
+    returnToBase: true }, now + 5000);
+  tick(60);
+  assert.ok(values.get('ParamEyeBallX') < -0.4 && runtime.getAmbientDiagnostics().sample.gazeX < -0.5,
+    'a future queued eye event cannot claim gaze before its scheduled start');
+  tick(270);
+  assert.ok(values.get('ParamEyeBallX') > 0.4, 'the scheduled eye event owns gaze once its active window begins');
+  runtime.cancelExpressionAction();
+  tick(60);
+  assert.ok(values.get('ParamEyeBallX') < -0.4, 'cancelling the eye event smoothly restores the autonomous gaze');
+
+  runtime.setModelPosition(0, 0.88 - framing.y - meshTop * framing.scale);
+  runtime.applyAmbientPlan({ ...plan, sequence: 4, breath: { ...plan.breath, rootAmplitude: 0 },
+    hop: { height: 0.1, durationMs: 1000 } });
+  const boundedHop = [];
+  for (let frame = 0; frame < 60; frame++) {
+    tick();
+    boundedHop.push(runtime.getAmbientDiagnostics().rootOffset);
+  }
+  assert.ok(Math.max(...boundedHop) > 0.03 && Math.max(...boundedHop) <= 0.080001,
+    'the full hop is scaled into the available viewport height');
+  assert.ok(boundedHop.filter(value => value >= 0.079999).length <= 3,
+    'viewport fitting must not turn a one-second hop into a long clipped ceiling plateau');
+  runtime.applyAmbientPlan({ ...plan, sequence: 5, breath: { ...plan.breath, rootAmplitude: 0.08 } });
+  tick(180);
+  const boundedBreath = [];
+  for (let frame = 0; frame < 240; frame++) {
+    tick();
+    boundedBreath.push(runtime.getAmbientDiagnostics().rootOffset);
+  }
+  assert.ok(Math.max(...boundedBreath) > 0.06 && Math.max(...boundedBreath) <= 0.080001,
+    'large root breathing keeps its full waveform within the visible height budget');
+  assert.ok(boundedBreath.filter(value => value >= 0.079999).length <= 3,
+    'large root breathing must not flatten against the viewport ceiling');
+
+  const beforeHopRoot = runtime.getAmbientDiagnostics().rootOffset;
+  runtime.applyAmbientPlan({ ...plan, sequence: 6, hop: { height: 0.1, durationMs: 1000 } });
+  runtime.applyAmbientMotion(0, now);
+  runtime.limitRootToViewport(0);
+  runtime.updateModelMatrix();
+  near(runtime.getAmbientDiagnostics().rootOffset, beforeHopRoot,
+    'a new hop envelope cannot instantly rescale ongoing root breathing');
+  tick(15);
+  assert.ok(runtime.getAmbientDiagnostics().rootOffset > 0.02, 'offline inheritance is exercised during a visible hop');
+  const beforeHopCancel = runtime.getAmbientDiagnostics().rootOffset;
+  runtime.applyAmbientPlan({ ...plan, sequence: 7, state: 'listening' });
+  runtime.applyAmbientMotion(0, now);
+  runtime.limitRootToViewport(0);
+  runtime.updateModelMatrix();
+  near(runtime.getAmbientDiagnostics().rootOffset, beforeHopCancel,
+    'listening cancellation preserves the root breathing and hop handoff height');
+  runtime.disconnectAmbient();
+  runtime.applyAmbientMotion(0, now);
+  runtime.limitRootToViewport(0);
+  near(runtime.getAmbientDiagnostics().rootOffset, beforeHopCancel,
+    'disconnecting a hop does not jump the root breathing envelope');
+  assert.equal(runtime.getAmbientDiagnostics().active, true, 'disconnect retains initialized basic breathing');
+  const replacement = new RuntimeModel();
+  replacement.inheritAmbientBaseline(runtime);
+  assert.equal(replacement.getAmbientDiagnostics().active, true, 'offline replacement keeps the basic runtime initialized');
+  assert.deepEqual(structuredClone(replacement._ambientBase), structuredClone(runtime._ambientBase),
+    'offline replacement retains the settled emotion and body baseline');
+  assert.notEqual(replacement._ambientBase, runtime._ambientBase, 'resource instances do not share a mutable settled pose');
+  near(replacement._ambientMotion.update(0, now, true).rootY, 0, 'offline replacement never replays the previous hop');
+  let replacementSample;
+  for (let frame = 1; frame <= 60; frame++) replacementSample = replacement._ambientMotion.update(1 / 60, now + frame * 1000 / 60, true);
+  assert.ok(replacementSample.breath > 0 && replacementSample.rootY <= 0.006,
+    'offline replacement continues basic breathing without a new Python plan');
+}
+
+// Python 自主計畫只由前端連續執行；驗證真實 guard、曲線與收尾，不複製 runtime。
+{
+  const { isAmbientPlan } = load('src/types/ambientPlan.ts');
+  const { AmbientMotion, clampRootY } = load('src/live2d/runtime/AmbientMotion.ts');
+  const ambientPlan = (overrides = {}) => ({
+    type: 'ambient_plan', sequence: 1, state: 'idle', moveMs: 900,
+    target: { headX: 0.8, headY: -0.4, headZ: 0.6, bodyX: 0.3, bodyY: -0.2, bodyZ: 0.5, gazeX: -0.6, gazeY: 0.2 },
+    breath: { periodSec: 4.8, amplitude: 0.7, rootAmplitude: 0.04 }, ...overrides,
+  });
+  assert.equal(isAmbientPlan(ambientPlan()), true);
+  for (const malformed of [
+    { sequence: 0 }, { sequence: -1 }, { sequence: 1.5 }, { sequence: Infinity },
+    { moveMs: 299 }, { moveMs: 3001 }, { state: 'speaking' },
+    { target: { ...ambientPlan().target, gazeX: NaN } },
+    { target: { ...ambientPlan().target, headY: 1.1 } },
+    { target: { headX: 0 } },
+    { breath: { periodSec: 2, amplitude: 0.5, rootAmplitude: 0.01 } },
+    { breath: { periodSec: 4, amplitude: Infinity, rootAmplitude: 0.01 } },
+    { breath: { periodSec: 4, amplitude: 0.5, rootAmplitude: 0.081 } },
+    { hop: { height: 0.121, durationMs: 800 } },
+    { hop: { height: 0.1, durationMs: 1601 } },
+  ]) assert.equal(isAmbientPlan(ambientPlan(malformed)), false, `invalid ambient payload ${JSON.stringify(malformed)}`);
+  const advanceAmbient = (runtime, rate, startMs, seconds, enabled = true, body = 1, gaze = 1) => {
+    let sample;
+    for (let frame = 1; frame <= Math.round(rate * seconds); frame++) {
+      sample = runtime.update(1 / rate, startMs + frame * 1000 / rate, enabled, body, gaze);
+      assert.ok(Object.values(sample).every(Number.isFinite), 'ambient samples stay finite');
+      assert.ok(sample.breath >= 0 && sample.breath <= 1 && sample.rootY >= 0 && sample.rootY <= 0.2);
+    }
+    return sample;
+  };
+  const samples = [30, 60, 120].map(rate => {
+    const runtime = new AmbientMotion();
+    runtime.apply(ambientPlan({ breath: { periodSec: 3.4, amplitude: 0.7, rootAmplitude: 0.04 } }), 0);
+    return advanceAmbient(runtime, rate, 0, 2);
+  });
+  for (const sample of samples.slice(1)) {
+    near(sample.headX, samples[0].headX, 'head trajectory is frame-rate independent', 1e-7);
+    near(sample.gazeX, samples[0].gazeX, 'gaze trajectory is frame-rate independent', 1e-7);
+    near(sample.breath, samples[0].breath, 'breath phase is frame-rate independent', 1e-6);
+    near(sample.rootY, samples[0].rootY, 'root does not accumulate across frame rates', 1e-6);
+  }
+  const rapidGaze = [30, 60, 120].map(rate => {
+    const runtime = new AmbientMotion();
+    runtime.apply(ambientPlan({ moveMs: 2400, target: { ...ambientPlan().target, headX: 0.85, gazeX: 0.85 } }), 0);
+    const sample = advanceAmbient(runtime, rate, 0, 0.2);
+    assert.ok(sample.gazeX > 0.8 && sample.headX < 0.1,
+      'gaze reaches its independent short movement before a slow head/body move');
+    return sample;
+  });
+  for (const sample of rapidGaze.slice(1)) near(sample.gazeX, rapidGaze[0].gazeX,
+    'independent rapid gaze stays continuous at 30/60/120 Hz', 1e-8);
+  const shortBody = new AmbientMotion();
+  shortBody.apply(ambientPlan({ moveMs: 300, target: { ...ambientPlan().target, gazeX: 0.85 } }), 0);
+  near(advanceAmbient(shortBody, 60, 0, 0.2).gazeX, rapidGaze[1].gazeX,
+    'body moveMs does not change gaze timing');
+  const steady = new AmbientMotion();
+  const refreshed = new AmbientMotion();
+  steady.apply(ambientPlan(), 0);
+  refreshed.apply(ambientPlan(), 0);
+  advanceAmbient(steady, 60, 0, 1);
+  advanceAmbient(refreshed, 60, 0, 1);
+  assert.equal(refreshed.apply(ambientPlan(), 1000), false, 'duplicate plan cannot restart a trajectory');
+  assert.equal(refreshed.apply(ambientPlan({ sequence: 2 }), 1000), true);
+  const oldSample = advanceAmbient(steady, 60, 1000, 1);
+  const refreshedSample = advanceAmbient(refreshed, 60, 1000, 1);
+  near(refreshedSample.breath, oldSample.breath, 'new plans preserve the breathing phase');
+  near(refreshedSample.headX, oldSample.headX, 'new plans preserve current position and velocity');
+  assert.equal(refreshed.apply(ambientPlan({ sequence: 1 }), 2000), false, 'stale plans must be discarded');
+  assert.equal(refreshed.apply(ambientPlan({ sequence: 3 }), NaN), false, 'invalid timestamps must be rejected');
+  refreshed.apply(ambientPlan({ sequence: 3, target: { ...ambientPlan().target, headX: -0.8 } }), 2000);
+  near(refreshed.update(0, 2000, true).headX, refreshedSample.headX,
+    'opposite targets start from the current rendered position');
+  assert.ok(advanceAmbient(refreshed, 60, 2000, 2).headX < -0.7,
+    'an interrupted trajectory reaches the new target without resetting the runtime');
+  assert.ok(Object.values(refreshed.update(NaN, Infinity, true, Infinity, NaN)).every(Number.isFinite),
+    'invalid local timing or weights cannot poison future frames');
+
+  const hopping = new AmbientMotion();
+  const noRootBreath = { periodSec: 4.8, amplitude: 0.5, rootAmplitude: 0 };
+  hopping.apply(ambientPlan({ breath: noRootBreath, hop: { height: 0.1, durationMs: 1000 } }), 0);
+  const rising = advanceAmbient(hopping, 120, 0, 0.25);
+  assert.ok(rising.rootY > 0.02, 'hop must visibly rise');
+  hopping.apply(ambientPlan({ sequence: 2, state: 'listening', breath: noRootBreath }), 250);
+  const atHandoff = hopping.update(0, 250, true);
+  near(atHandoff.rootY, rising.rootY, 'listening cancellation must not teleport the root');
+  const landed = advanceAmbient(hopping, 120, 250, 1);
+  assert.ok(landed.rootY < 0.0001, 'listening must finish the current hop while root breathing settles');
+  hopping.apply(ambientPlan({ sequence: 3, state: 'listening', breath: noRootBreath, hop: { height: 0.1, durationMs: 1000 } }), 1250);
+  near(advanceAmbient(hopping, 60, 1250, 1).rootY, 0, 'listening never starts a new hop', 1e-6);
+
+  const disconnected = new AmbientMotion();
+  disconnected.apply(ambientPlan({ hop: { height: 0.1, durationMs: 1000 } }), 0);
+  const beforeDisconnect = advanceAmbient(disconnected, 120, 0, 0.25);
+  disconnected.disconnect(250);
+  near(disconnected.update(0, 250, true).rootY, beforeDisconnect.rootY, 'disconnect preserves root continuity');
+  const offline = advanceAmbient(disconnected, 120, 250, 2);
+  assert.ok(offline.rootY <= 0.0061, 'disconnected runtime retains only basic root breathing');
+  assert.ok(offline.breath > 0, 'basic breathing survives disconnect');
+  assert.equal(disconnected.apply(ambientPlan(), 2250), true, 'a new connection may restart sequence numbering');
+  const disabled = advanceAmbient(disconnected, 60, 2250, 2, false);
+  assert.ok(Math.abs(disabled.headX) < 1e-4 && disabled.rootY < 1e-4, 'disable smoothly settles all contributions');
+  const weighted = advanceAmbient(disconnected, 60, 4250, 1, true, 0, 0);
+  assert.ok(Math.abs(weighted.headX) < 1e-4 && Math.abs(weighted.gazeX) < 1e-4 && weighted.rootY < 1e-4,
+    'explicit action owners can suppress body and gaze without stopping the runtime');
+  assert.ok(advanceAmbient(disconnected, 60, 5250, 1).headX > 0.6, 'ownership release smoothly returns to the current plan');
+
+  const resumed = new AmbientMotion();
+  resumed.apply(ambientPlan({ hop: { height: 0.1, durationMs: 1000 } }), 0);
+  const beforePause = advanceAmbient(resumed, 60, 0, 0.25);
+  const afterPause = resumed.update(0, 10000, true);
+  near(afterPause.rootY, beforePause.rootY, 'background tab resume keeps the last rendered height');
+  assert.ok(advanceAmbient(resumed, 60, 10000, 1).rootY < 0.041,
+    'background tab resume settles the old hop without replaying it');
+
+  near(clampRootY(0.12, 0.08), 0.06, 'root respects calibrated headroom');
+  near(clampRootY(0.12, 0.01), 0, 'insufficient headroom prevents upward translation');
+  near(clampRootY(0.12, 0.08, 0.04), 0.04, 'root retains the requested top margin');
+  near(clampRootY(NaN, 0.08), 0, 'invalid root offsets are suppressed');
+  near(clampRootY(0.12, Infinity), 0, 'unknown headroom cannot move the root offscreen');
+}
+
+// 真實 canvas 同步服務；只替換分頁通訊、GPU 擷取與時鐘邊界。
+{
+  const clock = new FakeClock();
+  const channels = new Set();
+  const captures = [];
+  const received = [];
+  let captureCount = 0;
+  let receiverCount = 0;
+  class Bitmap {
+    closed = false;
+    constructor(label) { this.label = label; }
+    close() { this.closed = true; }
+  }
+  class Channel {
+    listeners = new Set();
+    closed = false;
+    constructor(name) { this.name = name; channels.add(this); }
+    addEventListener(type, listener) { if (type === 'message') this.listeners.add(listener); }
+    removeEventListener(type, listener) { if (type === 'message') this.listeners.delete(listener); }
+    postMessage(data) {
+      assert.equal(this.closed, false, 'a closed channel cannot send');
+      for (const channel of channels) {
+        if (channel === this || channel.name !== this.name || channel.closed) continue;
+        const clone = data.type === 'frame' ? { ...data, bitmap: new Bitmap(data.bitmap.label) } : { ...data };
+        void Promise.resolve().then(() => {
+          if (channel.closed) clone.bitmap?.close();
+          else for (const listener of [...channel.listeners]) listener({ data: clone });
+        });
+      }
+    }
+    close() { this.closed = true; channels.delete(this); }
+  }
+  const realm = () => {
+    const events = new Map();
+    const intervals = new Set();
+    const window = {
+      setInterval(callback, delay) {
+        const interval = { timer: null };
+        const tick = () => {
+          callback();
+          interval.timer = clock.setTimeout(tick, delay);
+        };
+        interval.timer = clock.setTimeout(tick, delay);
+        intervals.add(interval);
+        return interval;
+      },
+      clearInterval(interval) { clock.clearTimeout(interval.timer); intervals.delete(interval); },
+      addEventListener(type, listener) {
+        if (!events.has(type)) events.set(type, new Set());
+        events.get(type).add(listener);
+      },
+      removeEventListener(type, listener) { events.get(type)?.delete(listener); },
+      emit(type) { for (const listener of [...(events.get(type) ?? [])]) listener(); },
+      crash() { for (const interval of intervals) this.clearInterval(interval); },
+    };
+    const canvasLoad = createLoader({}, {
+      window, BroadcastChannel: Channel, ImageBitmap: Bitmap,
+      performance: { now: () => clock.now }, crypto: { randomUUID: () => `receiver_${receiverCount++}` },
+      createImageBitmap() {
+        captureCount++;
+        const capture = deferred();
+        captures.push(capture);
+        return capture.promise;
+      },
+    });
+    return { service: canvasLoad('src/services/canvasSyncService.ts').canvasSyncService, window };
+  };
+  const delegate = () => ({
+    callback: null,
+    setPostRenderCallback(callback) { this.callback = callback; },
+    frame() { this.callback?.({}); },
+  });
+  const complete = async label => {
+    assert.ok(captures.length, 'a GPU capture must be pending');
+    const bitmap = new Bitmap(label);
+    captures.shift().resolve(bitmap);
+    await flushMicrotasks();
+    assert.equal(bitmap.closed, true, 'the source releases every captured bitmap');
+  };
+  const receive = bitmap => { received.push(bitmap.label); bitmap.close(); };
+  const source = realm();
+  const main = delegate();
+  source.service.attachToRenderLoop(main);
+  await flushMicrotasks();
+  for (let frame = 0; frame < 120; frame++) main.frame();
+  assert.equal(captureCount, 0, 'no display receiver means zero GPU captures');
+
+  const display = realm();
+  let closeDisplay = display.service.startReceiving(receive);
+  await flushMicrotasks();
+  main.frame();
+  main.frame();
+  assert.equal(captureCount, 1, 'an active receiver enables capture with one pending readback');
+  await complete('first');
+  assert.deepEqual(received, ['first'], 'the existing frame/bitmap contract reaches the receiver');
+  closeDisplay();
+  await flushMicrotasks();
+  for (let frame = 0; frame < 120; frame++) main.frame();
+  assert.equal(captureCount, 1, 'receiver cleanup immediately stops capture');
+
+  closeDisplay = display.service.startReceiving(receive);
+  await flushMicrotasks();
+  main.frame();
+  closeDisplay();
+  await flushMicrotasks();
+  await complete('closed_while_pending');
+  assert.equal(received.length, 1, 'closing the receiver discards an in-flight capture');
+
+  closeDisplay = display.service.startReceiving(receive);
+  await flushMicrotasks();
+  main.frame();
+  const remounted = delegate();
+  source.service.attachToRenderLoop(remounted);
+  assert.equal(main.callback, null, 'remount removes the old render hook');
+  await flushMicrotasks();
+  remounted.frame();
+  const beforeOldCompletion = captureCount;
+  await complete('old_generation');
+  remounted.frame();
+  assert.equal(captureCount, beforeOldCompletion, 'stale capture completion cannot unlock the new readback');
+  assert.equal(received.length, 1, 'stale render generations never publish frames');
+  await complete('remounted');
+  assert.equal(received.at(-1), 'remounted');
+
+  source.service.stopBroadcasting();
+  source.service.channel.close();
+  const reload = realm();
+  const reloadedMain = delegate();
+  reload.service.attachToRenderLoop(reloadedMain);
+  await flushMicrotasks();
+  const beforeReload = captureCount;
+  reloadedMain.frame();
+  assert.equal(captureCount, beforeReload + 1, 'source_ready restores an existing receiver after main reload');
+  await complete('reloaded');
+
+  clock.advance(8000);
+  await flushMicrotasks();
+  const beforeHeartbeat = captureCount;
+  reloadedMain.frame();
+  assert.equal(captureCount, beforeHeartbeat + 1, 'heartbeat renews a receiver beyond its original lease');
+  await complete('heartbeat');
+  display.window.emit('pagehide');
+  await flushMicrotasks();
+  const beforeHide = captureCount;
+  reloadedMain.frame();
+  assert.equal(captureCount, beforeHide, 'pagehide immediately stops capture');
+  display.window.emit('pageshow');
+  await flushMicrotasks();
+  reloadedMain.frame();
+  assert.equal(captureCount, beforeHide + 1, 'pageshow restores a cached display receiver');
+  await complete('restored');
+
+  display.window.crash();
+  display.service.channel.close();
+  clock.advance(6001);
+  await flushMicrotasks();
+  const beforeExpired = captureCount;
+  for (let frame = 0; frame < 120; frame++) reloadedMain.frame();
+  assert.equal(captureCount, beforeExpired, 'a crashed receiver stops capture after its lease expires');
+  const secondDisplay = realm();
+  const closeSecond = secondDisplay.service.startReceiving(receive);
+  await flushMicrotasks();
+  reloadedMain.frame();
+  await complete('new_receiver');
+  closeSecond();
+  await flushMicrotasks();
+  reload.service.stopBroadcasting();
+  assert.equal(reloadedMain.callback, null, 'stopping the source removes its render hook');
+  assert.equal(captureCount, 8);
+  assert.equal(received.length, 6);
+  assert.equal(captures.length, 0, 'canvas sync leaves no GPU readback pending');
+}
+
+console.log('Rushia runtime checks passed: shared model switching, failure recovery, framing, expression composition, action timing, cancelled TTS, autonomous ambient execution and on-demand canvas mirroring.');

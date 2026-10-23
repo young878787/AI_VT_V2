@@ -6,6 +6,7 @@ import { getDefaultModel } from '../live2d/LAppDefine';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import type { BlinkAction, ExpressionEyeMotionPlan, ExpressionIdlePlan, ExpressionMicroEvent, ExpressionMotionPlan, ExpressionPlanPayload } from '../types/expressionPlan';
 import type { EmotionSource, EmotionState } from '../types/emotionState';
+import type { AmbientPlan } from '../types/ambientPlan';
 import { beginChatContext, emptyChatContext, finishChatContext, receiveContextStatus } from '../types/contextStatus';
 import type { ChatContextState, ContextStatusPayload } from '../types/contextStatus';
 
@@ -81,6 +82,7 @@ interface AppState {
     eyeROpen: number;
   };
   expressionPlan: ExpressionPlanPayload | null;
+  ambientPlan: AmbientPlan | null;
   expressionEvents: ExpressionMicroEvent[];
 
   // 動作
@@ -109,6 +111,8 @@ interface AppState {
   setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number, eyeBallX?: number, eyeBallY?: number) => void;
   setBlinkControl: (action: BlinkAction, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
   setExpressionPlan: (plan: ExpressionPlanPayload) => void;
+  setAmbientPlan: (plan: AmbientPlan) => void;
+  disconnectAmbient: () => void;
   enqueueExpressionEvents: (events: ExpressionMicroEvent[]) => void;
   clearExpressionEvents: () => void;
 
@@ -136,8 +140,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   modelLoading: false,
   modelLoaded: false,
   modelError: null,
-  eyeTrackingEnabled: true,
-  autoPlayEnabled: false,
+  eyeTrackingEnabled: false,
+  autoPlayEnabled: true,
   showControls: true,
 
   // 模型變換初始狀態
@@ -171,6 +175,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     eyeROpen: 1
   },
   expressionPlan: null,
+  ambientPlan: null,
   expressionEvents: [],
 
   // JEV 情緒初始狀態
@@ -367,6 +372,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         break;
     }
+  },
+
+  setAmbientPlan: (plan) => {
+    const current = get().ambientPlan;
+    if (current && plan.sequence <= current.sequence) return;
+    set({ ambientPlan: plan });
+    LAppLive2DManager.getInstance().getActiveModel()?.applyAmbientPlan(plan);
+  },
+
+  disconnectAmbient: () => {
+    set({ ambientPlan: null });
+    LAppLive2DManager.getInstance().getActiveModel()?.disconnectAmbient();
   },
 
   setExpressionPlan: (plan) => {

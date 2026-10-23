@@ -59,6 +59,7 @@ from services.chat_session_service import ChatSessionInUseError
 from services.context_tools import ContextTools
 from services.ai_test_context import fixture_timestamp
 from services.memory_events import recent_memory_events, subscribe_memory_events
+from services.avatar_runtime import AvatarRuntime
 
 
 router = APIRouter()
@@ -274,6 +275,17 @@ async def websocket_endpoint(websocket: WebSocket):
     async def send(payload: dict) -> None:
         async with send_lock:
             await websocket.send_json(payload)
+            if payload.get("type") == "expression_plan":
+                avatar_runtime.adopt_expression_plan(payload)
+
+    avatar_runtime = AvatarRuntime(send)
+    avatar_task: asyncio.Task | None = None
+
+    def consume_avatar_failure(task: asyncio.Task) -> None:
+        if not task.cancelled():
+            failure = task.exception()
+            if failure is not None:
+                print(f"[Avatar runtime] 自主動畫停止: {type(failure).__name__}")
 
     def consume_task_failure(task: asyncio.Task) -> None:
         """Retrieve late DB task failures after the caller's timeout path."""
@@ -782,11 +794,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         await send({"type": "session_ready", "session_id": session_id})
+        avatar_task = asyncio.create_task(avatar_runtime.run())
+        avatar_task.add_done_callback(consume_avatar_failure)
         if short_term_enabled:
             await chat_sessions.ensure_compression(compress_once)
         while True:
             data = json.loads(await websocket.receive_text())
             if not isinstance(data, dict):
+                continue
+            if data.get("type") == "avatar_state":
+                try:
+                    avatar_runtime.update_state(data)
+                except ValueError as exc:
+                    await send({"type": "error", "code": "invalid_avatar_state", "content": str(exc)})
                 continue
             try:
                 mode = resolve_test_mode(data.get("test_mode"))
@@ -810,6 +830,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 emotion_state = test_snapshot["emotion_state"] if next_short_term else None
                 expression_state = None
                 current_action = None
+                avatar_runtime.reset()
                 short_term_enabled = next_short_term
                 version = 0
                 await send({"type": "session_ready", "session_id": session_id,
@@ -819,6 +840,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 short_term_enabled = next_short_term
                 expression_state = None
                 current_action = None
+                avatar_runtime.reset()
                 if short_term_enabled:
                     restored = await chat_sessions.repository.load_context(session_id)
                     if restored is None:
@@ -850,6 +872,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 else:
                     reset_state = await chat_sessions.repository.reset(session_id)
                 messages, emotion_state, expression_state = [], None, None
+                avatar_runtime.reset()
                 session_generation = reset_state["generation"]
                 session_summary = ""
                 session_failed = False
@@ -946,6 +969,9 @@ async def websocket_endpoint(websocket: WebSocket):
         try:
             await cancel_active()
         finally:
+            if avatar_task is not None:
+                avatar_task.cancel()
+                await asyncio.gather(avatar_task, return_exceptions=True)
             unsubscribe_memory_events()
             memory_event_task.cancel()
             session_invalidation_task.cancel()

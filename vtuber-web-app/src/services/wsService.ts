@@ -4,6 +4,8 @@ import { isBlinkAction, isExpressionPlanPayload } from '../types/expressionPlan'
 import { isEmotionUpdatePayload } from '../types/emotionState';
 import { isContextStatusPayload } from '../types/contextStatus';
 import { actionScheduler } from './actionScheduler';
+import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
+import { isAmbientPlan } from '../types/ambientPlan';
 
 class WSService {
     private ws: WebSocket | null = null;
@@ -16,12 +18,28 @@ class WSService {
     private readonly MAX_RETRIES = 5;
     private readonly RETRY_DELAY_MS = 3000;
     private sessionId: string | null = null;
+    private previousSessionId: string | null = null;
+    private avatarListening = false;
     
     // TTS 播放器
     private ttsPlayer: TTSPlayer;
 
     constructor() {
         this.ttsPlayer = TTSPlayer.getInstance();
+        useAppStore.subscribe((state, previous) => {
+            if (state.autoPlayEnabled !== previous.autoPlayEnabled) this.sendAvatarState();
+        });
+    }
+
+    public setAvatarListening(listening: boolean): void {
+        this.avatarListening = listening;
+        this.sendAvatarState();
+    }
+
+    private sendAvatarState(): void {
+        if (this.ws?.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ type: 'avatar_state', listening: this.avatarListening,
+            enabled: useAppStore.getState().autoPlayEnabled }));
     }
 
     public connect() {
@@ -38,6 +56,7 @@ class WSService {
             this.retryCount = 0; // 成功連線後重置重試計數
             useAppStore.getState().resetChatContext();
             this.ws?.send(JSON.stringify({ type: 'sync' }));
+            this.sendAvatarState();
             actionScheduler.setReporter((status, action) => {
                 if (this.ws?.readyState === WebSocket.OPEN) {
                     this.ws.send(JSON.stringify({ type: 'action_state', status,
@@ -50,8 +69,27 @@ class WSService {
             try {
                 const data = JSON.parse(event.data);
                 const store = useAppStore.getState();
+                if (data.type === 'ambient_plan') {
+                    if (isAmbientPlan(data)) store.setAmbientPlan(data);
+                    else console.warn('Received invalid ambient_plan payload');
+                    return;
+                }
                 if (data.type === 'session_ready') {
+                    if (this.previousSessionId && this.previousSessionId !== data.session_id) {
+                        LAppLive2DManager.getInstance().getActiveModel()?.resetAmbientEmotion();
+                        useAppStore.setState({ expressionPlan: null });
+                    }
                     this.sessionId = typeof data.session_id === 'string' ? data.session_id : null;
+                    this.previousSessionId = this.sessionId;
+                    return;
+                }
+                if (data.type === 'reset_done') {
+                    LAppLive2DManager.getInstance().getActiveModel()?.resetAmbientEmotion();
+                    useAppStore.setState({ expressionPlan: null });
+                    return;
+                }
+                if (data.type === 'error' && data.code === 'invalid_avatar_state') {
+                    console.warn('Avatar control rejected:', data.content);
                     return;
                 }
                 if (data.type === 'turn_cancelled') {
@@ -193,6 +231,8 @@ class WSService {
         };
 
         this.ws.onclose = () => {
+            this.avatarListening = false;
+            useAppStore.getState().disconnectAmbient();
             actionScheduler.cancel();
             this.ttsPlayer.stop();
             actionScheduler.setReporter(null);
@@ -295,6 +335,8 @@ class WSService {
     /** REST owner reset 會使後端關閉舊寫入連線；此處只清理前端回合狀態。 */
     public syncResetSession(): void {
         actionScheduler.cancel();
+        LAppLive2DManager.getInstance().getActiveModel()?.resetAmbientEmotion();
+        useAppStore.setState({ expressionPlan: null });
         this.activeTurnId = null;
         this.activeTurnStartedAt = null;
         this.currentAssistantMessageId = null;

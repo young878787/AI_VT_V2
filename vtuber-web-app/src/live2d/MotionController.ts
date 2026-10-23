@@ -25,8 +25,7 @@ export class MotionController {
   
   private _isEnabled: boolean = true;
   private _currentMotion: MotionInfo | null = null;
-  private _autoPlayTimer: number | null = null;
-  private _autoPlayInterval: number = 15000; // 15秒自動播放一次
+
 
   /**
    * 取得單例實例
@@ -65,62 +64,7 @@ export class MotionController {
   }
 
   /**
-   * 啟動自動播放
-   */
-  public startAutoPlay(): void {
-    this.stopAutoPlay(); // 先停止現有的
-    
-    // 啟用模型自動效果（眼睛、呼吸）
-    const manager = LAppLive2DManager.getInstance();
-    const model = manager.getActiveModel();
-    if (model) {
-      model.setAutoEffectsEnabled(true);
-    }
-    
-    // 立即播放一次
-    this.playRandomIdle();
-    
-    // 設定定時器
-    this._autoPlayTimer = window.setInterval(() => {
-      this.playRandomIdle();
-    }, this._autoPlayInterval);
-    
-    LAppPal.printLog('自動播放已啟動');
-  }
-
-  /**
-   * 停止自動播放
-   */
-  public stopAutoPlay(): void {
-    if (this._autoPlayTimer !== null) {
-      clearInterval(this._autoPlayTimer);
-      this._autoPlayTimer = null;
-      
-      // 禁用模型自動效果（眼睛、呼吸）
-      const manager = LAppLive2DManager.getInstance();
-      const model = manager.getActiveModel();
-      if (model) {
-        model.setAutoEffectsEnabled(false);
-      }
-      
-      LAppPal.printLog('自動播放已停止');
-    }
-  }
-
-  /**
-   * 設定自動播放間隔
-   * @param interval 間隔時間（毫秒）
-   */
-  public setAutoPlayInterval(interval: number): void {
-    this._autoPlayInterval = interval;
-    // 如果正在自動播放，重新啟動以應用新間隔
-    if (this._autoPlayTimer !== null) {
-      this.startAutoPlay();
-    }
-  }
-
-  /**
-   * 播放隨機待機動作
+   * 手動播放隨機待機片段
    */
   public playRandomIdle(): void {
     if (!this._isEnabled) return;

@@ -150,7 +150,8 @@ class EmotionWebSocketTests(unittest.TestCase):
         socket, captured = self._run(
             [{"content": "妳今天好可愛"}], [answers],
         )
-        types = [payload["type"] for payload in socket.payloads]
+        # Connection-scoped ambient updates may interleave independently of this turn.
+        types = [payload["type"] for payload in socket.payloads if payload["type"] != "ambient_plan"]
         self.assertEqual(types[:5], ["session_ready", "context_status", "context_status", "input_accepted", "emotion_update"])
         self.assertEqual([payload["status"] for payload in socket.payloads if payload["type"] == "context_status"],
                          ["reading", "unavailable"])
@@ -176,7 +177,7 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(plan["debug"]["jevDecisionSource"], "jev")
         self.assertEqual(plan["debug"]["jevDecisionHistoryMessages"], 0)
         self.assertEqual(len(plan["debug"]["jevDecisionQuestionHash"]), 12)
-        self.assertEqual(socket.payloads[-1]["type"], "stream_end")
+        self.assertEqual(types[-1], "stream_end")
 
     def test_stream_end_reports_chat_performance_metrics(self):
         socket, _ = self._run([{"content": "測試效能"}], [jev_answers()])
@@ -206,7 +207,7 @@ class EmotionWebSocketTests(unittest.TestCase):
         socket, captured = self._run([{"type": "reset_session", "session_id": "session_a"}], [])
         captured["runtime"].reset.assert_not_awaited()
         self.assertEqual(
-            [payload["type"] for payload in socket.payloads],
+            [payload["type"] for payload in socket.payloads if payload["type"] != "ambient_plan"],
             ["session_ready", "emotion_update", "reset_done"],
         )
 

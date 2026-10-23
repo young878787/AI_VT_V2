@@ -73,6 +73,7 @@ export class LAppLive2DManager {
 
       const previous = this._activeModel;
       if (previous) {
+        model.inheritAmbientBaseline(previous);
         model.setCanvasSize(previous.getCanvasWidth(), previous.getCanvasHeight());
         model.setModelScale(previous.getModelScale());
         const position = previous.getModelPosition();

@@ -3,7 +3,7 @@ import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import { useAppStore } from '../store/appStore';
 import { actionScheduler } from './actionScheduler';
 
-/** 切換舞台資源並重播共用表情計畫；角色名稱與參數契約保持 Rushia。 */
+/** 切換舞台資源並重綁常駐基準；短表演不在切換後重播。 */
 export async function switchModel(directory: string): Promise<void> {
   const state = useAppStore.getState();
   const config = AvailableModels.find(model => model.directory === directory);
@@ -20,21 +20,23 @@ export async function switchModel(directory: string): Promise<void> {
     model.setEyeTrackingEnabled(current.eyeTrackingEnabled);
     model.setAutoEffectsEnabled(current.autoPlayEnabled);
     model.setSpeaking(current.isSpeaking);
-    model.setThinking(current.isAiTyping && !current.isSpeaking);
 
     actionScheduler.cancel();
     useAppStore.setState({ currentModelDirectory: config.directory, modelLoading: false, modelLoaded: true });
-    if (current.expressionPlan) actionScheduler.submit(structuredClone(current.expressionPlan), 'debug');
+    if (current.expressionPlan?.idlePlan) model.applyIdlePlan(current.expressionPlan.idlePlan);
+    if (current.ambientPlan) {
+      const currentTargets = { ...current.ambientPlan };
+      delete currentTargets.hop;
+      model.applyAmbientPlan(currentTargets);
+    }
   } catch (error) {
     const detail = error instanceof Error ? error.message : '未知錯誤';
     const previous = manager.getActiveModel();
     actionScheduler.cancel();
-    const plan = useAppStore.getState().expressionPlan;
     useAppStore.setState({
       modelLoading: false,
       modelLoaded: previous !== null,
       modelError: `${detail}${previous ? `。仍使用 ${state.currentModelDirectory}，請重新選擇模型重試。` : ''}`,
     });
-    if (previous && plan) actionScheduler.submit(structuredClone(plan), 'debug');
   }
 }
