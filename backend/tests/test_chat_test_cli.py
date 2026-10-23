@@ -1,286 +1,287 @@
+"""分組入口與狀態重播測試；所有模型、DB、WebSocket及子程序皆為替身。"""
+
 import argparse
-import asyncio
+import contextlib
+import io
 import json
-import pathlib
+from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest import mock
+from unittest.mock import AsyncMock, Mock, patch
+from uuid import uuid4
 
-
-BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
-if str(BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(BACKEND_ROOT))
-
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools import chat_test_cli as cli
-from domain.chat_test_mode import ChatTestMode
 
 
-class FakeSocket:
-    def __init__(self):
-        self.closed = False
+class CliTests(unittest.TestCase):
+    def test_no_arguments_prints_usage_without_run(self):
+        with patch.object(cli, "run") as run, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main([]), 0)
+        run.assert_not_called()
+        self.assertIn("--suite", out.getvalue())
 
-    async def close(self):
-        self.closed = True
+    def test_removed_legacy_flags_rejected(self):
+        for flags in (["--max-turns", "1"], ["--model", "Rushia"], ["--retries", "3"]):
+            with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                cli.main(["--suite", "chat", *flags])
+
+    def test_database_guard_rejects_same_database_and_does_not_print_credentials(self):
+        with patch.object(cli, "dotenv_values", return_value={
+                "MEMORY_TEST_DATABASE_URL": "postgresql://secret:credential@localhost/common",
+                "MEMORY_DATABASE_URL": "postgresql://other:credential@other/common"}), patch.dict(cli.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "不同的 PostgreSQL") as exc:
+                cli.test_database_url()
+        self.assertNotIn("credential", str(exc.exception))
+
+    def test_backend_is_local_isolated_and_disables_audio(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(cli.subprocess, "Popen") as start:
+            process, log = cli.start_backend(Path(directory), 1234, "postgresql://test/db", "test_" + "a" * 32, uuid4(), uuid4())
+            log.close()
+            self.assertIs(process, start.return_value)
+            env = start.call_args.kwargs["env"]
+            self.assertEqual(env["AI_VT_TEST_MODE"], "true")
+            self.assertEqual(env["TTS_ENABLED"], "false")
+            self.assertEqual(env["ASR_ENABLED"], "false")
+            self.assertEqual(Path(env["AI_VT_TEST_FIXTURE_PATH"]), Path(directory) / "fixture.json")
+
+    def test_safe_error_redacts_transport_details(self):
+        self.assertNotIn("secret", cli.safe_error(RuntimeError("postgresql://secret@server/db")))
+        self.assertEqual(cli.safe_error(ValueError("fixture_invalid")), "fixture_invalid")
+
+    def test_weather_text_source_is_not_a_screenshot_asset(self):
+        record = {"tools": [{"name": "get_weather", "result": {"data": {"source": "CWA fixture"}}}]}
+        self.assertEqual(cli.collect_assets(record, Path(".")), [])
+
+    def test_cost_excludes_injected_provider_fault_and_keeps_failed_summary_unknown(self):
+        records = [{"trace": [{"stage": "context_test_fault", "fault": "vision_rejection"},
+                               {"stage": "chat", "error": "BadRequestError", "duration_sec": 0.1},
+                               {"stage": "chat", "error": None, "usage": None}],
+                    "control": {"action": "compress", "status": "failed", "duration_sec": 2}}]
+        metadata = {}
+        cli.update_cost(metadata, records, None, cli.time.monotonic())
+        self.assertEqual(metadata["cost"]["roles"]["chat"]["calls"], 1)
+        self.assertIsNone(metadata["cost"]["roles"]["chat"]["duration_sec"])
+        self.assertIsNone(metadata["cost"]["roles"]["summary"]["calls"])
+        self.assertEqual(metadata["cost"]["roles"]["summary"]["duration_sec"], 2)
+
+    def test_cost_counts_native_tool_selection_and_final_request_without_double_counting_direct_reply(self):
+        records = [{"trace": [{"stage": "chat_request"}, {"stage": "context_tool_selection", "usage": None},
+                               {"stage": "chat_request"}, {"stage": "context_test_fault"},
+                               {"stage": "chat", "error": "BadRequestError"},
+                               {"stage": "chat_request"}, {"stage": "chat", "usage": None}]},
+                   {"trace": [{"stage": "chat_request"}, {"stage": "context_tool_selection", "usage": None},
+                               {"stage": "chat", "usage": None}]}]
+        metadata = {}
+        cli.update_cost(metadata, records, None, cli.time.monotonic())
+        self.assertEqual(metadata["cost"]["roles"]["chat"]["calls"], 3)
 
 
-def make_record(turn: int, error: str | None = None) -> dict:
-    return {
-        "turn": turn, "ts": "2026-09-23T12:00:00", "user": f"message {turn}",
-        "reply": "露西亞的回答" if not error else "",
-        "emotion_state": {"shy": 0.5}, "emotion_source": "jev",
-        "expression": "shy", "expression_debug": {}, "memory_changes": {},
-        "errors": [error] if error else [], "latency_first_text_sec": 1.0,
-        "duration_sec": 2.0,
-    }
+class RunTests(unittest.IsolatedAsyncioTestCase):
+    async def test_memory_dependency_replays_only_required_inputs_and_preserves_denominator(self):
+        await self._memory_run()
 
+    async def test_objective_failure_prevents_dependent_requests_with_failed_status(self):
+        for stage in ("retrieval", "injection", "tool_selection", "tool_delivery", "transaction", "isolation"):
+            with self.subTest(stage=stage):
+                await self._memory_run(failure_stage=stage)
 
-class ChatTestCliTests(unittest.TestCase):
-    def test_memory_stability_deduplicates_event_and_keeps_semantics_separate(self):
-        earlier = {"memory_event_id": "event", "memory_attempts": 1, "memory_job_status": "retry",
-                   "memory_agent_diagnostics": {"calls": 2, "logical_steps": 2}}
-        final = {"memory_event_id": "event", "memory_attempts": 2, "memory_job_status": "done",
-                 "latency_memory_completion_sec": 3.5, "semantic_review": {"verdict": "incorrect"},
-                 "memory_agent_diagnostics": {"calls": 5, "logical_steps": 4, "failures": 1,
-                    "queue": {"active_jobs": 2, "oldest_age_sec": 7}}}
-        result = cli.summarize_memory_stability([earlier, final, {"memory_event_id": None}])
-        self.assertEqual(result["observed_jobs"], 1)
-        self.assertEqual(result["attempts"], 2)
-        self.assertEqual(result["totals"]["calls"], 5)
-        self.assertEqual(result["totals"]["logical_steps"], 4)
-        self.assertEqual(result["completion_wait_sec"]["p95"], 3.5)
-        self.assertEqual(result["max_observed_queue_oldest_sec"], 7)
-        self.assertNotIn("semantic_review", result)
+    async def test_fixture_failure_marks_unsent_selected_cases_failed(self):
+        await self._memory_run(prepare_failure=True)
 
-    def test_fixed_latest_reused_without_creating_history(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            first = cli.create_run_dir(root)
-            (first / "turns.jsonl").write_text("existing evidence")
-            self.assertEqual(cli.create_run_dir(root), first)
-            self.assertFalse(first.is_symlink())
-            self.assertEqual([p.name for p in root.iterdir()], ["latest"])
+    async def test_objective_failure_does_not_stop_independent_memory_scenarios(self):
+        await self._memory_run(failure_stage="retrieval", full_suite=True)
 
-    def test_old_latest_symlink_does_not_overwrite_history(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            old = root / "20261003_130507"
-            old.mkdir()
-            (old / "turns.jsonl").write_text("previous evidence")
-            (root / "latest").symlink_to(old.name, target_is_directory=True)
-            latest = cli.create_run_dir(root)
-            (latest / "turns.jsonl").write_text("new evidence")
-            self.assertFalse(latest.is_symlink())
-            self.assertEqual((old / "turns.jsonl").read_text(), "previous evidence")
+    async def _memory_run(self, failure_stage=None, prepare_failure=False, full_suite=False):
+        from tools.ai_testset import load_suite
+        dataset = load_suite("memory")
+        sent = []
+        store = SimpleNamespace(open=Mock(), close=Mock(), case_state=Mock(return_value={}), created=True)
+        loader = SimpleNamespace(embedding_cost={}, memory_ids={}, other_owner_state=Mock(return_value={}))
 
-    def test_backend_uses_isolated_test_database_and_scope(self):
-        with tempfile.TemporaryDirectory() as directory:
-            run_dir = pathlib.Path(directory)
-            (run_dir / "memory").mkdir()
-            fake_process = mock.Mock()
-            user_id, character_id = cli.uuid.uuid4(), cli.uuid.uuid4()
-            schema = "test_" + cli.uuid.uuid4().hex
-            with mock.patch("tools.chat_test_cli.subprocess.Popen", return_value=fake_process) as popen:
-                process, log_file = cli.start_backend(run_dir, 12345, "postgresql://test/db", schema,
-                                                       user_id, character_id)
-            try:
-                self.assertIs(process, fake_process)
-                kwargs = popen.call_args.kwargs
-                self.assertEqual(kwargs["env"]["AI_VT_MEMORY_DIR"], str((run_dir / "memory").resolve()))
-                self.assertEqual(kwargs["env"]["AI_VT_TEST_MODE"], "true")
-                self.assertEqual(kwargs["env"]["MEMORY_TEST_DATABASE_URL"], "postgresql://test/db")
-                self.assertEqual(kwargs["env"]["MEMORY_DATABASE_SCHEMA"], schema)
-                self.assertEqual(kwargs["env"]["MEMORY_DEFAULT_USER_ID"], str(user_id))
-                self.assertEqual(kwargs["env"]["MEMORY_DEFAULT_CHARACTER_ID"], str(character_id))
-                self.assertEqual(kwargs["cwd"], cli.BACKEND_ROOT)
-                self.assertIn("12345", popen.call_args.args[0])
-            finally:
-                log_file.close()
+        async def prepare(case, _):
+            if prepare_failure:
+                raise ValueError("fixture_missing")
+            return {"session_id": case["session"], "metadata": {}}
 
-    def test_report_shows_joint_jev_choices_and_fallbacks(self):
-        with tempfile.TemporaryDirectory() as directory:
-            record = make_record(1)
-            record["expression_debug"] = {
-                "jevBaseEmotionChoice": "shy", "jevBaseEmotionConfidence": 0.8,
-                "jevInteractionAttitudeChoice": "awkward",
-                "jevInteractionAttitudeConfidence": 0.75,
-                "jevResolvedEmotion": "shy", "jevResolvedAttitude": "awkward",
-                "jevDecisionSource": "jev",
-                "jevBaseEmotionFallbackReason": "none",
-                "jevInteractionAttitudeFallbackReason": "none",
-                "jevDecisionCriteriaVersion": "joint_two_axis_v4",
-                "jevDecisionQuestionHash": "abc123abc123",
+        async def turn(ws, index, message, model, session, storage, timeout, mode):
+            sent.append(message)
+            return {"turn_id": uuid4().hex, "user": message, "reply": "合成回答", "stream_complete": True,
+                    "request_sent": True, "errors": [], "_db_state": {}}
+
+        def check(suite, case, record, *args):
+            failed = failure_stage and case["case_id"] == "mem_003"
+            record["checks"] = [{"stage": failure_stage or "execution", "status": "failed" if failed else "passed", "reason_code": "test_double",
+                                  "evidence": {"file": "turns.jsonl", "case_id": case["case_id"]}}]
+            record["operation_observations"] = [{"operation": "reinforce", "observed": {
+                "referenced_target_ids": ["existing"], "reinforced_target_ids": [], "new_same_text_ids": ["new"]}}]
+
+        loader.prepare = prepare
+        settings = SimpleNamespace(embedding_model="test", embedding_serving_model="test", embedding_dimension=1024,
+                                   embedding_query_prefix="", embedding_document_prefix="", embedding_contract="test")
+        socket = SimpleNamespace(close=AsyncMock())
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            root = Path(directory)
+            replacements = {
+                "test_database_url": lambda: "postgresql://test/test_db", "MemoryRunStore": Mock(return_value=store),
+                "start_backend": Mock(return_value=(Mock(), Mock())), "stop_backend": Mock(),
+                "connect_backend": AsyncMock(return_value=socket), "control_step": AsyncMock(return_value={}),
+                "run_turn": turn, "provenance": lambda _: {}, "RUNS_DIR": root,
             }
-            path = pathlib.Path(directory) / "memory_report.md"
-            cli.write_markdown_report([record], path, {
-                "run_id": "test", "planned_turns": 1, "started_at": "now",
-                "scenario": "test", "scenario_sha256": "hash",
-                "ai_provider": "test", "chat_model": "test", "jev_model": "test",
-                "memory_schema": "test_" + "a" * 32,
-            }, "completed", None)
-            report = path.read_text(encoding="utf-8")
-            self.assertIn("## 統計摘要", report)
-            self.assertIn("## 全部輪次決策總覽", report)
-            self.assertIn("| 1 | message 1 | 露西亞的回答 | shy 0.50、pleased 未提供、genuinely_angry 未提供、sad_or_hurt 未提供、masking_positive_feeling 未提供、wants_continue_interaction 未提供 | shy | awkward | shy | awkward | B 0.80 / A 0.75 | OK |", report)
-            self.assertIn("## 詳細紀錄", report)
-            self.assertIn("turns.jsonl", report)
-            self.assertNotIn("```json", report)
-            self.assertNotIn("## 詳細資料", report)
-            self.assertIn("問題指紋：`abc123abc123`", report)
-
-    def test_report_identifies_rejected_attitude_choice(self):
-        with tempfile.TemporaryDirectory() as directory:
-            record = make_record(15)
-            record["expression"] = "neutral"
-            record["expression_debug"] = {
-                "jevBaseEmotionChoice": "neutral", "jevBaseEmotionConfidence": 0.82,
-                "jevInteractionAttitudeChoice": "smile",
-                "jevInteractionAttitudeConfidence": 0.33,
-                "jevResolvedEmotion": "neutral", "jevResolvedAttitude": "smile",
-                "jevDecisionSource": "partial_fallback",
-                "jevBaseEmotionFallbackReason": "none",
-                "jevInteractionAttitudeFallbackReason": "low_confidence",
-            }
-            path = pathlib.Path(directory) / "memory_report.md"
-            cli.write_markdown_report([record], path, {
-                "run_id": "test", "planned_turns": 1, "started_at": "now",
-                "scenario": "test", "scenario_sha256": "hash",
-                "ai_provider": "test", "chat_model": "test", "jev_model": "test",
-                "memory_schema": "test_" + "a" * 32,
-            }, "completed", None)
-            report = path.read_text(encoding="utf-8")
-            self.assertIn("互動態度（JEV 原始選擇）", report)
-            self.assertIn("| 原始態度 |", report)
-            self.assertIn("| neutral | smile | neutral | smile | B 0.82 / A 0.33 | 部分回退（態度 low_confidence） |", report)
-
-    def test_failed_turn_stops_scenario_and_keeps_partial_report(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            scenario = root / "scenario.txt"
-            scenario.write_text("one\ntwo\nthree\n", encoding="utf-8")
-            socket = FakeSocket()
-            process = mock.Mock()
-            process.poll.return_value = None
-            log_file = mock.Mock()
-            args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
-                                      retries=0, startup_timeout=1, turn_timeout=1)
-            with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
-                mock.patch.object(cli, "test_database_url", return_value="postgresql://test/db"), \
-                mock.patch.object(cli.MemoryRunStore, "open"), \
-                mock.patch.object(cli.MemoryRunStore, "close"), \
-                mock.patch.object(cli, "start_backend", return_value=(process, log_file)), \
-                mock.patch.object(cli, "connect_backend", return_value=socket), \
-                mock.patch.object(cli, "stop_backend") as stop, \
-                mock.patch.object(cli, "run_turn", side_effect=[make_record(1), make_record(2, "overloaded")]) as turn:
-                run_dir, status = asyncio.run(cli.run(args))
+            for name, value in replacements.items():
+                stack.enter_context(patch.object(cli, name, value))
+            stack.enter_context(patch("tools.ai_test_fixtures.FixtureLoader", return_value=loader))
+            stack.enter_context(patch("domain.memory_settings.load_memory_settings", return_value=settings))
+            stack.enter_context(patch("tools.ai_test_evidence.check_turn", side_effect=check))
+            ai_client = stack.enter_context(patch("infrastructure.ai_client.chat_create_with_fallback", side_effect=AssertionError("No runtime Judge allowed")))
+            stack.enter_context(patch("infrastructure.ai_client._role_clients", {}))
+            args = argparse.Namespace(suite="memory", case=None if full_suite else "mem_006", scenario=None, turn_timeout=1, startup_timeout=1)
+            run_dir, status = await cli.run(args)
+            result = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            snapshot = json.loads((run_dir / "cases.json").read_text(encoding="utf-8"))
+            records = [json.loads(line) for line in (run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()]
+        expected = [c["input"] for c in dataset["cases"] if c["case_id"] in {"mem_003", "mem_005", "mem_006"}]
+        if full_suite:
+            self.assertEqual(sent, [c["input"] for c in dataset["cases"] if c["case_id"] not in {"mem_004", "mem_005", "mem_006"}])
+        else:
+            self.assertEqual(sent, [] if prepare_failure else expected[:1] if failure_stage else expected)
+        ai_client.assert_not_called()
+        self.assertNotIn("judge", result["cost"])
+        self.assertTrue(all("semantic_review" not in record for record in records))
+        self.assertTrue(all("blocked" not in json.dumps(record) for record in records))
+        if failure_stage and not full_suite:
             self.assertEqual(status, "failed")
-            self.assertEqual(turn.call_count, 2)
-            self.assertTrue(socket.closed)
-            stop.assert_called_once_with(process, log_file)
+            self.assertTrue(all(record["status"] == "failed" for record in records))
+            self.assertTrue(all(record["request_sent"] is False for record in records[1:]))
+            self.assertEqual(records[1]["checks"][0]["evidence"]["case_ids"], ["mem_003"])
+            self.assertEqual(records[2]["checks"][0]["evidence"]["case_ids"], ["mem_005"])
+        if prepare_failure:
+            self.assertEqual(status, "failed")
+            self.assertEqual(result["execution"]["status"], "failed")
+            self.assertTrue(all(record["status"] == "failed" and record["request_sent"] is False for record in records))
+            self.assertEqual(records[0]["checks"][0]["reason_code"], "runner_failure")
+            self.assertEqual(records[1]["checks"][0]["reason_code"], "run_terminated")
+        self.assertEqual(snapshot["selection"], [c["case_id"] for c in dataset["cases"]] if full_suite else ["mem_003", "mem_005", "mem_006"])
+        self.assertEqual(result["execution"]["planned_cases"], 14)
+        self.assertNotEqual(status, "passed")
+        store.close.assert_called_once()
+
+    async def test_turn_does_not_retry_sent_user_input_on_connection_failure(self):
+        socket = SimpleNamespace(send=AsyncMock(), recv=AsyncMock(side_effect=OSError("closed")))
+        store = SimpleNamespace(snapshot=Mock(return_value={}), case_state=Mock(return_value={}))
+        from domain.chat_test_mode import ChatTestMode
+        result = await cli.run_turn(socket, 1, "合成輸入", "Rushia", "fixture_test", store, 1, ChatTestMode.SHORT_ONLY)
+        socket.send.assert_awaited_once()
+        self.assertTrue(result["request_sent"])
+        self.assertTrue(result["errors"])
+
+    async def test_state_capture_failure_preserves_sent_input_and_reply(self):
+        socket = SimpleNamespace(send=AsyncMock(), recv=AsyncMock(side_effect=[
+            json.dumps({"type": "text_stream", "content": "實際回答"}),
+            json.dumps({"type": "expression_plan", "plan": {"expression": "neutral"}}),
+            json.dumps({"type": "stream_end"})]))
+        store = SimpleNamespace(snapshot=Mock(return_value={}),
+                                case_state=Mock(side_effect=[{}, RuntimeError("DB read failed")]))
+        from domain.chat_test_mode import ChatTestMode
+        result = await cli.run_turn(socket, 1, "合成輸入", "Rushia", "fixture_test", store, 1, ChatTestMode.SHORT_ONLY)
+        socket.send.assert_awaited_once()
+        self.assertTrue(result["request_sent"])
+        self.assertEqual(result["reply"], "實際回答")
+        self.assertIsNone(result["_db_state"])
+        self.assertIn("讀取 DB 狀態失敗：RuntimeError", result["errors"])
+
+    async def test_full_integration_saves_generated_inputs_and_uses_one_owner_reset(self):
+        await self._integration_run()
+
+    async def test_generation_failure_keeps_prior_dialogue_and_marks_unsent_slots_failed(self):
+        await self._integration_run(generation_failure=True)
+
+    async def _integration_run(self, generation_failure=False):
+        from tools.ai_testset import load_suite
+        dataset = load_suite("integration")
+        sent, generated = [], []
+        store = SimpleNamespace(open=Mock(), close=Mock(), case_state=Mock(return_value={}), created=True)
+        loader = SimpleNamespace(embedding_cost={}, memory_ids={}, other_owner_state=Mock(return_value={}))
+
+        async def prepare(case, _):
+            return {"session_id": case["session"], "metadata": {}}
+
+        async def turn(ws, index, message, model, session, storage, timeout, mode):
+            sent.append({"user": message, "session": session, "mode": mode.value})
+            return {"turn_id": uuid4().hex, "user": message, "reply": "本次實際合成回覆", "stream_complete": True,
+                    "request_sent": True, "errors": [], "_db_state": {}}
+
+        async def generate(case, previous, diagnostics):
+            expected_previous = "it_013" if case["case_id"] == "it_014" else "it_014"
+            self.assertEqual(previous[-1]["case_id"], expected_previous)
+            self.assertEqual(previous[-1]["reply"], "本次實際合成回覆")
+            generated.append(case["case_id"])
+            if generation_failure:
+                raise RuntimeError("generation_unavailable")
+            diagnostics["calls"] += 1
+            return ("你現在還記得我的飲料偏好、先前暗號和電影喜好有哪些嗎？" if case["case_id"] == "it_014"
+                    else "那切回 AI VT 專案，現在和以前各由誰負責動作，接下來的下一步是什麼？")
+
+        def check(suite, case, record, *args):
+            record["checks"] = [{"stage": "execution", "status": "passed", "reason_code": "test_double",
+                                  "evidence": {"file": "turns.jsonl", "case_id": case["case_id"]}}]
+
+        async def control(ws, action, *args):
+            return {"action": action, "status": "success", "acknowledged": True}
+
+        loader.prepare = prepare
+        settings = SimpleNamespace(embedding_model="test", embedding_serving_model="test", embedding_dimension=1024,
+                                   embedding_query_prefix="", embedding_document_prefix="", embedding_contract="test")
+        socket = SimpleNamespace(close=AsyncMock())
+        controls = AsyncMock(side_effect=control)
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            root = Path(directory)
+            replacements = {
+                "test_database_url": lambda: "postgresql://test/test_db", "MemoryRunStore": Mock(return_value=store),
+                "start_backend": Mock(return_value=(Mock(), Mock())), "stop_backend": Mock(),
+                "connect_backend": AsyncMock(return_value=socket), "control_step": controls,
+                "run_turn": turn, "provenance": lambda _: {}, "RUNS_DIR": root,
+                "read_session_state": Mock(side_effect=[{"summary": "舊摘要", "summary_through_sequence": -1},
+                                                       {"summary": "新摘要", "summary_through_sequence": 5}]),
+                "read_compressed_texts": Mock(return_value=["已壓縮的原始user與assistant對話"]),
+            }
+            for name, value in replacements.items():
+                stack.enter_context(patch.object(cli, name, value))
+            stack.enter_context(patch("tools.ai_test_fixtures.FixtureLoader", return_value=loader))
+            stack.enter_context(patch("domain.memory_settings.load_memory_settings", return_value=settings))
+            stack.enter_context(patch("tools.ai_test_evidence.check_turn", side_effect=check))
+            ai_client = stack.enter_context(patch("infrastructure.ai_client.chat_create_with_fallback", side_effect=AssertionError("No runtime Judge allowed")))
+            stack.enter_context(patch("tools.ai_testset.generate_followup", side_effect=generate))
+            stack.enter_context(patch("infrastructure.ai_client._role_clients", {}))
+            args = argparse.Namespace(suite="integration", case=None, scenario=None, turn_timeout=1, startup_timeout=1)
+            run_dir, status = await cli.run(args)
+            result = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            snapshot = json.loads((run_dir / "cases.json").read_text(encoding="utf-8"))
             records = [json.loads(line) for line in (run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()]
-            self.assertEqual([record["turn"] for record in records], [1, 2])
-            report = (run_dir / "expression_report.md").read_text(encoding="utf-8")
-            self.assertIn("**failed**；已完成 1 / 3 輪", report)
-            self.assertIn("第 2 輪失敗：overloaded", report)
-            self.assertNotIn("message 3", report)
-            self.assertTrue((run_dir / "run.json").exists())
-            self.assertTrue((run_dir / "case_states.jsonl").exists())
-
-    def test_interruption_preserves_first_turn_and_closes_backend(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            scenario = root / "scenario.txt"
-            scenario.write_text("one\ntwo\n", encoding="utf-8")
-            socket = FakeSocket()
-            process = mock.Mock()
-            log_file = mock.Mock()
-            args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
-                                      retries=0, startup_timeout=1, turn_timeout=1)
-            with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
-                mock.patch.object(cli, "test_database_url", return_value="postgresql://test/db"), \
-                mock.patch.object(cli.MemoryRunStore, "open"), \
-                mock.patch.object(cli.MemoryRunStore, "close"), \
-                mock.patch.object(cli, "start_backend", return_value=(process, log_file)), \
-                mock.patch.object(cli, "connect_backend", return_value=socket), \
-                mock.patch.object(cli, "stop_backend") as stop, \
-                mock.patch.object(cli, "run_turn", side_effect=[make_record(1), asyncio.CancelledError()]):
-                with self.assertRaises(asyncio.CancelledError):
-                    asyncio.run(cli.run(args))
-            run_dir = (root / "runs" / "latest").resolve()
-            report = (run_dir / "expression_report.md").read_text(encoding="utf-8")
-            self.assertIn("**interrupted**；已完成 1 / 2 輪", report)
-            self.assertEqual(len((run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()), 1)
-            self.assertTrue(socket.closed)
-            stop.assert_called_once_with(process, log_file)
-
-    def test_retry_keeps_one_final_turn_and_records_attempt_error(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            scenario = root / "scenario.txt"
-            scenario.write_text("one\n", encoding="utf-8")
-            sockets = [FakeSocket(), FakeSocket()]
-            args = argparse.Namespace(scenario=str(scenario), model="Hiyori", max_turns=0,
-                                      retries=1, startup_timeout=1, turn_timeout=1)
-            with mock.patch.object(cli, "RUNS_DIR", root / "runs"), \
-                mock.patch.object(cli, "test_database_url", return_value="postgresql://test/db"), \
-                mock.patch.object(cli.MemoryRunStore, "open"), \
-                mock.patch.object(cli.MemoryRunStore, "close"), \
-                mock.patch.object(cli, "start_backend", return_value=(mock.Mock(), mock.Mock())), \
-                mock.patch.object(cli, "connect_backend", side_effect=sockets) as connect, \
-                mock.patch.object(cli, "stop_backend"), \
-                mock.patch.object(cli, "run_turn", side_effect=[make_record(1, "overloaded"), make_record(1)]):
-                run_dir, status = asyncio.run(cli.run(args))
-            self.assertEqual(status, "completed")
-            self.assertEqual(connect.call_count, 2)
-            self.assertTrue(all(socket.closed for socket in sockets))
-            records = [json.loads(line) for line in (run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()]
-            self.assertEqual(len(records), 1)
-            self.assertEqual(records[0]["attempts"], 2)
-            self.assertEqual(records[0]["attempt_errors"], ["overloaded"])
-
-    def test_turn_timeout_returns_error_without_memory_job(self):
-        class SlowSocket:
-            async def send(self, payload):
-                self.payload = json.loads(payload)
-
-            async def recv(self):
-                await asyncio.sleep(1)
-
-        with tempfile.TemporaryDirectory():
-            socket = SlowSocket()
-            store = mock.Mock()
-            store.snapshot.return_value = {}
-            record = asyncio.run(cli.run_turn(
-                socket, 1, "hi", "Hiyori", "test_session", store, 0.01,
-                test_mode=ChatTestMode.SHORT_ONLY,
-            ))
-            self.assertIn("逾時", record["errors"][0])
-            self.assertEqual(socket.payload["test_session_alias"], "test_session")
-            self.assertNotIn("session_id", socket.payload)
-            self.assertEqual(record["memory_changes"], {})
-
-    def test_missing_or_same_test_database_fails_before_backend(self):
-        with mock.patch.object(cli, "ENV_PATH", pathlib.Path("/nonexistent/.env")), \
-             mock.patch.dict(cli.os.environ, {"MEMORY_TEST_DATABASE_URL": "",
-                                              "MEMORY_DATABASE_URL": "postgresql://localhost/prod"}):
-            with self.assertRaisesRegex(RuntimeError, "MEMORY_TEST_DATABASE_URL"):
-                cli.test_database_url()
-        with mock.patch.object(cli, "ENV_PATH", pathlib.Path("/nonexistent/.env")), \
-             mock.patch.dict(cli.os.environ, {"MEMORY_TEST_DATABASE_URL": "postgresql://localhost/prod",
-                                              "MEMORY_DATABASE_URL": "postgresql://localhost/prod"}):
-            with self.assertRaisesRegex(RuntimeError, "不同"):
-                cli.test_database_url()
-
-    def test_wait_requires_finalized_route_even_if_initial_status_is_ignored(self):
-        store = mock.Mock()
-        store.job.side_effect = [
-            {"route_finalized": False, "status": "ignored"},
-            {"route_finalized": True, "status": "buffered"},
-        ]
-        with mock.patch.object(cli.asyncio, "sleep", new=mock.AsyncMock()):
-            job = asyncio.run(cli.wait_memory_job(store, "a" * 32, timeout=1))
-        self.assertEqual(job["status"], "buffered")
-        self.assertEqual(store.job.call_count, 2)
+        if generation_failure:
+            self.assertEqual(len(sent), 13)
+            self.assertEqual(generated, ["it_014"])
+            self.assertEqual(status, "failed")
+            self.assertEqual(result["execution"]["completed_turns"], 13)
+            self.assertTrue(all(record["request_sent"] is False and record["status"] == "failed" for record in records[-2:]))
+            self.assertTrue(all(record["reply"] == "本次實際合成回覆" for record in records[:13]))
+            self.assertTrue(all(not c["input"] for c in snapshot["cases"][-2:]))
+            return
+        self.assertEqual(len(sent), 15)
+        ai_client.assert_not_called()
+        self.assertTrue(all("semantic_review" not in record for record in records))
+        self.assertEqual(generated, ["it_014", "it_015"])
+        self.assertEqual([c.args[1] for c in controls.await_args_list], ["reset", "compress"])
+        self.assertEqual([row["user"] for row in sent[:13]], [c["input"] for c in dataset["cases"][:13]])
+        self.assertEqual(snapshot["cases"][-2]["input"], sent[-2]["user"])
+        self.assertEqual(snapshot["cases"][-1]["input"], sent[-1]["user"])
+        self.assertEqual(records[-2]["test_mode"], "mixed_read")
+        self.assertEqual(records[-1]["test_mode"], "mixed_read")
+        self.assertEqual(result["execution"]["completed_turns"], 15)
+        self.assertEqual(result["counts"]["human_pending"], 15)
+        self.assertEqual(status, "pending")
 
 
 if __name__ == "__main__":

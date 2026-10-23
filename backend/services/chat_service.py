@@ -350,6 +350,12 @@ async def _create_context_request(messages, diagnostics, on_status, **kwargs):
     for payload in statuses:
         await on_status({**payload, "status": "sending" if payload["status"] == "ready" else payload["status"]})
     try:
+        from services.ai_test_context import reject_fixture_image
+        if reject_fixture_image(messages):
+            import httpx
+            trace("context_test_fault", {"source": "fixture", "fault": "vision_rejection"})
+            response = httpx.Response(400, request=httpx.Request("POST", "https://fixture.invalid/chat"))
+            raise BadRequestError("fixture vision rejection", response=response, body={})
         response = await chat_create_with_fallback(messages=messages, **kwargs)
     except Exception:
         for payload in statuses:

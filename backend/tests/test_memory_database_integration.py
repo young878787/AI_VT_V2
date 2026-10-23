@@ -5,6 +5,7 @@ import json
 import math
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1159,18 +1160,26 @@ async def main():
         raise RuntimeError('Expected isolated test job')
     print('claimed', flush=True)
     await asyncio.Event().wait()
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 asyncio.run(main())
 """
-        process = await asyncio.create_subprocess_exec(sys.executable, "-c", code,
-            str(self.scope.user_id), str(self.scope.character_id), self.scope.schema_name,
+        # Windows的psycopg需Selector loop；其subprocess transport不支援，使用同一真實子程序的同步邊界。
+        process = await asyncio.to_thread(subprocess.Popen, [sys.executable, "-c", code,
+            str(self.scope.user_id), str(self.scope.character_id), self.scope.schema_name],
             cwd=BACKEND_ROOT.parent, env={**os.environ, "MEMORY_TEST_DATABASE_URL": TEST_URL},
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
-            self.assertEqual(await asyncio.wait_for(process.stdout.readline(), 5), b"claimed\n")
+            self.assertEqual((await asyncio.wait_for(asyncio.to_thread(process.stdout.readline), 5)).strip(), b"claimed")
         finally:
-            if process.returncode is None:
+            if process.poll() is None:
                 process.terminate()
-            await asyncio.wait_for(process.wait(), 5)
+            try:
+                await asyncio.wait_for(asyncio.to_thread(process.wait), 5)
+            except TimeoutError:
+                process.kill()
+                await asyncio.to_thread(process.wait)
+            process.stdout.close()
         attempts, generation = (await self._query("SELECT attempts, generation FROM memory_jobs WHERE id = %s", (event,)))[0]
         old = {"id": event, "attempts": attempts, "generation": generation, "source_text": "我喜歡茶"}
         await self._query("UPDATE memory_jobs SET lease_until = now() - interval '1 second' WHERE id = %s", (event,))

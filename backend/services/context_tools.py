@@ -1,14 +1,13 @@
 """Chat 可依當輪對話／任務選擇的五個有界唯讀工具。"""
 import asyncio
 import json
-import os
 import time
-from pathlib import Path
 
 from core.prompt_logger import trace
 from domain.runtime_context import DESKTOP_TOOL_KINDS, context_status, local_time, make_turn_snapshot, result, safe_tool_result
 from infrastructure.windows_desktop import DesktopReader, WindowsDesktop
 from services.taiwan_weather import get_weather, grounded_location
+from services.ai_test_context import fixture_snapshot, fixture_tool
 
 _reader = None
 BATCH_TIMEOUT_SECONDS = 5
@@ -17,9 +16,7 @@ BATCH_TIMEOUT_SECONDS = 5
 def desktop_reader() -> DesktopReader:
     global _reader
     if _reader is None:
-        fixture = (Path(__file__).resolve().parents[2] / "sample/擷取.JPG"
-                   if os.getenv("AI_VT_TEST_MODE", "").lower() == "true" else None)
-        _reader = DesktopReader(WindowsDesktop(screenshot_fixture=fixture))
+        _reader = DesktopReader(WindowsDesktop())
     return _reader
 
 
@@ -62,7 +59,8 @@ class ContextTools:
         return tools
 
     async def snapshot(self, turn_id: str, timestamp: float) -> dict:
-        desktop = (await (self.reader or desktop_reader()).read("snapshot") if self.desktop_allowed
+        desktop = (fixture_snapshot() if self.desktop_allowed else None)
+        desktop = desktop or (await (self.reader or desktop_reader()).read("snapshot") if self.desktop_allowed
                    else result("unavailable", reason="local_access_required"))
         return make_turn_snapshot(turn_id, timestamp, desktop)
 
@@ -115,16 +113,19 @@ class ContextTools:
         return params
 
     async def _execute(self, name, params) -> dict:
+        if name == "get_weather" and self.user_context is not None:
+            location = grounded_location(params["location"], self.user_context)
+            if location is None:
+                return result("unavailable", reason="location_required")
+            params["location"] = location
+        fixed = fixture_tool(name, params)
+        if fixed is not None:
+            return fixed
         if name == "get_datetime":
             time = local_time()
             return result("ok", {"datetime": time.isoformat(), "weekday": time.weekday() + 1,
                                  "timezone": "Asia/Taipei"})
         if name == "get_weather":
-            if self.user_context is not None:
-                location = grounded_location(params["location"], self.user_context)
-                if location is None:
-                    return result("unavailable", reason="location_required")
-                params["location"] = location
             return await get_weather(**params)
         reader = self.reader or desktop_reader()
         if name == "get_activity_context":

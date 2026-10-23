@@ -57,6 +57,7 @@ from services.expression_compiler import compile_expression_plan
 from services.expression_legacy_renderer import render_legacy_behavior_payload
 from services.chat_session_service import ChatSessionInUseError
 from services.context_tools import ContextTools
+from services.ai_test_context import fixture_timestamp
 from services.memory_events import recent_memory_events, subscribe_memory_events
 
 
@@ -937,7 +938,7 @@ async def websocket_endpoint(websocket: WebSocket):
             active_task = asyncio.create_task(prepare_and_run_turn(
                 turn_id, text, model_name, data.get("legacy_payloads") is True,
                 next_user_message, mode,
-                message_timestamp=input_event["timestamp"],
+                message_timestamp=fixture_timestamp(input_event["timestamp"]),
             ))
     except WebSocketDisconnect:
         print("Client disconnected")

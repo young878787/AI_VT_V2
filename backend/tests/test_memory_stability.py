@@ -1,8 +1,5 @@
 """Memory 多輪傳輸與 worker 的 deadline、故障及取消回歸。"""
 import asyncio
-import json
-import os
-import signal
 import pathlib
 import sys
 import unittest
@@ -51,7 +48,8 @@ class MemoryTransportStabilityTests(unittest.IsolatedAsyncioTestCase):
                 raise error
             await blocked()
         self.create.side_effect = first_then_block
-        with patch.object(memory_agent_client, "CALL_TIMEOUT_SEC", .03):
+        # 冷啟動tokenizer與Windows排程可超過30ms；仍驗證兩次傳輸共用同一deadline。
+        with patch.object(memory_agent_client, "CALL_TIMEOUT_SEC", .3):
             with self.assertRaises(TimeoutError):
                 await asyncio.wait_for(self.agent.call(self.messages, [], self.diag), 1)
         self.assertEqual(self.diag["calls"], 2)
@@ -185,69 +183,6 @@ class MemoryWorkerStabilityTests(unittest.IsolatedAsyncioTestCase):
         self.repo.finish.assert_not_awaited()
         self.manager.apply.assert_not_awaited()
 
-
-@unittest.skipUnless(os.getenv("MEMORY_STABILITY_LIVE") == "1", "固定 Chat 長跑需 MEMORY_STABILITY_LIVE=1")
-class MemoryChatSoakTests(unittest.IsolatedAsyncioTestCase):
-    async def test_three_replays_keep_db_prompt_and_semantic_evidence(self):
-        from tools import chat_test_cli as cli
-        from tools.memory_testset import load_snapshot, fingerprint
-        cli.test_database_url()
-        backend = pathlib.Path(__file__).resolve().parents[1]
-        cases = load_snapshot(str(backend / "log" / "chat_test_runs" / "latest" / "cases.json"))
-        output = cli.create_run_dir(backend / "log" / "memory_stability")
-        cli.atomic_write_text(output / "cases.json", json.dumps(cases, ensure_ascii=False, indent=2))
-        for name in ("turns.jsonl", "case_states.jsonl"):
-            (output / name).write_text("", encoding="utf-8")
-        manifest = {"status": "running", "started_at": cli.timestamp(), "cases_sha256": fingerprint(cases),
-                    "planned_cycles": 3, "cycles": []}
-        def persist():
-            manifest["updated_at"] = cli.timestamp()
-            cli.atomic_write_text(output / "run.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-            lines = ["# Memory 固定 Chat 重播穩定性", "", f"- 狀態：{manifest['status']}；案例 SHA-256：`{manifest['cases_sha256']}`",
-                     "- 每輪沿用同一 28-case 快照、相同業務入口及獨立 DB schema；每案 reset 隔離。",
-                     "- DB／prompt／回答詳查 turns.jsonl 及 case_states.jsonl 的 cycle＋case_id＋turn。",
-                     "- 這是三輪循序重播，沒有模擬持續到達負載；完成與語意判定分開，不推定正式 SLO。", "",
-                     "| Cycle | Status | Cases／Turns | Agent jobs／Steps／HTTP | Timeout／Failures | 語意評分 | Cleanup |",
-                     "|---|---|---|---|---|---|---|"]
-            for row in manifest["cycles"]:
-                m, s = row["memory_stability"], row.get("semantic_evaluation", {})
-                lines.append(f"| {row['cycle']} | {row['status']} | {row['executed_cases']}/{row['executed_turns']} | "
-                             f"{m['agent_jobs']}/{m['totals']['logical_steps']}/{m['totals']['calls']} | "
-                             f"{m['totals']['timeouts']}/{m['totals']['failures']} | {s.get('counts')} | {row['cleanup']} |")
-            cli.atomic_write_text(output / "memory_report.md", "\n".join(lines) + "\n")
-        persist()
-        try:
-            for cycle in range(1, 4):
-                process = await asyncio.create_subprocess_exec(sys.executable, str(backend / "tools" / "chat_test_cli.py"),
-                                                               "--scenario", str(output / "cases.json"))
-                try:
-                    returncode = await process.wait()
-                except BaseException:
-                    process.send_signal(signal.SIGINT)
-                    await process.wait()
-                    raise
-                directory = backend / "log" / "chat_test_runs" / "latest"
-                result = json.loads((directory / "run.json").read_text(encoding="utf-8"))
-                status = result["status"]
-                if returncode not in (0, 1) or status not in {"completed", "failed"}:
-                    raise RuntimeError("Chat 重播未正常結案")
-                manifest["cycles"].append({"cycle": cycle, **{key: result.get(key) for key in (
-                    "status", "started_at", "updated_at", "executed_cases", "executed_turns", "memory_stability",
-                    "hard_checks", "semantic_evaluation", "cleanup", "error", "chat_model", "jev_model", "memory_model",
-                    "embedding_model")}})
-                for name in ("turns.jsonl", "case_states.jsonl"):
-                    with (output / name).open("a", encoding="utf-8") as destination:
-                        for line in (directory / name).read_text(encoding="utf-8").splitlines():
-                            destination.write(json.dumps({"cycle": cycle, **json.loads(line)}, ensure_ascii=False) + "\n")
-                persist()
-                print(f"[Memory stability] cycle {cycle}: {status}", flush=True)
-            manifest["status"] = "completed" if all(row["status"] == "completed" for row in manifest["cycles"]) else "failed"
-        except BaseException:
-            manifest["status"] = "failed"
-            raise
-        finally:
-            persist()
-        self.assertEqual(manifest["status"], "completed", "固定重播未全部通過；詳見 memory_stability/latest/memory_report.md")
 
 
 if __name__ == "__main__":

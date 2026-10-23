@@ -33,8 +33,9 @@ class ArchitectureBaselineTests(unittest.TestCase):
     def test_guards_block_socket_dns_libpq_and_child_process_paths(self):
         import psycopg
 
-        with block_external_io() as attempts:
-            with socket.socket() as tcp, socket.socket(socket.AF_UNIX) as local:
+        # event loop的本機自喚醒socket先建立，避免隔離測試擋住Windows loop自身初始化。
+        with asyncio.Runner() as runner, block_external_io() as attempts:
+            with socket.socket() as tcp, socket.socket(getattr(socket, "AF_UNIX", socket.AF_INET)) as local:
                 calls = (
                     lambda: socket.create_connection(("127.0.0.1", 1)),
                     lambda: socket.getaddrinfo("example.invalid", 443),
@@ -43,7 +44,7 @@ class ArchitectureBaselineTests(unittest.TestCase):
                     lambda: tcp.sendto(b"probe", ("127.0.0.1", 1)),
                     lambda: local.connect("/tmp/baseline-denied.sock"),
                     lambda: psycopg.Connection.connect("postgresql://127.0.0.1:1/baseline"),
-                    lambda: asyncio.run(psycopg.AsyncConnection.connect("postgresql://127.0.0.1:1/baseline")),
+                    lambda: runner.run(psycopg.AsyncConnection.connect("postgresql://127.0.0.1:1/baseline")),
                     lambda: subprocess.Popen(["false"]),
                 )
                 for index, call in enumerate(calls):

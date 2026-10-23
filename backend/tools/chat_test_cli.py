@@ -1,51 +1,38 @@
-"""在隔離後端執行多輪 Chat 測試，逐輪保存可追溯報告。"""
+"""四組 AI 驗收唯一入口；僅建立隔離測試 instance 與臨時 schema。"""
 
 import argparse
 import asyncio
-from collections import Counter
+import hashlib
 import json
-import math
 import os
 import shutil
 import socket
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import websockets
-from dotenv import dotenv_values
+from dotenv import dotenv_values, load_dotenv
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
-from zoneinfo import ZoneInfo
 
-# 支援從 repository 根目錄直接執行。
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.memory_test_evidence import check_turn, answer_result
-from tools.memory_semantic_review import evaluate_semantics
-from tools.memory_testset import CORE_PATH, fingerprint, generate_cases, load_snapshot, validate_cases, step_mode
-from tools.context_test_evidence import collect_tools, summarize_tools
-from services.memory_agent_client import CUMULATIVE_DIAGNOSTIC_FIELDS
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND_ROOT))
+RUNS_DIR = BACKEND_ROOT / "log" / "ai_tests"
+ENV_PATH = BACKEND_ROOT.parent / ".env"
 
 
 def timestamp() -> str:
     return datetime.now(ZoneInfo("Asia/Taipei")).isoformat(timespec="seconds")
-
-
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-RUNS_DIR = BACKEND_ROOT / "log" / "chat_test_runs"
-ENV_PATH = BACKEND_ROOT.parent / ".env"
-
-
-def load_scenario(path: str) -> list[str]:
-    return [line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")]
 
 
 def test_database_url() -> str:
@@ -104,12 +91,15 @@ class MemoryRunStore:
             rows = connection.execute(text(
                 f'SELECT id, canonical_text, memory_type, status, embedding IS NOT NULL AS has_embedding, '
                 f'embedding_model, group_id, subject_key, valid_from, valid_to, expires_at, observed_at '
+                f', embedding_contract, importance, confidence, retention_class, keywords, '
+                f'md5(embedding::text) AS embedding_md5 '
                 f'FROM "{self.schema}".memory_items '
                 'WHERE user_id = :user_id AND character_id = :character_id ORDER BY id'
             ), self.owner).mappings()
             return {str(row["id"]): {"text": row["canonical_text"], "type": row["memory_type"],
                                       "status": row["status"], "has_embedding": row["has_embedding"],
                                       "embedding_model": row["embedding_model"],
+                                      **{key: row[key] for key in ("embedding_contract", "importance", "confidence", "retention_class", "keywords", "embedding_md5")},
                                       **{key: str(row[key]) if row[key] is not None else None for key in
                                          ("group_id", "subject_key", "valid_from", "valid_to", "expires_at", "observed_at")}}
                     for row in rows}
@@ -154,8 +144,10 @@ class MemoryRunStore:
                 "sources": ("memory_sources", "id, conversation_id, message_id, speaker, raw_text, occurred_at"),
                 "evidence": ("memory_evidence", "memory_id, source_id, kind"),
                 "relations": ("memory_relations", "from_id, to_id, kind"),
-                "audit": ("memory_audit", "action, target_id, operation_key, reason_class"),
+                "audit": ("memory_audit", "action, target_id, operation_key, reason_class, decision, source_event_id, deleted_count"),
                 "jobs": ("memory_jobs", "id, conversation_id, route, status, route_finalized, context_job_ids, source_ids, generation, attempts, error"),
+                "generation": ("memory_scope_state", "generation"),
+                "barriers": ("memory_forget_barriers", "subject_hash, fact_hash, created_at"),
             }.items():
                 name, fields = columns
                 rows = connection.execute(text(f'SELECT {fields} FROM "{self.schema}".{name} '
@@ -163,6 +155,14 @@ class MemoryRunStore:
                 state[table] = sorted(json.loads(json.dumps([dict(row) for row in rows], default=str)),
                                       key=lambda row: json.dumps(row, sort_keys=True))
         state["items"] = self.snapshot()
+        # 全列指紋涵蓋未投影的metadata、向量與lease等；報告不複製1024維向量。
+        with self.engine.connect() as connection:
+            state["row_hashes"] = {}
+            for table in ("memory_items", "memory_sources", "memory_evidence", "memory_relations", "memory_audit",
+                          "memory_jobs", "memory_scope_state", "memory_forget_barriers"):
+                state["row_hashes"][table] = sorted(connection.execute(text(
+                    f'SELECT md5(to_jsonb(row)::text) FROM "{self.schema}".{table} AS row '
+                    'WHERE user_id = :user_id AND character_id = :character_id'), self.owner).scalars())
         return state
 
 
@@ -232,6 +232,12 @@ def start_backend(run_dir: Path, port: int, database_url: str, schema: str,
     child_env["MEMORY_DATABASE_SCHEMA"] = schema
     child_env["MEMORY_DEFAULT_USER_ID"] = str(user_id)
     child_env["MEMORY_DEFAULT_CHARACTER_ID"] = str(character_id)
+    child_env["AI_VT_TEST_FIXTURE_PATH"] = str((run_dir / "fixture.json").resolve())
+    child_env["ASR_ENABLED"] = "false"
+    child_env["TTS_ENABLED"] = "false"
+    # 用既有壓縮服務處理精簡fixture；保留最後一輪，不增加setup聊天。
+    child_env["CHAT_COMPRESSION_KEEP_RECENT_MESSAGES"] = "2"
+    child_env["CHAT_COMPRESSION_TRIGGER_MESSAGES"] = "16"
     command = [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(port)]
     if sys.platform == "win32":
         # psycopg async 不支援 Windows 的 ProactorEventLoop。
@@ -332,8 +338,11 @@ async def run_turn(
         errors.append(f"單輪逾時（>{timeout:g}s）")
     except (websockets.ConnectionClosed, OSError, ValueError) as exc:
         errors.append(f"連線或回應錯誤：{exc}")
+    except Exception as exc:
+        errors.append(f"單輪執行失敗：{type(exc).__name__}")
     interrupted = "使用者中斷測試" in errors
     job = None
+    memory_wait_started = time.monotonic()
     try:
         if event_id and not interrupted:
             job = await wait_memory_job(store, event_id)
@@ -343,6 +352,7 @@ async def run_turn(
     except Exception as exc:
         errors.append(f"讀取記憶工作失敗：{type(exc).__name__}")
     memory_status = job["status"] if job else None
+    memory_wait_sec = round(time.monotonic() - memory_wait_started, 3)
     if job and memory_status in {"failed", "cancelled", "timeout", "missing"}:
         errors.append(job.get("error") or f"記憶工作狀態：{memory_status}")
     memory_completion_sec = round(time.monotonic() - started, 2) if job else None
@@ -354,7 +364,11 @@ async def run_turn(
     except Exception as exc:
         after = before
         errors.append(f"讀取 DB 證據失敗：{type(exc).__name__}")
-    state_after = await asyncio.to_thread(store.case_state) if test_mode else None
+    try:
+        state_after = await asyncio.to_thread(store.case_state) if test_mode else None
+    except Exception as exc:
+        state_after = None
+        errors.append(f"讀取 DB 狀態失敗：{type(exc).__name__}")
     return {
         "_db_state": state_after,
         "db_unchanged": state_before == state_after if test_mode else None,
@@ -371,13 +385,13 @@ async def run_turn(
         "emotion_source": source,
         "expression": expression,
         "expression_debug": expression_debug,
-        "memory_changes": memory_changes(before, after),
+        "memory_changes": {key: list(value) for key, value in memory_changes(before, after).items()},
         "memory_event_id": event_id,
         "memory_agent_diagnostics": job.get("agent_diagnostics", {}) if job else {},
         "memory_route": job.get("route") if job else None,
         "memory_route_confidence": job.get("confidence") if job else None,
         "memory_context_job_ids": job.get("context_job_ids", []) if job else [],
-        "memory_audit": audit,
+        "memory_audit": [{key: row[key] for key in ("action", "target_id", "operation_key", "deleted_count", "reason")} for row in audit],
         "memory_embedding_diagnostics": job.get("embedding_diagnostics", {}) if job else {},
         "memory_job_status": memory_status,
         "memory_missing_context": job.get("missing_context") if job else None,
@@ -393,73 +407,15 @@ async def run_turn(
         "latency_expression_sec": expression_sec,
         "latency_stream_end_sec": stream_end_sec,
         "latency_memory_completion_sec": memory_completion_sec,
+        "job_wait_sec": memory_wait_sec,
         "duration_sec": round(time.monotonic() - started, 2),
     }
-
-
-def print_turn(record: dict) -> None:
-    print(f"\n[Turn {record['turn']}] {record['user']}")
-    print(f"露西亞: {record['reply']}")
-    print(f"情緒 ({record['emotion_source']}): {json.dumps(record['emotion_state'], ensure_ascii=False)}")
-    print(f"表情: {record['expression']}")
-    debug = record.get("expression_debug") or {}
-    if debug.get("jevBaseEmotionChoice"):
-        print(
-            f"JEV 表演: {debug['jevBaseEmotionChoice']} + "
-            f"{debug.get('jevInteractionAttitudeChoice', '-')} → "
-            f"{debug.get('jevResolvedEmotion', '-')} / "
-            f"{debug.get('jevResolvedAttitude', '-')} "
-            f"({debug.get('jevDecisionSource', '-')})"
-        )
-    if record["memory_changes"]:
-        print(f"記憶變更: {', '.join(record['memory_changes'])}")
-    if record.get("memory_job_status"):
-        print(f"記憶: {record.get('memory_route') or '-'} / {record['memory_job_status']}")
-    if record.get("memory_embedding_diagnostics"):
-        print("Embedding: " + summarize_embedding_diagnostics(record["memory_embedding_diagnostics"]))
-    if record["errors"]:
-        print(f"錯誤: {record['errors']}")
-    elif any(not check["passed"] for check in record.get("hard_checks", [])):
-        print(answer_result(record))
-
-
-def summarize_embedding_diagnostics(diagnostics: dict) -> str:
-    if not diagnostics:
-        return "無紀錄"
-    configured = diagnostics.get("model") or "-"
-    serving = diagnostics.get("serving_model") or "-"
-    served = diagnostics.get("served_model") or "-"
-    return (f"呼叫 {diagnostics.get('calls', 0)} 次／失敗 {diagnostics.get('failures', 0)} 次／"
-            f"{diagnostics.get('dimension')} 維／{configured}→{serving}→{served}／"
-            f"{diagnostics.get('duration_ms', 0):.1f} ms")
-
-
-def markdown_cell(value: object, limit: int = 240) -> str:
-    """將摘要欄位壓成單行；完整值仍保留在 JSONL 詳細紀錄。"""
-    text = "-" if value is None or value == "" else str(value)
-    text = " ".join(text.split()).replace("|", "\\|")
-    if len(text) > limit:
-        return text[:limit - 1] + "…"
-    return text
 
 
 def atomic_write_text(path: Path, content: str) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(content, encoding="utf-8")
     temporary.replace(path)
-
-
-def operation_counts(records: list[dict], key: str) -> str:
-    counts = Counter(item.get("action", "?") for record in records for item in record.get(key, []))
-    return ", ".join(f"{name}:{count}" for name, count in counts.items()) or "-"
-
-
-def injected_count(record: dict) -> int:
-    return sum(
-        len(trace.get("injected_memory_ids", []))
-        for trace in record.get("trace", [])
-        if trace.get("stage") == "chat_context"
-    )
 
 
 def read_turn_trace(run_dir: Path, turn_id: str | None) -> list[dict]:
@@ -526,298 +482,6 @@ def locate_injected_fragments(context: dict, projections: list[dict]) -> None:
             context["injected_memory_ids"].append(projection["id"])
 
 
-def write_markdown_report(records: list[dict], path: Path, metadata: dict, status: str, error: str | None) -> None:
-    """寫入表情／JEV 摘要；完整證據只保留在 turns.jsonl。"""
-    completed = sum(not record["errors"] for record in records)
-    planned = metadata["planned_turns"]
-    lines = [
-        "# Headless Chat 測試報告", "",
-        f"- 狀態：**{status}**；已完成 {completed} / {planned if planned is not None else '不限'} 輪",
-        f"- 開始：{metadata['started_at']}",
-        f"- 更新：{timestamp()}",
-        f"- Scenario：`{metadata['scenario']}`（SHA-256：`{metadata['scenario_sha256']}`）",
-        f"- AI：{metadata['ai_provider']} / `{metadata['chat_model']}`；JEV：`{metadata['jev_model']}`",
-        f"- Embedding：`{metadata.get('embedding_model', '(unset)')}`／"
-        f"{metadata.get('embedding_dimension', '(unset)')} 維／L2 normalization",
-        f"- 測試 DB schema：`{metadata['memory_schema']}`（報告產出後清理）",
-        "- 測試短期記憶：執行期間使用隔離目錄，結束時清除",
-        f"- 詳細逐輪紀錄：`{path.parent / 'turns.jsonl'}`；後端日誌：`{path.parent / 'server.log'}`",
-        f"- 案例結案快照：`{path.parent / 'case_states.jsonl'}`",
-        "- [記憶／聊天報告](memory_report.md)",
-    ]
-    if error:
-        lines.append(f"- 停止原因：{error}")
-    if records:
-        first_debug = records[0].get("expression_debug") or {}
-        criteria_version = first_debug.get("jevDecisionCriteriaVersion")
-        if criteria_version:
-            question_hash = first_debug.get("jevDecisionQuestionHash")
-            lines.append(f"- JEV 聯合判準版本：`{criteria_version}`；問題指紋：`{question_hash or '-'}`")
-
-    debug_rows = [(record, record.get("expression_debug") or {}) for record in records]
-    base_counts = Counter(debug.get("jevBaseEmotionChoice", "-") for _, debug in debug_rows)
-    attitude_counts = Counter(debug.get("jevInteractionAttitudeChoice", "-") for _, debug in debug_rows)
-    expression_counts = Counter(record.get("expression") or "-" for record in records)
-    fallback_rows = [
-        (record, debug) for record, debug in debug_rows
-        if debug.get("jevDecisionSource") != "jev" or record.get("errors")
-    ]
-
-    def counts_text(counts: Counter) -> str:
-        return "、".join(f"{key} {value}" for key, value in counts.most_common()) or "-"
-
-    lines.extend([
-        "", "## 統計摘要", "",
-        f"- 基礎情緒：{counts_text(base_counts)}",
-        f"- 互動態度（JEV 原始選擇）：{counts_text(attitude_counts)}",
-        f"- 最終表情：{counts_text(expression_counts)}",
-        f"- 需檢查輪次：{len(fallback_rows)} / {len(records)}",
-        "", "## 全部輪次決策總覽", "",
-        "| # | 使用者 | AI 回覆 | 六欄情緒 | 基礎情緒 | 原始態度 | 最終表情 | 最終態度 | 信心 | 狀態 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
-    ])
-    for record in records:
-        debug = record.get("expression_debug") or {}
-
-        def diagnostic_value(key: str) -> str:
-            value = debug.get(key, "-")
-            return f"{value:.2f}" if isinstance(value, (int, float)) else str(value)
-
-        source = debug.get("jevDecisionSource")
-        status_text = "錯誤" if record.get("errors") else (
-            "OK" if source == "jev" else "部分回退" if source == "partial_fallback" else "回退"
-        )
-        if source == "partial_fallback" and not record.get("errors"):
-            reasons = []
-            if debug.get("jevBaseEmotionFallbackReason") not in (None, "none"):
-                reasons.append("情緒 " + str(debug["jevBaseEmotionFallbackReason"]))
-            if debug.get("jevInteractionAttitudeFallbackReason") not in (None, "none"):
-                reasons.append("態度 " + str(debug["jevInteractionAttitudeFallbackReason"]))
-            if reasons:
-                status_text += "（" + "、".join(reasons) + "）"
-        cells = [
-            f"{record.get('case_id', '')}/{record['turn']}" if record.get("case_id") else record["turn"],
-            markdown_cell(record["user"]), markdown_cell(record.get("reply")),
-            "、".join(f"{field} {value:.2f}" if isinstance(value, (int, float)) else f"{field} 未提供"
-                for field in ("shy", "pleased", "genuinely_angry", "sad_or_hurt", "masking_positive_feeling", "wants_continue_interaction")
-                for value in [(record.get("emotion_state") or {}).get(field)]),
-            diagnostic_value("jevBaseEmotionChoice"),
-            diagnostic_value("jevInteractionAttitudeChoice"),
-            record.get("expression") or "-",
-            diagnostic_value("jevResolvedAttitude"),
-            f"B {diagnostic_value('jevBaseEmotionConfidence')} / A {diagnostic_value('jevInteractionAttitudeConfidence')}",
-            status_text,
-        ]
-        lines.append("| " + " | ".join(markdown_cell(cell) for cell in cells) + " |")
-    lines.extend(["", "## 需查看的輪次", ""])
-    if fallback_rows:
-        for record, debug in fallback_rows:
-            reasons = []
-            if debug.get("jevBaseEmotionFallbackReason") not in (None, "none"):
-                reasons.append(f"基礎情緒 {debug.get('jevBaseEmotionFallbackReason')}")
-            if debug.get("jevInteractionAttitudeFallbackReason") not in (None, "none"):
-                reasons.append(f"互動態度 {debug.get('jevInteractionAttitudeFallbackReason')}")
-            if record.get("errors"):
-                reasons.append("錯誤：" + ", ".join(record["errors"]))
-            key = f"{record.get('case_id', 'legacy')}/{record['turn']}"
-            lines.append(f"- `{key}`：{markdown_cell(record['user'])}（" + "; ".join(reasons) + "）")
-    else:
-        lines.append("- 無")
-    lines.extend([
-        "", "## 詳細紀錄", "",
-        "- 完整 JEV、probabilities、fallback、記憶交易、召回與裁切後 messages：`turns.jsonl`。",
-        "- 每行一筆逐輪 JSON；使用 `case_id`＋`turn`，或 `turn_id`／`memory_event_id` 精確擷取。",
-        "- 每案 reset 前的 DB sources、evidence、relations、jobs 與 memory items：`case_states.jsonl`。",
-        "- 摘要中的使用者輸入與回覆可能為單行截短；完整文字以 JSONL 為準。",
-        "",
-    ])
-    atomic_write_text(path, "\n".join(lines))
-
-
-def summarize_memory_stability(records: list[dict]) -> dict:
-    """按 event 去重，累計成本不混成最後 attempt；語意評分仍獨立。"""
-    jobs = {r["memory_event_id"]: r for r in records if r.get("memory_event_id")}
-    diagnostics = [r.get("memory_agent_diagnostics") or {} for r in jobs.values()]
-    waits = sorted(r["latency_memory_completion_sec"] for r in jobs.values()
-                   if isinstance(r.get("latency_memory_completion_sec"), (int, float)))
-    queues = [d["queue"] for d in diagnostics if d.get("queue")]
-    return {
-        "observed_jobs": len(jobs),
-        "agent_jobs": sum(d.get("logical_steps", 0) > 0 for d in diagnostics),
-        "statuses": dict(Counter(r.get("memory_job_status", "unknown") for r in jobs.values())),
-        "attempts": sum(r.get("memory_attempts") or 0 for r in jobs.values()),
-        "totals": {key: sum(d.get(key, 0) for d in diagnostics) for key in CUMULATIVE_DIAGNOSTIC_FIELDS},
-        "last_errors": dict(Counter((d.get("last_failure") or {}).get("error") or d.get("error")
-                                    for d in diagnostics if d.get("last_failure") or d.get("error"))),
-        "retry_exhausted_jobs": sum(bool(d.get("retry_exhausted")) for d in diagnostics),
-        "recovered_leases": sum(d.get("recovered_lease_age_sec") is not None for d in diagnostics),
-        "completion_wait_sec": {"samples": len(waits), "p50": waits[math.ceil(len(waits) * .5) - 1] if waits else None,
-                                "p95": waits[math.ceil(len(waits) * .95) - 1] if waits else None,
-                                "max": waits[-1] if waits else None},
-        "queue_samples": len(queues),
-        "max_observed_queue_jobs": max((q["active_jobs"] for q in queues), default=None),
-        "max_observed_queue_oldest_sec": max((q["oldest_age_sec"] for q in queues), default=None),
-    }
-
-
-def write_memory_report(records: list[dict], path: Path, metadata: dict, status: str, error: str | None) -> None:
-    """主要表格提供回答比對；硬條件及來源證據保留在詳細段落。"""
-    try:
-        materials = json.loads((path.parent / "cases.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        materials = []
-    states = {}
-    state_path = path.parent / "case_states.jsonl"
-    if state_path.exists():
-        for line in state_path.read_text(encoding="utf-8").splitlines():
-            try:
-                item = json.loads(line)
-                states[item["case_id"]] = item["state"]
-            except (ValueError, KeyError):
-                continue
-    if not materials:
-        materials = [{"case_id": c["case_id"], "conversation": []} for c in metadata.get("case_statuses", [])]
-    lines = ["# 記憶與聊天案例比對", "", f"- 執行狀態：**{status}**",
-        f"- 案例：已執行 {metadata.get('executed_cases', 0)} / {metadata.get('planned_cases', 0)}；實際對話 {sum(r.get('action') != 'compress' for r in records)} 輪",
-        f"- 開始：{metadata['started_at']}；案例 SHA-256：`{metadata.get('cases_sha256', '-')}`",
-        "- 回答結果以執行、隔離與來源硬條件為前提；語意比對獨立呈現，不能覆蓋來源失敗。",
-        "- [表情／態度／JEV 報告](expression_report.md)；[案例](cases.json)；[逐輪證據](turns.jsonl)；[DB 結案證據](case_states.jsonl)；[執行摘要](run.json)", ""]
-    if error:
-        lines.extend([f"最近錯誤：{error}", ""])
-    stability = metadata.get("memory_stability")
-    if stability:
-        totals = stability["totals"]
-        lines.extend(["## Memory 多輪穩定性", "",
-            f"- 工作 {stability['observed_jobs']}；狀態 {stability['statuses']}；總 attempts {stability['attempts']}。",
-            f"- 累計邏輯步驟 {totals['logical_steps']}／HTTP calls {totals['calls']}；search/read {totals['search_calls']}/{totals['read_calls']}；修正 {totals['corrections']}／合法替換 {totals['replacements']}。",
-            f"- Token input/output {totals['input_tokens']}/{totals['output_tokens']}；模型累計耗時 {totals['latency_ms']} ms；timeout {totals['timeouts']}；attempt failures {totals['failures']}；重試耗盡工作 {stability['retry_exhausted_jobs']}。",
-            f"- 結案等待（秒）{stability['completion_wait_sec']}；queue 取樣 {stability['queue_samples']}，觀測最大工作數 {stability['max_observed_queue_jobs']}／最舊 age {stability['max_observed_queue_oldest_sec']} 秒。",
-            "- 每個 event 僅取最後紀錄；累計成本跨 attempts，最後 attempt 的增量見 turns.jsonl 的 attempt_metrics。queue 只在 claim 後取樣；等待包含 Chat 與背景工作重疊，不等同純 Agent 延遲，也不代表持續負載 SLO。", ""])
-
-    def cell(value):
-        return markdown_cell(value, limit=100000)
-
-    tools_summary = summarize_tools(records)
-    lines.extend(["## Tools 與後端取得", "",
-        f"- 選擇／實際執行 {tools_summary['selected_calls']}/{tools_summary['executed_calls']} 次；工具覆蓋 {cell(tools_summary['names'])}。",
-        f"- 後端狀態 {cell(tools_summary['backend_statuses'])}；receipt 交付 {tools_summary['receipts_delivered']}；圖片接受 {tools_summary['images_accepted']}。",
-        "- 截圖測試來源為後端載入 sample/擷取.JPG；此項不代表原生 Windows 當下螢幕擷取。", "",
-        "| Case／Step | 快照／工具提供 | AI 自由選擇 | 後端取得 | 模型交付 | 語意驗收 |",
-        "|---|---|---|---|---|---|"])
-    for record in records:
-        if record.get("action") == "compress":
-            continue
-        context = next((item for item in record.get("trace", []) if item.get("stage") == "chat_context"), {})
-        tools = record.get("tools", collect_tools(record))
-        origins = context.get("message_origins", [])
-        lines.append(f"| {record.get('case_id', 'legacy')} / {record['turn']} | {'已注入' if 'runtime_context' in origins else '未提供'} / {cell(context.get('tools_available', []))} | {cell([t['name'] for t in tools]) if tools else '未呼叫'} | {cell([t['backend_status'] for t in tools])} | {cell([dict(receipt=t['receipt_delivered'], image=t['image_accepted']) for t in tools])} | {cell(record.get('semantic_review', {}).get('verdict', '未評分'))} |")
-    lines.append("")
-    for group in ("short_term", "long_term", "mixed", None):
-        selected = [c for c in materials if c.get("case_group") == group]
-        if not selected:
-            continue
-        lines.extend([f"## {group or 'legacy'}", "",
-            "| Case／Probe | 組別／類型 | 回答結果 | 最終應該答案／對話 |", "|---|---|---|---|"])
-        for case in selected:
-            steps = [(i, s) for i, s in enumerate(case.get("conversation", []), 1) if s["phase"] in {"probe", "recall_probe"}]
-            if not steps and case.get("conversation"):
-                steps = [(len(case["conversation"]), case["conversation"][-1])]
-            for probe, (index, step) in enumerate(steps, 1):
-                record = next((r for r in records if r.get("case_id") == case["case_id"] and r.get("turn") == index), None)
-                result = answer_result(record) if record else "錯誤：此步驟尚未執行"
-                expected = step.get("expected_result", case.get("expected_result", "未定義；TXT 表情回歸"))
-                label = f"probe_{probe}" if step["phase"] in {"probe", "recall_probe"} else "setup"
-                lines.append(f"| [{case['case_id']} / {label}](#{case['case_id']}) | {group or 'legacy'} / {case.get('case_type', '-')} | {cell(result)} | {cell(expected)} |")
-        lines.append("")
-    reviews = [r for r in records if r.get("semantic_review")]
-    if reviews:
-        evaluation = metadata.get("semantic_evaluation", {})
-        lines.extend(["## 回答語意比對", "",
-            f"- 評分 prompt：`{evaluation.get('prompt_version')}`；模型：{evaluation.get('models', [])}；統計：{evaluation.get('counts', {})}",
-            "- 使用既有 Chat 模型，以獨立審查 prompt 比對；這是模型評估，仍需保留人工核對空間。", "",
-            "| Case／Step | 語意判定 | 理由 | 缺少事實／無來源斷言 | 硬條件符合 |", "|---|---|---|---|---|"])
-        for record in reviews:
-            review = record["semantic_review"]
-            lines.append(f"| {record['case_id']} / {record['turn']} | {review.get('verdict', review['status'])} | {cell(review.get('reason', review.get('error')))} | {cell(review.get('missing_facts', []) + review.get('unsupported_claims', []))} | {review['hard_conditions_met']} |")
-        lines.append("")
-    for case in materials:
-        case_id = case["case_id"]
-        actual = [r for r in records if r.get("case_id") == case_id]
-        lines.extend([f'<a id="{case_id}"></a>', f"## {case_id}", "",
-                      "測試目的：" + "、".join(case.get("expected_focus", [])), "",
-                      "| Step | Phase／實際模式 | Session | User input | Assistant reply |",
-                      "|---:|---|---|---|---|"])
-        for index, step in enumerate(case.get("conversation", []), 1):
-            record = next((r for r in actual if r.get("turn") == index), {})
-            lines.append(f"| {index} | {step['phase']} / {record.get('test_mode', '未執行')} | {step['session']} / {record.get('session_id', '-')} | {cell(step.get('input', '[compress]'))} | {cell(record.get('reply', '未執行'))} |")
-        for record in actual:
-            if record.get("action") == "compress":
-                continue
-            lines.extend(["", f"### Step {record['turn']}", ""])
-            if record.get("phase") in {"probe", "recall_probe"} or "expected_tools" in record or not any(s["phase"] in {"probe", "recall_probe"} for s in case.get("conversation", [])):
-                lines.extend(["回答結果：" + cell(answer_result(record)), "",
-                    "最終應該答案／對話：" + cell(record.get("expected_result", case.get("expected_result"))), ""])
-            context = next((t for t in record.get("trace", []) if t.get("stage") == "chat_context"), {})
-            retrieval = next((t for t in record.get("trace", []) if t.get("stage") == "retrieval"), {})
-            lines.extend(["短期來源（裁切後）：", "",
-                          "- Summary：" + cell(context.get("retained_summary")),
-                          "- History：" + cell(" / ".join(f"{m['role']}: {m['content']}" for m, origin in
-                              zip(context.get("messages", []), context.get("message_origins", [])) if origin == "history")),
-                          "- 當輪快照：" + cell(context.get("runtime_context")), ""])
-            for tool in record.get("tools", []):
-                data = tool["result"].get("data") or {}
-                lines.extend(["- Tool：" + cell(tool["name"]) + "；call ID：" + cell(tool["call_id"]),
-                    "  - 後端參數／取得：" + cell(tool["arguments"]) + " / " + cell([tool["executed"], tool["backend_status"], tool["backend_reason"]]),
-                    "  - 耗時／後端結果：" + cell(tool["duration_sec"]) + " 秒 / " + cell(tool["result"]),
-                    "  - 來源／圖片：" + cell(data.get("source")) + " / " + cell({key: data.get(key) for key in ("width", "height", "image_sha256")}) + f" / {tool['image_bytes']} bytes",
-                    "  - receipt／圖片交付：" + cell([tool["receipt_delivered"], tool["delivery_status"], tool["delivery_reason"], tool["image_accepted"]])])
-            for fact in record.get("source_evidence", []):
-                source = case["conversation"][fact["source_step"] - 1]["input"]
-                lines.append(f"- 來源 Step {fact['source_step']} / {fact['source']}：{cell(source)}；實際位置：{cell(fact['actual'])}")
-            lines.extend(["", "| Memory ID／狀態 | Canonical text | Cosine／exact_match | 投影目的地／裁切後注入 |",
-                          "|---|---|---|---|"])
-            for candidate in retrieval.get("candidates", []):
-                destinations = [p.get("destination") for p in retrieval.get("projections", []) if p['id'] == candidate['id']]
-                injected = candidate['id'] in context.get("injected_memory_ids", [])
-                lines.append(f"| {candidate['id']} / {candidate.get('status')} | {cell(candidate.get('canonical_text'))} | {candidate.get('similarity')} / {candidate.get('exact_match')} | {destinations} / {injected} |")
-            if not retrieval.get("candidates"):
-                lines.append("| - | 無合格候選或此模式停用召回 | - | 無 |")
-            for trace_item in record.get("trace", []):
-                if trace_item.get("stage") == "retrieval_filter" and trace_item.get("mode") == retrieval.get("mode"):
-                    for candidate in trace_item.get("excluded_candidates", []):
-                        lines.append(f"| {candidate['id']} / 未通過 | {cell(candidate.get('canonical_text'))} | {candidate.get('similarity')} / {candidate.get('exact_match')} | 否：{candidate.get('rejection_reason')} |")
-            management_ids = list(dict.fromkeys(c['id'] for t in record.get("trace", [])
-                if t.get("stage") == "memory_candidates" for c in t.get("candidates", [])))
-            lines.extend(["", f"寫入：{record.get('memory_route')} / {record.get('memory_job_status')}；source IDs：{record.get('memory_source_ids', [])}；audit：{cell(record.get('memory_audit', []))}",
-                          "", "Agent 管理候選（不是 Chat 召回）：" + cell(management_ids), "",
-                          "| 硬條件 | 實際值 | 預期值 | 失敗理由 |", "|---|---|---|---|"])
-            for check in record.get("hard_checks", []):
-                lines.append(f"| {check['layer']} / {check['name']} | {cell(check['actual'])} | {cell(check['expected'])} | {cell(check['reason'])} |")
-        state = states.get(case_id, {})
-        if state.get("items"):
-            lines.extend(["", "結案 current/history：", "",
-                          "| Memory ID／狀態 | Canonical text | 有效期間 | User evidence source IDs |", "|---|---|---|---|"])
-            for memory_id, item in state["items"].items():
-                sources = [e["source_id"] for e in state.get("evidence", []) if e["memory_id"] == memory_id]
-                lines.append(f"| {memory_id} / {item['status']} | {cell(item['text'])} | {item.get('valid_from')} ~ {item.get('valid_to')} | {cell(sources)} |")
-            if state.get("relations"):
-                lines.extend(["", "版本關聯：" + cell(state["relations"])])
-        lines.extend(["", f"完整 sources／evidence／relations／audit 與 current/history 狀態請在 [case_states.jsonl](case_states.jsonl) 依 `{case_id}` 查閱；逐輪原始 trace 與硬條件在 [turns.jsonl](turns.jsonl)。", ""])
-    atomic_write_text(path, "\n".join(lines) + "\n")
-
-def write_reports(records, run_dir, metadata, status, error):
-    dialogue = [record for record in records if record.get("action") != "compress"]
-    write_markdown_report(dialogue, run_dir / "expression_report.md", metadata, status, error)
-    write_memory_report(records, run_dir / "memory_report.md", metadata, status, error)
-
-
-def save_record(records: list[dict], record: dict, run_dir: Path, metadata: dict, status: str, error: str | None) -> None:
-    record.pop("_db_state", None)
-    records.append(record)
-    with (run_dir / "turns.jsonl").open("a", encoding="utf-8") as file:
-        file.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
 async def control_step(ws, action: str, session_id: str, timeout: float, test_mode=None) -> dict:
     expected = {"reset": "reset_done", "compress": "compress_done"}[action]
     started = time.monotonic()
@@ -831,258 +495,399 @@ async def control_step(ws, action: str, session_id: str, timeout: float, test_mo
                 raise RuntimeError(f"{action} 控制失敗")
             if message.get("type") == expected:
                 return {"action": action, "acknowledged": True,
+                        "status": message.get("status"), "reason": message.get("reason"),
                         "duration_sec": round(time.monotonic() - started, 3)}
 
 
-async def run(args: argparse.Namespace) -> tuple[Path, str]:
-    database_url = test_database_url()
-    # 先完整載入重播來源，再覆寫固定最新產物，避免重播 latest 時先清空案例。
-    legacy = bool(args.scenario and Path(args.scenario).suffix.lower() == ".txt")
-    cases = None
-    generator_metadata = {"status": "not_started"}
-    if args.scenario:
-        if legacy:
-            inputs = load_scenario(args.scenario)
-            if args.max_turns:
-                inputs = inputs[:args.max_turns]
-            cases = [{"case_id": "legacy", "case_group": None, "conversation": [
-                {"phase": "probe", "session": "context", "input": value} for value in inputs]}]
-        else:
-            cases = load_snapshot(args.scenario)
-            generator_metadata = {"status": "replayed"}
-            provenance = Path(args.scenario).with_name("run.json")
-            if provenance.exists():
-                try:
-                    previous = json.loads(provenance.read_text(encoding="utf-8"))
-                    if previous.get("cases_sha256") == fingerprint(cases):
-                        generator_metadata = {**previous.get("generator", {}), "replayed": True}
-                except (ValueError, OSError):
-                    pass
-    elif args.max_turns:
-        raise ValueError("--max-turns 僅供既有 TXT 表情回歸，不裁切 28-case 集")
-    if not legacy and args.max_turns:
-        raise ValueError("28-case 快照不得以 --max-turns 裁切")
-    run_dir = create_run_dir()
-    (run_dir / "memory").mkdir(exist_ok=True)
-    for name in ("cases.json", "turns.jsonl", "case_states.jsonl", "memory_report.md", "expression_report.md", "server.log"):
-        (run_dir / name).write_text("", encoding="utf-8")
-    schema = "test_" + uuid.uuid4().hex
-    user_id, character_id = uuid.uuid4(), uuid.uuid4()
-    store = MemoryRunStore(database_url, schema, user_id, character_id)
-    metadata = {"started_at": timestamp(), "scenario": str(Path(args.scenario).resolve()) if args.scenario else str(CORE_PATH),
-        "scenario_sha256": fingerprint(cases) if cases is not None else None,
-        "planned_cases": len(cases) if cases is not None else 28,
-        "planned_turns": sum("input" in step for case in cases for step in case["conversation"]) if cases else None,
-        "memory_schema": schema, "legacy": legacy, "generator": generator_metadata,
-        "completed_case_ids": [], "case_statuses": [], "cleanup": {}, **model_metadata()}
-    records = []
-    status, error = "running", None
-    process = log_file = ws = None
-    current_case = None
+def provenance(dataset):
+    from tools.ai_testset import fingerprint
+    from infrastructure.memory_repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
+    from services.memory_retriever import MEMORY_CHAR_BUDGET
+    root = BACKEND_ROOT.parent
 
-    def persist(*, render_reports: bool = False):
-        metadata["memory_stability"] = summarize_memory_stability(records)
-        metadata["tools"] = summarize_tools(records)
-        metadata["hard_checks"] = {layer: dict(Counter(r.get("hard_status", {}).get(layer, "not_checked")
-            for r in records if r.get("action") != "compress")) for layer in
-            ("execution_status", "isolation_status", "memory_evidence_status", "context_evidence_status", "tool_evidence_status")}
-        metadata.update(status=status, error=error, executed_cases=len({r["case_id"] for r in records}),
-                        executed_turns=sum(r.get("action") != "compress" for r in records), updated_at=timestamp())
-        (run_dir / "run.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-        if render_reports:
-            write_reports(records, run_dir, metadata, status, error)
+    def git(*args):
+        response = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
+        return response.stdout
 
-    persist(render_reports=True)
-    print(f"測試資料夾：{run_dir}")
+    files = [*BACKEND_ROOT.glob("tools/ai_test*.py"), *BACKEND_ROOT.glob("tools/ai_test_cases/**/*.json"),
+             BACKEND_ROOT / "tools/chat_test_cli.py", BACKEND_ROOT / "domain/agent_a_prompts.py",
+             BACKEND_ROOT / "services/chat_service.py", BACKEND_ROOT / "domain/jev_questions.py",
+             BACKEND_ROOT / "services/memory_llm.py", *BACKEND_ROOT.glob("tools/ai_test_cases/assets/*")]
+    return {"git_commit": git("rev-parse", "HEAD").decode().strip(),
+            "dirty": bool(git("status", "--porcelain", "--untracked-files=normal")),
+            "patch_sha256": hashlib.sha256(git("diff", "HEAD", "--", "backend")).hexdigest(),
+            "file_sha256": {str(p.relative_to(root)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
+                            for p in files if p.is_file()},
+            "cases_sha256": fingerprint(dataset), "models": model_metadata(),
+            "reference_time": dataset.get("reference_time"),
+            "retrieval": {"limit": CHAT_RETRIEVAL_LIMIT, "min_similarity": CHAT_RETRIEVAL_MIN_SIMILARITY,
+                          "projection_char_budget": MEMORY_CHAR_BUDGET},
+            "compression": {"keep_recent_messages": 2, "trigger_messages": 16}}
+
+
+def persist_jsonl(path, rows):
+    atomic_write_text(path, "".join(json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in rows))
+
+
+def update_cost(metadata, records, loader, started):
+    roles = {}
+    for role, stage in (("chat", "chat"), ("jev", "jev")):
+        traces = []
+        for record in records:
+            if role == "chat":
+                requests = []
+                for item in record.get("trace", []):
+                    if item.get("stage") == "chat_request":
+                        requests.append({"usage": None, "duration_sec": None, "injected": False})
+                    elif requests and item.get("stage") == "context_test_fault":
+                        requests[-1]["injected"] = True
+                    elif requests and item.get("stage") in {"context_tool_selection", "chat"}:
+                        requests[-1].update({key: item.get(key) for key in ("usage", "duration_sec", "model")})
+                if requests:
+                    # 工具選擇與無工具時的chat完成是同一次request；按請求區間計一次。
+                    traces.extend(request for request in requests if not request["injected"])
+                    continue
+            injected_failure = False
+            for item in record.get("trace", []):
+                if item.get("stage") == "context_test_fault":
+                    injected_failure = True
+                if item.get("stage") == stage:
+                    if stage == "chat" and injected_failure and item.get("error") == "BadRequestError":
+                        injected_failure = False
+                        continue  # 拒收替身未送至provider，不列為實際模型呼叫。
+                    traces.append(item)
+        usages = [t.get("usage") for t in traces]
+        roles[role] = {"calls": len(traces), "input_tokens": sum(u.get("prompt_tokens", 0) for u in usages)
+                       if usages and all(u is not None for u in usages) else None,
+                       "output_tokens": sum(u.get("completion_tokens", 0) for u in usages)
+                       if usages and all(u is not None for u in usages) else None,
+                       "duration_sec": sum(t["duration_sec"] for t in traces)
+                       if all(isinstance(t.get("duration_sec"), (int, float)) for t in traces) else None}
+    controls = [r["control"] for r in records if r.get("control", {}).get("action") == "compress"]
+    roles["summary"] = {"calls": None if any(c.get("status") in {"failed", "cancelled"} for c in controls)
+                        else sum(c.get("status") == "success" for c in controls), "input_tokens": None, "output_tokens": None,
+                        "duration_sec": sum(c.get("duration_sec", 0) for c in controls)}
+    diagnostics = [r["memory_agent_diagnostics"] for r in records if r.get("memory_agent_diagnostics")]
+    roles["memory_agent"] = {"calls": sum(d.get("calls", 0) for d in diagnostics),
+                             "input_tokens": sum(d["input_tokens"] for d in diagnostics)
+                             if diagnostics and all("input_tokens" in d for d in diagnostics) else None,
+                             "output_tokens": sum(d["output_tokens"] for d in diagnostics)
+                             if diagnostics and all("output_tokens" in d for d in diagnostics) else None}
+    for role in ("generator",):
+        info = metadata.get(role, {})
+        requests = info.get("requests", [])
+        usages = [request.get("usage") for request in requests]
+        complete_usage = len(usages) == info.get("calls", 0) and bool(usages) and all(u is not None for u in usages)
+        roles[role] = {"calls": info.get("calls", 0),
+                       "input_tokens": sum(u.get("prompt_tokens", 0) for u in usages) if complete_usage else None,
+                       "output_tokens": sum(u.get("completion_tokens", 0) for u in usages) if complete_usage else None,
+                       "models": sorted({request["model"] for request in requests if request.get("model")})}
+    retrievals = [t for r in records for t in r.get("trace", []) if t.get("stage") == "retrieval"]
+    event_retrievals = sum(any(t.get("stage") == "retrieval" for t in r.get("trace", []))
+                           for r in records if r.get("memory_event_id"))
+    event_embedding = [r.get("memory_embedding_diagnostics", {}) for r in records if r.get("memory_event_id")]
+    background_calls = (sum(d.get("calls", 0) for d in event_embedding) - event_retrievals)
+    embedding = {"initial_documents": dict(loader.embedding_cost) if loader else None,
+                 "retrieval_queries": {"calls": len(retrievals), "input_tokens": None},
+                 "jobs_queries_and_documents": {"calls": background_calls if background_calls >= 0 else None, "input_tokens": None},
+                 "startup_dimension_probe": {"calls": 1 if metadata.get("backend_ready") else None, "input_tokens": None}}
+    embedding_counts = [part.get("calls") if isinstance(part, dict) else None for part in embedding.values()]
+    embedding["calls"] = sum(embedding_counts) if all(isinstance(value, int) for value in embedding_counts) else None
+    metadata["cost"] = {"roles": roles, "embedding": embedding,
+                        "job_wait_sec": sum(r.get("job_wait_sec") or 0 for r in records),
+                        "wall_clock_sec": round(time.monotonic() - started, 3),
+                        "note": "未提供usage的成本為null；階段累計不等於壁鐘時間，embedding含fixture載入，query與worker另見trace。"}
+
+
+async def run(args):
+    from domain.memory_settings import load_memory_settings
+    from tools.ai_testset import load_suite, select_cases, generate_followup
+    from tools.ai_test_evidence import case_mode, check_turn, context_trace
+    from tools.ai_test_fixtures import FixtureLoader
+    from tools.ai_test_report import initialize_report, write_reports
+
+    # 重播latest時先完整讀取及驗證，再覆寫固定產物。沒有suite不啟動任何依賴。
+    dataset = load_suite(args.suite, args.scenario)
+    selected = select_cases(dataset, args.case)
+    dataset["selection"] = [c["case_id"] for c in selected]
+    load_dotenv(ENV_PATH, override=False)
+    run_dir = create_run_dir(RUNS_DIR / args.suite)
+    manifest_path = run_dir / "fixture.json"
+    memory_dir = run_dir / "memory"
+    memory_dir.mkdir(exist_ok=True)
+    for name in ("trace.jsonl", "prompt.log"):
+        (memory_dir / name).write_text("", encoding="utf-8")
+    (run_dir / "server.log").write_text("", encoding="utf-8")
+    manifest_path.unlink(missing_ok=True)
+    metadata = {"suite": args.suite, "cases": dataset["cases"], "started_at": timestamp(),
+                "planned_case_ids": [c["case_id"] for c in dataset["cases"]],
+                "selected_case_ids": dataset["selection"], "provenance": provenance(dataset),
+                "dependencies": {"chat": "live", "jev": "live", "memory_agent": "live" if args.suite in {"memory", "integration"} else "disabled",
+                                 "query_embedding": "live" if args.suite in {"memory", "integration"} else "disabled",
+                                 "document_embedding": "fixed_cache_initial_corpus;live_operation_results",
+                                 "tools": "live;it_012_vision_fault" if args.suite == "integration" else "fixture"},
+                "generator": {"calls": 0}, "cleanup": {}}
+    initialize_report(run_dir, args.suite, dataset, metadata["provenance"])
+    records, states = [], []
+    execution, error = "running", None
+    process = log_file = ws = store = loader = None
+    started = time.monotonic()
+    active_scenario = active_session = None
+    current_case_id = None
+    failed_dependencies = set()
+
+    def persist():
+        persist_jsonl(run_dir / "turns.jsonl", records)
+        persist_jsonl(run_dir / "case_states.jsonl", states)
+        atomic_write_text(run_dir / "cases.json", json.dumps(dataset, ensure_ascii=False, indent=2))
+        update_cost(metadata, records, loader, started)
+        return write_reports(run_dir, metadata, records, states, execution, error, metadata["cleanup"])
+
+    persist()
+    print(f"測試組：{args.suite}；本次選取 {len(selected)} / {len(dataset['cases'])} 題（含必要前序）", flush=True)
     try:
-        persist(render_reports=True)
-        if cases is None:
-            core = validate_cases(json.loads(CORE_PATH.read_text(encoding="utf-8")), source="Gold", count=23)
-            # 生成失敗也保存已知固定素材，不冒充完整快照。
-            (run_dir / "cases.json").write_text(json.dumps(core, ensure_ascii=False, indent=2), encoding="utf-8")
-            cases = core + await generate_cases(core, metadata["generator"])
-        metadata.update(cases_sha256=fingerprint(cases), scenario_sha256=fingerprint(cases),
-            planned_turns=sum("input" in step for case in cases for step in case["conversation"]),
-            case_statuses=[{"case_id": case["case_id"], "status": "pending"} for case in cases])
-        (run_dir / "cases.json").write_text(json.dumps(cases, ensure_ascii=False, indent=2), encoding="utf-8")
-        persist(render_reports=True)
-        store.open()
+        database_url = test_database_url()
+        schema, user_id, character_id = "test_" + uuid.uuid4().hex, uuid.uuid4(), uuid.uuid4()
+        metadata["provenance"]["test_scope"] = {"schema": schema, "user_id": str(user_id),
+                                                 "character_id": str(character_id), "database_guard": "verified_distinct_database"}
+        store = MemoryRunStore(database_url, schema, user_id, character_id)
+        await asyncio.to_thread(store.open)
+        settings = load_memory_settings({**os.environ, "AI_VT_TEST_MODE": "true", "MEMORY_TEST_DATABASE_URL": database_url,
+                                         "MEMORY_DATABASE_SCHEMA": schema, "MEMORY_DEFAULT_USER_ID": str(user_id),
+                                         "MEMORY_DEFAULT_CHARACTER_ID": str(character_id)})
+        metadata["provenance"]["embedding_contract"] = {
+            "model": settings.embedding_model, "serving_model": settings.embedding_serving_model,
+            "dimension": settings.embedding_dimension, "query_prefix": settings.embedding_query_prefix,
+            "document_prefix": settings.embedding_document_prefix, "normalization": "l2-v1", "sha256": settings.embedding_contract}
+        loader = FixtureLoader(store, manifest_path=manifest_path, settings=settings)
         port = find_available_port()
-        url = f"ws://127.0.0.1:{port}/ws/chat"
         process, log_file = start_backend(run_dir, port, database_url, schema, user_id, character_id)
+        url = f"ws://127.0.0.1:{port}/ws/chat"
         ws = await connect_backend(url, process, args.startup_timeout)
-        for case, current_case in zip(cases, metadata["case_statuses"]):
-            current_case["status"] = "running"
-            case_has_errors = False
-            sessions = {step["session"]: f"test_{uuid.uuid4().hex}" for step in case["conversation"]}
-            active_alias = case["conversation"][0]["session"] if case["conversation"] else None
-            if not legacy:
-                # 新 case owner reset 與每個 probe 的新連線；已保存前案結案證據。
-                await control_step(ws, "reset", sessions[active_alias], args.turn_timeout)
-            for turn, step in enumerate(case["conversation"], 1):
-                if step["session"] != active_alias:
-                    await ws.close()
-                    ws = await connect_backend(url, process, args.startup_timeout)
-                    active_alias = step["session"]
-                session_id = sessions[active_alias]
-                if step.get("action") == "compress":
-                    record = {"turn": turn, "ts": timestamp(), "action": "compress", "user": "[compress]",
-                              "reply": "", "session_id": session_id, "errors": []}
-                    try:
-                        record["control"] = await control_step(ws, "compress", session_id, args.turn_timeout,
-                                                            test_mode=step_mode(case, step))
-                    except (TimeoutError, RuntimeError) as exc:
-                        record["errors"].append(type(exc).__name__)
-                else:
-                    attempt_errors = []
-                    for attempt in range(1, args.retries + 2):
-                        record = await run_turn(ws, turn, step["input"], "Rushia", session_id, store, args.turn_timeout,
-                                                **({"test_mode": step_mode(case, step)} if not legacy else {}))
-                        record["attempts"] = attempt
-                        if not record["errors"]:
-                            break
-                        attempt_errors.extend(record["errors"])
-                        # send 成功也不能盲目重送：ACK 遺失不代表後端沒接受。
-                        if (record.get("request_sent") or record["reply"] or record.get("memory_event_id")
-                                or "逾時" in record["errors"][0] or attempt > args.retries):
-                            break
-                        await ws.close()
-                        try:
-                            ws = await connect_backend(url, process, args.startup_timeout)
-                        except Exception as exc:
-                            record["errors"].append(f"重連失敗：{type(exc).__name__}")
-                            break
-                    record["attempt_errors"] = attempt_errors
-                    record["trace"] = read_turn_trace(run_dir, record.get("turn_id"))
-                    if not legacy and not record["errors"] and not any(item["stage"] == "chat_context" for item in record["trace"]):
-                        record["errors"].append("缺少裁切後 Chat context trace")
-                    db_state = record.pop("_db_state", None) or {}
-                    if not legacy:
-                        record["expected_result"] = step.get("expected_result", case["expected_result"])
-                        if "expected_tools" in step:
-                            record["expected_tools"] = step["expected_tools"]
-                        check_turn(case, step, record, [r for r in records if r.get("case_id") == case["case_id"]], db_state)
-                    else:
-                        record["tools"] = collect_tools(record)
-                record.update(case_id=case["case_id"], phase=step["phase"], case_group=case["case_group"],
-                              test_mode=step_mode(case, step).value if not legacy else "normal")
-                if record["errors"] or any(v == "failed" for v in record.get("hard_status", {}).values()):
-                    case_has_errors = True
-                    status = "interrupted" if record.get("interrupted") else "failed"
-                    error = f"第 {turn} 輪失敗：{record['errors'][0] if record['errors'] else answer_result(record)}"
-                    current_case["status"] = status
-                    current_case["error"] = error
-                save_record(records, record, run_dir, metadata, status, error)
+        metadata["backend_ready"] = True
+        for index, case in enumerate(selected, 1):
+            current_case_id = case["case_id"]
+            dependencies = set(case.get("depends_on", [])) & failed_dependencies
+            if dependencies:
+                records.append({"case_id": case["case_id"], "source": case["source"], "phase": case["phase"],
+                                "user": case["input"], "reply": "", "request_sent": False, "status": "failed",
+                                "checks": [{"stage": "dependency", "status": "failed", "reason_code": "prerequisite_failed",
+                                            "evidence": {"file": "turns.jsonl", "case_ids": sorted(dependencies)}}]})
+                failed_dependencies.add(case["case_id"])
                 persist()
-                if "input" in step:
-                    print_turn(record)
-                if record["errors"]:
-                    if not legacy and record.get("stream_complete") and record.get("memory_job_status") == "failed":
-                        # 背景模型已達重試上限並結案；保存失敗，繼續實際 probe 觀察。
-                        status = "running"
-                    else:
-                        break
-            if not legacy and records and records[-1]["case_id"] == case["case_id"]:
-                case_state = await asyncio.to_thread(store.case_state)
-                with (run_dir / "case_states.jsonl").open("a", encoding="utf-8") as file:
-                    file.write(json.dumps({"case_id": case["case_id"], "captured_at": timestamp(),
-                                           "state": case_state}, ensure_ascii=False) + "\n")
-            if status == "interrupted" or (legacy and status != "running"):
+                continue
+            scenario = case["context"].get("scenario", case["case_id"])
+            if scenario != active_scenario:
+                await control_step(ws, "reset", "reset", args.turn_timeout)
+                active_scenario, active_session = scenario, None
+            fixture = await loader.prepare(case, dataset)
+            session = fixture["session_id"]
+            if session != active_session:
+                await ws.close()
+                ws = await connect_backend(url, process, args.startup_timeout)
+                active_session = session
+            mode = case_mode(args.suite, case)
+            controls = {}
+            summary_before = summary_after = None
+            compression = None
+            if case["context"].get("compress_before"):
+                compression_before = await asyncio.to_thread(read_session_state, store, session)
+                summary_before = compression_before["summary"]
+                controls = await control_step(ws, "compress", session, args.turn_timeout, mode)
+                compression_after = await asyncio.to_thread(read_session_state, store, session)
+                summary_after = compression_after["summary"]
+                compression = {"before": compression_before, "after": compression_after,
+                               "compressed_sequences": list(range(compression_before["summary_through_sequence"] + 1,
+                                                                  compression_after["summary_through_sequence"] + 1)),
+                               "source_texts": await asyncio.to_thread(read_compressed_texts, store, session,
+                                   compression_before["summary_through_sequence"], compression_after["summary_through_sequence"])}
+            if case["source"] == "generated" and not case["input"]:
+                if dataset.get("input_source") == "replayed_inputs":
+                    raise ValueError("重播選取到未解析生成槽，禁止重新生成")
+                case["input"] = await generate_followup(case, records, metadata["generator"])
+                next(c for c in dataset["cases"] if c["case_id"] == case["case_id"])["input"] = case["input"]
+                persist()
+            before = await asyncio.to_thread(store.case_state)
+            foreign_before = await asyncio.to_thread(loader.other_owner_state)
+            record = await run_turn(ws, index, case["input"], "Rushia", session, store, args.turn_timeout, mode)
+            state = record.pop("_db_state", None) or {}
+            record.update(case_id=case["case_id"], source=case["source"], phase=case["phase"], test_mode=mode.value,
+                          fixture=fixture["metadata"], control=controls, summary_before=summary_before, summary_after=summary_after)
+            if case["source"] == "generated":
+                record["generation"] = metadata["generator"].get("cases", {}).get(case["case_id"], {"input_source": "replayed_inputs"})
+            if compression:
+                record["compression"] = compression
+            records.append(record)
+            states.append({"case_id": case["case_id"], "turn_id": record["turn_id"], "state": state,
+                           "baseline_difference": state_difference(before, state), "fixture_ids": dict(loader.memory_ids)})
+            persist()
+            record["trace"] = read_turn_trace(run_dir, record.get("turn_id"))
+            context = context_trace(record)
+            context["retained_summary"] = retained_summary(context)
+            foreign_after = await asyncio.to_thread(loader.other_owner_state)
+            check_turn(args.suite, case, record, records[:-1], before, state, loader.memory_ids)
+            record["checks"].append({"stage": "isolation", "status": "passed" if foreign_before == foreign_after else "failed",
+                                     "reason_code": "other_owner_unchanged", "evidence": {"file": "case_states.jsonl", "case_id": case["case_id"], "field": "other_owner_unchanged"}})
+            if fixture["metadata"].get("reference_day_matches_runtime") is False:
+                record["checks"].append({"stage": "fixture", "status": "failed", "reason_code": "reference_day_mismatch",
+                                         "evidence": {"file": "turns.jsonl", "case_id": case["case_id"], "field": "fixture.reference_day_matches_runtime"}})
+            record["assets"] = collect_assets(record, run_dir)
+            states[-1]["other_owner_unchanged"] = foreign_before == foreign_after
+            # 保存對話與實際證據供後期評讀；不呼叫語意評分模型。
+            persist()
+            if record.get("interrupted"):
+                execution, error = "cancelled", "使用者中斷測試"
                 break
-            if case_has_errors:
-                current_case["status"] = "failed"
-                status = "running"  # 後續獨立 case 仍可 reset 後執行。
+            if any(c["status"] == "failed" for c in record["checks"]):
+                record["status"] = "failed"
+                failed_dependencies.add(case["case_id"])
             else:
-                current_case["status"] = "completed"
-                metadata["completed_case_ids"].append(case["case_id"])
-            persist(render_reports=True)
-        if status == "running":
-            status = "failed" if any(case["status"] == "failed" for case in metadata["case_statuses"]) else "completed"
-        if not legacy:
-            metadata["semantic_evaluation"] = {}
-            semantic_failed = await evaluate_semantics(cases, records, metadata["semantic_evaluation"])
-            for case_status in metadata["case_statuses"]:
-                if case_status["case_id"] in semantic_failed:
-                    case_status["status"] = "failed"
-                    case_status["error"] = "回答語意比對未通過或未完成"
-            metadata["completed_case_ids"] = [c["case_id"] for c in metadata["case_statuses"] if c["status"] == "completed"]
-            if semantic_failed:
-                status = "failed"
-                error = "回答語意比對未通過或未完成：" + ", ".join(sorted(semantic_failed))
-
+                record["status"] = "completed"
+            print(f"[{index}/{len(selected)}] {case['case_id']} 客觀檢查={record['status']}", flush=True)
+            persist()
+        if execution == "running":
+            execution = "completed"
     except asyncio.CancelledError:
-        status, error = "interrupted", "使用者中斷測試"
-        if current_case:
-            current_case["status"] = status
-        raise
-    except KeyboardInterrupt:
-        status, error = "interrupted", "使用者中斷測試"
+        execution, error = "cancelled", "使用者中斷測試"
     except Exception as exc:
-        status = "failed"
-        error = str(exc) if isinstance(exc, (RuntimeError, TimeoutError, ValueError)) else type(exc).__name__
-        if current_case:
-            current_case["status"] = status
-        print(f"測試失敗：{error}")
+        execution, error = "failed", f"{type(exc).__name__}：{safe_error(exc)}"
+        metadata["failure"] = {"case_id": current_case_id, "stage": "runner", "exception": type(exc).__name__,
+                               "frames": [{"file": Path(f.filename).name, "line": f.lineno, "function": f.name}
+                                          for f in traceback.extract_tb(exc.__traceback__)[-8:]]}
+        recorded = {record["case_id"]: record for record in records}
+        for failed_case in selected:
+            case_id = failed_case["case_id"]
+            if case_id in recorded and case_id != current_case_id:
+                continue
+            record = recorded.get(case_id)
+            if record is None:
+                record = {"case_id": case_id, "source": failed_case["source"], "phase": failed_case["phase"],
+                          "user": failed_case["input"], "reply": "", "request_sent": False, "checks": []}
+                records.append(record)
+            record["status"] = "failed"
+            record.setdefault("checks", []).append({"stage": "execution", "status": "failed",
+                "reason_code": "runner_failure" if case_id == current_case_id or current_case_id is None else "run_terminated",
+                "evidence": {"file": "run.json", "field": "execution.failure", "case_id": current_case_id}})
+        print(error, flush=True)
     finally:
-        if metadata.get("semantic_evaluation"):
-            try:
-                atomic_write_text(run_dir / "turns.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
-            except OSError as exc:
-                status, error = "failed", f"保存語意比對失敗：{type(exc).__name__}"
         if ws is not None:
             try:
                 await ws.close()
                 metadata["cleanup"]["websocket"] = "closed"
-            except Exception as exc:
-                metadata["cleanup"]["websocket"] = type(exc).__name__
-                status = "failed"
+            except Exception:
+                metadata["cleanup"]["websocket"] = "failed"
         if process is not None:
             try:
-                stop_backend(process, log_file)
+                await asyncio.to_thread(stop_backend, process, log_file)
                 metadata["cleanup"]["backend"] = "stopped"
-            except Exception as exc:
-                status, error = "failed", f"關閉測試後端失敗：{type(exc).__name__}"
+                metadata["cleanup"]["worker"] = "stopped_with_backend"
+            except Exception:
                 metadata["cleanup"]["backend"] = "failed"
+        if store is not None:
+            try:
+                await asyncio.to_thread(store.close)
+                metadata["cleanup"]["schema"] = "removed"
+                metadata["cleanup"]["connection"] = "disposed"
+            except Exception:
+                metadata["cleanup"]["schema"] = "failed"
         try:
-            store.close()
-            metadata["cleanup"]["schema"] = "removed"
-        except Exception as exc:
-            status, error = "failed", f"清理測試 schema 失敗：{type(exc).__name__}"
-            metadata["cleanup"]["schema"] = "failed"
-        try:
-            shutil.rmtree(run_dir / "memory")
-            metadata["cleanup"]["short_term"] = "removed"
-        except OSError as exc:
-            status, error = "failed", f"清理短期暫存失敗：{type(exc).__name__}"
-            metadata["cleanup"]["short_term"] = "failed"
-        if not args.scenario or metadata.get("semantic_evaluation"):
-            from infrastructure.ai_client import _role_clients
-            for client in _role_clients.values():
-                await client.close()
-        persist(render_reports=True)
-        print(f"報告已寫入：{run_dir / 'memory_report.md'}（{status}）")
-    return run_dir, status
+            if not memory_dir.resolve().is_relative_to(run_dir.resolve()):
+                raise ValueError("暫存路徑越界")
+            shutil.rmtree(memory_dir)
+            manifest_path.unlink(missing_ok=True)
+            metadata["cleanup"]["temporary"] = "removed"
+        except Exception:
+            metadata["cleanup"]["temporary"] = "failed"
+        from infrastructure.ai_client import _role_clients
+        for client in list(_role_clients.values()):
+            await client.close()
+        _role_clients.clear()
+        metadata["finished_at"] = timestamp()
+        result = persist()
+        print(f"報告：{run_dir / 'report.md'}；執行={execution}；驗收={result['acceptance']['overall']}", flush=True)
+    return run_dir, result["acceptance"]["overall"]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="隔離式 Headless JEV Chat 測試")
-    parser.add_argument("--scenario", help="28-case JSON 快照重播；TXT 保留既有表情回歸，省略時生成完整新集")
-    parser.add_argument("--max-turns", type=int, default=0)
-    parser.add_argument("--retries", type=int, default=2)
-    parser.add_argument("--startup-timeout", type=float, default=60)
+def safe_error(exc):
+    # DB/HTTP例外常含DSN或headers；只保留我們定義且無連線資訊的診斷。
+    value = str(exc)
+    if isinstance(exc, (ValueError, RuntimeError, TimeoutError)) and not any(
+            token in value.lower() for token in ("://", "api_key", "authorization", "password", "sk-")):
+        return value[:600]
+    return "詳細原因請核對隔離 server.log；敏感連線內容未輸出"
+
+
+def read_session_summary(store, session):
+    return read_session_state(store, session)["summary"]
+
+
+def read_session_state(store, session):
+    with store.engine.connect() as connection:
+        row = connection.execute(text(f'SELECT summary,summary_through_sequence,next_message_sequence FROM "{store.schema}".chat_sessions '
+            'WHERE id=:session AND user_id=:user_id AND character_id=:character_id'),
+            {**store.owner, "session": session}).mappings().first()
+        return dict(row) if row else {"summary": "", "summary_through_sequence": -1, "next_message_sequence": 0}
+
+
+def retained_summary(context):
+    summary = context.get("summary", "")
+    start = context.get("summary_section_start")
+    if start is None:
+        return ""
+    return "\n".join(summary[max(left, start)-start:min(right, start+len(summary))-start]
+                     for left, right in context.get("system_retained_ranges", [])
+                     if max(left, start) < min(right, start+len(summary)))
+
+
+def read_compressed_texts(store, session, before_cursor, after_cursor):
+    with store.engine.connect() as connection:
+        return list(connection.execute(text(f'SELECT content FROM "{store.schema}".chat_messages '
+            'WHERE session_id=:session AND user_id=:user_id AND character_id=:character_id '
+            'AND sequence>:before AND sequence<=:after ORDER BY sequence'),
+            {**store.owner, "session": session, "before": before_cursor, "after": after_cursor}).scalars())
+
+
+def state_difference(before, after):
+    from tools.ai_testset import fingerprint
+    return {"baseline_sha256": fingerprint(before), "final_sha256": fingerprint(after),
+            "changed_tables": [key for key in sorted(set(before) | set(after)) if before.get(key) != after.get(key)]}
+
+
+def collect_assets(record, run_dir):
+    from hashlib import sha256
+    assets = []
+    for tool in record.get("tools", []):
+        if tool.get("name") != "capture_screenshot":
+            continue
+        source = ((tool.get("result") or {}).get("data") or {}).get("source", {})
+        if not isinstance(source, dict):
+            continue
+        ref = source.get("report_asset") or source.get("asset_path") or source.get("asset")
+        if ref and tool.get("image_accepted"):
+            path = (run_dir / ref).resolve()
+            if path.is_relative_to(run_dir.resolve()) and path.is_file():
+                assets.append({"path": ref, "sha256": sha256(path.read_bytes()).hexdigest()})
+    return assets
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="四組隔離AI測試；必須明確選suite，不執行舊28-case或TXT。")
+    parser.add_argument("--suite", choices=("chat", "memory", "tools", "integration"))
+    parser.add_argument("--scenario", help="重播該suite的完整cases.json，不重新生成續問")
+    parser.add_argument("--case", help="定位單題並重播必要前序；保留全組分母")
+    parser.add_argument("--startup-timeout", type=float, default=90)
     parser.add_argument("--turn-timeout", type=float, default=120)
-    args = parser.parse_args()
-    if args.max_turns < 0 or args.retries < 0 or args.startup_timeout <= 0 or args.turn_timeout <= 0:
-        parser.error("輪數與重試次數不得為負；逾時必須大於 0")
-    try:
-        _, status = asyncio.run(run(args))
-    except KeyboardInterrupt:
-        raise SystemExit(130)
-    if status == "interrupted":
-        raise SystemExit(130)
-    if status == "failed":
-        raise SystemExit(1)
+    args = parser.parse_args(argv)
+    if not args.suite:
+        parser.print_help()
+        return 0
+    if args.startup_timeout <= 0 or args.turn_timeout <= 0:
+        parser.error("timeout 必須大於0")
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    _, status = asyncio.run(run(args))
+    return 0 if status == "passed" else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
