@@ -131,7 +131,9 @@ export class AmbientMotion {
     const gain = advance(this.enableGain, enabled ? 1 : 0, 18, dt);
     const result = {} as AmbientSample;
     for (const axis of AMBIENT_AXES) {
-      const moveSec = axis.startsWith('gaze') ? 0.2 : this.moveMs / 1000;
+      // 眼球先到位、頭部跟隨，身體較慢停穩；更新目標時保留各軸速度。
+      const moveSec = axis.startsWith('gaze') ? 0.2
+        : this.moveMs / 1000 * (axis.startsWith('body') ? 1.45 : 1);
       const value = advance(this.axes[axis], enabled ? this.target[axis] : 0, 4.8 / moveSec, dt);
       result[axis] = clamp(value, -1, 1) * gain * (axis.startsWith('gaze') ? gaze : body);
     }

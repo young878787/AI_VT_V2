@@ -85,17 +85,24 @@ class AvatarTargetTests(unittest.TestCase):
             runtime = AvatarRuntime(AsyncMock(), rng=random.Random(seed))
             first_glance, run_count, run_time = True, 0, 0.0
             for _ in range(100):
+                quiet = runtime._quiet_remaining > 0
                 plan, delay = runtime._next_plan()
                 hold = delay - plan["moveMs"] / 1000
                 total_time += delay
                 x, y = plan["target"]["gazeX"], plan["target"]["gazeY"]
+                if quiet:
+                    # Refocusing retains the primary front dwell, not a new direction.
+                    self.assertEqual(runtime._gaze_anchor, (0, 0))
+                    forward_time += delay
+                    run_time += delay
+                    continue
                 if x == y == 0:
                     forward_holds.append(hold)
                     forward_time += delay
                     run_count += 1
                     run_time += delay
                     # Even slow poses cannot leave the eyes fixed for a minute.
-                    self.assertLessEqual(run_time, (2 if first_glance else 4) * 7.2)
+                    self.assertLessEqual(run_time, (2 if first_glance else 4) * 7.2 + 6.5)
                 else:
                     self.assertTrue(1 <= run_count <= 2 if first_glance else 2 <= run_count <= 4)
                     self.assertGreaterEqual(max(abs(x), abs(y)), 0.28)
@@ -105,7 +112,7 @@ class AvatarTargetTests(unittest.TestCase):
                     glance_holds.append(hold)
                     first_glance, run_count, run_time = False, 0, 0.0
         self.assertGreater(forward_time / total_time, 0.8)
-        self.assertLess(forward_time / total_time, 0.93)
+        self.assertLess(forward_time / total_time, 0.96)
         self.assertEqual(set(run_lengths), {2, 3, 4})
         self.assertGreater(len(set(run_times)), 100)
         self.assertLess(max(glance_holds), 0.8)
@@ -136,16 +143,23 @@ class AvatarTargetTests(unittest.TestCase):
 
     def test_seeded_targets_are_bounded_and_have_varied_amplitudes_and_deadlines(self):
         runtime = AvatarRuntime(AsyncMock(), rng=random.Random(42))
-        plans = [runtime._next_plan() for _ in range(300)]
+        plans, quiet_plans = [], set()
+        for index in range(300):
+            if runtime._quiet_remaining > 0:
+                quiet_plans.add(index)
+            plans.append(runtime._next_plan())
         self.assertEqual([plan["sequence"] for plan, _ in plans], list(range(1, 301)))
-        for plan, delay in plans:
+        for index, (plan, delay) in enumerate(plans):
             self.assertEqual(plan["state"], "idle")
             self.assertNotIn("turn_id", plan)
             self.assertEqual(set(plan["target"]), set(TARGET_FIELDS))
             self.assertTrue(all(math.isfinite(value) and -1 <= value <= 1
                                 for value in plan["target"].values()))
             self.assertTrue(300 <= plan["moveMs"] <= 3000)
-            self.assertGreater(delay, plan["moveMs"] / 1000)
+            if index in quiet_plans:
+                self.assertTrue(1.3 <= delay < 3.8)
+            else:
+                self.assertGreater(delay, plan["moveMs"] / 1000)
             self.assertTrue(3 <= plan["breath"]["periodSec"] <= 8)
             self.assertTrue(0 <= plan["breath"]["amplitude"] <= 1)
             self.assertTrue(0 <= plan["breath"]["rootAmplitude"] <= 0.08)
@@ -157,6 +171,68 @@ class AvatarTargetTests(unittest.TestCase):
         self.assertTrue(any("hop" in plan for plan, _ in plans))
         self.assertGreater(len({plan["moveMs"] for plan, _ in plans}), 100)
         self.assertGreater(len({round(delay, 2) for _, delay in plans}), 100)
+
+    def test_quiet_holds_pose_breath_and_primary_gaze_without_drift_or_hops(self):
+        runtime = AvatarRuntime(AsyncMock(), rng=random.Random(29))
+        quiet_runs, refocused, still = [], 0, 0
+        previous = None
+        remaining_before = 0.0
+        for _ in range(1500):
+            quiet = runtime._quiet_remaining > 0
+            remaining = runtime._quiet_remaining
+            history = list(runtime._recent_gaze)
+            countdown = runtime._gaze_front_remaining
+            plan, delay = runtime._next_plan()
+            if quiet:
+                self.assertIsNotNone(previous)
+                for field in TARGET_FIELDS[:6]:
+                    self.assertEqual(plan["target"][field], previous["target"][field])
+                self.assertEqual(plan["breath"], previous["breath"])
+                self.assertEqual(plan["moveMs"], previous["moveMs"])
+                self.assertNotIn("hop", plan)
+                self.assertEqual(list(runtime._recent_gaze), history)
+                self.assertEqual(runtime._gaze_front_remaining, countdown)
+                self.assertEqual(runtime._gaze_anchor, (0, 0))
+                distance = math.hypot(plan["target"]["gazeX"], plan["target"]["gazeY"])
+                if distance:
+                    self.assertTrue(0.0149 <= distance <= 0.0401)
+                    refocused += 1
+                else:
+                    still += 1
+                if not remaining_before:
+                    quiet_runs.append(remaining)
+                self.assertAlmostEqual(remaining - runtime._quiet_remaining, delay)
+                self.assertTrue(1.3 <= delay < 3.8)
+            remaining_before = runtime._quiet_remaining if quiet else 0.0
+            previous = plan
+        self.assertGreater(len(quiet_runs), 50)
+        self.assertTrue(all(4.5 <= duration <= 6.5 for duration in quiet_runs))
+        self.assertGreater(refocused, 100)
+        self.assertGreater(still, 50)
+
+    def test_quiet_is_bounded_to_once_per_front_run_and_controls_clear_pending(self):
+        runtime = AvatarRuntime(AsyncMock(), rng=random.Random(4))
+        quiet_started = False
+        for _ in range(500):
+            was_quiet = runtime._quiet_remaining > 0
+            runtime._next_plan()
+            if not was_quiet:
+                if runtime._gaze_anchor != (0, 0):
+                    quiet_started = False
+                elif runtime._quiet_remaining:
+                    self.assertFalse(quiet_started)
+                    quiet_started = True
+        for control in ({"type": "avatar_state", "listening": True},
+                        {"type": "avatar_state", "listening": False, "enabled": False}):
+            runtime._quiet_remaining = 5.0
+            runtime.update_state(control)
+            self.assertEqual(runtime._quiet_remaining, 0)
+            self.assertNotIn("hop", runtime._next_plan()[0])
+        runtime._quiet_remaining = 5.0
+        runtime.reset()
+        self.assertEqual(runtime._quiet_remaining, 0)
+        self.assertFalse(runtime._quiet_in_front_run)
+        self.assertEqual(runtime._gaze_anchor, (0, 0))
 
     def test_listening_keeps_some_lean_returns_gaze_to_front_and_stops_hops(self):
         runtime = AvatarRuntime(AsyncMock(), rng=random.Random(7))

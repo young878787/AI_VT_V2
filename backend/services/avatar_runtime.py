@@ -40,6 +40,11 @@ class AvatarRuntime:
         self._recent_gaze: deque[str] = deque(maxlen=2)
         self._sequence = 0
         self._target = dict.fromkeys(TARGET_FIELDS, 0.0)
+        self._gaze_anchor = (0.0, 0.0)
+        self._breath = {"periodSec": 4.8, "amplitude": 0.25, "rootAmplitude": 0.006}
+        self._move_ms = 1000
+        self._quiet_remaining = 0.0
+        self._quiet_in_front_run = False
         self._activity = 1.0
         self._speed = 1.0
         self._enabled = True
@@ -57,6 +62,7 @@ class AvatarRuntime:
         listening = payload["listening"]
         if (enabled, listening) != (self._enabled, self._listening):
             self._enabled, self._listening = enabled, listening
+            self._quiet_remaining = 0.0
             self._disabled_sent = False
             self._changed.set()
 
@@ -76,6 +82,7 @@ class AvatarRuntime:
             speed = 1.0
         if (activity, speed) != (self._activity, self._speed):
             self._activity, self._speed = activity, speed
+            self._quiet_remaining = 0.0
             self._changed.set()
 
     def reset(self) -> None:
@@ -83,6 +90,11 @@ class AvatarRuntime:
         self._activity, self._speed = 1.0, 1.0
         self._listening = False
         self._target = dict.fromkeys(TARGET_FIELDS, 0.0)
+        self._gaze_anchor = (0.0, 0.0)
+        self._breath = {"periodSec": 4.8, "amplitude": 0.25, "rootAmplitude": 0.006}
+        self._move_ms = 1000
+        self._quiet_remaining = 0.0
+        self._quiet_in_front_run = False
         self._recent.clear()
         self._recent_gaze.clear()
         self._gaze_front_remaining = self._rng.randint(1, 2)
@@ -109,6 +121,7 @@ class AvatarRuntime:
         rng = self._rng
         self._sequence += 1
         if not self._enabled:
+            self._quiet_remaining = 0.0
             self._target = dict.fromkeys(TARGET_FIELDS, 0.0)
             return {
                 "type": "ambient_plan", "sequence": self._sequence, "state": "idle", "moveMs": 800,
@@ -130,18 +143,35 @@ class AvatarRuntime:
                       "amplitude": round(rng.uniform(0.25, 0.4), 3), "rootAmplitude": 0.006}
             hold = rng.uniform(2.5, 4.8)
             hop = None
+        elif self._quiet_remaining > 0:
+            # Keep the pose and breath long enough to settle; only the eyes may refocus.
+            gaze_x, gaze_y = self._gaze_anchor
+            if rng.random() < 0.6:
+                angle, radius = rng.uniform(0, math.tau), rng.uniform(0.015, 0.04)
+                gaze_x += math.cos(angle) * radius
+                gaze_y += math.sin(angle) * radius
+            self._target.update(gazeX=_bounded(gaze_x), gazeY=_bounded(gaze_y))
+            delay = (self._quiet_remaining if self._quiet_remaining < 3.8
+                     else rng.uniform(1.3, 2.5))
+            self._quiet_remaining = max(0.0, self._quiet_remaining - delay)
+            return {"type": "ambient_plan", "sequence": self._sequence, "state": "idle",
+                    "moveMs": self._move_ms, "target": dict(self._target),
+                    "breath": dict(self._breath)}, delay
         else:
             action = self._choose({"nearby": 3.0, "pose": 2.6, "sway": 2.0, "hop": activity})
             direction = self._choose({"left": 1.0, "right": 1.0, "center": 0.8})
             sign = {"left": -1.0, "right": 1.0, "center": 0.0}[direction]
             extent = rng.uniform(0.14, 0.32) if action == "nearby" else rng.uniform(0.45, 0.9)
             extent *= activity
-            # Bound quiet eye intervals without introducing a separate gaze state machine.
+            # Count primary gaze changes separately from occasional quiet refocusing.
             gaze = "front" if self._gaze_front_remaining > 0 else "glance"
             self._gaze_front_remaining = (self._gaze_front_remaining - 1 if gaze == "front"
                                           else rng.randint(2, 4))
             self._recent.append(gaze)
             gaze_x, gaze_y = (0.0, 0.0) if gaze == "front" else self._sample_gaze()
+            self._gaze_anchor = (gaze_x, gaze_y)
+            if gaze == "glance":
+                self._quiet_in_front_run = False
             head_x = sign * extent * 0.7 + gaze_x * 0.22
             self._target = {
                 "headX": _bounded(head_x), "headY": _bounded(rng.uniform(-0.7, 0.7) * extent),
@@ -158,7 +188,12 @@ class AvatarRuntime:
             hold = rng.uniform(0.18, 0.65) if gaze == "glance" else rng.uniform(1.2, 4.2)
             hop = ({"height": round(rng.uniform(0.045, 0.105) * activity, 4),
                     "durationMs": rng.randint(700, 1400)} if action == "hop" else None)
+            if gaze == "front" and not self._quiet_in_front_run and rng.random() < 0.35:
+                self._quiet_remaining = rng.uniform(4.5, 6.5)
+                self._quiet_in_front_run = True
 
+        self._move_ms = move_ms
+        self._breath = dict(breath)
         plan = {"type": "ambient_plan", "sequence": self._sequence,
                 "state": "listening" if listening else "idle", "moveMs": move_ms,
                 "target": dict(self._target), "breath": breath}

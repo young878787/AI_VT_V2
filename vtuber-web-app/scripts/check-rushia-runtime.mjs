@@ -4,6 +4,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import './check-blink-runtime.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -130,7 +131,7 @@ const modelLoad = createLoader({
   './LAppPal': {}, './LAppTextureManager': {}, './LAppDelegate': {},
 }, { performance: { now: () => modelNowMs } });
 const { LAppModel } = modelLoad('src/live2d/LAppModel.ts');
-const { CubismEyeBlink } = load('src/live2d/framework/effect/cubismeyeblink.ts');
+const { BlinkRuntime } = load('src/live2d/runtime/BlinkRuntime.ts');
 const model = Object.create(LAppModel.prototype);
 const parameters = new Map([['left', 0.5], ['right', 0.3]]);
 model._model = {
@@ -141,19 +142,24 @@ model._idParamEyeLOpen = 'left';
 model._idParamEyeROpen = 'right';
 model._aiEyeBaseLOpen = 0.5;
 model._aiEyeBaseROpen = 0.3;
-model._eyeBlink = CubismEyeBlink.create();
-model._eyeBlink.setParameterIds(['left', 'right']);
-model._eyeBlink.pause();
+model._blinkRuntime = new BlinkRuntime(() => 0.5);
+model._eyeBlinkIds = ['left', 'right'];
+model._nativeParamOverrides = new Map();
+model._nativeMotionParameters = new Set();
+model._autoEffectsEnabled = true;
+model.pauseAutoBlink();
 for (let frame = 0; frame < 30; frame += 1) {
-  model.updateEyeBlink(1 / 60);
+  modelNowMs += 1000 / 60;
+  model.updateEyeBlink(1 / 60, modelNowMs);
   near(parameters.get('left'), 0.5, 'paused blink preserves half-closed left eye');
   near(parameters.get('right'), 0.3, 'paused blink preserves asymmetric right eye');
 }
-model._eyeBlink.resume();
-model._eyeBlink.forceBlink();
+model.resumeAutoBlink();
+model.forceBlink();
 let minimumLeft = 1;
 for (let frame = 0; frame < 45; frame += 1) {
-  model.updateEyeBlink(1 / 60);
+  modelNowMs += 1000 / 60;
+  model.updateEyeBlink(1 / 60, modelNowMs);
   minimumLeft = Math.min(minimumLeft, parameters.get('left'));
   near(parameters.get('left') / 0.5, parameters.get('right') / 0.3,
     'blink keeps the expression eye ratio');
@@ -161,6 +167,50 @@ for (let frame = 0; frame < 45; frame += 1) {
 assert.ok(minimumLeft < 0.05, 'resumed blink must visibly close the eyes');
 near(parameters.get('left'), 0.5, 'completed blink restores the left expression');
 near(parameters.get('right'), 0.3, 'completed blink restores the right expression');
+model.setBlinkInterval(2, 6);
+assert.deepEqual({ ...model.getBlinkState() }, { paused: false, intervalMin: 2, intervalMax: 6 });
+model._autoEffectsEnabled = false;
+modelNowMs += 1000 / 60;
+model.updateEyeBlink(1 / 60, modelNowMs);
+near(parameters.get('left'), 0.5, 'disabled autonomous effects release the eye to its expression base');
+model.forceBlink();
+let disabledForcedMinimum = 1;
+for (let frame = 0; frame < 45; frame += 1) {
+  modelNowMs += 1000 / 60;
+  model.updateEyeBlink(1 / 60, modelNowMs);
+  disabledForcedMinimum = Math.min(disabledForcedMinimum, parameters.get('left'));
+}
+assert.ok(disabledForcedMinimum < 0.05, 'explicit force blink still works with automatic effects disabled');
+near(parameters.get('left'), 0.5, 'forced blink restores the expression while automatic effects remain disabled');
+model._autoEffectsEnabled = true;
+model._nativeParamOverrides.set('ParamEyeLOpen', { value: 0.2, lastSetAt: modelNowMs });
+model.forceBlink();
+modelNowMs += 1000 / 60;
+model.updateEyeBlink(1 / 60, modelNowMs);
+near(parameters.get('right'), 0.3, 'manual eye ownership suppresses the autonomous blink event');
+model._nativeParamOverrides.clear();
+modelNowMs += 1000 / 60;
+model.updateEyeBlink(1 / 60, modelNowMs);
+near(parameters.get('right'), 0.3, 'manual eye release cannot replay a suppressed blink');
+modelNowMs += 10000;
+model.pauseAutoBlink(3);
+model.updateEyeBlink(1 / 60, modelNowMs);
+assert.equal(model.getBlinkState().paused, true, 'a new pause after background inactivity starts from the command time');
+modelNowMs += 2990;
+model.updateEyeBlink(1 / 60, modelNowMs);
+assert.equal(model.getBlinkState().paused, true, 'the new pause retains its full duration across frame gaps');
+modelNowMs += 10;
+model.updateEyeBlink(1 / 60, modelNowMs);
+assert.equal(model.getBlinkState().paused, false, 'timed pause completes at its actual deadline');
+modelNowMs += 10000;
+model.forceBlink();
+let resumedForceMinimum = 1;
+for (let frame = 0; frame < 30; frame += 1) {
+  modelNowMs += 1000 / 60;
+  model.updateEyeBlink(1 / 60, modelNowMs);
+  resumedForceMinimum = Math.min(resumedForceMinimum, parameters.get('left'));
+}
+assert.ok(resumedForceMinimum < 0.05, 'a fresh force command after background inactivity must execute');
 
 class FakeClock {
   now = 10000;
@@ -848,9 +898,8 @@ function audioHarness(suspended = false) {
   meshTop = 0.1;
   runtime.setModelPosition(0, 0);
 
-  runtime._eyeBlink = CubismEyeBlink.create();
-  runtime._eyeBlink.setParameterIds(['ParamEyeLOpen', 'ParamEyeROpen']);
-  runtime._eyeBlink.pause();
+  runtime._eyeBlinkIds = ['ParamEyeLOpen', 'ParamEyeROpen'];
+  runtime.pauseAutoBlink();
   runtime._nativeMotionParameters = new Set(['ParamAngleX', 'ParamEyeBallX', 'ParamBreath', 'ParamEyeLOpen', 'ParamMouthOpenY']);
   runtime._motionManager = { isFinished: () => false, updateMotion() {
     core.setParameterValueById('ParamAngleX', 27);
@@ -1131,6 +1180,29 @@ function audioHarness(suspended = false) {
   });
   for (const sample of rapidGaze.slice(1)) near(sample.gazeX, rapidGaze[0].gazeX,
     'independent rapid gaze stays continuous at 30/60/120 Hz', 1e-8);
+  const layeredMotion = [30, 60, 120].map(rate => {
+    const runtime = new AmbientMotion();
+    runtime.apply(ambientPlan({ moveMs: 1200,
+      target: { ...ambientPlan().target, headX: 0.8, bodyX: 0.8, gazeX: 0.8 } }), 0);
+    const sample = advanceAmbient(runtime, rate, 0, 0.5);
+    assert.ok(sample.gazeX > sample.headX + 0.2 && sample.headX > sample.bodyX + 0.1,
+      'eyes arrive before the head and the slower torso at each frame rate');
+    return sample;
+  });
+  for (const sample of layeredMotion.slice(1)) near(sample.bodyX, layeredMotion[0].bodyX,
+    'slower torso timing stays frame-rate independent', 1e-8);
+  const quiet = new AmbientMotion();
+  const quietTarget = { ...ambientPlan().target, headX: 0.4, bodyZ: -0.3 };
+  quiet.apply(ambientPlan({ target: quietTarget }), 0);
+  const settled = advanceAmbient(quiet, 60, 0, 6);
+  quiet.apply(ambientPlan({ sequence: 2, target: { ...quietTarget, gazeX: 0.025 } }), 6000);
+  const refocused = advanceAmbient(quiet, 60, 6000, 0.5);
+  near(refocused.headX, settled.headX, 'a quiet refocus does not restart a settled head', 1e-8);
+  near(refocused.bodyZ, settled.bodyZ, 'a quiet refocus preserves a settled torso', 1e-7);
+  assert.ok(refocused.gazeX > 0.024 && refocused.gazeX <= 0.025,
+    'quiet refocus moves only the shared small gaze target');
+  assert.ok(Math.abs(refocused.breath - settled.breath) > 0.01,
+    'quiet posture holds retain the running breathing phase');
   const shortBody = new AmbientMotion();
   shortBody.apply(ambientPlan({ moveMs: 300, target: { ...ambientPlan().target, gazeX: 0.85 } }), 0);
   near(advanceAmbient(shortBody, 60, 0, 0.2).gazeX, rapidGaze[1].gazeX,

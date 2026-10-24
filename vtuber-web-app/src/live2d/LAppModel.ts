@@ -10,7 +10,6 @@ import { CubismModelMatrix } from '@framework/math/cubismmodelmatrix';
 import { CubismDefaultParameterId } from '@framework/cubismdefaultparameterid';
 import type { CubismIdHandle } from '@framework/id/cubismid';
 import { CubismFramework } from '@framework/live2dcubismframework';
-import { CubismEyeBlink } from '@framework/effect/cubismeyeblink';
 import type { CubismMotionQueueEntryHandle } from '@framework/motion/cubismmotionqueuemanager';
 import { InvalidMotionQueueEntryHandleValue } from '@framework/motion/cubismmotionqueuemanager';
 import { ACubismMotion } from '@framework/motion/acubismmotion';
@@ -38,6 +37,7 @@ import { resolveHalfBodyFraming } from './modelFraming';
 import type { AmbientPlan } from '../types/ambientPlan';
 import { AmbientMotion, clampRootY } from './runtime/AmbientMotion';
 import { ParameterMixer } from './runtime/ParameterMixer';
+import { BlinkRuntime } from './runtime/BlinkRuntime';
 
 const DEFAULT_BODY_MOTION_PROFILE: BodyMotionProfile = {
   style: 'calm_sway',
@@ -206,6 +206,7 @@ export class LAppModel extends CubismUserModel {
   // key = paramId (string), value = { value, lastSetAt (performance.now ms) }
   private _nativeParamOverrides: Map<string, { value: number; lastSetAt: number }> = new Map();
   private _activeExpressionEvents: ActiveExpressionEvent[] = [];
+  private readonly _blinkRuntime = new BlinkRuntime();
   private readonly _ambientMotion = new AmbientMotion();
   private _ambientInitialized = false;
   private _ambientBase: BasePoseParams = createNeutralTargetParams();
@@ -458,11 +459,6 @@ export class LAppModel extends CubismUserModel {
   private setupEffects(): void {
     if (!this._modelSetting) return;
 
-    // 眨眼
-    if (this._modelSetting.getEyeBlinkParameterCount() > 0) {
-      this._eyeBlink = CubismEyeBlink.create(this._modelSetting);
-    }
-
     // 設置眨眼參數 ID 陣列
     const eyeBlinkIdCount = this._modelSetting.getEyeBlinkParameterCount();
     this._eyeBlinkIds = [];
@@ -518,9 +514,8 @@ export class LAppModel extends CubismUserModel {
    * @param pauseAfterSec 眨眼完成後暫停自動眨眼的時間（秒），0=不暫停
    */
   public forceBlink(pauseAfterSec: number = 0): void {
-    if (this._eyeBlink) {
-      this._eyeBlink.forceBlink(pauseAfterSec);
-    }
+    this.sampleBlink(0, performance.now());
+    this._blinkRuntime.forceBlink(pauseAfterSec);
   }
 
   /**
@@ -528,18 +523,16 @@ export class LAppModel extends CubismUserModel {
    * @param durationSec 暫停時間（秒），0=無期限（需手動 resume）
    */
   public pauseAutoBlink(durationSec: number = 0): void {
-    if (this._eyeBlink) {
-      this._eyeBlink.pause(durationSec);
-    }
+    this.sampleBlink(0, performance.now());
+    this._blinkRuntime.pause(durationSec);
   }
 
   /**
    * 恢復自動眨眼
    */
   public resumeAutoBlink(): void {
-    if (this._eyeBlink) {
-      this._eyeBlink.resume();
-    }
+    this.sampleBlink(0, performance.now());
+    this._blinkRuntime.resume();
   }
 
   /**
@@ -548,23 +541,16 @@ export class LAppModel extends CubismUserModel {
    * @param maxSec 最大間隔（秒）
    */
   public setBlinkInterval(minSec: number, maxSec: number): void {
-    if (this._eyeBlink) {
-      this._eyeBlink.setBlinkingIntervalRange(minSec, maxSec);
-    }
+    this.sampleBlink(0, performance.now());
+    this._blinkRuntime.setBlinkingIntervalRange(minSec, maxSec);
   }
 
   /**
    * 取得眨眼狀態（供 UI 顯示）
    */
   public getBlinkState(): { paused: boolean; intervalMin: number; intervalMax: number } {
-    if (this._eyeBlink) {
-      return {
-        paused: this._eyeBlink.isPaused(),
-        intervalMin: this._eyeBlink['_blinkingIntervalMin'],
-        intervalMax: this._eyeBlink['_blinkingIntervalMax'],
-      };
-    }
-    return { paused: false, intervalMin: 1.0, intervalMax: 4.0 };
+    const interval = this._blinkRuntime.getIntervalRange();
+    return { paused: this._blinkRuntime.isPaused(), intervalMin: interval.min, intervalMax: interval.max };
   }
 
   /**
@@ -1249,22 +1235,23 @@ export class LAppModel extends CubismUserModel {
     }
   }
 
-  private updateEyeBlink(deltaTimeSeconds: number): void {
-    if (!this._eyeBlink) {
-      return;
-    }
+  private sampleBlink(deltaTimeSeconds: number, nowMs: number,
+    nativeEyes = this._nativeMotionParameters.has('ParamEyeLOpen')
+      || this._nativeMotionParameters.has('ParamEyeROpen')): number {
+    const manualEyes = ['ParamEyeLOpen', 'ParamEyeROpen'].some(id => {
+      const override = this._nativeParamOverrides.get(id);
+      return override !== undefined && nowMs - override.lastSetAt <= 5000;
+    });
+    // 控制指令也先同步時鐘，背景恢復時的新指令才不會被當成過期事件。
+    return this._blinkRuntime.update(deltaTimeSeconds, nowMs,
+      !nativeEyes && !manualEyes && this._eyeBlinkIds.length > 0, this._autoEffectsEnabled);
+  }
 
-    // 眨眼從 1 計算，再乘表情開合；暫停眨眼時也不會將半閉眼平方。
-    this._model.setParameterValueById(this._idParamEyeLOpen, 1);
-    this._model.setParameterValueById(this._idParamEyeROpen, 1);
-    this._eyeBlink.updateParameters(this._model, deltaTimeSeconds);
-
-    {
-      const blinkL = this._model.getParameterValueById(this._idParamEyeLOpen);
-      const blinkR = this._model.getParameterValueById(this._idParamEyeROpen);
-      this._model.setParameterValueById(this._idParamEyeLOpen, blinkL * this._aiEyeBaseLOpen);
-      this._model.setParameterValueById(this._idParamEyeROpen, blinkR * this._aiEyeBaseROpen);
-    }
+  private updateEyeBlink(deltaTimeSeconds: number, nowMs: number, nativeEyes = false): void {
+    const blink = this.sampleBlink(deltaTimeSeconds, nowMs, nativeEyes);
+    if (nativeEyes) return;
+    this._model.setParameterValueById(this._idParamEyeLOpen, blink * this._aiEyeBaseLOpen);
+    this._model.setParameterValueById(this._idParamEyeROpen, blink * this._aiEyeBaseROpen);
   }
 
   private updateExpressionManager(deltaTimeSeconds: number): void {
@@ -1648,7 +1635,7 @@ export class LAppModel extends CubismUserModel {
 
     const nativeEyes = this._nativeMotionParameters.has('ParamEyeLOpen')
       || this._nativeMotionParameters.has('ParamEyeROpen');
-    if (!nativeEyes) this.updateEyeBlink(deltaTimeSeconds);
+    this.updateEyeBlink(deltaTimeSeconds, nowMs, nativeEyes);
     this.updateExpressionManager(deltaTimeSeconds);
     if (!this._ambientInitialized) this.applyEyeTracking();
     this.applyEyeGaze(nowMs);
