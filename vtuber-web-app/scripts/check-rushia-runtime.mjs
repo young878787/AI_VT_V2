@@ -1036,6 +1036,47 @@ function audioHarness(suspended = false) {
   for (let frame = 1; frame <= 60; frame++) replacementSample = replacement._ambientMotion.update(1 / 60, now + frame * 1000 / 60, true);
   assert.ok(replacementSample.breath > 0 && replacementSample.rootY <= 0.006,
     'offline replacement continues basic breathing without a new Python plan');
+
+  // 八方向都必須到達最後的眼球參數，不能只在 payload 裡有 gazeY。
+  runtime.cancelExpressionAction();
+  runtime.setEyeTrackingEnabled(false);
+  const settledBeforeGaze = structuredClone(runtime._ambientBase);
+  const gazeDirections = [
+    ['left', -0.6, 0], ['right', 0.6, 0],
+    ['up', 0, 1], ['down', 0, -1],
+    ['upper_left', -0.8, 1], ['upper_right', 0.8, 1],
+    ['lower_left', -0.8, -1], ['lower_right', 0.8, -1],
+  ];
+  for (const [index, [name, x, y]] of gazeDirections.entries()) {
+    runtime.applyAmbientPlan({ ...plan, sequence: 100 + index,
+      target: { ...plan.target, gazeX: x, gazeY: y } });
+    tick(60);
+    near(values.get('ParamEyeBallX'), x * 0.85, `${name} reaches final eye X`, 1e-6);
+    near(values.get('ParamEyeBallY'), y, `${name} reaches the stronger final eye Y`, 1e-6);
+    near(physicsSnapshot.get('ParamEyeBallY'), values.get('ParamEyeBallY'),
+      `${name} vertical gaze survives the complete frame`, 1e-6);
+  }
+  runtime.applyAmbientPlan({ ...plan, sequence: 108, state: 'listening',
+    target: { ...plan.target, gazeX: 0, gazeY: 0 } });
+  tick(60);
+  near(values.get('ParamEyeBallX'), 0, 'listening returns X to calibrated forward', 1e-6);
+  near(values.get('ParamEyeBallY'), 0, 'listening returns Y to calibrated forward', 1e-6);
+  assert.deepEqual(structuredClone(runtime._ambientBase), settledBeforeGaze,
+    'eight-direction glances preserve the settled emotion and body baseline');
+  runtime.setEyeTrackingEnabled(true);
+  tick(60);
+  near(values.get('ParamEyeBallX'), 0.8 * 0.55 * 0.85, 'pointer horizontal amplitude remains unchanged', 1e-6);
+  near(values.get('ParamEyeBallY'), 0.7 * 0.45 * 0.85, 'stronger autonomous Y preserves pointer amplitude', 1e-6);
+  runtime.setEyeTrackingEnabled(false);
+  tick(60);
+  near(values.get('ParamEyeBallY'), 0, 'pointer release returns to calibrated autonomous gaze', 1e-6);
+  const smallerEyeRange = new ParameterMixer({ ...core,
+    getParameterMinimumValue: index => ids[index] === 'ParamEyeBallY' ? -0.6 : core.getParameterMinimumValue(index),
+    getParameterMaximumValue: index => ids[index] === 'ParamEyeBallY' ? 0.7 : core.getParameterMaximumValue(index),
+  });
+  near(smallerEyeRange.normalized('ParamEyeBallY', 1), 0.7, 'stronger Y still intersects the model upper bound');
+  near(smallerEyeRange.normalized('ParamEyeBallY', -1), -0.6, 'stronger Y still intersects the model lower bound');
+  near(smallerEyeRange.write('ParamEyeBallY', 2, 0, true), 0.7, 'oversized Y is clamped before Core');
 }
 
 // Python 自主計畫只由前端連續執行；驗證真實 guard、曲線與收尾，不複製 runtime。

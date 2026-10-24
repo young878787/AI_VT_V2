@@ -8,6 +8,16 @@ import random
 
 
 TARGET_FIELDS = ("headX", "headY", "headZ", "bodyX", "bodyY", "bodyZ", "gazeX", "gazeY")
+GAZE_DIRECTION_RANGES = {
+    "left": ((-0.75, -0.45), (-0.04, 0.04)),
+    "right": ((0.45, 0.75), (-0.04, 0.04)),
+    "up": ((-0.04, 0.04), (0.90, 1.0)),
+    "down": ((-0.04, 0.04), (-1.0, -0.95)),
+    "up_left": ((-0.80, -0.55), (0.85, 1.0)),
+    "up_right": ((0.55, 0.80), (0.85, 1.0)),
+    "down_left": ((-0.80, -0.55), (-1.0, -0.85)),
+    "down_right": ((0.55, 0.80), (-1.0, -0.85)),
+}
 
 
 def _bounded(value: float, limit: float = 1.0) -> float:
@@ -27,6 +37,7 @@ class AvatarRuntime:
         self._gaze_front_remaining = self._rng.randint(1, 2)
         self._changed = asyncio.Event()
         self._recent: deque[str] = deque(maxlen=4)
+        self._recent_gaze: deque[str] = deque(maxlen=2)
         self._sequence = 0
         self._target = dict.fromkeys(TARGET_FIELDS, 0.0)
         self._activity = 1.0
@@ -73,6 +84,7 @@ class AvatarRuntime:
         self._listening = False
         self._target = dict.fromkeys(TARGET_FIELDS, 0.0)
         self._recent.clear()
+        self._recent_gaze.clear()
         self._gaze_front_remaining = self._rng.randint(1, 2)
         self._disabled_sent = False
         self._changed.set()
@@ -83,6 +95,15 @@ class AvatarRuntime:
         choice = self._rng.choices(names, weights=weights, k=1)[0]
         self._recent.append(choice)
         return choice
+
+    def _sample_gaze(self) -> tuple[float, float]:
+        """Keep eye direction history separate from body direction and front holds."""
+        directions = list(GAZE_DIRECTION_RANGES)
+        weights = [0.3 ** self._recent_gaze.count(direction) for direction in directions]
+        direction = self._rng.choices(directions, weights=weights, k=1)[0]
+        self._recent_gaze.append(direction)
+        x_range, y_range = GAZE_DIRECTION_RANGES[direction]
+        return self._rng.uniform(*x_range), self._rng.uniform(*y_range)
 
     def _next_plan(self) -> tuple[dict, float]:
         rng = self._rng
@@ -120,13 +141,7 @@ class AvatarRuntime:
             self._gaze_front_remaining = (self._gaze_front_remaining - 1 if gaze == "front"
                                           else rng.randint(2, 4))
             self._recent.append(gaze)
-            gaze_x = 0.0 if gaze == "front" else rng.uniform(-0.85, 0.85)
-            gaze_y = 0.0 if gaze == "front" else rng.uniform(-0.36, 0.4)
-            if gaze == "glance" and max(abs(gaze_x), abs(gaze_y)) < 0.28:
-                if abs(gaze_x) >= abs(gaze_y):
-                    gaze_x = math.copysign(0.28, gaze_x)
-                else:
-                    gaze_y = math.copysign(0.28, gaze_y)
+            gaze_x, gaze_y = (0.0, 0.0) if gaze == "front" else self._sample_gaze()
             head_x = sign * extent * 0.7 + gaze_x * 0.22
             self._target = {
                 "headX": _bounded(head_x), "headY": _bounded(rng.uniform(-0.7, 0.7) * extent),

@@ -1717,7 +1717,8 @@ export class LAppModel extends CubismUserModel {
     }
     for (const [id, value, pointer] of [
       ['ParamEyeBallX', sample.gazeX, this._dragX * 0.55],
-      ['ParamEyeBallY', sample.gazeY, this._dragY * 0.45],
+      // 自主上下眼位使用完整 Rig 行程；pointer 維持原本的垂直幅度。
+      ['ParamEyeBallY', sample.gazeY, this._dragY * 0.45 * 0.85],
     ] as const) {
       const owned = manual || native.has(id) || !!this._activeEyeMotionPlan
         || ownedChannels.has(id);

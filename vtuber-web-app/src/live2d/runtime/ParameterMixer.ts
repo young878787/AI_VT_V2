@@ -11,7 +11,7 @@ interface ParameterModel {
 const LIMITS: Record<string, number> = {
   ParamAngleX: 22, ParamAngleY: 16, ParamAngleZ: 23,
   ParamBodyAngleX: 8, ParamBodyAngleY: 7, ParamBodyAngleZ: 9,
-  ParamEyeBallX: 0.85, ParamEyeBallY: 0.85,
+  ParamEyeBallX: 0.85, ParamEyeBallY: 1,
 };
 
 /** 單一受控通道輸出；快取真實 index，換 owner 時保留當前位置與速度。 */

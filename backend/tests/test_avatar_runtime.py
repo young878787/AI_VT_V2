@@ -22,6 +22,62 @@ from backend.tests.test_emotion_chat_ws import jev_answers
 
 
 class AvatarTargetTests(unittest.TestCase):
+    def test_glances_cover_eight_directions_with_visible_vertical_and_diagonal_motion(self):
+        runtime = AvatarRuntime(AsyncMock(), rng=random.Random(20261023))
+        samples = {}
+        order = []
+        for _ in range(400):
+            x, y = runtime._sample_gaze()
+            direction = runtime._recent_gaze[-1]
+            samples.setdefault(direction, []).append((x, y))
+            order.append(direction)
+            self.assertTrue(all(math.isfinite(value) and -1.0 <= value <= 1.0 for value in (x, y)))
+            self.assertGreaterEqual(max(abs(x), abs(y)), 0.45)
+            if direction in {"left", "right"}:
+                self.assertTrue(0.45 <= abs(x) <= 0.75)
+                self.assertLessEqual(abs(y), 0.04)
+            elif direction in {"up", "down"}:
+                self.assertLessEqual(abs(x), 0.04)
+                self.assertTrue(0.90 <= y <= 1.0 if direction == "up" else -1.0 <= y <= -0.95)
+            else:
+                self.assertTrue(0.55 <= abs(x) <= 0.80)
+                self.assertTrue(0.85 <= y <= 1.0 if direction.startswith("up_") else -1.0 <= y <= -0.85)
+            if "left" in direction:
+                self.assertLess(x, 0)
+            elif "right" in direction:
+                self.assertGreater(x, 0)
+        self.assertEqual(set(samples), {"left", "right", "up", "down", "up_left", "up_right",
+                                       "down_left", "down_right"})
+        for direction, values in samples.items():
+            with self.subTest(direction=direction):
+                self.assertGreater(len(values), 20)
+                self.assertGreater(len({round(x, 3) for x, _ in values}), 15)
+                self.assertGreater(len({round(y, 3) for _, y in values}), 15)
+        self.assertGreater(len(set(zip(order, order[1:]))), 40)
+        self.assertTrue(any(left == right for left, right in zip(order, order[1:])))
+
+    def test_gaze_repeat_weights_are_independent_of_body_history(self):
+        first = AvatarRuntime(AsyncMock(), rng=random.Random(7))
+        second = AvatarRuntime(AsyncMock(), rng=random.Random(7))
+        first._recent.extend(["left", "left", "nearby", "pose"])
+        second._recent.extend(["right", "right", "sway", "hop"])
+        self.assertEqual([first._sample_gaze() for _ in range(30)],
+                         [second._sample_gaze() for _ in range(30)])
+        self.assertEqual(len(first._recent_gaze), 2)
+        first._recent_gaze.clear()
+        first._recent_gaze.extend(["up", "down"])
+        with patch.object(first._rng, "choices", wraps=first._rng.choices) as choose:
+            first._sample_gaze()
+        weights = dict(zip(choose.call_args.args[0], choose.call_args.kwargs["weights"]))
+        self.assertEqual(weights["up"], 0.3)
+        self.assertEqual(weights["down"], 0.3)
+        self.assertTrue(all(weight == 1.0 for name, weight in weights.items() if name not in {"up", "down"}))
+        history = list(first._recent_gaze)
+        first._gaze_front_remaining = 1
+        forward, _ = first._next_plan()
+        self.assertEqual((forward["target"]["gazeX"], forward["target"]["gazeY"]), (0, 0))
+        self.assertEqual(list(first._recent_gaze), history)
+
     def test_idle_glances_have_bounded_varied_waits_visible_amplitude_and_short_holds(self):
         forward_holds, glance_holds, run_lengths, run_times = [], [], [], []
         forward_time, total_time = 0.0, 0.0
@@ -60,17 +116,21 @@ class AvatarTargetTests(unittest.TestCase):
     def test_listening_does_not_consume_idle_gaze_countdown_and_reset_restarts_it(self):
         runtime = AvatarRuntime(AsyncMock(), rng=random.Random(17))
         runtime._next_plan()
+        runtime._sample_gaze()
+        gaze_history = list(runtime._recent_gaze)
         remaining = runtime._gaze_front_remaining
         runtime.update_state({"type": "avatar_state", "listening": True})
         for _ in range(30):
             runtime._next_plan()
         self.assertEqual(runtime._gaze_front_remaining, remaining)
+        self.assertEqual(list(runtime._recent_gaze), gaze_history)
         runtime.update_state({"type": "avatar_state", "listening": False})
         after_listening, _ = runtime._next_plan()
         self.assertEqual(max(abs(after_listening["target"]["gazeX"]),
                              abs(after_listening["target"]["gazeY"])) == 0, remaining > 0)
         runtime.reset()
         self.assertTrue(1 <= runtime._gaze_front_remaining <= 2)
+        self.assertEqual(list(runtime._recent_gaze), [])
         after_reset, _ = runtime._next_plan()
         self.assertEqual((after_reset["target"]["gazeX"], after_reset["target"]["gazeY"]), (0, 0))
 
