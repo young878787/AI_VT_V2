@@ -60,6 +60,11 @@ export class BlinkRuntime {
 
   isPaused(): boolean { return this.paused; }
 
+  /** 雙眨間隙及尚未取樣的強制指令仍佔用眼皮，不能插入自主 wink。 */
+  isIdle(): boolean {
+    return this.event === null && this.secondAtMs === null && this.pendingForcePauseMs === null;
+  }
+
   getIntervalRange(): { min: number; max: number } {
     return { min: this.intervalMin, max: this.intervalMax };
   }

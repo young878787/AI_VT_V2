@@ -10,12 +10,27 @@ export interface AmbientSample extends AmbientTarget {
 }
 
 interface Spring { value: number; velocity: number }
-interface HopSegment { startedAt: number; duration: number; from: number; velocity: number; to: number }
+interface Segment { startedAt: number; duration: number; from: number; velocity: number; to: number }
+type GazeAxis = 'gazeX' | 'gazeY';
+type PoseAxis = Exclude<AmbientAxis, GazeAxis>;
 
 const TAU = Math.PI * 2;
 const BASIC_BREATH = { periodSec: 4.8, amplitude: 0.25, rootAmplitude: 0.006 };
 const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
 const spring = (value = 0): Spring => ({ value, velocity: 0 });
+const POSE_AXES = AMBIENT_AXES.filter((axis): axis is PoseAxis => !axis.startsWith('gaze'));
+const still = (value = 0): Segment => ({ startedAt: 0, duration: 1, from: value, velocity: 0, to: value });
+// 低頻、互不成倍數的固定正弦（Hz, 幅度）；hold 期間仍保留微動，不使用亂數。
+const DRIFT: Record<PoseAxis, ReadonlyArray<readonly [number, number]>> = {
+  headX: [[0.071, 0.04], [0.043, 0.025]],
+  headY: [[0.083, 0.035], [0.051, 0.022]],
+  headZ: [[0.062, 0.04], [0.117, 0.018]],
+  bodyX: [[0.047, 0.045], [0.089, 0.022]],
+  bodyY: [[0.058, 0.04], [0.031, 0.022]],
+  bodyZ: [[0.039, 0.045], [0.073, 0.022]],
+};
+const drift = (axis: PoseAxis, seconds: number) =>
+  DRIFT[axis].reduce((sum, [hz, amplitude]) => sum + amplitude * Math.sin(TAU * hz * seconds), 0);
 
 /** 臨界阻尼解析解；相同經過時間不受 30／60／120 Hz 分割影響。 */
 function advance(state: Spring, target: number, omega: number, dt: number): number {
@@ -33,8 +48,8 @@ export function clampRootY(rootY: number, topMarginRatio: number, minTopMargin =
   return clamp(rootY, 0, Math.min(0.2, Math.max(0, topMarginRatio - Math.max(0, minTopMargin))));
 }
 
-// 五次曲線保留接管當下的位置與速度；起訖加速度為零。
-function sampleSegment(segment: HopSegment, nowMs: number): Spring {
+// 五次曲線保留接管當下的位置與速度；起訖加速度為零，速度呈鐘形。
+function sampleQuintic(segment: Segment, nowMs: number): Spring {
   const t = clamp((nowMs - segment.startedAt) / segment.duration, 0, 1);
   if (t >= 1) return spring(segment.to);
   const durationSec = segment.duration / 1000;
@@ -45,15 +60,22 @@ function sampleSegment(segment: HopSegment, nowMs: number): Spring {
   const c5 = 6 * delta - 3 * velocity;
   const value = segment.from + velocity * t + c3 * t ** 3 + c4 * t ** 4 + c5 * t ** 5;
   const speed = (velocity + 3 * c3 * t ** 2 + 4 * c4 * t ** 3 + 5 * c5 * t ** 4) / durationSec;
-  if (value < 0 || value > 0.12) return spring(clamp(value, 0, 0.12));
   return { value, velocity: speed };
+}
+
+function sampleSegment(segment: Segment, nowMs: number): Spring {
+  const state = sampleQuintic(segment, nowMs);
+  if (state.value < 0 || state.value > 0.12) return spring(clamp(state.value, 0, 0.12));
+  return state;
 }
 
 /** 只執行 Python 計畫；不挑選姿勢、不使用亂數、不寫入 UI store。 */
 export class AmbientMotion {
   private sequence = 0;
   private target = Object.fromEntries(AMBIENT_AXES.map(axis => [axis, 0])) as AmbientTarget;
-  private axes = Object.fromEntries(AMBIENT_AXES.map(axis => [axis, spring()])) as Record<AmbientAxis, Spring>;
+  private poses = Object.fromEntries(POSE_AXES.map(axis => [axis, still()])) as Record<PoseAxis, Segment>;
+  private gazes: Record<GazeAxis, Spring> = { gazeX: spring(), gazeY: spring() };
+  private driftSec = 0;
   private moveMs = 1000;
   private breathTarget = { ...BASIC_BREATH };
   private period = spring(BASIC_BREATH.periodSec);
@@ -63,7 +85,7 @@ export class AmbientMotion {
   private bodyGain = spring(1);
   private gazeGain = spring(1);
   private enableGain = spring(1);
-  private hopSegments: HopSegment[] = [];
+  private hopSegments: Segment[] = [];
   private wasEnabled = true;
   private lastNowMs = 0;
   private hasUpdated = false;
@@ -74,6 +96,7 @@ export class AmbientMotion {
     this.moveMs = plan.moveMs;
     this.target = { ...plan.target };
     this.breathTarget = { ...plan.breath };
+    if (this.wasEnabled) this.retarget(nowMs, true);
     if (plan.state === 'listening') this.cancelHop(nowMs);
     else if (plan.hop && this.wasEnabled) {
       const current = this.sampleHop(nowMs);
@@ -90,17 +113,19 @@ export class AmbientMotion {
     const now = Number.isFinite(nowMs) ? nowMs : this.lastNowMs;
     this.cancelHop(now);
     this.sequence = 0;
-    for (const axis of AMBIENT_AXES) this.target[axis] = this.axes[axis].value;
+    for (const axis of POSE_AXES) this.target[axis] = sampleQuintic(this.poses[axis], this.sampledAt(now)).value;
+    for (const axis of ['gazeX', 'gazeY'] as const) this.target[axis] = this.gazes[axis].value;
+    if (this.wasEnabled) this.retarget(now, true);
     this.breathTarget = { ...BASIC_BREATH };
   }
 
   reset(): void {
     this.sequence = 0;
     this.moveMs = 1000;
-    for (const axis of AMBIENT_AXES) {
-      this.target[axis] = 0;
-      this.axes[axis] = spring();
-    }
+    for (const axis of AMBIENT_AXES) this.target[axis] = 0;
+    for (const axis of POSE_AXES) this.poses[axis] = still();
+    this.gazes = { gazeX: spring(), gazeY: spring() };
+    this.driftSec = 0;
     this.hopSegments = [];
     this.breathTarget = { ...BASIC_BREATH };
     this.period = spring(BASIC_BREATH.periodSec);
@@ -119,23 +144,28 @@ export class AmbientMotion {
     const dt = Number.isFinite(dtSeconds) ? clamp(dtSeconds, 0, 0.1) : 0;
     const now = Number.isFinite(nowMs) ? nowMs : this.lastNowMs;
     // 背景分頁恢復時從最後顯示的高度收尾，不瞬間落地或補播過期跳動。
-    if (this.hasUpdated && now - this.lastNowMs > 250 && this.hopSegments.length) {
-      this.finishHop(this.sampleHop(this.lastNowMs), now);
+    if (this.hasUpdated && now - this.lastNowMs > 250) {
+      if (this.hopSegments.length) this.finishHop(this.sampleHop(this.lastNowMs), now);
+      this.retarget(now, this.wasEnabled);
     }
     this.lastNowMs = now;
     this.hasUpdated = true;
     if (this.wasEnabled && !enabled) this.cancelHop(now);
+    if (this.wasEnabled !== enabled) this.retarget(now, enabled);
     this.wasEnabled = enabled;
+    this.driftSec += dt;
     const body = advance(this.bodyGain, Number.isFinite(bodyWeight) ? clamp(bodyWeight, 0, 1) : 0, 24, dt);
     const gaze = advance(this.gazeGain, Number.isFinite(gazeWeight) ? clamp(gazeWeight, 0, 1) : 0, 24, dt);
     const gain = advance(this.enableGain, enabled ? 1 : 0, 18, dt);
     const result = {} as AmbientSample;
-    for (const axis of AMBIENT_AXES) {
-      // 眼球先到位、頭部跟隨，身體較慢停穩；更新目標時保留各軸速度。
-      const moveSec = axis.startsWith('gaze') ? 0.2
-        : this.moveMs / 1000 * (axis.startsWith('body') ? 1.45 : 1);
-      const value = advance(this.axes[axis], enabled ? this.target[axis] : 0, 4.8 / moveSec, dt);
-      result[axis] = clamp(value, -1, 1) * gain * (axis.startsWith('gaze') ? gaze : body);
+    // 眼球以短彈簧先到位；頭身走五次曲線，身體較慢停穩，再疊加持續微動。
+    for (const axis of ['gazeX', 'gazeY'] as const) {
+      const value = advance(this.gazes[axis], enabled ? this.target[axis] : 0, 4.8 / 0.2, dt);
+      result[axis] = clamp(value, -1, 1) * gain * gaze;
+    }
+    for (const axis of POSE_AXES) {
+      const value = sampleQuintic(this.poses[axis], now).value + drift(axis, this.driftSec);
+      result[axis] = clamp(value, -1, 1) * gain * body;
     }
     // 週期、幅度可更新，相位始終延續；停用也不重啟呼吸週期。
     const previousPeriod = this.period.value;
@@ -152,6 +182,23 @@ export class AmbientMotion {
       Math.min(0.12, Math.max(segment.from, segment.to) + Math.max(0, segment.velocity) * segment.duration / 5000)), 0);
     result.rootPeak = Math.max(rootAmplitude, this.breathTarget.rootAmplitude) + hopPeak;
     return result;
+  }
+
+  /** 背景分頁恢復時從最後顯示的位置接續，不跳到牆鐘時間的進度。 */
+  private sampledAt(nowMs: number): number {
+    return this.hasUpdated && nowMs - this.lastNowMs > 250 ? this.lastNowMs : nowMs;
+  }
+
+  // 新目標從目前位置與速度起算；停用時收回中性位置。
+  private retarget(nowMs: number, enabled: boolean): void {
+    const sampledAt = this.sampledAt(nowMs);
+    for (const axis of POSE_AXES) {
+      const current = sampleQuintic(this.poses[axis], sampledAt);
+      this.poses[axis] = {
+        startedAt: nowMs, duration: this.moveMs * (axis.startsWith('body') ? 1.45 : 1),
+        from: current.value, velocity: current.velocity, to: enabled ? this.target[axis] : 0,
+      };
+    }
   }
 
   private sampleHop(nowMs: number): Spring {

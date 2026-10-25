@@ -38,6 +38,12 @@ import type { AmbientPlan } from '../types/ambientPlan';
 import { AmbientMotion, clampRootY } from './runtime/AmbientMotion';
 import { ParameterMixer } from './runtime/ParameterMixer';
 import { BlinkRuntime } from './runtime/BlinkRuntime';
+import { FaceIdleRuntime } from './runtime/FaceIdleRuntime';
+import type { FaceIdleSample } from './runtime/FaceIdleRuntime';
+
+const NEUTRAL_FACE_IDLE: FaceIdleSample = {
+  eyeL: 1, eyeR: 1, browL: 0, browR: 0, winking: false, kind: 'still',
+};
 
 const DEFAULT_BODY_MOTION_PROFILE: BodyMotionProfile = {
   style: 'calm_sway',
@@ -207,6 +213,9 @@ export class LAppModel extends CubismUserModel {
   private _nativeParamOverrides: Map<string, { value: number; lastSetAt: number }> = new Map();
   private _activeExpressionEvents: ActiveExpressionEvent[] = [];
   private readonly _blinkRuntime = new BlinkRuntime();
+  private readonly _faceIdleRuntime = new FaceIdleRuntime();
+  private _lastFaceIdleSample: FaceIdleSample = { ...NEUTRAL_FACE_IDLE };
+  private _faceListening = false;
   private readonly _ambientMotion = new AmbientMotion();
   private _ambientInitialized = false;
   private _ambientBase: BasePoseParams = createNeutralTargetParams();
@@ -483,6 +492,7 @@ export class LAppModel extends CubismUserModel {
    * 設置自動效果啟用狀態（眼睛眨眼、呼吸）
    */
   public setAutoEffectsEnabled(enabled: boolean): void {
+    if (enabled !== this._autoEffectsEnabled) this.resetFaceIdle();
     this._autoEffectsEnabled = enabled;
   }
 
@@ -514,6 +524,7 @@ export class LAppModel extends CubismUserModel {
    * @param pauseAfterSec 眨眼完成後暫停自動眨眼的時間（秒），0=不暫停
    */
   public forceBlink(pauseAfterSec: number = 0): void {
+    this.cancelIdleEyes(performance.now());
     this.sampleBlink(0, performance.now());
     this._blinkRuntime.forceBlink(pauseAfterSec);
   }
@@ -523,6 +534,7 @@ export class LAppModel extends CubismUserModel {
    * @param durationSec 暫停時間（秒），0=無期限（需手動 resume）
    */
   public pauseAutoBlink(durationSec: number = 0): void {
+    this.cancelIdleEyes(performance.now());
     this.sampleBlink(0, performance.now());
     this._blinkRuntime.pause(durationSec);
   }
@@ -531,6 +543,7 @@ export class LAppModel extends CubismUserModel {
    * 恢復自動眨眼
    */
   public resumeAutoBlink(): void {
+    this.cancelIdleEyes(performance.now());
     this.sampleBlink(0, performance.now());
     this._blinkRuntime.resume();
   }
@@ -940,16 +953,22 @@ export class LAppModel extends CubismUserModel {
   }
 
   public applyAmbientPlan(plan: AmbientPlan): void {
-    if (this._ambientMotion.apply(plan, performance.now())) this._ambientInitialized = true;
+    if (this._ambientMotion.apply(plan, performance.now())) {
+      this._ambientInitialized = true;
+      this._faceListening = plan.state === 'listening';
+    }
   }
 
   public disconnectAmbient(): void {
     this._ambientMotion.disconnect(performance.now());
+    this._faceListening = false;
+    this.resetFaceIdle();
   }
 
   public resetAmbientEmotion(): void {
     this.cancelExpressionAction();
     this._ambientBase = createNeutralTargetParams();
+    this.resetFaceIdle();
   }
 
   public inheritAmbientBaseline(previous: LAppModel): void {
@@ -960,7 +979,7 @@ export class LAppModel extends CubismUserModel {
   public getAmbientDiagnostics() {
     return { active: this._ambientInitialized, sample: this._lastAmbientSample,
       rootOffset: this._rootOffset, action: this._expressionActionActive,
-      pointer: this._eyeTrackingEnabled };
+      pointer: this._eyeTrackingEnabled, face: { ...this._lastFaceIdleSample } };
   }
 
   public applyMotionPlan(motionPlan?: ExpressionMotionPlan): void {
@@ -1235,6 +1254,45 @@ export class LAppModel extends CubismUserModel {
     }
   }
 
+  private resetFaceIdle(): void {
+    this._faceIdleRuntime.reset();
+    this._lastFaceIdleSample = { ...NEUTRAL_FACE_IDLE };
+  }
+
+  private cancelIdleEyes(nowMs: number): void {
+    this._faceIdleRuntime.cancelEyes(nowMs);
+    this._lastFaceIdleSample = { ...this._lastFaceIdleSample, eyeL: 1, eyeR: 1, winking: false };
+  }
+
+  private faceOwnership(nowMs: number): { eyes: boolean; brows: boolean } {
+    const eyeIds = ['ParamEyeLOpen', 'ParamEyeROpen'];
+    const browIds = ['ParamBrowLY', 'ParamBrowRY', 'ParamBrowLAngle', 'ParamBrowRAngle',
+      'ParamBrowLForm', 'ParamBrowRForm', 'ParamBrowLX', 'ParamBrowRX'];
+    const external = (ids: string[]) => ids.some(id => {
+      const override = this._nativeParamOverrides.get(id);
+      return this._nativeMotionParameters.has(id)
+        || (override !== undefined && nowMs - override.lastSetAt <= 5000);
+    });
+    const locked = nowMs < this._manualUntilMs
+      || (!!this._expressionManager && !this._expressionManager.isFinished());
+    const activeBase = this._expressionActionActive && this._aiBehaviorTimer > 0;
+    let eyes = locked || external(eyeIds) || (activeBase && (
+      this._aiEyeLOpen < 0.999 || this._aiEyeROpen < 0.999
+      || this._aiEyeLSmile > 0.001 || this._aiEyeRSmile > 0.001));
+    let brows = locked || external(browIds) || (activeBase && [this._aiBrowLY, this._aiBrowRY,
+      this._aiBrowLAngle, this._aiBrowRAngle, this._aiBrowLForm, this._aiBrowRForm,
+      this._aiBrowLX, this._aiBrowRX].some(value => Math.abs(value) > 0.001));
+    for (const event of this._activeExpressionEvents) {
+      if (nowMs < event.startedAtMs || nowMs >= event.startedAtMs + event.durationMs) continue;
+      if (event.patch.eyeSync !== undefined) eyes = brows = true;
+      if (['eyeLOpen', 'eyeROpen', 'eyeLSmile', 'eyeRSmile'].some(key =>
+        event.patch[key as keyof ExpressionParamPatch] !== undefined)) eyes = true;
+      if (['browLY', 'browRY', 'browLAngle', 'browRAngle', 'browLForm', 'browRForm', 'browLX', 'browRX']
+        .some(key => event.patch[key as keyof ExpressionParamPatch] !== undefined)) brows = true;
+    }
+    return { eyes, brows };
+  }
+
   private sampleBlink(deltaTimeSeconds: number, nowMs: number,
     nativeEyes = this._nativeMotionParameters.has('ParamEyeLOpen')
       || this._nativeMotionParameters.has('ParamEyeROpen')): number {
@@ -1244,14 +1302,27 @@ export class LAppModel extends CubismUserModel {
     });
     // 控制指令也先同步時鐘，背景恢復時的新指令才不會被當成過期事件。
     return this._blinkRuntime.update(deltaTimeSeconds, nowMs,
-      !nativeEyes && !manualEyes && this._eyeBlinkIds.length > 0, this._autoEffectsEnabled);
+      !nativeEyes && !manualEyes && this._eyeBlinkIds.length > 0,
+      this._autoEffectsEnabled && !this._lastFaceIdleSample.winking);
   }
 
   private updateEyeBlink(deltaTimeSeconds: number, nowMs: number, nativeEyes = false): void {
     const blink = this.sampleBlink(deltaTimeSeconds, nowMs, nativeEyes);
+    const ownership = this.faceOwnership(nowMs);
+    this._lastFaceIdleSample = this._faceIdleRuntime.update(deltaTimeSeconds, nowMs, {
+      enabled: this._autoEffectsEnabled && nowMs >= this._manualUntilMs,
+      eyesAllowed: !ownership.eyes && !this._blinkRuntime.isPaused() && this._eyeBlinkIds.length > 0,
+      browsAllowed: !ownership.brows,
+      listening: this._faceListening,
+      blinkPaused: this._blinkRuntime.isPaused(),
+      blinkReady: this._blinkRuntime.isIdle(),
+      eyeLOpen: this._aiEyeBaseLOpen, eyeROpen: this._aiEyeBaseROpen,
+    });
     if (nativeEyes) return;
-    this._model.setParameterValueById(this._idParamEyeLOpen, blink * this._aiEyeBaseLOpen);
-    this._model.setParameterValueById(this._idParamEyeROpen, blink * this._aiEyeBaseROpen);
+    this._model.setParameterValueById(this._idParamEyeLOpen,
+      blink * this._aiEyeBaseLOpen * this._lastFaceIdleSample.eyeL);
+    this._model.setParameterValueById(this._idParamEyeROpen,
+      blink * this._aiEyeBaseROpen * this._lastFaceIdleSample.eyeR);
   }
 
   private updateExpressionManager(deltaTimeSeconds: number): void {
@@ -1467,6 +1538,19 @@ export class LAppModel extends CubismUserModel {
   }
 
   private applyCurrentExpressionParameters(): void {
+    const face = this._lastFaceIdleSample;
+    const sdkExpression = !!this._expressionManager && !this._expressionManager.isFinished();
+    // Y 通道也在全中性表情下寫回基準，避免上一段眉毛事件殘留或累加。
+    if (!sdkExpression) {
+      for (const [id, base, delta] of [
+        [this._idParamBrowLY, this._currentBrowLY, face.browL],
+        [this._idParamBrowRY, this._currentBrowRY, face.browR],
+      ] as const) {
+        if (!this._nativeMotionParameters.has(id.getString())) {
+          this._model.setParameterValueById(id, Math.max(-1, Math.min(1, base + delta)));
+        }
+      }
+    }
     const hasExpression = this._aiBehaviorTimer > 0
       || this._currentBlushLevel > 0.01
       || Math.abs(this._currentMouthForm) > 0.01
@@ -1487,11 +1571,11 @@ export class LAppModel extends CubismUserModel {
 
     for (const [id, value] of [
       [this._idParamCheek, this._currentBlushLevel], [this._idParamMouthForm, this._currentMouthForm],
-      [this._idParamBrowLY, this._currentBrowLY], [this._idParamBrowRY, this._currentBrowRY],
       [this._idParamBrowLAngle, this._currentBrowLAngle], [this._idParamBrowRAngle, this._currentBrowRAngle],
       [this._idParamBrowLForm, this._currentBrowLForm], [this._idParamBrowRForm, this._currentBrowRForm],
       [this._idParamBrowLX, this._currentBrowLX], [this._idParamBrowRX, this._currentBrowRX],
     ] as const) {
+      if (sdkExpression && id.getString().startsWith('ParamBrow')) continue;
       if (!this._nativeMotionParameters.has(id.getString())) this._model.setParameterValueById(id, value);
     }
   }

@@ -5,6 +5,8 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import './check-blink-runtime.mjs';
+import './check-face-idle-runtime.mjs';
+import './check-face-composition.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -132,6 +134,7 @@ const modelLoad = createLoader({
 }, { performance: { now: () => modelNowMs } });
 const { LAppModel } = modelLoad('src/live2d/LAppModel.ts');
 const { BlinkRuntime } = load('src/live2d/runtime/BlinkRuntime.ts');
+const { FaceIdleRuntime } = load('src/live2d/runtime/FaceIdleRuntime.ts');
 const model = Object.create(LAppModel.prototype);
 const parameters = new Map([['left', 0.5], ['right', 0.3]]);
 model._model = {
@@ -143,6 +146,12 @@ model._idParamEyeROpen = 'right';
 model._aiEyeBaseLOpen = 0.5;
 model._aiEyeBaseROpen = 0.3;
 model._blinkRuntime = new BlinkRuntime(() => 0.5);
+model._faceIdleRuntime = new FaceIdleRuntime(() => 0);
+model._lastFaceIdleSample = { eyeL: 1, eyeR: 1, browL: 0, browR: 0, winking: false, kind: 'still' };
+model._faceListening = false;
+model._manualUntilMs = 0;
+model._activeExpressionEvents = [];
+model._expressionActionActive = false;
 model._eyeBlinkIds = ['left', 'right'];
 model._nativeParamOverrides = new Map();
 model._nativeMotionParameters = new Set();
@@ -924,7 +933,9 @@ function audioHarness(suspended = false) {
   near(values.get('ParamMouthOpenY'), 0.65, 'speech ending releases the mouth back to native motion');
   runtime._motionManager = { isFinished: () => true };
   tick(90);
-  near(values.get('ParamAngleX'), 13.2, 'finished native motion smoothly releases back to the latest Python target', 1e-4);
+  // 自主輸出含持續微動；容差只涵蓋 ParameterMixer 追隨微動的延遲。
+  const autonomousAngleX = () => runtime._parameterMixer.normalized('ParamAngleX', runtime.getAmbientDiagnostics().sample.headX);
+  near(values.get('ParamAngleX'), autonomousAngleX(), 'finished native motion smoothly releases back to the latest Python target', 0.1);
   assert.ok(values.get('ParamEyeBallX') < -0.4, 'finished native gaze releases back to the current autonomous gaze');
 
   const emotion = { ...createNeutralTargetParams(), mouthForm: 0.45, blushLevel: 0.3, browLY: 0.2,
@@ -1000,7 +1011,7 @@ function audioHarness(suspended = false) {
   }
   assert.equal(runtime.getNativeParamOverrides().has('ParamAngleX'), false, 'expired overrides are removed');
   tick(120);
-  near(values.get('ParamAngleX'), 0, 'expired native override smoothly returns to the autonomous target', 1e-4);
+  near(values.get('ParamAngleX'), autonomousAngleX(), 'expired native override smoothly returns to the autonomous target', 0.1);
 
   runtime.setAiBehavior(0, 0, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0.8, 0, 0, 0);
   tick(60);
@@ -1192,13 +1203,20 @@ function audioHarness(suspended = false) {
   for (const sample of layeredMotion.slice(1)) near(sample.bodyX, layeredMotion[0].bodyX,
     'slower torso timing stays frame-rate independent', 1e-8);
   const quiet = new AmbientMotion();
+  const unfocused = new AmbientMotion();
   const quietTarget = { ...ambientPlan().target, headX: 0.4, bodyZ: -0.3 };
   quiet.apply(ambientPlan({ target: quietTarget }), 0);
+  unfocused.apply(ambientPlan({ target: quietTarget }), 0);
   const settled = advanceAmbient(quiet, 60, 0, 6);
+  advanceAmbient(unfocused, 60, 0, 6);
   quiet.apply(ambientPlan({ sequence: 2, target: { ...quietTarget, gazeX: 0.025 } }), 6000);
   const refocused = advanceAmbient(quiet, 60, 6000, 0.5);
-  near(refocused.headX, settled.headX, 'a quiet refocus does not restart a settled head', 1e-8);
-  near(refocused.bodyZ, settled.bodyZ, 'a quiet refocus preserves a settled torso', 1e-7);
+  const unchanged = advanceAmbient(unfocused, 60, 6000, 0.5);
+  // 微動照常進行；同一時間線上，重新對焦不得改變頭身軌跡。
+  near(refocused.headX, unchanged.headX, 'a quiet refocus does not restart a settled head', 1e-8);
+  near(refocused.bodyZ, unchanged.bodyZ, 'a quiet refocus preserves a settled torso', 1e-7);
+  assert.ok(Math.abs(refocused.headX - settled.headX) > 1e-4,
+    'settled head keeps a subtle continuous drift instead of freezing');
   assert.ok(refocused.gazeX > 0.024 && refocused.gazeX <= 0.025,
     'quiet refocus moves only the shared small gaze target');
   assert.ok(Math.abs(refocused.breath - settled.breath) > 0.01,
