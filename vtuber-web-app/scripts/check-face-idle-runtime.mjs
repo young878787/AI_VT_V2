@@ -42,7 +42,7 @@ function rig(context = {}) {
         const next = Math.min(target, now + step);
         sample = runtime.update((next - now) / 1000, next, state);
         for (const value of [sample.eyeL, sample.eyeR]) assert.ok(value >= 0 && value <= 1, 'eye multipliers stay within 0..1');
-        for (const value of [sample.browL, sample.browR]) assert.ok(Math.abs(value) <= 0.06, 'brow deltas stay within +/-0.06');
+        for (const value of [sample.browL, sample.browR]) assert.ok(Math.abs(value) <= 0.14, 'brow deltas stay within +/-0.14');
         now = next;
       }
       return sample;
@@ -57,7 +57,7 @@ function rig(context = {}) {
 
 // 各種一般眼皮事件在完整停留時符合目標範圍，最深仍至少保留 0.64。
 for (const [pick, kind, minimum, maximum] of [
-  [0.4, 'relax', 0.90, 0.98], [0.7, 'half', 0.78, 0.88], [0.8, 'deep', 0.64, 0.75],
+  [0.3, 'relax', 0.84, 0.94], [0.5, 'half', 0.78, 0.88], [0.66, 'deep', 0.64, 0.75],
 ]) {
   const test = rig();
   test.at(2999);
@@ -78,7 +78,7 @@ for (const [pick, kind, minimum, maximum] of [
 {
   const test = rig();
   test.at(2999);
-  test.values.push(0.88, 0.5, 0.5, 0);
+  test.values.push(0.76, 0.5, 0.5, 0);
   const sample = test.at(3800);
   assert.equal(sample.kind, 'asymmetric');
   assert.ok(sample.eyeL >= 0.74 && sample.eyeL <= 0.88);
@@ -89,26 +89,26 @@ for (const [pick, kind, minimum, maximum] of [
 {
   const test = rig({ eyeLOpen: 0.5, eyeROpen: 0.85 });
   test.at(2999);
-  test.values.push(0.8);
+  test.values.push(0.66);
   const sample = test.at(3800);
   assert.equal(sample.kind, 'relax');
-  assert.ok(sample.eyeL >= 0.94 && sample.eyeL <= 0.98);
+  assert.ok(sample.eyeL >= 0.90 && sample.eyeL <= 0.96);
   near((0.5 * sample.eyeL) / (0.85 * sample.eyeR), 0.5 / 0.85, 'base asymmetry remains intact');
 }
 
-for (const pick of [0.7, 0.8, 0.88]) {
+for (const pick of [0.5, 0.66, 0.76]) {
   const test = rig({ listening: true });
   test.at(2999);
   test.values.push(pick);
   const sample = test.at(3800);
   assert.equal(sample.kind, 'relax', 'listening replaces half/deep/asymmetric with light relaxation');
-  assert.ok(sample.eyeL >= 0.94 && sample.eyeL <= 0.98);
+  assert.ok(sample.eyeL >= 0.90 && sample.eyeL <= 0.96);
   near(sample.eyeL, sample.eyeR, 'listening keeps both eyes paired');
 }
 
 // 已開始的深眼皮在聆聽／低基準切換時，保留當下值並於 500ms 平滑收尾。
 for (const context of [{ listening: true }, { eyeLOpen: 0.5 }]) {
-  for (const pick of [0.7, 0.8, 0.88]) {
+  for (const pick of [0.5, 0.66, 0.76]) {
     const test = rig();
     test.at(2999);
     test.values.push(pick);
@@ -134,7 +134,7 @@ for (const context of [{ listening: true }, { eyeLOpen: 0.5 }]) {
 {
   const test = rig();
   test.at(2999);
-  test.values.push(0.8);
+  test.values.push(0.66);
   const before = test.at(3350);
   near(before.eyeL, 0.82, 'release test begins halfway through closing');
   test.context.listening = true;
@@ -146,7 +146,7 @@ for (const context of [{ listening: true }, { eyeLOpen: 0.5 }]) {
 {
   const test = rig();
   test.at(2999);
-  test.values.push(0.8, 0.5, 1, 1, 1, 1);
+  test.values.push(0.66, 0.5, 1, 1, 1, 1);
   const lowest = test.at(4400).eyeL;
   near(test.at(5600).eyeL, lowest, 'deep relaxation holds for at most 1200ms');
   assert.ok(test.at(5601).eyeL > lowest, 'deep relaxation starts reopening after its shorter hold');
@@ -249,18 +249,18 @@ for (const context of [
   test.runtime.cancelEyes(3900);
   near(test.at(4000).eyeL, 1, 'cancelEyes discards current eyelids');
   test.fallback(0.8);
-  near(test.at(8899).eyeL, 1, 'cancelEyes imposes a complete new interval');
+  near(test.at(6899).eyeL, 1, 'cancelEyes imposes a complete new interval');
 }
 
 // 眉毛僅提供 Y 偏移，單獨 brow 事件不影響眼開度。
 {
   const test = rig();
   test.at(2999);
-  test.values.push(0.94);
+  test.values.push(0.88);
   const sample = test.at(3800);
   assert.equal(sample.kind, 'brow');
   near(sample.eyeL, 1, 'brow-only event preserves eyes');
-  near(Math.abs(sample.browL), 0.025, 'smallest brow delta');
+  near(Math.abs(sample.browL), 0.06, 'smallest brow delta');
   near(sample.browR, 0, 'brow sides may remain independent');
 }
 
@@ -268,7 +268,7 @@ for (const context of [
 {
   const test = rig();
   test.at(2999);
-  test.values.push(0.8);
+  test.values.push(0.66);
   assert.ok(test.at(3800).eyeL < 1);
   const resumed = test.gap(10000);
   near(resumed.eyeL, 1, 'background gap discards old eye events');
@@ -291,7 +291,7 @@ for (const context of [
   const results = [30, 60, 120].map(hz => {
     const test = rig();
     test.at(2999, 1000 / hz);
-    test.values.push(0.8);
+    test.values.push(0.66);
     return [3100, 3500, 3800, 4500, 5100, 13000].map(now => test.at(now, 1000 / hz));
   });
   for (let rate = 1; rate < results.length; rate += 1) {
@@ -300,6 +300,31 @@ for (const context of [
       assert.equal(results[rate][index].kind, expected.kind);
     });
   }
+}
+
+// 長時間掛機：臉部事件常見且看得出來，但不密集到每秒都在變。
+{
+  let seed = 20261026;
+  const random = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  const runtime = new FaceIdleRuntime(random);
+  const starts = [];
+  let previous = 'still';
+  let deepestRelax = 1;
+  let strongestBrow = 0;
+  const context = { ...baseContext };
+  for (let now = 0; now <= 600000; now += 1000 / 60) {
+    const sample = runtime.update(1 / 60, now, context);
+    if (sample.kind !== 'still' && previous === 'still') starts.push(now);
+    if (sample.kind === 'relax') deepestRelax = Math.min(deepestRelax, sample.eyeL);
+    strongestBrow = Math.max(strongestBrow, Math.abs(sample.browL), Math.abs(sample.browR));
+    previous = sample.kind;
+  }
+  const perMinute = starts.length / 10;
+  assert.ok(perMinute >= 4 && perMinute <= 10, `face events stay frequent but calm: ${perMinute}/min`);
+  assert.ok(Math.max(...starts.slice(1).map((start, index) => start - starts[index])) <= 25000,
+    'the face never stays idle for long stretches');
+  assert.ok(deepestRelax <= 0.86, `relaxation reaches a visible depth: ${deepestRelax}`);
+  assert.ok(strongestBrow >= 0.1, `brow accents reach a visible size: ${strongestBrow}`);
 }
 
 console.log('Face idle runtime checks passed: bounded events, balanced wink cooldown, blink guards, group ownership, cancellation, reset and sampling.');

@@ -1225,6 +1225,50 @@ function audioHarness(suspended = false) {
   shortBody.apply(ambientPlan({ moveMs: 300, target: { ...ambientPlan().target, gazeX: 0.85 } }), 0);
   near(advanceAmbient(shortBody, 60, 0, 0.2).gazeX, rapidGaze[1].gazeX,
     'body moveMs does not change gaze timing');
+  // 頭身移動途中只換眼神，不得重排或改變尚未完成的頭身曲線。
+  const moving = new AmbientMotion();
+  const unchangedMove = new AmbientMotion();
+  for (const runtime of [moving, unchangedMove]) {
+    runtime.apply(ambientPlan({ moveMs: 1500 }), 0);
+    advanceAmbient(runtime, 60, 0, 0.5);
+  }
+  moving.apply(ambientPlan({ sequence: 2, moveMs: 600,
+    target: { ...ambientPlan().target, gazeX: 0.3, gazeY: -0.2 } }), 500);
+  const glanced = advanceAmbient(moving, 60, 500, 0.5);
+  const unglanced = advanceAmbient(unchangedMove, 60, 500, 0.5);
+  for (const axis of ['headX', 'headY', 'headZ', 'bodyX', 'bodyY', 'bodyZ']) {
+    near(glanced[axis], unglanced[axis], `mid-motion gaze-only plan keeps the ${axis} trajectory`, 1e-9);
+  }
+  assert.ok(Math.abs(glanced.gazeX - 0.3) < 0.01 && Math.abs(glanced.gazeY + 0.2) < 0.01,
+    'gaze-only plan still moves the eyes');
+  // 眼睛立即移動；頭 80 ms、身體 200 ms 後才離開原曲線。
+  const staged = new AmbientMotion();
+  const resting = new AmbientMotion();
+  staged.apply(ambientPlan({ moveMs: 1000, target: { ...ambientPlan().target, headX: 0.8, bodyX: 0.8 } }), 0);
+  const stageAt = (seconds, startMs) => [advanceAmbient(staged, 1000, startMs, seconds),
+    advanceAmbient(resting, 1000, startMs, seconds)];
+  let [stagedSample, restingSample] = stageAt(0.07, 0);
+  assert.ok(stagedSample.gazeX < -0.1, 'eyes start moving immediately');
+  near(stagedSample.headX, restingSample.headX, 'head waits for its onset lag', 1e-12);
+  near(stagedSample.bodyX, restingSample.bodyX, 'torso waits for its onset lag', 1e-12);
+  [stagedSample, restingSample] = stageAt(0.08, 70);
+  assert.ok(stagedSample.headX > restingSample.headX + 1e-4, 'head starts after the eyes');
+  near(stagedSample.bodyX, restingSample.bodyX, 'torso starts after the head', 1e-12);
+  [stagedSample, restingSample] = stageAt(0.1, 150);
+  assert.ok(stagedSample.bodyX > restingSample.bodyX + 1e-5, 'torso starts last');
+  // 移動中換向：延遲期間沿用原曲線，位置與速度都不中斷。
+  const turning = new AmbientMotion();
+  const continuing = new AmbientMotion();
+  for (const runtime of [turning, continuing]) {
+    runtime.apply(ambientPlan({ moveMs: 1500 }), 0);
+    advanceAmbient(runtime, 1000, 0, 0.5);
+  }
+  turning.apply(ambientPlan({ sequence: 2, target: { ...ambientPlan().target, headX: -0.8, bodyX: -0.8 } }), 500);
+  const turnedEarly = advanceAmbient(turning, 1000, 500, 0.06);
+  const continuedEarly = advanceAmbient(continuing, 1000, 500, 0.06);
+  near(turnedEarly.headX, continuedEarly.headX, 'a mid-motion retarget keeps head velocity during its lag', 1e-12);
+  near(turnedEarly.bodyX, continuedEarly.bodyX, 'a mid-motion retarget keeps torso velocity during its lag', 1e-12);
+  assert.ok(advanceAmbient(turning, 60, 560, 2.5).headX < -0.7, 'the lagged retarget still reaches the new target');
   const steady = new AmbientMotion();
   const refreshed = new AmbientMotion();
   steady.apply(ambientPlan(), 0);

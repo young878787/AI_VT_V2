@@ -35,6 +35,8 @@ interface FaceEvent {
 }
 
 const WINK_COOLDOWN_MS = 45000;
+// 事件之間的間隔；臉部細節維持常見但不密集。
+const EVENT_GAP_MS = [3000, 7000] as const;
 const MAX_FRAME_GAP_MS = 1000;
 const neutral = (): FaceIdleSample => ({ eyeL: 1, eyeR: 1, browL: 0, browR: 0, winking: false, kind: 'still' });
 const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
@@ -76,7 +78,7 @@ export class FaceIdleRuntime {
   cancelEyes(nowMs: number): void {
     const now = Number.isFinite(nowMs) ? nowMs : this.nowMs;
     // 明確眨眼／暫停後，至少等一個完整新間隔才再排自主眼皮。
-    this.eyesResumeAtMs = now + this.between(5000, 12000);
+    this.eyesResumeAtMs = now + this.between(...EVENT_GAP_MS);
     if (this.event) {
       this.event.eyes = false;
       if (!this.event.brows) this.event = null;
@@ -104,7 +106,7 @@ export class FaceIdleRuntime {
     }
     if (!this.wasEnabled || interrupted) {
       this.event = null;
-      this.nextEventAtMs = now + this.between(this.wasEnabled ? 5000 : 3000, this.wasEnabled ? 12000 : 7000);
+      this.nextEventAtMs = now + this.between(...EVENT_GAP_MS);
       if (this.winkAllowedAtMs === null) this.winkAllowedAtMs = now + WINK_COOLDOWN_MS;
       this.wasEnabled = true;
       return neutral();
@@ -116,7 +118,7 @@ export class FaceIdleRuntime {
       if (this.event && !context.browsAllowed) this.event.brows = false;
       if (this.event && !this.event.eyes && !this.event.brows) {
         this.event = null;
-        this.nextEventAtMs = now + this.between(5000, 12000);
+        this.nextEventAtMs = now + this.between(...EVENT_GAP_MS);
       }
     }
 
@@ -124,7 +126,7 @@ export class FaceIdleRuntime {
       const endedAt = this.event.startedAtMs + this.event.closingMs + this.event.holdMs + this.event.openingMs;
       if (now >= endedAt) {
         this.event = null;
-        this.nextEventAtMs = endedAt + this.between(5000, 12000);
+        this.nextEventAtMs = endedAt + this.between(...EVENT_GAP_MS);
       }
     }
     if (this.event?.eyes && (context.listening || Math.min(eyeBase(context.eyeLOpen), eyeBase(context.eyeROpen)) < 0.75)
@@ -144,7 +146,7 @@ export class FaceIdleRuntime {
     if (!this.event && now >= this.nextEventAtMs) {
       const startedAt = this.nextEventAtMs;
       this.event = this.createEvent(startedAt, context, eyesAllowed && now >= this.eyesResumeAtMs);
-      if (!this.event) this.nextEventAtMs = startedAt + this.between(5000, 12000);
+      if (!this.event) this.nextEventAtMs = startedAt + this.between(...EVENT_GAP_MS);
     }
     if (!this.event) return neutral();
 
@@ -162,8 +164,8 @@ export class FaceIdleRuntime {
 
   private createEvent(startedAtMs: number, context: FaceIdleContext, eyesAllowed: boolean): FaceEvent | null {
     const pick = this.between(0, 1);
-    let kind: FaceIdleKind = pick < 0.32 ? 'still' : pick < 0.62 ? 'relax' : pick < 0.77 ? 'half'
-      : pick < 0.84 ? 'deep' : pick < 0.92 ? 'asymmetric' : pick < 0.96 ? 'brow' : 'winkLeft';
+    let kind: FaceIdleKind = pick < 0.12 ? 'still' : pick < 0.42 ? 'relax' : pick < 0.62 ? 'half'
+      : pick < 0.7 ? 'deep' : pick < 0.82 ? 'asymmetric' : pick < 0.92 ? 'brow' : 'winkLeft';
     if (kind === 'still') return null;
 
     const leftBase = eyeBase(context.eyeLOpen);
@@ -185,7 +187,7 @@ export class FaceIdleRuntime {
 
     let eyeL = 1;
     let eyeR = 1;
-    if (kind === 'relax') eyeL = eyeR = this.between(shallow ? 0.94 : 0.90, 0.98);
+    if (kind === 'relax') eyeL = eyeR = this.between(shallow ? 0.90 : 0.84, shallow ? 0.96 : 0.94);
     else if (kind === 'half') eyeL = eyeR = this.between(0.78, 0.88);
     else if (kind === 'deep') eyeL = eyeR = this.between(0.64, 0.75);
     else if (kind === 'asymmetric') {
@@ -206,8 +208,8 @@ export class FaceIdleRuntime {
       eyes: eyesAllowed && kind !== 'brow',
       brows: false,
     };
-    if (context.browsAllowed && (kind === 'brow' || this.between(0, 1) < (winking ? 0.35 : 0.24))) {
-      const amount = this.between(0.025, winking ? 0.04 : 0.06);
+    if (context.browsAllowed && (kind === 'brow' || this.between(0, 1) < 0.35)) {
+      const amount = winking ? this.between(0.05, 0.09) : this.between(0.06, 0.14);
       if (winking) {
         if (kind === 'winkLeft') event.browL = amount;
         else event.browR = amount;

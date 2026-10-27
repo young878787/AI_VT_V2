@@ -205,7 +205,7 @@ function fixedFace(model, sample, blink = 1) {
 }
 
 // 真正的 FaceIdleRuntime 與 LAppModel：深放鬆、眉毛以及單眼都經過實際狀態機。
-for (const [random, expected] of [[0.8, 'deep'], [0.94, 'brow']]) {
+for (const [random, expected] of [[0.66, 'deep'], [0.88, 'brow']]) {
   const { model, values, tick } = harness(() => random);
   model.setBlinkInterval(100, 100);
   let observed = false;
@@ -286,7 +286,7 @@ for (const [random, expected] of [[0.8, 'deep'], [0.94, 'brow']]) {
 
 // 同一個真實事件內的 wink 與眉毛也可分別交接，不能只清顯示 sample。
 {
-  const randoms = [0, ...Array.from({ length: 9 }, () => [0, 0]).flat(),
+  const randoms = [0, ...Array.from({ length: 15 }, () => [0, 0]).flat(),
     0.99, 0, 0.5, 0.5, 0.5, 0, 0.5];
   const { model, values, tick } = harness(() => randoms.shift() ?? 0.5);
   model.setBlinkInterval(100, 100);

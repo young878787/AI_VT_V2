@@ -10,7 +10,7 @@ export interface AmbientSample extends AmbientTarget {
 }
 
 interface Spring { value: number; velocity: number }
-interface Segment { startedAt: number; duration: number; from: number; velocity: number; to: number }
+interface Segment { startedAt: number; duration: number; from: number; velocity: number; to: number; previous?: Segment }
 type GazeAxis = 'gazeX' | 'gazeY';
 type PoseAxis = Exclude<AmbientAxis, GazeAxis>;
 
@@ -20,6 +20,8 @@ const clamp = (value: number, minimum: number, maximum: number) => Math.max(mini
 const spring = (value = 0): Spring => ({ value, velocity: 0 });
 const POSE_AXES = AMBIENT_AXES.filter((axis): axis is PoseAxis => !axis.startsWith('gaze'));
 const still = (value = 0): Segment => ({ startedAt: 0, duration: 1, from: value, velocity: 0, to: value });
+// 眼睛先動，頭、身體依序晚起動；延遲期間沿用前一段曲線，位置與速度都連續。
+const ONSET_LAG_MS = { head: 80, body: 200 };
 // 低頻、互不成倍數的固定正弦（Hz, 幅度）；hold 期間仍保留微動，不使用亂數。
 const DRIFT: Record<PoseAxis, ReadonlyArray<readonly [number, number]>> = {
   headX: [[0.071, 0.04], [0.043, 0.025]],
@@ -50,7 +52,8 @@ export function clampRootY(rootY: number, topMarginRatio: number, minTopMargin =
 
 // 五次曲線保留接管當下的位置與速度；起訖加速度為零，速度呈鐘形。
 function sampleQuintic(segment: Segment, nowMs: number): Spring {
-  const t = clamp((nowMs - segment.startedAt) / segment.duration, 0, 1);
+  if (nowMs < segment.startedAt && segment.previous) return sampleQuintic(segment.previous, nowMs);
+  const t =clamp((nowMs - segment.startedAt) / segment.duration, 0, 1);
   if (t >= 1) return spring(segment.to);
   const durationSec = segment.duration / 1000;
   const velocity = segment.velocity * durationSec;
@@ -94,9 +97,11 @@ export class AmbientMotion {
     if (!isAmbientPlan(plan) || !Number.isFinite(nowMs) || plan.sequence <= this.sequence) return false;
     this.sequence = plan.sequence;
     this.moveMs = plan.moveMs;
+    // 只換眼神或 hop 的計畫不重啟頭身軌跡；目標有變的軸才重排。
+    const changed = POSE_AXES.filter(axis => plan.target[axis] !== this.target[axis]);
     this.target = { ...plan.target };
     this.breathTarget = { ...plan.breath };
-    if (this.wasEnabled) this.retarget(nowMs, true);
+    if (this.wasEnabled) this.retarget(nowMs, true, changed, true);
     if (plan.state === 'listening') this.cancelHop(nowMs);
     else if (plan.hop && this.wasEnabled) {
       const current = this.sampleHop(nowMs);
@@ -190,13 +195,20 @@ export class AmbientMotion {
   }
 
   // 新目標從目前位置與速度起算；停用時收回中性位置。
-  private retarget(nowMs: number, enabled: boolean): void {
+  private retarget(nowMs: number, enabled: boolean, axes: readonly PoseAxis[] = POSE_AXES, staggered = false): void {
     const sampledAt = this.sampledAt(nowMs);
-    for (const axis of POSE_AXES) {
-      const current = sampleQuintic(this.poses[axis], sampledAt);
+    // 背景恢復從最後畫面接續，不延遲起動，避免延遲期間顯示牆鐘進度。
+    const lagged = staggered && sampledAt === nowMs;
+    for (const axis of axes) {
+      const body = axis.startsWith('body');
+      const previous = this.poses[axis];
+      const startedAt = nowMs + (lagged ? ONSET_LAG_MS[body ? 'body' : 'head'] : 0);
+      const current = sampleQuintic(previous, lagged ? startedAt : sampledAt);
+      if (previous.startedAt <= nowMs) previous.previous = undefined;
       this.poses[axis] = {
-        startedAt: nowMs, duration: this.moveMs * (axis.startsWith('body') ? 1.45 : 1),
+        startedAt, duration: this.moveMs * (body ? 1.45 : 1),
         from: current.value, velocity: current.velocity, to: enabled ? this.target[axis] : 0,
+        previous: lagged ? previous : undefined,
       };
     }
   }
