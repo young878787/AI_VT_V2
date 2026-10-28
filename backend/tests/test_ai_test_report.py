@@ -69,6 +69,31 @@ class AiTestReportTests(unittest.TestCase):
             self.assertIn(expected, text)
         self.assertEqual(list(self.directory.glob("*.tmp")), [])
 
+    def test_jev_role_records_are_reported_and_question_hashes_must_resolve(self):
+        metadata = self.initialize()
+        traces = [{"stage": "jev", "role": role, "question_hash": "hash_" + role, "duration_sec": 0.4,
+                   "error": None, "state": {"current_user_input": "請說明目前進度", "recent_dialogue": []},
+                   "answers": {"marker": "answer_" + role}} for role in ("emotion", "action", "memory")]
+        rows = [record(trace=traces, emotion_source="jev", memory_route="process")]
+        self.save(rows)
+        questions = {"hash_" + role: {"role": role, "questions": {}} for role in ("emotion", "action", "memory")}
+        (self.directory / "jev_questions.json").write_text(json.dumps({"questions": questions}), encoding="utf-8")
+        run = self.write(metadata, rows)
+        self.assertEqual(run["acceptance"]["overall"], "passed")
+        self.assertEqual(run["artifacts"]["jev_questions.json"]["sha256"],
+                         file_sha256(self.directory / "jev_questions.json"))
+        text = self.report()
+        self.assertIn("JEV 判斷", text)
+        for role in ("emotion", "action", "memory"):
+            self.assertIn(f"| {role} | current_user_input, recent_dialogue | 0 | 0.4 | 無 | `hash_{role}` |", text)
+            self.assertIn("answer_" + role, text)
+        self.assertIn('"route": "process"', text)
+        questions.pop("hash_memory")
+        (self.directory / "jev_questions.json").write_text(json.dumps({"questions": questions}), encoding="utf-8")
+        run = self.write(metadata, rows)
+        self.assertEqual(run["acceptance"]["overall"], "failed")
+        self.assertIn("jev_question_missing", {item["reason_code"] for item in run["attention"]})
+
     def test_capacity_failure_fails_overall_but_separates_core(self):
         metadata = self.initialize("memory", [{"case_id": "mem_013"}, {"case_id": "mem_014"}])
         rows = [record("mem_013"), record("mem_014", status="failed")]

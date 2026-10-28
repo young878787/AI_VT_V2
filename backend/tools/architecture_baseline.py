@@ -144,7 +144,7 @@ def contracts() -> dict:
     from core import config
     from domain.agent_a_prompts import build_agent_a_prompt
     from domain.emotion_state import NEUTRAL_EMOTION_STATE
-    from domain.jev_questions import build_jev_questions
+    from domain.jev_questions import build_role_questions
     from domain.memory_decisions import agent_tools
     from domain.memory_settings import load_memory_settings
     from services.memory_llm import PROMPT
@@ -167,7 +167,8 @@ def contracts() -> dict:
                   for role in ("CHAT", "JEV", "MEMORY", "EMBEDDING")},
         "prompt_sha256": {
             "chat_empty_context": fingerprint(build_agent_a_prompt({}, "", NEUTRAL_EMOTION_STATE, "Rushia")),
-            "jev_questions": fingerprint(build_jev_questions()),
+            **{f"jev_{role}_questions": fingerprint(questions)
+               for role, questions in build_role_questions().items()},
             "memory_system": fingerprint(PROMPT),
             "memory_tools_observe": fingerprint(agent_tools(False)),
             "memory_tools_forget": fingerprint(agent_tools(True)),

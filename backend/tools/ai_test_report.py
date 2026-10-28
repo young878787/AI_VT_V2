@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 SCHEMA_VERSION = 2
 EVIDENCE_FILES = ("cases.json", "turns.jsonl", "case_states.jsonl")
+JEV_QUESTIONS_FILE = "jev_questions.json"
 ATTENTION_LIMIT = 100
 _AI_START = "<!-- AI_SYNTHESIS_START basis="
 _AI_END = "<!-- AI_SYNTHESIS_END -->"
@@ -169,6 +170,35 @@ def _attention(case_id: str | None, record: dict | None, stage: str,
             "reason_code": reason_code, "evidence": evidence or _evidence(case_id or "", record, stage), **extra}
 
 
+def _jev_traces(record: dict) -> list[dict]:
+    """三角色 JEV 紀錄；舊版單次呼叫 trace 沒有 role，不列入。"""
+    return [item for item in record.get("trace", []) if item.get("stage") == "jev" and "role" in item]
+
+
+def _jev_question_issues(directory: Path, records: list[dict]) -> list[dict]:
+    """逐輪只存 question_hash；題目全文必須能在同次 jev_questions.json 找到。"""
+    hashes = {item.get("question_hash") for record in records for item in _jev_traces(record)}
+    if not hashes:
+        return []
+    try:
+        known = set((_read_json(directory / JEV_QUESTIONS_FILE, {}) or {}).get("questions", {}))
+    except (ValueError, TypeError, AttributeError) as exc:
+        return [{"stage": "jev", "reason_code": "invalid_jev_questions", "evidence": JEV_QUESTIONS_FILE, "detail": str(exc)}]
+    return [{"stage": "jev", "reason_code": "jev_question_missing", "evidence": f"{JEV_QUESTIONS_FILE}#{value}"}
+            for value in sorted(hashes - known, key=str)]
+
+
+def _jev_resolved(record: dict, role: str) -> Any:
+    if role == "emotion":
+        return {"source": record.get("emotion_source"), "state": record.get("emotion_state")}
+    if role == "action":
+        debug = record.get("expression_debug") or {}
+        return {key: debug.get(key) for key in ("jevDecisionSource", "jevResolvedEmotion", "jevResolvedAttitude",
+                                                "jevBaseEmotionFallbackReason", "jevInteractionAttitudeFallbackReason")}
+    return {"route": record.get("memory_route"), "confidence": record.get("memory_route_confidence"),
+            "event_id": record.get("memory_event_id")}
+
+
 def _cost(metadata: dict, records: list[dict]) -> dict:
     given = metadata.get("cost") or {}
     role_values = given.get("roles") or given
@@ -285,6 +315,7 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
         if fingerprint(saved) != fingerprint(expected_records):
             artifact_issues.append({"stage": "artifacts", "reason_code": "unsaved_evidence",
                                     "evidence": name})
+    artifact_issues.extend(_jev_question_issues(directory, records))
     for issue in artifact_issues:
         attention.append(_attention(None, None, issue.get("stage", "artifacts"),
                                     issue.get("reason_code", "invalid_artifact"), issue.get("evidence"),
@@ -387,7 +418,7 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
               "hard": dict(Counter(outcome["hard"] for outcome in outcomes.values())),
               "human_pending": sum(outcome["human"] != "accepted" for outcome in outcomes.values()) if human_required else 0}
     artifacts = {}
-    references = list(EVIDENCE_FILES) + ["review.json", "server.log"]
+    references = list(EVIDENCE_FILES) + ["review.json", "server.log", JEV_QUESTIONS_FILE]
     for record in records:
         references.extend(_image_references(record))
     for reference in dict.fromkeys(references):
@@ -486,9 +517,29 @@ def _render_report(directory: Path, run: dict, cases: dict, outcomes: dict, grou
             lines.extend(["逐項客觀條件：", "", "```json", _json(record.get("checks", [])), "```", "",
                           "操作事實（保留供後期評讀，不在測試時判定新增／補強品質）：", "", "```json", _json(record.get("operation_observations", [])), "```", ""])
             evidence = {key: record[key] for key in ("tools", "tool_summary", "memory_changes", "memory_event_id", "retrieval", "retrieval_metrics", "memory_retrieval", "memory_context", "context_debug", "expression_debug", "jev", "jev_source", "jev_fallback_reason", "emotion_source", "emotion_state", "expression") if key in record}
-            evidence["trace_summary"] = [trace for trace in record.get("trace", []) if trace.get("stage") in ("jev", "retrieval")]
+            # 完整 JEV 輸入只留在 turns.jsonl；報告列欄位名稱與引用。
+            evidence["trace_summary"] = [
+                {key: value for key, value in trace.items() if key != "state"}
+                | ({"state_keys": sorted(trace["state"])} if isinstance(trace.get("state"), dict) else {})
+                for trace in record.get("trace", []) if trace.get("stage") in ("jev", "retrieval")]
             lines.extend(["證據摘要（JEV 原始選擇／confidence／probabilities／fallback 與 resolved 保留原始欄位）：", "", "```json", _json(evidence), "```", "",
                           f"詳細 prompt／證據：`{_evidence(case_id, record, 'prompt')}`；DB：`case_states.jsonl#case_id={case_id}`。", ""])
+            jev_rows = _jev_traces(record)
+            if jev_rows:
+                lines.extend(["JEV 判斷（三角色並行；完整輸入見各列引用，題目全文見 `jev_questions.json`）：", "",
+                              "| 角色 | 輸入欄位 | 近期對話則數 | 秒 | 錯誤 | 題目 hash | 完整輸入 |", "|---|---|---|---|---|---|---|"])
+                for item in jev_rows:
+                    state = item.get("state") if isinstance(item.get("state"), dict) else {}
+                    dialogue = state.get("recent_dialogue")
+                    lines.append(f"| {_cell(item.get('role'))} | {_cell(', '.join(sorted(state)))} | "
+                                 f"{_cell(len(dialogue) if isinstance(dialogue, list) else None)} | {_cell(item.get('duration_sec'))} | "
+                                 f"{_cell(item.get('error') or '無')} | `{_cell(item.get('question_hash'))}` | "
+                                 f"`{_evidence(case_id, record, 'trace[stage=jev,role=' + str(item.get('role')) + '].state')}` |")
+                lines.append("")
+                for item in jev_rows:
+                    lines.extend([f"{item.get('role')} 原始輸出與解析結果：", "", "```json",
+                                  _json({"answers": item.get("answers"), "resolved": _jev_resolved(record, item.get("role"))}),
+                                  "```", ""])
             images = _image_references(record)
             for reference in images:
                 asset = _local_asset(directory, reference)

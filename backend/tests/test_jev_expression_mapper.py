@@ -21,13 +21,15 @@ from domain.emotion_state import (
     validate_emotion_state,
 )
 from domain.jev_questions import (
+    JEV_ROLES,
+    build_action_context,
     build_action_questions,
     build_emotion_context,
     build_emotion_questions,
-    build_jev_context,
-    build_jev_questions,
-    build_memory_questions,
+    build_memory_context,
+    build_role_questions,
     map_answers_to_intent,
+    question_hash,
 )
 from api.routes.memory_router import reset_memory
 from infrastructure.memory_store import (
@@ -53,10 +55,6 @@ def action_answers():
         "wants_goofy": {"type": "noul", "noul": 0.1},
         "needs_special_blink": {"type": "noul", "noul": 0.8},
     }
-
-
-def combined_answers(score=0.6):
-    return {**emotion_answers(score), **action_answers()}
 
 
 class EmotionContractTests(unittest.TestCase):
@@ -106,21 +104,53 @@ class EmotionContractTests(unittest.TestCase):
         self.assertEqual(set(context), {"character_expression_profile", "recent_dialogue", "current_user_input", "previous_emotion_state"})
         self.assertEqual(context["character_expression_profile"], CHARACTER_EXPRESSION_PROFILE)
         self.assertNotIn("personality", context)
-        self.assertEqual(len(context["recent_dialogue"]), 16)
-        self.assertEqual(context["recent_dialogue"][0]["text"], "user 2")
+        self.assertEqual(len(context["recent_dialogue"]), 6)
+        self.assertEqual(context["recent_dialogue"][0]["text"], "user 7")
         self.assertNotIn("latest", str(context["recent_dialogue"]))
         self.assertNotIn("memory secret", str(context))
 
-    def test_single_call_context_and_questions_contain_emotion_and_two_axes(self):
-        context = build_jev_context(
-            "hello", [], None, {"emotion": "happy"}, "memory", {"status": "started"},
-        )
-        self.assertEqual(context["interaction_personality"], PERSONALITY)
-        self.assertEqual(context["previous_expression_carry_state"], {"emotion": "happy"})
-        self.assertEqual(context["relevant_memory"], "memory")
-        self.assertEqual(context["current_action"], {"status": "started"})
-        self.assertEqual(set(build_action_questions()), set(action_answers()))
-        self.assertEqual(set(build_jev_questions()), set(combined_answers()) | set(build_memory_questions()))
+    def test_three_role_contexts_contain_only_their_own_fields(self):
+        history = [{"role": "system", "content": "memory secret"}]
+        for index in range(5):
+            history.extend([
+                {"role": "user", "content": f"user {index}" + "x" * 600},
+                {"role": "assistant", "content": f"reply {index}"},
+            ])
+        emotion = build_emotion_context("hello", history, NEUTRAL_EMOTION_STATE)
+        action = build_action_context("hello", history, {"emotion": "happy"}, {"status": "started"})
+        memory = build_memory_context("hello", history)
+        self.assertEqual(set(emotion), {"current_user_input", "recent_dialogue", "character_expression_profile",
+                                        "previous_emotion_state"})
+        self.assertEqual(set(build_emotion_context("hello", history, None)),
+                         {"current_user_input", "recent_dialogue", "character_expression_profile"})
+        self.assertEqual(set(action), {"current_user_input", "recent_dialogue", "interaction_personality",
+                                       "previous_expression_carry_state", "current_action"})
+        self.assertEqual(set(build_action_context("hello", history, None, None)),
+                         {"current_user_input", "recent_dialogue", "interaction_personality"})
+        self.assertEqual(set(memory), {"current_user_input", "recent_dialogue"})
+        self.assertEqual(action["interaction_personality"], PERSONALITY)
+        self.assertEqual(action["previous_expression_carry_state"], {"emotion": "happy"})
+        self.assertEqual(action["current_action"], {"status": "started"})
+        self.assertEqual(emotion["recent_dialogue"], action["recent_dialogue"])
+        self.assertEqual(emotion["recent_dialogue"], memory["recent_dialogue"])
+        self.assertEqual(len(memory["recent_dialogue"]), 6)
+        self.assertTrue(all(len(item["text"]) <= 500 for item in memory["recent_dialogue"]))
+        self.assertNotIn("hello", str(memory["recent_dialogue"]))
+        self.assertNotIn("memory secret", str([emotion, action, memory]))
+
+    def test_role_questions_keep_previous_output_schema(self):
+        roles = build_role_questions()
+        self.assertEqual(set(roles), JEV_ROLES)
+        self.assertEqual(set(roles["emotion"]), set(EMOTION_FIELDS))
+        self.assertEqual(set(roles["action"]), set(action_answers()))
+        self.assertEqual(set(roles["memory"]), {"memory_noise"})
+        self.assertEqual(sum(len(questions) for questions in roles.values()), 14)
+        self.assertEqual(len({question_hash(questions) for questions in roles.values()}), 3)
+        for item in roles["emotion"].values():
+            self.assertNotIn("relevant_memory", item["instructions"])
+        for item in roles["action"].values():
+            self.assertNotIn("六欄", item["instructions"])
+        self.assertEqual(question_hash(build_action_questions()), question_hash(roles["action"]))
         primary_instructions = build_action_questions()["base_emotion"]["instructions"]
         self.assertIn("一般友善、輕微正向或想繼續互動仍選 neutral", primary_instructions)
         self.assertIn("聯合判斷", primary_instructions)

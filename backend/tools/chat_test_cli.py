@@ -27,7 +27,9 @@ from sqlalchemy.exc import ArgumentError
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
+from domain.jev_questions import JEV_ROLES  # noqa: E402
 RUNS_DIR = BACKEND_ROOT / "log" / "ai_tests"
+JEV_TRACE_WAIT_SEC = 15.0
 ENV_PATH = BACKEND_ROOT.parent / ".env"
 
 
@@ -189,15 +191,62 @@ async def wait_memory_job(store: MemoryRunStore, event_id: str | None, timeout: 
     return {"status": "timeout", "error": "記憶工作等待逾時"}
 
 
+def archive_run_dir(latest: Path, history: Path) -> Path:
+    """把舊 latest 原樣搬到 history/<開始時間>/；搬移失敗直接拋出，不覆寫舊結果。"""
+    try:
+        run = json.loads((latest / "run.json").read_text(encoding="utf-8-sig"))
+        moment = datetime.fromisoformat(run["execution"]["started_at"]).astimezone()
+    except (OSError, ValueError, TypeError, KeyError):
+        moment = datetime.fromtimestamp(latest.stat().st_mtime)
+    name = moment.strftime("%Y%m%d-%H%M%S")
+    history.mkdir(parents=True, exist_ok=True)
+    target, suffix = history / name, 2
+    while target.exists():
+        target, suffix = history / f"{name}-{suffix}", suffix + 1
+    latest.rename(target)
+    return target
+
+
 def create_run_dir(root: Path | None = None) -> Path:
-    """固定最新產物；只解除舊 latest 連結，不覆寫連結指向的歷史。"""
+    """固定最新產物；開新一輪前封存舊 latest，只解除舊 latest 連結，不搬移連結指向的歷史。"""
     root = root or RUNS_DIR
     root.mkdir(parents=True, exist_ok=True)
     latest = root / "latest"
     if latest.is_symlink():
         latest.unlink()
+    elif latest.is_dir() and any(latest.iterdir()):
+        archive_run_dir(latest, root / "history")
     latest.mkdir(exist_ok=True)
     return latest
+
+
+def write_jev_questions(run_dir: Path) -> dict:
+    """保存三角色 JEV 題目全文；逐輪 trace 只以 question_hash 引用。"""
+    from domain.jev_questions import JEV_DECISION_CRITERIA_VERSION, build_role_questions, question_hash
+    payload = {"schema_version": 1, "criteria_version": JEV_DECISION_CRITERIA_VERSION,
+               "questions": {question_hash(questions): {"role": role, "questions": questions}
+                             for role, questions in build_role_questions().items()}}
+    atomic_write_text(run_dir / "jev_questions.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return payload
+
+
+async def wait_jev_trace(run_dir: Path, turn_id: str, timeout: float = JEV_TRACE_WAIT_SEC) -> None:
+    """動作／記憶角色可能在 stream_end 後才寫 trace；送下一輪前等三角色紀錄齊全。"""
+    path = run_dir / "memory" / "trace.jsonl"
+    deadline = time.monotonic() + timeout
+    while True:
+        roles = set()
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if item.get("turn_id") == turn_id and item.get("stage") == "jev":
+                    roles.add(item.get("role"))
+        if JEV_ROLES <= roles or time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(0.1)
 
 
 def model_metadata() -> dict:
@@ -582,6 +631,15 @@ def update_cost(metadata, records, loader, started):
                        "input_tokens": sum(u.get("prompt_tokens", 0) for u in usages) if complete_usage else None,
                        "output_tokens": sum(u.get("completion_tokens", 0) for u in usages) if complete_usage else None,
                        "models": sorted({request["model"] for request in requests if request.get("model")})}
+    jev_traces = [t for r in records for t in r.get("trace", []) if t.get("stage") == "jev"]
+    by_role = {}
+    for role in sorted(JEV_ROLES):
+        selected = [t for t in jev_traces if t.get("role") == role]
+        by_role[role] = {"calls": len(selected),
+                         "duration_sec": round(sum(t["duration_sec"] for t in selected), 4)
+                         if all(isinstance(t.get("duration_sec"), (int, float)) for t in selected) else None}
+    # 三角色並行；各角色耗時加總不等於壁鐘時間。
+    roles["jev"]["by_role"] = by_role
     retrievals = [t for r in records for t in r.get("trace", []) if t.get("stage") == "retrieval"]
     event_retrievals = sum(any(t.get("stage") == "retrieval" for t in r.get("trace", []))
                            for r in records if r.get("memory_event_id"))
@@ -612,6 +670,7 @@ async def run(args):
     dataset["selection"] = [c["case_id"] for c in selected]
     load_dotenv(ENV_PATH, override=False)
     run_dir = create_run_dir(RUNS_DIR / args.suite)
+    write_jev_questions(run_dir)
     manifest_path = run_dir / "fixture.json"
     memory_dir = run_dir / "memory"
     memory_dir.mkdir(exist_ok=True)
@@ -710,6 +769,8 @@ async def run(args):
             before = await asyncio.to_thread(store.case_state)
             foreign_before = await asyncio.to_thread(loader.other_owner_state)
             record = await run_turn(ws, index, case["input"], "Rushia", session, store, args.turn_timeout, mode)
+            if record["request_sent"]:
+                await wait_jev_trace(run_dir, record["turn_id"])
             state = record.pop("_db_state", None) or {}
             record.update(case_id=case["case_id"], source=case["source"], phase=case["phase"], test_mode=mode.value,
                           fixture=fixture["metadata"], control=controls, summary_before=summary_before, summary_after=summary_after)

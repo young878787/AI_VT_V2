@@ -9,6 +9,7 @@ import re
 from uuid import UUID
 
 from domain.chat_test_mode import ChatTestMode
+from domain.jev_questions import JEV_ROLES
 from domain.runtime_context import CONTEXT_TOOL_NAMES, project_snapshot
 from infrastructure.memory_repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
 from tools.context_test_evidence import collect_tools
@@ -109,7 +110,11 @@ def _receipt_map(record):
 
 def jev_evidence(record):
     """只核對已保存的原始判斷與編譯診斷，不把合法信心門檻當成呼叫失敗。"""
-    jev = next((trace for trace in record.get("trace", []) if trace.get("stage") == "jev"), {})
+    traces = [trace for trace in record.get("trace", []) if trace.get("stage") == "jev"]
+    by_role = {trace.get("role"): trace for trace in traces}
+    jev = by_role.get("action", {})
+    roles_complete = (len(traces) == len(JEV_ROLES) and set(by_role) == JEV_ROLES
+                      and all(not trace.get("error") for trace in traces))
     debug = record.get("expression_debug") or {}
     answers = jev.get("answers") or {}
     valid_raw = all(isinstance(answers.get(key), dict) and isinstance(answers[key].get("choice"), str)
@@ -120,13 +125,14 @@ def jev_evidence(record):
                     and math.isfinite(answers[key]["confidence"]) and 0 <= answers[key]["confidence"] <= 1
                     and debug.get(f"jev{prefix}FallbackReason") in {"none", "low_confidence"}
                     for key, prefix in (("base_emotion", "BaseEmotion"), ("interaction_attitude", "InteractionAttitude")))
-    valid = (bool(jev) and not jev.get("error") and valid_raw
+    valid = (roles_complete and valid_raw
              and debug.get("jevDecisionSource") in {"jev", "fallback", "partial_fallback"}
              and isinstance(debug.get("jevResolvedEmotion"), str) and bool(debug["jevResolvedEmotion"])
              and isinstance(debug.get("jevResolvedAttitude"), str) and bool(debug["jevResolvedAttitude"]))
     return {"stage": "jev", "status": "passed" if valid else "failed",
             "reason_code": "raw_call_and_fallback",
-            "actual": {"error": jev.get("error"), "source": debug.get("jevDecisionSource")},
+            "actual": {"roles": {role: trace.get("error") for role, trace in by_role.items()},
+                       "source": debug.get("jevDecisionSource")},
             "expected": None, "evidence": {"file": "turns.jsonl", "case_id": record.get("case_id"),
                 "turn_id": record.get("turn_id"), "field": "trace"}}
 

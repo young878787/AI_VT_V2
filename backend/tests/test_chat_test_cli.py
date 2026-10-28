@@ -79,6 +79,93 @@ class CliTests(unittest.TestCase):
         self.assertEqual(metadata["cost"]["roles"]["chat"]["calls"], 3)
 
 
+    def test_cost_splits_jev_calls_by_role(self):
+        records = [{"trace": [{"stage": "jev", "role": "emotion", "duration_sec": 0.5},
+                              {"stage": "jev", "role": "action", "duration_sec": 0.75},
+                              {"stage": "jev", "role": "memory"}]}]
+        metadata = {}
+        cli.update_cost(metadata, records, None, cli.time.monotonic())
+        by_role = metadata["cost"]["roles"]["jev"]["by_role"]
+        self.assertEqual({role: value["calls"] for role, value in by_role.items()},
+                         {"action": 1, "emotion": 1, "memory": 1})
+        self.assertEqual(by_role["action"]["duration_sec"], 0.75)
+        self.assertIsNone(by_role["memory"]["duration_sec"])
+
+    def test_jev_questions_file_contains_every_role_hash(self):
+        from domain.jev_questions import build_role_questions, question_hash
+        with tempfile.TemporaryDirectory() as directory:
+            payload = cli.write_jev_questions(Path(directory))
+            saved = json.loads((Path(directory) / "jev_questions.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, payload)
+        expected = {question_hash(questions): {"role": role, "questions": questions}
+                    for role, questions in build_role_questions().items()}
+        self.assertEqual(saved["questions"], expected)
+
+
+class ArchiveRunDirTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.latest = self.root / "latest"
+
+    def fill_latest(self, started_at=None):
+        self.latest.mkdir()
+        (self.latest / "report.md").write_text("舊報告", encoding="utf-8")
+        if started_at is not None:
+            (self.latest / "run.json").write_text(json.dumps({"execution": {"started_at": started_at}}),
+                                                  encoding="utf-8")
+
+    def test_previous_latest_moves_to_history_named_by_run_start(self):
+        self.fill_latest("2026-10-23T08:09:10+08:00")
+        expected = cli.datetime.fromisoformat("2026-10-23T08:09:10+08:00").astimezone().strftime("%Y%m%d-%H%M%S")
+        latest = cli.create_run_dir(self.root)
+        self.assertEqual(latest, self.latest)
+        self.assertEqual(list(latest.iterdir()), [])
+        self.assertEqual((self.root / "history" / expected / "report.md").read_text(encoding="utf-8"), "舊報告")
+
+    def test_unreadable_run_json_falls_back_to_directory_mtime(self):
+        self.fill_latest()
+        (self.latest / "run.json").write_text("{", encoding="utf-8")
+        expected = cli.datetime.fromtimestamp(self.latest.stat().st_mtime).strftime("%Y%m%d-%H%M%S")
+        cli.create_run_dir(self.root)
+        self.assertTrue((self.root / "history" / expected / "report.md").is_file())
+
+    def test_name_collision_gets_numbered_suffix(self):
+        names = []
+        for _ in range(3):
+            self.fill_latest("2026-10-23T08:09:10+08:00")
+            names.append(cli.archive_run_dir(self.latest, self.root / "history").name)
+            self.assertFalse(self.latest.exists())
+        self.assertEqual(names, [names[0], names[0] + "-2", names[0] + "-3"])
+
+    def test_missing_or_empty_latest_is_not_archived(self):
+        cli.create_run_dir(self.root)
+        cli.create_run_dir(self.root)
+        self.assertTrue(self.latest.is_dir())
+        self.assertFalse((self.root / "history").exists())
+
+    def test_rename_failure_keeps_previous_latest(self):
+        self.fill_latest("2026-10-23T08:09:10+08:00")
+        with patch.object(Path, "rename", side_effect=PermissionError("in use")):
+            with self.assertRaises(PermissionError):
+                cli.create_run_dir(self.root)
+        self.assertEqual((self.latest / "report.md").read_text(encoding="utf-8"), "舊報告")
+
+    def test_symlinked_latest_is_unlinked_without_moving_target(self):
+        target = self.root / "elsewhere"
+        target.mkdir()
+        (target / "report.md").write_text("連結目標", encoding="utf-8")
+        try:
+            self.latest.symlink_to(target, target_is_directory=True)
+        except OSError:
+            self.skipTest("此環境無建立 symlink 權限")
+        latest = cli.create_run_dir(self.root)
+        self.assertFalse(latest.is_symlink())
+        self.assertEqual((target / "report.md").read_text(encoding="utf-8"), "連結目標")
+        self.assertFalse((self.root / "history").exists())
+
+
 class RunTests(unittest.IsolatedAsyncioTestCase):
     async def test_memory_dependency_replays_only_required_inputs_and_preserves_denominator(self):
         await self._memory_run()
@@ -128,7 +215,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
                 "test_database_url": lambda: "postgresql://test/test_db", "MemoryRunStore": Mock(return_value=store),
                 "start_backend": Mock(return_value=(Mock(), Mock())), "stop_backend": Mock(),
                 "connect_backend": AsyncMock(return_value=socket), "control_step": AsyncMock(return_value={}),
-                "run_turn": turn, "provenance": lambda _: {}, "RUNS_DIR": root,
+                "run_turn": turn, "wait_jev_trace": AsyncMock(), "provenance": lambda _: {}, "RUNS_DIR": root,
             }
             for name, value in replacements.items():
                 stack.enter_context(patch.object(cli, name, value))
@@ -242,7 +329,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
                 "test_database_url": lambda: "postgresql://test/test_db", "MemoryRunStore": Mock(return_value=store),
                 "start_backend": Mock(return_value=(Mock(), Mock())), "stop_backend": Mock(),
                 "connect_backend": AsyncMock(return_value=socket), "control_step": controls,
-                "run_turn": turn, "provenance": lambda _: {}, "RUNS_DIR": root,
+                "run_turn": turn, "wait_jev_trace": AsyncMock(), "provenance": lambda _: {}, "RUNS_DIR": root,
                 "read_session_state": Mock(side_effect=[{"summary": "舊摘要", "summary_through_sequence": -1},
                                                        {"summary": "新摘要", "summary_through_sequence": 5}]),
                 "read_compressed_texts": Mock(return_value=["已壓縮的原始user與assistant對話"]),

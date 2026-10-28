@@ -29,8 +29,10 @@ def fixture(phase="recall", oracle=None):
     context = {"stage": "chat_context", "messages": [{"role": "system", "content": "角色規則"},
         {"role": "user", "content": case["input"]}], "message_origins": ["system", "input"],
         "history": [], "summary": "", "jev_recent_dialogue": [], "injected_memory_ids": [], "memory_fragments": []}
-    trace = [{"stage": "jev", "answers": {"base_emotion": {"choice": "neutral", "confidence": 0.9},
-              "interaction_attitude": {"choice": "smile", "confidence": 0.9}}}, {"stage": "chat"}, context,
+    trace = [{"stage": "jev", "role": "emotion", "answers": {}},
+             {"stage": "jev", "role": "action", "answers": {"base_emotion": {"choice": "neutral", "confidence": 0.9},
+              "interaction_attitude": {"choice": "smile", "confidence": 0.9}}},
+             {"stage": "jev", "role": "memory", "answers": {}}, {"stage": "chat"}, context,
              {"stage": "test_mode", "mode": mode.value, "short_term_enabled": mode.short_term,
               "memory_read_enabled": mode.memory_read, "memory_write_enabled": mode.memory_write}]
     if mode.memory_read:
@@ -73,14 +75,22 @@ class AiTestEvidenceTests(unittest.TestCase):
     def test_low_confidence_fallback_keeps_raw_call_success_visible_but_errors_fail(self):
         case, record, state, _ = fixture()
         record["expression_debug"].update(jevDecisionSource="partial_fallback", jevInteractionAttitudeFallbackReason="low_confidence")
-        record["trace"][0]["answers"]["interaction_attitude"]["confidence"] = 0.3
+        record["trace"][1]["answers"]["interaction_attitude"]["confidence"] = 0.3
         self.assertEqual(run_checks(case, record, state)["raw_call_and_fallback"]["status"], "passed")
         saved = copy.deepcopy(record)
         self.assertEqual(jev_evidence(record), run_checks(case, record, state)["raw_call_and_fallback"])
         self.assertEqual(record, saved)
-        record["trace"][0]["error"] = "TimeoutError"
-        self.assertEqual(run_checks(case, record, state)["raw_call_and_fallback"]["status"], "failed")
-        record["trace"][0].pop("error")
+        for index in range(3):
+            record["trace"][index]["error"] = "TimeoutError"
+            self.assertEqual(run_checks(case, record, state)["raw_call_and_fallback"]["status"], "failed")
+            record["trace"][index].pop("error")
+        memory = record["trace"].pop(2)
+        self.assertEqual(jev_evidence(record)["status"], "failed")
+        record["trace"].insert(2, memory)
+        record["trace"].append(copy.deepcopy(memory))
+        self.assertEqual(jev_evidence(record)["status"], "failed")
+        record["trace"].pop()
+        self.assertEqual(jev_evidence(record)["status"], "passed")
         record["expression_debug"] = {}
         self.assertEqual(run_checks(case, record, state)["raw_call_and_fallback"]["status"], "failed")
 
