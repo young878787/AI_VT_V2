@@ -43,14 +43,19 @@ class MemorySettings:
         return hashlib.sha256(contract.encode("utf-8")).hexdigest()
 
 
-def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySettings:
+def _required(env, name: str) -> str:
+    value = env.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} 未設定")
+    return value
+
+
+def load_memory_database_settings(environment: dict[str, str] | None = None) -> tuple[str, MemoryScope]:
+    """只讀 PostgreSQL 連線與 owner scope；不需要記憶 AI 金鑰。"""
     env = os.environ if environment is None else environment
 
     def required(name: str) -> str:
-        value = env.get(name, "").strip()
-        if not value:
-            raise RuntimeError(f"{name} 未設定")
-        return value
+        return _required(env, name)
 
     production_url = required("MEMORY_DATABASE_URL")
     if urlparse(production_url).scheme not in {"postgres", "postgresql"}:
@@ -77,6 +82,16 @@ def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySet
             raise RuntimeError("測試模式必須使用 test_<32 lowercase hex> schema")
     elif scope.schema_name.startswith("test_"):
         raise RuntimeError("正式模式不得使用 test_* schema")
+    return database_url, scope
+
+
+def load_memory_settings(environment: dict[str, str] | None = None) -> MemorySettings:
+    env = os.environ if environment is None else environment
+
+    def required(name: str) -> str:
+        return _required(env, name)
+
+    database_url, scope = load_memory_database_settings(env)
     try:
         dimension = int(required("EMBEDDING_AI_DIMENSION"))
     except ValueError as exc:

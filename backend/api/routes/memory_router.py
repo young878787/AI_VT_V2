@@ -20,6 +20,8 @@ def _runtime(request: Request):
     runtime = getattr(runtime, "memory_runtime", None)
     if runtime is None:
         raise HTTPException(status_code=503, detail="MemoryRuntime 尚未啟動")
+    if not getattr(runtime, "long_term_enabled", True):
+        raise HTTPException(status_code=503, detail="長期記憶未啟用")
     return runtime
 
 

@@ -705,8 +705,9 @@ async def websocket_endpoint(websocket: WebSocket):
         if active_turn_id != turn_id:
             return
         await send({"type": "context_status", "turn_id": turn_id, **snapshot_context_status(runtime_context)})
-        write_enabled = mode is None or mode.memory_write
-        read_enabled = mode is None or mode.memory_read
+        long_term_enabled = getattr(memory_runtime, "long_term_enabled", True)
+        write_enabled = long_term_enabled and (mode is None or mode.memory_write)
+        read_enabled = long_term_enabled and (mode is None or mode.memory_read)
         trace("test_mode", {"mode": mode.value if mode else "normal",
             "short_term_enabled": short_term_enabled, "memory_read_enabled": read_enabled,
             "memory_write_enabled": write_enabled})
