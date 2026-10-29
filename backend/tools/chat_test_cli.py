@@ -811,7 +811,9 @@ async def run(args):
                 break
             if any(c["status"] == "failed" for c in record["checks"]):
                 record["status"] = "failed"
-                failed_dependencies.add(case["case_id"])
+                # jev-emotion 為同一 session 的連續曲線，15 輪全跑，前輪失敗不阻擋後續輪次。
+                if args.suite != "jev-emotion":
+                    failed_dependencies.add(case["case_id"])
             else:
                 record["status"] = "completed"
             print(f"[{index}/{len(selected)}] {case['case_id']} 客觀檢查={record['status']}", flush=True)

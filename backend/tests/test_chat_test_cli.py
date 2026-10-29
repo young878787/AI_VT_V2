@@ -262,6 +262,57 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(status, "passed")
         store.close.assert_called_once()
 
+    async def test_jev_emotion_runs_all_turns_after_failure_and_archives_history(self):
+        from tools.ai_testset import load_suite
+        dataset = load_suite("jev-emotion")
+        sent = []
+        store = SimpleNamespace(open=Mock(), close=Mock(), case_state=Mock(return_value={}), created=True)
+        loader = SimpleNamespace(embedding_cost={}, memory_ids={}, other_owner_state=Mock(return_value={}))
+
+        async def prepare(case, _):
+            return {"session_id": case["session"], "metadata": {}}
+
+        async def turn(ws, index, message, model, session, storage, timeout, mode):
+            sent.append(message)
+            return {"turn_id": uuid4().hex, "user": message, "reply": "合成回答", "stream_complete": True,
+                    "request_sent": True, "errors": [], "_db_state": {}}
+
+        def check(suite, case, record, *args):
+            failed = case["case_id"] == "je_008"
+            record["checks"] = [{"stage": "emotion", "status": "failed" if failed else "passed", "reason_code": "emotion_first",
+                                  "evidence": {"file": "turns.jsonl", "case_id": case["case_id"]}}]
+
+        loader.prepare = prepare
+        settings = SimpleNamespace(embedding_model="test", embedding_serving_model="test", embedding_dimension=1024,
+                                   embedding_query_prefix="", embedding_document_prefix="", embedding_contract="test")
+        socket = SimpleNamespace(close=AsyncMock())
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            root = Path(directory)
+            replacements = {
+                "test_database_url": lambda: "postgresql://test/test_db", "MemoryRunStore": Mock(return_value=store),
+                "start_backend": Mock(return_value=(Mock(), Mock())), "stop_backend": Mock(),
+                "connect_backend": AsyncMock(return_value=socket), "control_step": AsyncMock(return_value={}),
+                "run_turn": turn, "wait_jev_trace": AsyncMock(), "provenance": lambda _: {}, "RUNS_DIR": root,
+                "read_emotion_record": Mock(return_value=None),
+            }
+            for name, value in replacements.items():
+                stack.enter_context(patch.object(cli, name, value))
+            stack.enter_context(patch("tools.ai_test_fixtures.FixtureLoader", return_value=loader))
+            stack.enter_context(patch("domain.memory_settings.load_memory_settings", return_value=settings))
+            stack.enter_context(patch("tools.ai_test_evidence.check_turn", side_effect=check))
+            args = argparse.Namespace(suite="jev-emotion", case=None, scenario=None, turn_timeout=1, startup_timeout=1)
+            for _ in range(2):
+                run_dir, status = await cli.run(args)
+            records = [json.loads(line) for line in (run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()]
+            history = list((root / "jev-emotion" / "history").iterdir())
+            self.assertEqual(len(history), 1)
+            self.assertTrue((history[0] / "run.json").is_file())
+        self.assertEqual(sent, [c["input"] for c in dataset["cases"]] * 2)
+        self.assertEqual(status, "failed")
+        self.assertTrue(all(record["request_sent"] for record in records))
+        self.assertEqual([r["case_id"] for r in records if r["status"] == "failed"], ["je_008"])
+        self.assertEqual(run_dir, root / "jev-emotion" / "latest")
+
     async def test_turn_does_not_retry_sent_user_input_on_connection_failure(self):
         socket = SimpleNamespace(send=AsyncMock(), recv=AsyncMock(side_effect=OSError("closed")))
         store = SimpleNamespace(snapshot=Mock(return_value={}), case_state=Mock(return_value={}))
