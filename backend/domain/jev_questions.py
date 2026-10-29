@@ -3,7 +3,12 @@ import hashlib
 import json
 import math
 
-from domain.emotion_state import CHARACTER_EXPRESSION_PROFILE, EMOTION_FIELDS, PERSONALITY
+from domain.emotion_state import (
+    CHARACTER_EXPRESSION_PROFILE,
+    EMOTION_FIELDS,
+    MOOD_HISTORY_LIMIT,
+    PERSONALITY,
+)
 from domain.expression_intent_schema import (
     ALLOWED_ARCS,
     ALLOWED_EMOTIONS,
@@ -104,35 +109,50 @@ INTENSITY_LEVELS = list(_INTENSITY_LEVELS)
 ENERGY_LEVELS = list(_ENERGY_LEVELS)
 
 
+# 2 為不變，對應後端 (score - 2) / 2；表達軸（masking_positive_feeling）為撒嬌 0 ↔ 嘴硬 4。
 _EMOTION_QUESTIONS = {
-    "shy": "露西亞此刻是否明顯害羞或不好意思？",
-    "pleased": "露西亞是否因目前互動感到開心、滿足或被取悅？",
-    "genuinely_angry": "露西亞是否真的生氣，而非嘴硬、吐槽或假裝不耐煩？",
-    "sad_or_hurt": "露西亞是否難過、失落、受傷或感到被冷落？",
-    "masking_positive_feeling": "露西亞是否正在掩飾喜歡、開心或親近等正面感受？",
-    "wants_continue_interaction": "露西亞是否希望目前話題或親密互動繼續？",
+    "shy": ("這句話讓你害羞嗎？", (
+        "0 原本的害羞被打消", "1 害羞少一點", "2 沒影響", "3 有點害羞", "4 很害羞、很不好意思",
+    )),
+    "pleased": ("這句話讓你開心嗎？", (
+        "0 開心被打消（被潑冷水、被否定）", "1 開心少一點", "2 沒影響", "3 有點開心",
+        "4 很開心（被稱讚、被重視）",
+    )),
+    "genuinely_angry": ("這句話讓你真的生氣嗎？你自己嘴硬、吐槽不算生氣。", (
+        "0 氣消了（對方道歉、解釋清楚）", "1 氣消一點", "2 沒影響", "3 有點不爽",
+        "4 很生氣（被罵、被看不起、被冒犯）",
+    )),
+    "sad_or_hurt": ("這句話讓你難過嗎？", (
+        "0 難過被撫平（被安慰、被在乎）", "1 難過少一點", "2 沒影響", "3 有點受傷、失落",
+        "4 很受傷（被嫌棄、被冷落）",
+    )),
+    "masking_positive_feeling": ("聽到這句話，你會撒嬌還是嘴硬？", (
+        "0 很想撒嬌：開心、被寵，或對方敷衍你（只回「喔」「嗯」）時黏過去討回應", "1 有點想撒嬌",
+        "2 跟平常一樣", "3 有點嘴硬", "4 很嘴硬：生氣或受傷時逞強、假裝不在意",
+    )),
+    "wants_continue_interaction": ("聽完這句話，你想把話題聊下去嗎？", (
+        "0 想敷衍帶過、結束話題：你在生氣、受傷，或對方一直講你沒興趣的事", "1 回短一點就好",
+        "2 照常回應", "3 想多聊一點", "4 很想延伸話題、主動多講：開心、害羞時",
+    )),
 }
 
-_EMOTION_EVALUATION_RULES = (
-    "你是情緒狀態估計器，只估計露西亞此刻的內在情緒。",
-    "以 current_user_input 的當輪可觀察線索為最高優先；recent_dialogue 只用來解讀當輪線索。",
-    "previous_emotion_state 只供連續性參考，不代表本輪仍有相同情緒；沒有當輪支持證據時，降低對應分數，不沿用舊分數。",
-    "character_expression_profile 只可協助解讀模糊線索；不能獨立構成情緒證據，也不能直接提高任何情緒分數。",
-    "明確否認某種情緒通常是該情緒的反向證據；只有強烈、可觀察的相反線索才可推翻。",
-    "判斷 masking_positive_feeling 時，否認本身不足以提高分數；必須同時有可觀察的正面感受及掩飾行為。",
+_EMOTION_ROLE = (
+    "你是露西亞，死靈法師青少女。對方剛對你說了 current_user_input，前面的對話在 recent_dialogue。\n"
+    "current_mood 是你現在的情緒（0～1）；mood_history 是前幾輪各讓情緒變了多少，turns_ago=1 是上一輪。\n"
+    "只看對方這句話給 0～4 分：2 是沒影響，3～4 往選項 4 的方向，0～1 往選項 0 的方向，兩邊都會用到。"
+    "跟這題無關就給 2。前幾輪已經反應過的事再講一次，不再加分。"
 )
 
 
 def build_emotion_questions() -> dict:
     assert set(_EMOTION_QUESTIONS) == set(EMOTION_FIELDS)
-    rules = "\n".join(f"- {rule}" for rule in _EMOTION_EVALUATION_RULES)
     return {
         field: {
-            "type": "noul",
-            "instructions": f"{question}\n\n判斷規則：\n{rules}\n不輸出理由。",
-            "criteria": {"true": "符合", "false": "不符合"},
+            "type": "score",
+            "instructions": f"{_EMOTION_ROLE}\n\n{question}",
+            "criteria": list(levels),
         }
-        for field, question in _EMOTION_QUESTIONS.items()
+        for field, (question, levels) in _EMOTION_QUESTIONS.items()
     }
 
 
@@ -150,17 +170,27 @@ def build_recent_dialogue(chat_history: list[dict]) -> list[dict]:
 def build_emotion_context(
     user_message: str,
     chat_history: list[dict],
-    previous_emotion_state: dict | None,
+    current_mood: dict[str, float],
+    mood_history: list[dict] | None = None,
 ) -> dict:
-    """情緒角色：只含證據中立 profile、近期對話與上一輪情緒。"""
-    context = {
+    """情緒角色：證據中立 profile、近期對話、閒置回落後的情緒值與最近 ≤3 輪變化。
+
+    turns_ago 依 turn_id 對應 chat_history 的實際 user 輪次；找不到對應輪次的紀錄不送出。
+    """
+    user_turn_ids = [msg.get("turn_id") for msg in chat_history
+                     if isinstance(msg, dict) and msg.get("role") == "user"]
+    entries = []
+    for entry in list(mood_history or [])[-MOOD_HISTORY_LIMIT:]:
+        if entry["turn_id"] in user_turn_ids:
+            turns_ago = len(user_turn_ids) - user_turn_ids.index(entry["turn_id"])
+            entries.append({"turns_ago": turns_ago, "changes": dict(entry["changes"])})
+    return {
         "character_expression_profile": CHARACTER_EXPRESSION_PROFILE,
         "recent_dialogue": build_recent_dialogue(chat_history),
         "current_user_input": user_message[:4000],
+        "current_mood": {field: round(current_mood[field], 2) for field in EMOTION_FIELDS},
+        "mood_history": entries,
     }
-    if previous_emotion_state is not None:
-        context["previous_emotion_state"] = previous_emotion_state
-    return context
 
 
 def build_action_questions() -> dict:

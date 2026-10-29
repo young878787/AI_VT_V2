@@ -18,7 +18,7 @@ from core.config import (
 )
 from core.prompt_logger import log_turn, reset_log, trace, trace_event, trace_turn, bind_trace_event
 from domain.agent_a_prompts import build_agent_a_prompt, build_turn_scope_hint
-from domain.emotion_state import EMOTION_FIELDS, resolve_emotion_state, NEUTRAL_EMOTION_STATE
+from domain.emotion_state import EMOTION_FIELDS, NEUTRAL_EMOTION_STATE, apply_mood_turn, idle_decayed_mood
 from domain.expression_intent_schema import (
     ALLOWED_EMOTIONS,
     ALLOWED_PERFORMANCE_MODES,
@@ -533,7 +533,11 @@ async def websocket_endpoint(websocket: WebSocket):
         try:
             history = snapshot["messages"]
             role_questions = build_role_questions()
-            emotion_context = build_emotion_context(text, history, snapshot["emotion"])
+            mood_record = snapshot["emotion"]
+            current_mood = idle_decayed_mood(mood_record, snapshot["message_timestamp"])
+            emotion_context = build_emotion_context(
+                text, history, current_mood, mood_record["history"] if mood_record else None,
+            )
             action_context = build_action_context(text, history, snapshot["expression"], snapshot["action"])
             memory_context = build_memory_context(text, history)
 
@@ -582,19 +586,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 {field: answers.get(field) for field in EMOTION_FIELDS}
                 if isinstance(answers, dict) else None
             )
-            next_emotion, source = resolve_emotion_state(emotion_answers, snapshot["emotion"])
+            next_record, mood_changes, source = apply_mood_turn(
+                mood_record, current_mood, emotion_answers, turn_id, snapshot["message_timestamp"],
+            )
             if active_turn_id != turn_id:
                 return
-            emotion_state = next_emotion
+            emotion_state = next_record
             version += 1
             if short_term_enabled:
-                await persist_emotion(next_emotion)
-            await send({"type": "emotion_update", "state": next_emotion, "source": source,
+                await persist_emotion(next_record)
+            await send({"type": "emotion_update", "state": next_record["mood"], "source": source,
                         "turn_id": turn_id, "version": version})
 
-            prompt = build_agent_a_prompt(snapshot["profile"], snapshot["memory"], next_emotion, model_name=model_name,
+            prompt = build_agent_a_prompt(snapshot["profile"], snapshot["memory"], next_record["mood"],
+                                          model_name=model_name,
                                           message_timestamp=snapshot["message_timestamp"],
-                                          tools_enabled=snapshot["tools_enabled"])
+                                          tools_enabled=snapshot["tools_enabled"], mood_changes=mood_changes)
             if snapshot["summary"]:
                 prompt += "\n\n本 session 已完成的對話摘要：\n" + snapshot["summary"][:4000]
             scope_hint = build_turn_scope_hint(text, snapshot["messages"])
@@ -907,7 +914,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await send({"type": "reset_done"})
                 continue
             if control_type == "sync":
-                await send({"type": "emotion_update", "state": emotion_state or dict(NEUTRAL_EMOTION_STATE),
+                await send({"type": "emotion_update",
+                            "state": emotion_state["mood"] if emotion_state else dict(NEUTRAL_EMOTION_STATE),
                             "source": "previous_fallback" if emotion_state else "neutral_fallback",
                             "version": version})
                 continue

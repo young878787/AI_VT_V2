@@ -12,7 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from api.routes.memory_router import _ensure_local_management
-from domain.emotion_state import NEUTRAL_EMOTION_STATE
+from domain.emotion_state import NEUTRAL_EMOTION_STATE, apply_mood_turn
 from backend.tests.chat_session_fakes import FakeChatSessionRepository
 from services.memory_library import MemoryLibraryService
 
@@ -22,7 +22,7 @@ class MemoryLibrarySessionTests(unittest.IsolatedAsyncioTestCase):
         chat = FakeChatSessionRepository(
             [{"role": "user", "content": "我喜歡茶"}], "使用者喜歡茶", "session_123",
         )
-        chat.emotion_state = dict(NEUTRAL_EMOTION_STATE)
+        chat.emotion_state, _, _ = apply_mood_turn(None, dict(NEUTRAL_EMOTION_STATE), None, "turn_1", 0.0)
         library = MemoryLibraryService(SimpleNamespace(pool=None, scope=None), chat)
         listed = await library.sessions()
         self.assertEqual(len(listed), 1)
@@ -31,6 +31,7 @@ class MemoryLibrarySessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(listed[0]["has_emotion_state"])
         detail = await library.session("session_123")
         self.assertEqual(detail["messages"][0]["content"], "我喜歡茶")
+        self.assertEqual(detail["emotion_state"], NEUTRAL_EMOTION_STATE)
         result = await library.delete_session("session_123")
         self.assertEqual(result["deleted_sessions"], 1)
         self.assertEqual(await library.sessions(), [])

@@ -11,7 +11,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from core.config import CHAT_CONTEXT_RECENT_MESSAGES
 from core.utils import get_msg_field, normalize_session_id
-from domain.emotion_state import validate_emotion_state
+from domain.emotion_state import validate_mood_record
 from domain.memory_scope import MemoryScope
 from domain.memory_source import MEMORY_SOURCE_FIELD, read_memory_source
 
@@ -208,7 +208,7 @@ class ChatSessionRepository:
             "summary_through_sequence": summary_cursor,
             "next_message_sequence": next_sequence,
             "uncompressed_message_count": backlog,
-            "emotion_state": validate_emotion_state(emotion),
+            "emotion_state": validate_mood_record(emotion),
             "messages": messages,
             "created_at": created_at.isoformat(),
             "updated_at": updated_at.isoformat(),
@@ -465,10 +465,10 @@ class ChatSessionRepository:
                     (summary.strip(), through_sequence, session_id, *self.owner),
                 )).fetchone())[0]
 
-    async def update_emotion(self, session_id: str, generation: int, state: dict) -> int:
-        validated = validate_emotion_state(state)
+    async def update_emotion(self, session_id: str, generation: int, record: dict) -> int:
+        validated = validate_mood_record(record)
         if validated is None:
-            raise ValueError("無效的 Emotion State")
+            raise ValueError("無效的情緒紀錄")
         return await self._update_state(session_id, generation, "emotion_state", Jsonb(validated))
 
     async def _update_state(self, session_id: str, generation: int, column: str, value) -> int:
@@ -559,10 +559,11 @@ class ChatSessionRepository:
                     (session_id, *self.owner, session[1], limit, offset),
                 )
                 items = [self._message_item(row) for row in await cursor.fetchall()]
+                mood_record = validate_mood_record(session[4])
                 return {
                     "session_id": session[0], "generation": session[1], "revision": session[2],
                     "summary": session[3], "summary_through_sequence": session[5],
-                    "emotion_state": validate_emotion_state(session[4]),
+                    "emotion_state": mood_record["mood"] if mood_record else None,
                     "messages": items, "message_count": total, "limit": limit, "offset": offset,
                     "created_at": session[7].isoformat(), "updated_at": session[8].isoformat(),
                 }

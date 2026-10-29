@@ -18,6 +18,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from domain.memory_routing import MemoryRouting
 from domain.memory_scope import MemoryScope
 from domain.memory_source import build_user_message, read_memory_source
+from domain.emotion_state import NEUTRAL_EMOTION_STATE
 from domain.jev_questions import build_emotion_context
 from infrastructure.memory_repository import MemoryRepository
 from infrastructure.memory_store import load_session_messages, save_session_messages
@@ -197,7 +198,7 @@ class MemorySourcePolicyTests(unittest.IsolatedAsyncioTestCase):
             timestamp=1_700_000_000, generation=0,
         )
         chat = build_chat_context("system", [message], "下一句")
-        emotion = build_emotion_context("下一句", [message], None)
+        emotion = build_emotion_context("下一句", [message], NEUTRAL_EMOTION_STATE)
 
         self.assertEqual(chat[1], {"role": "user", "content": message["content"]})
         self.assertEqual(
