@@ -24,9 +24,9 @@ def active_fixture() -> dict | None:
         return None
     value = json.loads(Path(location).read_text(encoding="utf-8"))
     if (value.get("version") != 1 or value.get("schema") != os.environ["MEMORY_DATABASE_SCHEMA"]
-            or value.get("suite") not in {"chat", "memory", "tools", "integration"}):
+            or value.get("suite") not in {"chat", "memory", "tools", "integration", "jev-emotion"}):
         raise ValueError("fixture_invalid: runtime manifest")
-    if not re.fullmatch(r"(?:ch|mem|to|it)_[0-9]{3}", value.get("case_id", "")):
+    if not re.fullmatch(r"(?:ch|mem|to|it|je)_[0-9]{3}", value.get("case_id", "")):
         raise ValueError("fixture_invalid: case ID")
     if value.get("vision_rejection") and value["case_id"] not in {"to_007", "it_012"}:
         raise ValueError("fixture_invalid: unexpected vision fault")

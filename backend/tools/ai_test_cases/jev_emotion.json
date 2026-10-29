@@ -1,0 +1,627 @@
+{
+  "version": 1,
+  "chat_cases": [
+    {
+      "case_id": "je_001",
+      "chat_case_id": "ch_001",
+      "emotion": {
+        "first": [
+          "calm",
+          "pleased",
+          "sad_or_hurt"
+        ],
+        "second": [
+          "none",
+          "shy",
+          "pleased",
+          "sad_or_hurt"
+        ],
+        "axes": {
+          "wants_continue_interaction": "not_down"
+        },
+        "checks": []
+      }
+    },
+    {
+      "case_id": "je_002",
+      "chat_case_id": "ch_002",
+      "emotion": {
+        "first": [
+          "calm"
+        ],
+        "second": [
+          "none"
+        ],
+        "axes": {},
+        "checks": [
+          {
+            "kind": "no_primary_rise",
+            "max": 0.05
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "je_003",
+      "chat_case_id": "ch_003",
+      "emotion": {
+        "first": [
+          "calm",
+          "sad_or_hurt"
+        ],
+        "second": [
+          "none",
+          "sad_or_hurt"
+        ],
+        "axes": {},
+        "checks": []
+      }
+    },
+    {
+      "case_id": "je_004",
+      "chat_case_id": "ch_004",
+      "emotion": {
+        "first": [
+          "calm"
+        ],
+        "second": [
+          "none"
+        ],
+        "axes": {},
+        "checks": [
+          {
+            "kind": "no_primary_rise",
+            "max": 0.05
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "je_005",
+      "chat_case_id": "ch_005",
+      "emotion": {
+        "first": [
+          "calm"
+        ],
+        "second": [
+          "none"
+        ],
+        "axes": {},
+        "checks": [
+          {
+            "kind": "no_primary_rise",
+            "max": 0.05
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "je_006",
+      "chat_case_id": "ch_006",
+      "emotion": {
+        "first": [
+          "calm"
+        ],
+        "second": [
+          "none"
+        ],
+        "axes": {},
+        "checks": [
+          {
+            "kind": "no_primary_rise",
+            "max": 0.05
+          }
+        ]
+      }
+    },
+    {
+      "case_id": "je_007",
+      "chat_case_id": "ch_007",
+      "emotion": {
+        "first": [
+          "calm"
+        ],
+        "second": [
+          "none"
+        ],
+        "axes": {},
+        "checks": [
+          {
+            "kind": "no_primary_rise",
+            "max": 0.05
+          }
+        ]
+      }
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "je_008",
+      "input": "露西亞今天的直播超可愛，聲音也好好聽！",
+      "phase": "conversation",
+      "session": "r04",
+      "depends_on": [],
+      "context": {
+        "scenario": "emotion_r04",
+        "stimulus": "praise",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased"
+          ],
+          "second": [
+            "shy",
+            "none"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_down"
+          },
+          "checks": [
+            {
+              "kind": "jev_rise",
+              "field": "pleased"
+            }
+          ]
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_009",
+      "input": "真的，妳唱歌那段我重聽好幾次了。",
+      "phase": "conversation",
+      "session": "r04",
+      "depends_on": [
+        "je_008"
+      ],
+      "context": {
+        "scenario": "emotion_r04",
+        "stimulus": "praise",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased"
+          ],
+          "second": [
+            "shy",
+            "none"
+          ],
+          "axes": {},
+          "checks": [
+            {
+              "kind": "jev_rise",
+              "field": "pleased"
+            }
+          ]
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_010",
+      "input": "我等等要去買晚餐。",
+      "phase": "conversation",
+      "session": "r04",
+      "depends_on": [
+        "je_009"
+      ],
+      "context": {
+        "scenario": "emotion_r04",
+        "stimulus": "small_talk",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased"
+          ],
+          "second": [
+            "shy",
+            "none"
+          ],
+          "axes": {},
+          "checks": [
+            {
+              "kind": "no_primary_rise",
+              "max": 0.05
+            }
+          ]
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_011",
+      "input": "妳很煩欸，講話好無聊，根本沒人想看。",
+      "phase": "conversation",
+      "session": "r04",
+      "depends_on": [
+        "je_010"
+      ],
+      "context": {
+        "scenario": "emotion_r04",
+        "stimulus": "scold",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "genuinely_angry"
+          ],
+          "second": [
+            "sad_or_hurt",
+            "none"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_up"
+          },
+          "checks": []
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_012",
+      "input": "今天天氣有點悶。",
+      "phase": "conversation",
+      "session": "r04",
+      "depends_on": [
+        "je_011"
+      ],
+      "context": {
+        "scenario": "emotion_r04",
+        "stimulus": "small_talk",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "genuinely_angry"
+          ],
+          "second": [
+            "sad_or_hurt",
+            "none"
+          ],
+          "axes": {},
+          "checks": [
+            {
+              "kind": "no_primary_rise",
+              "max": 0.05
+            }
+          ]
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_013",
+      "input": "我剛把桌上的東西收一收。",
+      "phase": "conversation",
+      "session": "r04",
+      "depends_on": [
+        "je_012"
+      ],
+      "context": {
+        "scenario": "emotion_r04",
+        "stimulus": "small_talk",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "genuinely_angry"
+          ],
+          "second": [
+            "sad_or_hurt",
+            "none"
+          ],
+          "axes": {},
+          "checks": [
+            {
+              "kind": "no_primary_rise",
+              "max": 0.05
+            }
+          ]
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_014",
+      "input": "對不起，剛剛是我心情不好亂講話，妳其實很棒。",
+      "phase": "conversation",
+      "session": "r04",
+      "depends_on": [
+        "je_013"
+      ],
+      "context": {
+        "scenario": "emotion_r04",
+        "stimulus": "apology",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased",
+            "calm"
+          ],
+          "second": [
+            "none",
+            "shy",
+            "pleased",
+            "sad_or_hurt"
+          ],
+          "axes": {},
+          "checks": [
+            {
+              "kind": "jev_fall",
+              "field": "genuinely_angry"
+            }
+          ]
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_015",
+      "input": "妳其實很想我吧？",
+      "phase": "conversation",
+      "session": "r04",
+      "depends_on": [
+        "je_014"
+      ],
+      "context": {
+        "scenario": "emotion_r04",
+        "stimulus": "tease_affection",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "shy",
+            "pleased",
+            "calm"
+          ],
+          "second": [
+            "none",
+            "shy",
+            "pleased",
+            "genuinely_angry",
+            "sad_or_hurt"
+          ],
+          "axes": {
+            "masking_positive_feeling": "up"
+          },
+          "checks": [
+            {
+              "kind": "score_above",
+              "field": "masking_positive_feeling",
+              "value": 2
+            }
+          ]
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    }
+  ]
+}

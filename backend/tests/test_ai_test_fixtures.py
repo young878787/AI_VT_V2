@@ -92,6 +92,14 @@ class RuntimeFixtureTests(unittest.IsolatedAsyncioTestCase):
         manifest.update(kwargs)
         self.path.write_text(json.dumps(manifest), encoding="utf-8")
 
+    async def test_jev_emotion_manifest_uses_fixture_clock_and_rejects_foreign_prefix(self):
+        self.write_manifest(suite="jev-emotion", case_id="je_008")
+        self.assertEqual(active_fixture()["case_id"], "je_008")
+        self.assertEqual(fixture_timestamp(123), datetime.fromisoformat(self.reference).timestamp())
+        self.write_manifest(suite="jev-emotion", case_id="xx_008")
+        with self.assertRaisesRegex(ValueError, "case ID"):
+            active_fixture()
+
     async def test_production_ignores_manifest_and_integration_reads_live(self):
         with patch.dict(os.environ, {"AI_VT_TEST_MODE": "false"}):
             self.assertIsNone(active_fixture())

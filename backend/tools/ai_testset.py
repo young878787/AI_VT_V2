@@ -1,4 +1,4 @@
-"""四組固定案例、依賴選取及有界使用者續問；不接受舊測試格式。"""
+"""分組固定案例、依賴選取及有界使用者續問；不接受舊測試格式。"""
 
 import asyncio
 import copy
@@ -10,11 +10,15 @@ import re
 import time
 from zoneinfo import ZoneInfo
 
+from domain.emotion_state import EMOTION_FIELDS, PRIMARY_EMOTION_FIELDS
+
 
 CASE_DIR = Path(__file__).with_name("ai_test_cases")
-SUITE_COUNTS = {"chat": 7, "memory": 14, "tools": 7, "integration": 15}
+SUITE_COUNTS = {"chat": 7, "memory": 14, "tools": 7, "integration": 15, "jev-emotion": 15}
+SUITE_PREFIXES = {"chat": "ch", "memory": "mem", "tools": "to", "integration": "it", "jev-emotion": "je"}
 MAX_INPUT = 1000
 CASE_FIELDS = {"case_id", "input", "phase", "session", "depends_on", "context", "oracle", "source", "legacy_case_ids"}
+AXIS_DIRECTIONS = {"up", "down", "not_up", "not_down"}
 
 
 def fingerprint(value) -> str:
@@ -39,7 +43,7 @@ def _validate(data: dict, suite: str) -> None:
                 or memory["owner"] not in {"self", "other"}):
             raise ValueError("初始記憶缺欄位、重複 ID 或 owner 無效")
         memory_ids.add(memory["id"])
-    prefix = {"chat": "ch", "memory": "mem", "tools": "to", "integration": "it"}[suite]
+    prefix = SUITE_PREFIXES[suite]
     identifiers = [f"{prefix}_{index:03}" for index in range(1, SUITE_COUNTS[suite] + 1)]
     seen = set()
     for case, expected in zip(cases, identifiers):
@@ -89,13 +93,60 @@ def _validate(data: dict, suite: str) -> None:
             raise ValueError("legacy_case_ids 必須是對照陣列")
         if suite == "memory" and case["phase"] == "recall" and (context.get("history") or context.get("summary")):
             raise ValueError("記憶召回必須使用空短期上下文")
+        if (suite == "jev-emotion") != ("emotion" in oracle):
+            raise ValueError("只有 jev-emotion 案例必須帶 oracle.emotion")
+        if suite == "jev-emotion":
+            _validate_emotion_oracle(oracle["emotion"])
         seen.add(expected)
+
+
+def _validate_emotion_oracle(emotion) -> None:
+    """第一／第二名允許集合（calm=平穩、none=無輔助）、兩軸方向與 R-04 單欄條件。"""
+    if not isinstance(emotion, dict) or set(emotion) != {"first", "second", "axes", "checks"}:
+        raise ValueError("oracle.emotion 只能包含 first、second、axes、checks")
+    for key, allowed in (("first", {"calm", *PRIMARY_EMOTION_FIELDS}), ("second", {"none", *PRIMARY_EMOTION_FIELDS})):
+        values = emotion[key]
+        if (not isinstance(values, list) or not values or len(set(values)) != len(values)
+                or not set(values) <= allowed):
+            raise ValueError(f"oracle.emotion.{key} 必須為不重複且合法的允許集合")
+    axes = emotion["axes"]
+    if (not isinstance(axes, dict) or not set(axes) <= set(EMOTION_FIELDS) - set(PRIMARY_EMOTION_FIELDS)
+            or not set(axes.values()) <= AXIS_DIRECTIONS):
+        raise ValueError("oracle.emotion.axes 只接受兩軸與 up／down／not_up／not_down")
+    if not isinstance(emotion["checks"], list):
+        raise ValueError("oracle.emotion.checks 必須為陣列")
+    for item in emotion["checks"]:
+        kind = item.get("kind") if isinstance(item, dict) else None
+        valid = (
+            (kind in {"jev_rise", "jev_fall"} and set(item) == {"kind", "field"} and item["field"] in EMOTION_FIELDS)
+            or (kind == "no_primary_rise" and set(item) == {"kind", "max"}
+                and type(item["max"]) in (int, float) and 0 <= item["max"] < 1)
+            or (kind == "score_above" and set(item) == {"kind", "field", "value"} and item["field"] in EMOTION_FIELDS
+                and type(item["value"]) in (int, float) and 0 <= item["value"] <= 4))
+        if not valid:
+            raise ValueError("oracle.emotion.checks 含未知或格式錯誤的條件")
+
+
+def _jev_emotion_cases(data: dict) -> list[dict]:
+    """je_001～007 直接引用 chat.json 的輸入與上下文，只附加情緒 oracle；其餘為 R-04 連續情境。"""
+    chat = {case["case_id"]: case for case in json.loads((CASE_DIR / "chat.json").read_text(encoding="utf-8"))["cases"]}
+    shared = []
+    for item in data.pop("chat_cases"):
+        source = chat.get(item.get("chat_case_id"))
+        if source is None or source["depends_on"]:
+            raise ValueError("jev-emotion 只能引用存在且無前序的 chat 案例")
+        case = copy.deepcopy(source)
+        case["case_id"] = item["case_id"]
+        case["context"]["chat_case_id"] = source["case_id"]
+        case["oracle"]["emotion"] = item["emotion"]
+        shared.append(case)
+    return shared + data["cases"]
 
 
 def load_suite(suite: str, scenario=None) -> dict:
     """載入完整 suite；重播先完整讀檔且核對固定輸入、oracle 與控制點。"""
     if suite not in SUITE_COUNTS:
-        raise ValueError("suite 必須為 chat、memory、tools 或 integration")
+        raise ValueError("suite 必須為 chat、memory、tools、integration 或 jev-emotion")
     if scenario is not None and not isinstance(scenario, (dict, str, Path)):
         raise ValueError("不接受舊 28-case 陣列；重播必須為新 suite 快照 object")
     data = None
@@ -111,8 +162,10 @@ def load_suite(suite: str, scenario=None) -> dict:
             raise ValueError("重播必須包含有效且含時區的 reference_time") from exc
     else:
         reference = datetime.now(ZoneInfo("Asia/Taipei"))
-    fixed = json.loads((CASE_DIR / f"{suite}.json").read_text(encoding="utf-8"))
+    fixed = json.loads((CASE_DIR / f"{suite.replace('-', '_')}.json").read_text(encoding="utf-8"))
     fixed.update(suite=suite)
+    if suite == "jev-emotion":
+        fixed["cases"] = _jev_emotion_cases(fixed)
     if suite == "integration":
         # 初始 corpus 本文只有 memory.json 一份來源；依 memory_ids 決定真正植入範圍。
         fixed["memories"] = json.loads((CASE_DIR / "memory.json").read_text(encoding="utf-8"))["memories"]

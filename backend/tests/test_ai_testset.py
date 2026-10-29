@@ -29,6 +29,38 @@ class DatasetTests(unittest.TestCase):
                 self.assertTrue(all("conversation" not in case for case in data["cases"]))
                 self.assertEqual(sum(case["source"] == "generated" for case in data["cases"]), 2 if suite == "integration" else 0)
 
+    def test_jev_emotion_shares_chat_cases_and_chains_r04(self):
+        data = load_suite("jev-emotion")
+        chat = load_suite("chat")["cases"]
+        self.assertEqual([case["case_id"] for case in data["cases"]], [f"je_{index:03}" for index in range(1, 16)])
+        for shared, source in zip(copy.deepcopy(data["cases"][:7]), chat):
+            # 輸入、上下文與 chat oracle 不複製，只附加 chat_case_id 與情緒期望。
+            self.assertEqual(shared["context"].pop("chat_case_id"), source["case_id"])
+            self.assertIn("first", shared["oracle"].pop("emotion"))
+            self.assertEqual({**shared, "case_id": source["case_id"]}, source)
+        self.assertEqual({case["context"]["scenario"] for case in data["cases"][7:]}, {"emotion_r04"})
+        self.assertEqual([case["case_id"] for case in select_cases(data, "je_011")],
+                         ["je_008", "je_009", "je_010", "je_011"])
+        self.assertEqual([case["case_id"] for case in select_cases(data, "je_003")], ["je_003"])
+        self.assertEqual(load_suite("jev-emotion", data)["input_source"], "replayed_inputs")
+
+    def test_jev_emotion_oracle_rejects_unknown_tokens_and_missing_emotion(self):
+        data = load_suite("jev-emotion")
+        for mutate, message in (
+                (lambda c: c["oracle"]["emotion"]["first"].append("happy"), "first"),
+                (lambda c: c["oracle"]["emotion"].update(second=[]), "second"),
+                (lambda c: c["oracle"]["emotion"]["axes"].update(pleased="up"), "axes"),
+                (lambda c: c["oracle"]["emotion"]["checks"].append({"kind": "jev_rise", "field": "x"}), "checks"),
+                (lambda c: c["oracle"].pop("emotion"), "oracle.emotion")):
+            changed = copy.deepcopy(data)
+            mutate(changed["cases"][8])
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                load_suite("jev-emotion", changed)
+        chat = load_suite("chat")
+        chat["cases"][0]["oracle"]["emotion"] = data["cases"][0]["oracle"]["emotion"]
+        with self.assertRaisesRegex(ValueError, "oracle.emotion"):
+            load_suite("chat", chat)
+
     def test_memory_correction_dependency_skips_unneeded_recall(self):
         cases = select_cases(load_suite("memory"), "mem_006")
         self.assertEqual([case["case_id"] for case in cases], ["mem_003", "mem_005", "mem_006"])
