@@ -12,7 +12,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from tools.ai_test_evidence import case_mode, check_turn, jev_evidence, linked_targets
+from domain.emotion_state import EMOTION_FIELDS, apply_mood_turn, build_mood_lines, idle_decayed_mood
+from tools.ai_test_evidence import case_mode, check_turn, emotion_checks, jev_evidence, linked_targets
 
 
 EVENT = "12345678-1234-1234-1234-123456789abc"
@@ -373,6 +374,105 @@ class AiTestEvidenceTests(unittest.TestCase):
         record["trace"][-1]["messages"][0]["content"] = json.dumps({**final, "data": {"old_image": "leaked"}})
         with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
             self.assertEqual(run_checks(case, record, state)["receipt_content"]["status"], "failed")
+
+
+def emotion_turn(scores, before=None, turn_id="t2", emotion=None):
+    """以真實 mood 純函式組出一輪 runtime 證據；呼叫端再竄改單一層驗證歸因。"""
+    answers = {field: {"type": "score", "score": scores.get(field, 2), "confidence": 0.8} for field in EMOTION_FIELDS}
+    current = idle_decayed_mood(before, 100.0)
+    after, changes, source = apply_mood_turn(before, current, answers, turn_id, 100.0)
+    system = "角色規則\n目前心情：\n" + "\n".join(f"- {line}" for line in build_mood_lines(after["mood"], changes))
+    case = {"case_id": "je_008", "oracle": {"emotion": emotion or {
+        "first": ["pleased"], "second": ["shy", "none"], "axes": {"wants_continue_interaction": "not_down"},
+        "checks": [{"kind": "jev_rise", "field": "pleased"}]}}}
+    record = {"case_id": "je_008", "turn_id": turn_id, "emotion_source": source, "emotion_state": dict(after["mood"]),
+              "emotion_record_before": copy.deepcopy(before), "emotion_record_after": copy.deepcopy(after),
+              "trace": [{"stage": "jev", "role": "emotion", "answers": answers, "error": None, "question_hash": "h",
+                         "state": {"current_mood": {f: round(current[f], 2) for f in EMOTION_FIELDS}, "mood_history": []}},
+                        {"stage": "chat_context", "messages": [{"role": "system", "content": system}]}]}
+    return case, record
+
+
+def emotion_results(case, record):
+    return {check["reason_code"]: check["status"] for check in emotion_checks(case, record)}
+
+
+class EmotionEvidenceTests(unittest.TestCase):
+    def test_praise_passes_and_keeps_layered_evidence(self):
+        case, record = emotion_turn({"pleased": 4, "shy": 3})
+        results = emotion_results(case, record)
+        self.assertTrue(all(status == "passed" for status in results.values()), results)
+        evidence = record["emotion_evidence"]
+        self.assertEqual((evidence["judgment"]["first"], evidence["judgment"]["second"]), ("pleased", "shy"))
+        self.assertEqual(evidence["failure_layers"], [])
+        self.assertEqual(evidence["jev"]["scores"]["pleased"], 4)
+        self.assertEqual(evidence["breakdown"]["pleased"]["jev_change"], 0.35)
+
+    def test_continuous_turn_recomputes_from_db_record_with_streak(self):
+        _, first = emotion_turn({"pleased": 4, "shy": 3}, turn_id="t1")
+        case, record = emotion_turn({"pleased": 4}, before=first["emotion_record_after"])
+        self.assertEqual(emotion_results(case, record)["emotion_recompute"], "passed")
+        self.assertEqual(record["emotion_evidence"]["input"]["record_before"]["streak"]["pleased"], 1)
+
+    def test_wrong_judgment_is_attributed_to_jev_not_computation(self):
+        case, record = emotion_turn({"genuinely_angry": 4, "pleased": 0})
+        results = emotion_results(case, record)
+        for code in ("emotion_jev_scores", "emotion_recompute", "emotion_prompt_projection"):
+            self.assertEqual(results[code], "passed")
+        self.assertEqual(results["emotion_first"], "failed")
+        self.assertEqual(results["emotion_jev_rise_pleased"], "failed")
+        self.assertEqual(record["emotion_evidence"]["judgment"]["first"], "genuinely_angry")
+        self.assertEqual(record["emotion_evidence"]["failure_layers"], ["jev_judgment"])
+
+    def test_persisted_mismatch_is_computation_failure(self):
+        case, record = emotion_turn({"pleased": 4})
+        record["emotion_record_after"]["streak"]["pleased"] = 3
+        self.assertEqual(emotion_results(case, record)["emotion_recompute"], "failed")
+        self.assertEqual(record["emotion_evidence"]["failure_layers"], ["computation"])
+        case, record = emotion_turn({"pleased": 4})
+        record["emotion_state"]["pleased"] += 0.01
+        self.assertEqual(emotion_results(case, record)["emotion_recompute"], "failed")
+
+    def test_prompt_projection_requires_block_and_no_field_names(self):
+        case, record = emotion_turn({"pleased": 4})
+        record["trace"][1]["messages"][0]["content"] = "角色規則\n- 主要情緒：平穩"
+        self.assertEqual(emotion_results(case, record)["emotion_prompt_projection"], "failed")
+        self.assertEqual(record["emotion_evidence"]["failure_layers"], ["projection"])
+        case, record = emotion_turn({"pleased": 4})
+        record["trace"][1]["messages"][0]["content"] += "\npleased=0.35"
+        self.assertEqual(emotion_results(case, record)["emotion_prompt_projection"], "failed")
+
+    def test_invalid_jev_fails_scores_and_every_direction_check(self):
+        case, record = emotion_turn({"pleased": 4})
+        record["trace"][0]["answers"]["shy"] = {"type": "score", "score": 5, "confidence": 0.8}
+        record["emotion_source"] = "neutral_fallback"
+        results = emotion_results(case, record)
+        self.assertEqual(results["emotion_jev_scores"], "failed")
+        self.assertEqual(results["emotion_axis_wants_continue_interaction"], "failed")
+        self.assertEqual(results["emotion_jev_rise_pleased"], "failed")
+        self.assertEqual(record["emotion_evidence"]["failure_layers"][0], "jev_call")
+
+    def test_calm_neutral_axes_and_score_conditions(self):
+        emotion = {"first": ["calm"], "second": ["none"], "axes": {"masking_positive_feeling": "up"},
+                   "checks": [{"kind": "no_primary_rise", "max": 0.05},
+                              {"kind": "score_above", "field": "masking_positive_feeling", "value": 2}]}
+        case, record = emotion_turn({"masking_positive_feeling": 3}, emotion=emotion)
+        self.assertTrue(all(status == "passed" for status in emotion_results(case, record).values()))
+        case, record = emotion_turn({"pleased": 3}, emotion=emotion)
+        results = emotion_results(case, record)
+        self.assertEqual(results["emotion_first"], "failed")
+        self.assertEqual(results["emotion_no_primary_rise"], "failed")
+        self.assertEqual(results["emotion_axis_masking_positive_feeling"], "failed")
+        self.assertEqual(results["emotion_score_above_masking_positive_feeling"], "failed")
+
+    def test_check_turn_adds_emotion_only_when_oracle_has_it(self):
+        case, record, state, _ = fixture()
+        self.assertFalse(any(code.startswith("emotion_") for code in run_checks(case, record, state)))
+        emotion_case, emotion_record = emotion_turn({"pleased": 4})
+        case["oracle"]["emotion"] = emotion_case["oracle"]["emotion"]
+        record.update({key: value for key, value in emotion_record.items() if key.startswith("emotion_")})
+        self.assertIn("emotion_first", run_checks(case, record, state))
+        self.assertEqual(case_mode("jev-emotion", case).value, case_mode("chat", case).value)
 
 
 if __name__ == "__main__":

@@ -9,6 +9,10 @@ import re
 from uuid import UUID
 
 from domain.chat_test_mode import ChatTestMode
+from domain.emotion_state import (
+    EMOTION_FIELDS, MOOD_AXIS_HIGH, MOOD_AXIS_LOW, MOOD_RETENTION, NEUTRAL_EMOTION_STATE, PRIMARY_EMOTION_FIELDS,
+    apply_mood_turn, build_mood_lines, idle_decayed_mood, rank_mood,
+)
 from domain.jev_questions import JEV_ROLES
 from domain.runtime_context import CONTEXT_TOOL_NAMES, project_snapshot
 from infrastructure.memory_repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
@@ -18,7 +22,7 @@ JEV_EVIDENCE_VERSION = "raw_choice_confidence_gate_v2"
 
 
 def case_mode(suite, case):
-    if suite in {"chat", "tools"}:
+    if suite in {"chat", "tools", "jev-emotion"}:
         return ChatTestMode.SHORT_ONLY
     if suite == "memory":
         return ChatTestMode.MEMORY_SEED if case["phase"] == "operation" else ChatTestMode.MEMORY_PROBE
@@ -137,6 +141,107 @@ def jev_evidence(record):
                 "turn_id": record.get("turn_id"), "field": "trace"}}
 
 
+AXIS_FIELDS = tuple(field for field in EMOTION_FIELDS if field not in PRIMARY_EMOTION_FIELDS)
+
+
+def _axis_label(value):
+    return "high" if value >= MOOD_AXIS_HIGH else "low" if value <= MOOD_AXIS_LOW else "middle"
+
+
+def _answer_value(answers, field, key):
+    answer = (answers or {}).get(field)
+    return answer.get(key) if isinstance(answer, dict) else None
+
+
+def emotion_checks(case, record):
+    """以 test_mood_state 同一組純函式重算情緒，分層保存證據並判第一／第二名、兩軸與 R-04 條件。"""
+    expected_emotion = case["oracle"]["emotion"]
+    trace = next((t for t in record.get("trace", []) if t.get("stage") == "jev" and t.get("role") == "emotion"), {})
+    answers = trace.get("answers") if isinstance(trace.get("answers"), dict) else None
+    before, after = record.get("emotion_record_before"), record.get("emotion_record_after")
+    scores = {field: _answer_value(answers, field, "score") for field in EMOTION_FIELDS}
+    jev_valid = (record.get("emotion_source") == "jev" and not trace.get("error")
+                 and all(_answer_value(answers, field, "type") == "score" and isinstance(score, (int, float))
+                         and not isinstance(score, bool) and math.isfinite(score) and 0 <= score <= 4
+                         for field, score in scores.items()))
+    # L2：DB 上一輪紀錄＋fixture 時鐘重算，必須與 DB 本輪紀錄及 emotion_update 完全相等。
+    recomputed = changes = current = source = None
+    if isinstance(after, dict) and isinstance(after.get("updated_at"), (int, float)):
+        current = idle_decayed_mood(before, after["updated_at"])
+        recomputed, changes, source = apply_mood_turn(
+            before, current, {field: answers.get(field) for field in EMOTION_FIELDS} if answers else None,
+            record.get("turn_id"), after["updated_at"])
+    state = trace.get("state") if isinstance(trace.get("state"), dict) else {}
+    computation_ok = (recomputed is not None and recomputed == after and source == record.get("emotion_source")
+                      and record.get("emotion_state") == after["mood"]
+                      and state.get("current_mood") == {field: round(current[field], 2) for field in EMOTION_FIELDS}
+                      and isinstance(state.get("mood_history"), list))
+    mood = after["mood"] if isinstance(after, dict) else record.get("emotion_state") or {}
+    complete = set(EMOTION_FIELDS) <= set(mood)
+    lines = build_mood_lines(mood, changes) if complete else []
+    system = _actual_system(context_trace(record))
+    projection_ok = (bool(lines) and "\n".join(f"- {line}" for line in lines) in system
+                     and not any(field in system for field in EMOTION_FIELDS))
+    first, second = rank_mood(mood) if complete else ("missing", "missing")
+    first, second = first or "calm", second or "none"
+    jev_changes = changes if jev_valid and changes is not None else None
+    breakdown = {}
+    if current is not None:
+        for field in EMOTION_FIELDS:
+            retained = NEUTRAL_EMOTION_STATE[field] + (current[field] - NEUTRAL_EMOTION_STATE[field]) * MOOD_RETENTION[field]
+            jev = (changes or {}).get(field, 0.0)
+            # changes 已取 2 位小數，對沖量為近似值。
+            breakdown[field] = {"before": round(current[field], 4), "after_retention": round(retained, 4),
+                                "jev_change": jev, "opposition_approx": round(mood.get(field, 0.0) - retained - jev, 4),
+                                "final": round(mood.get(field, 0.0), 4)}
+    judgments = [("emotion_first", first in expected_emotion["first"], first, expected_emotion["first"]),
+                 ("emotion_second", second in expected_emotion["second"], second, expected_emotion["second"])]
+    for field, direction in expected_emotion["axes"].items():
+        change = None if jev_changes is None else jev_changes.get(field, 0.0)
+        valid = change is not None and {"up": change > 0, "down": change < 0,
+                                         "not_up": change <= 0, "not_down": change >= 0}[direction]
+        judgments.append(("emotion_axis_" + field, valid, change, direction))
+    for item in expected_emotion["checks"]:
+        kind = item["kind"]
+        if kind == "no_primary_rise":
+            actual = None if jev_changes is None else {f: jev_changes.get(f, 0.0) for f in PRIMARY_EMOTION_FIELDS}
+            judgments.append(("emotion_no_primary_rise", actual is not None and max(actual.values()) <= item["max"],
+                              actual, item))
+        elif kind == "score_above":
+            actual = scores[item["field"]] if jev_valid else None
+            judgments.append(("emotion_score_above_" + item["field"], actual is not None and actual > item["value"],
+                              actual, item))
+        else:
+            actual = None if jev_changes is None else jev_changes.get(item["field"], 0.0)
+            valid = actual is not None and (actual > 0 if kind == "jev_rise" else actual < 0)
+            judgments.append((f"emotion_{kind}_{item['field']}", valid, actual, item))
+    layers = [name for name, ok in (("jev_call", jev_valid), ("computation", computation_ok),
+                                    ("projection", projection_ok)) if not ok]
+    if not layers and not all(valid for _, valid, _, _ in judgments):
+        layers.append("jev_judgment")
+    record["emotion_evidence"] = {
+        "jev": {"scores": scores, "confidence": {field: _answer_value(answers, field, "confidence")
+                                                 for field in EMOTION_FIELDS},
+                "error": trace.get("error"), "question_hash": trace.get("question_hash")},
+        "input": {"record_before": before, "current_mood": state.get("current_mood"),
+                  "mood_history": state.get("mood_history")},
+        "breakdown": breakdown, "recomputed_record": recomputed, "persisted_record": after,
+        "judgment": {"first": first, "second": second,
+                     "axes": {field: _axis_label(mood[field]) for field in AXIS_FIELDS if field in mood},
+                     "expected": expected_emotion},
+        "projection": {"expected_lines": lines},
+        "failure_layers": layers,
+    }
+    evidence = {"file": "turns.jsonl", "case_id": case["case_id"], "turn_id": record.get("turn_id"),
+                "field": "emotion_evidence"}
+    checks = [("emotion_jev_scores", jev_valid, scores, "6 欄 score 0～4"),
+              ("emotion_recompute", computation_ok, after, recomputed),
+              ("emotion_prompt_projection", projection_ok, None, lines), *judgments]
+    return [{"stage": "emotion", "status": "passed" if valid else "failed", "reason_code": code,
+             "actual": actual, "expected": expected, "evidence": evidence}
+            for code, valid, actual, expected in checks]
+
+
 def check_turn(suite, case, record, previous, before, state, fixture_ids):
     checks = []
     record["operation_observations"] = []
@@ -159,6 +264,8 @@ def check_turn(suite, case, record, previous, before, state, fixture_ids):
     check("execution", "required_trace", all(any(t.get("stage") == s for t in traces)
           for s in ("jev", "chat", "chat_context")))
     checks.append(jev_evidence(record))
+    if "emotion" in oracle:
+        checks.extend(emotion_checks(case, record))
     expected = {"mode": mode.value, "short_term_enabled": mode.short_term,
                 "memory_read_enabled": mode.memory_read, "memory_write_enabled": mode.memory_write}
     check("isolation", "applied_mode", all(applied.get(k) == v for k, v in expected.items()), applied, expected)
@@ -193,7 +300,7 @@ def check_turn(suite, case, record, previous, before, state, fixture_ids):
         first_request = next((trace for trace in traces if trace.get("stage") == "chat_request"), {})
         check("tools", "tools_available", set(context.get("tools_available", [])) == set(CONTEXT_TOOL_NAMES)
               and set(first_request.get("tools", [])) == set(CONTEXT_TOOL_NAMES))
-    if suite in {"chat", "tools", "integration"} or context.get("runtime_context"):
+    if suite in {"chat", "tools", "integration", "jev-emotion"} or context.get("runtime_context"):
         snapshot = context.get("runtime_context", {})
         valid_snapshot = False
         try:
