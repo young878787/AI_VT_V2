@@ -79,8 +79,8 @@ cp .env.example .env
 # MEMORY_AI_API_KEY=your_memory_key
 # MEMORY_AI_BASE_URL=https://api.openai.com/v1
 # MEMORY_AI_MODEL=gpt-6-luna
-# BACKEND_PORT=9000
-# FRONTEND_PORT=5287
+# BACKEND_PORT=15287
+# FRONTEND_PORT=18080
 # JEV 固定使用 SystemOne 請求格式；可用 JEV_AI_BASE_URL、JEV_AI_MODEL 覆寫預設。
 
 # 4. 建立／同步根目錄主環境（Linux/macOS）
