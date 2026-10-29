@@ -661,7 +661,7 @@ def update_cost(metadata, records, loader, started):
 async def run(args):
     from domain.memory_settings import load_memory_settings
     from tools.ai_testset import load_suite, select_cases, generate_followup
-    from tools.ai_test_evidence import case_mode, check_turn, context_trace
+    from tools.ai_test_evidence import case_mode, check_turn, context_trace, emotion_curve
     from tools.ai_test_fixtures import FixtureLoader
     from tools.ai_test_report import initialize_report, write_reports
 
@@ -701,6 +701,9 @@ async def run(args):
         persist_jsonl(run_dir / "case_states.jsonl", states)
         atomic_write_text(run_dir / "cases.json", json.dumps(dataset, ensure_ascii=False, indent=2))
         update_cost(metadata, records, loader, started)
+        if args.suite == "jev-emotion":
+            # 跨輪曲線只供觀察與人工判定，不進入逐輪硬條件。
+            metadata["emotion_curve"] = emotion_curve(dataset, records)
         return write_reports(run_dir, metadata, records, states, execution, error, metadata["cleanup"])
 
     persist()

@@ -94,6 +94,48 @@ class AiTestReportTests(unittest.TestCase):
         self.assertEqual(run["acceptance"]["overall"], "failed")
         self.assertIn("jev_question_missing", {item["reason_code"] for item in run["attention"]})
 
+    def test_emotion_curve_is_reported_and_reviewed_outside_overall(self):
+        metadata = self.initialize("jev-emotion", [{"case_id": "je_001", "source": "fixed"}])
+        self.assertEqual(json.loads((self.directory / "review.json").read_text(encoding="utf-8"))["curve"],
+                         {"status": "pending", "reason": None})
+        metadata["emotion_curve"] = {
+            "source": "replay_of_actual_scores", "recompute_consistent": True,
+            "turns": {"je_001": {"scores": {}, "first": "calm", "second": "none",
+                                 "mood": {"shy": 0, "pleased": 0, "genuinely_angry": 0, "sad_or_hurt": 0,
+                                          "masking_positive_feeling": 0.5, "wants_continue_interaction": 0.5}}},
+            "checks": [{"id": "C6", "title": "連續罵：生氣累積", "status": "failed",
+                        "conditions": [{"kind": "rise", "actual": [0.4, 0.4]}],
+                        "root_cause": {"kind": "single_turn", "case_ids": ["je_009"], "details": []}}]}
+        rows = [record("je_001")]
+        self.save(rows)
+        run = self.write(metadata, rows)
+        self.assertEqual((run["acceptance"]["overall"], run["acceptance"]["curve"]), ("passed", "pending"))
+        self.assertIn("curve_pending", [item["reason_code"] for item in run["attention"]])
+        text = self.report()
+        self.assertIn("情緒曲線（人工判定，不計入驗收）：pending", text)
+        self.assertIn("| [je_001](#case-je_001) | 0.00 | 0.00 | 0.00 | 0.00 | 0.50 | 0.50 | 平穩 | 無 |", text)
+        self.assertIn("| C6 | 連續罵：生氣累積 | failed | rise=[0.4, 0.4] | single_turn je_009 |", text)
+        path = self.directory / "review.json"
+        for curve, expected in (({"status": "needs_changes", "reason": "罵 2 沒累積"}, "failed"),
+                                ({"status": "accepted", "reason": "人工看過曲線"}, "passed"),
+                                ({"status": "accepted", "reason": None}, "pending")):
+            review = json.loads(path.read_text(encoding="utf-8"))
+            review["curve"] = curve
+            path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+            run = self.write(metadata, rows)
+            with self.subTest(curve=curve):
+                self.assertEqual((run["acceptance"]["overall"], run["acceptance"]["curve"]), ("passed", expected))
+        self.assertIn("invalid_curve_review", [item["reason_code"] for item in run["attention"]])
+        self.assertEqual(rebuild_report(self.directory)["emotion_curve"], metadata["emotion_curve"])
+
+    def test_other_suites_have_no_curve_acceptance(self):
+        metadata = self.initialize()
+        rows = [record()]
+        self.save(rows)
+        run = self.write(metadata, rows)
+        self.assertNotIn("curve", run["acceptance"])
+        self.assertNotIn("emotion_curve", run)
+
     def test_emotion_rows_show_scores_ranking_and_failure_layer(self):
         metadata = self.initialize("jev-emotion", [{"case_id": "je_011", "source": "fixed"}])
         evidence = {"jev": {"scores": {"shy": 2, "pleased": 0, "genuinely_angry": 4, "sad_or_hurt": 3,

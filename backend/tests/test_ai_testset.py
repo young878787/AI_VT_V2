@@ -29,36 +29,48 @@ class DatasetTests(unittest.TestCase):
                 self.assertTrue(all("conversation" not in case for case in data["cases"]))
                 self.assertEqual(sum(case["source"] == "generated" for case in data["cases"]), 2 if suite == "integration" else 0)
 
-    def test_jev_emotion_shares_chat_cases_and_chains_r04(self):
+    def test_jev_emotion_is_one_continuous_curve_session(self):
         data = load_suite("jev-emotion")
-        chat = load_suite("chat")["cases"]
         self.assertEqual([case["case_id"] for case in data["cases"]], [f"je_{index:03}" for index in range(1, 16)])
-        for shared, source in zip(copy.deepcopy(data["cases"][:7]), chat):
-            # 輸入、上下文與 chat oracle 不複製，只附加 chat_case_id 與情緒期望。
-            self.assertEqual(shared["context"].pop("chat_case_id"), source["case_id"])
-            self.assertIn("first", shared["oracle"].pop("emotion"))
-            self.assertEqual({**shared, "case_id": source["case_id"]}, source)
-        self.assertEqual({case["context"]["scenario"] for case in data["cases"][7:]}, {"emotion_r04"})
-        self.assertEqual([case["case_id"] for case in select_cases(data, "je_011")],
-                         ["je_008", "je_009", "je_010", "je_011"])
-        self.assertEqual([case["case_id"] for case in select_cases(data, "je_003")], ["je_003"])
+        self.assertEqual({(case["session"], case["context"]["scenario"]) for case in data["cases"]},
+                         {("emotion_curve", "emotion_curve")})
+        # 不再共用 chat 案例；連續罵 3 輪、原句重講在 JEV 可見的近 3 輪內。
+        self.assertEqual([case["context"]["stimulus"] for case in data["cases"][7:10]], ["scold"] * 3)
+        self.assertEqual(data["cases"][3]["input"], data["cases"][1]["input"])
+        self.assertEqual([check["id"] for check in data["curve_checks"]], [f"C{index}" for index in range(1, 13)])
+        self.assertEqual([case["case_id"] for case in select_cases(data, "je_010")],
+                         [f"je_{index:03}" for index in range(1, 11)])
         self.assertEqual(load_suite("jev-emotion", data)["input_source"], "replayed_inputs")
 
     def test_jev_emotion_oracle_rejects_unknown_tokens_and_missing_emotion(self):
         data = load_suite("jev-emotion")
         for mutate, message in (
-                (lambda c: c["oracle"]["emotion"]["first"].append("happy"), "first"),
-                (lambda c: c["oracle"]["emotion"].update(second=[]), "second"),
-                (lambda c: c["oracle"]["emotion"]["axes"].update(pleased="up"), "axes"),
-                (lambda c: c["oracle"]["emotion"]["checks"].append({"kind": "jev_rise", "field": "x"}), "checks"),
-                (lambda c: c["oracle"].pop("emotion"), "oracle.emotion")):
+                (lambda d: d["cases"][8]["oracle"]["emotion"]["first"].append("happy"), "first"),
+                (lambda d: d["cases"][8]["oracle"]["emotion"].update(second=[]), "second"),
+                (lambda d: d["cases"][8]["oracle"]["emotion"]["axes"].update(pleased="up"), "axes"),
+                (lambda d: d["cases"][8]["oracle"]["emotion"]["ideal_scores"].update(shy=5), "ideal_scores"),
+                (lambda d: d["cases"][8]["oracle"]["emotion"]["ideal_scores"].pop("shy"), "ideal_scores"),
+                (lambda d: d["cases"][8]["oracle"]["emotion"].update(checks=[]), "oracle.emotion"),
+                (lambda d: d["cases"][8]["oracle"].pop("emotion"), "oracle.emotion"),
+                (lambda d: d["curve_checks"][0]["conditions"].append({"kind": "rise", "field": "pleased",
+                                                                       "cases": ["je_001", "je_099"]}), "C1"),
+                (lambda d: d["curve_checks"][1].update(id="C1"), "重複"),
+                (lambda d: d.pop("curve_checks"), "curve_checks")):
             changed = copy.deepcopy(data)
-            mutate(changed["cases"][8])
+            mutate(changed)
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 load_suite("jev-emotion", changed)
+        changed = copy.deepcopy(data)
+        changed["curve_checks"][0]["title"] = "改寫標題"
+        with self.assertRaisesRegex(ValueError, "曲線條件"):
+            load_suite("jev-emotion", changed)
         chat = load_suite("chat")
         chat["cases"][0]["oracle"]["emotion"] = data["cases"][0]["oracle"]["emotion"]
         with self.assertRaisesRegex(ValueError, "oracle.emotion"):
+            load_suite("chat", chat)
+        chat = load_suite("chat")
+        chat["curve_checks"] = data["curve_checks"]
+        with self.assertRaisesRegex(ValueError, "curve_checks"):
             load_suite("chat", chat)
 
     def test_memory_correction_dependency_skips_unneeded_recall(self):

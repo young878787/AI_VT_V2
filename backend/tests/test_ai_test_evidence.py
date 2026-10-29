@@ -13,7 +13,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from domain.emotion_state import EMOTION_FIELDS, apply_mood_turn, build_mood_lines, idle_decayed_mood
-from tools.ai_test_evidence import case_mode, check_turn, emotion_checks, jev_evidence, linked_targets
+from tools.ai_test_evidence import case_mode, check_turn, emotion_checks, emotion_curve, jev_evidence, linked_targets
+from tools.ai_testset import load_suite
 
 
 EVENT = "12345678-1234-1234-1234-123456789abc"
@@ -384,7 +385,7 @@ def emotion_turn(scores, before=None, turn_id="t2", emotion=None):
     system = "角色規則\n目前心情：\n" + "\n".join(f"- {line}" for line in build_mood_lines(after["mood"], changes))
     case = {"case_id": "je_008", "oracle": {"emotion": emotion or {
         "first": ["pleased"], "second": ["shy", "none"], "axes": {"wants_continue_interaction": "not_down"},
-        "checks": [{"kind": "jev_rise", "field": "pleased"}]}}}
+        "ideal_scores": dict.fromkeys(EMOTION_FIELDS, 2)}}}
     record = {"case_id": "je_008", "turn_id": turn_id, "emotion_source": source, "emotion_state": dict(after["mood"]),
               "emotion_record_before": copy.deepcopy(before), "emotion_record_after": copy.deepcopy(after),
               "trace": [{"stage": "jev", "role": "emotion", "answers": answers, "error": None, "question_hash": "h",
@@ -395,6 +396,20 @@ def emotion_turn(scores, before=None, turn_id="t2", emotion=None):
 
 def emotion_results(case, record):
     return {check["reason_code"]: check["status"] for check in emotion_checks(case, record)}
+
+
+def curve_records(overrides=None):
+    """以 suite 理想 score 跑完整 15 輪 runtime 證據；overrides 換掉指定輪的 score。"""
+    dataset = load_suite("jev-emotion")
+    records, before = [], None
+    for case in dataset["cases"]:
+        scores = (overrides or {}).get(case["case_id"], case["oracle"]["emotion"]["ideal_scores"])
+        _, record = emotion_turn(scores, before=before, turn_id="turn-" + case["case_id"])
+        record["case_id"] = case["case_id"]
+        record["checks"] = emotion_checks(case, record)
+        before = record["emotion_record_after"]
+        records.append(record)
+    return dataset, records
 
 
 class EmotionEvidenceTests(unittest.TestCase):
@@ -420,7 +435,7 @@ class EmotionEvidenceTests(unittest.TestCase):
         for code in ("emotion_jev_scores", "emotion_recompute", "emotion_prompt_projection"):
             self.assertEqual(results[code], "passed")
         self.assertEqual(results["emotion_first"], "failed")
-        self.assertEqual(results["emotion_jev_rise_pleased"], "failed")
+        self.assertEqual(results["emotion_axis_wants_continue_interaction"], "passed")
         self.assertEqual(record["emotion_evidence"]["judgment"]["first"], "genuinely_angry")
         self.assertEqual(record["emotion_evidence"]["failure_layers"], ["jev_judgment"])
 
@@ -449,21 +464,20 @@ class EmotionEvidenceTests(unittest.TestCase):
         results = emotion_results(case, record)
         self.assertEqual(results["emotion_jev_scores"], "failed")
         self.assertEqual(results["emotion_axis_wants_continue_interaction"], "failed")
-        self.assertEqual(results["emotion_jev_rise_pleased"], "failed")
         self.assertEqual(record["emotion_evidence"]["failure_layers"][0], "jev_call")
 
-    def test_calm_neutral_axes_and_score_conditions(self):
+    def test_calm_and_axis_directions(self):
         emotion = {"first": ["calm"], "second": ["none"], "axes": {"masking_positive_feeling": "up"},
-                   "checks": [{"kind": "no_primary_rise", "max": 0.05},
-                              {"kind": "score_above", "field": "masking_positive_feeling", "value": 2}]}
+                   "ideal_scores": dict.fromkeys(EMOTION_FIELDS, 2)}
         case, record = emotion_turn({"masking_positive_feeling": 3}, emotion=emotion)
         self.assertTrue(all(status == "passed" for status in emotion_results(case, record).values()))
         case, record = emotion_turn({"pleased": 3}, emotion=emotion)
         results = emotion_results(case, record)
         self.assertEqual(results["emotion_first"], "failed")
-        self.assertEqual(results["emotion_no_primary_rise"], "failed")
         self.assertEqual(results["emotion_axis_masking_positive_feeling"], "failed")
-        self.assertEqual(results["emotion_score_above_masking_positive_feeling"], "failed")
+        # 逐輪硬條件只有前提三項、第一／第二名與兩軸方向；跨輪條件移到曲線觀察。
+        self.assertEqual(set(results), {"emotion_jev_scores", "emotion_recompute", "emotion_prompt_projection",
+                                        "emotion_first", "emotion_second", "emotion_axis_masking_positive_feeling"})
 
     def test_check_turn_adds_emotion_only_when_oracle_has_it(self):
         case, record, state, _ = fixture()
@@ -477,3 +491,36 @@ class EmotionEvidenceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmotionCurveTests(unittest.TestCase):
+    def test_ideal_run_passes_every_curve_check(self):
+        dataset, records = curve_records()
+        curve = emotion_curve(dataset, records)
+        self.assertTrue(curve["recompute_consistent"])
+        self.assertEqual({check["id"]: check["status"] for check in curve["checks"]},
+                         {f"C{index}": "passed" for index in range(1, 13)})
+        self.assertEqual((curve["turns"]["je_010"]["first"], curve["turns"]["je_010"]["second"]),
+                         ("genuinely_angry", "sad_or_hurt"))
+
+    def test_weak_scold_is_attributed_to_its_turn(self):
+        weak = {**load_suite("jev-emotion")["cases"][8]["oracle"]["emotion"]["ideal_scores"], "genuinely_angry": 2}
+        dataset, records = curve_records({"je_009": weak})
+        checks = {check["id"]: check for check in emotion_curve(dataset, records)["checks"]}
+        self.assertEqual(checks["C6"]["status"], "failed")
+        self.assertEqual(checks["C6"]["root_cause"]["kind"], "single_turn")
+        self.assertEqual(checks["C6"]["root_cause"]["case_ids"], ["je_009"])
+        self.assertEqual(checks["C6"]["root_cause"]["details"][0]["actual_scores"]["genuinely_angry"], 2)
+        self.assertEqual(checks["C1"]["status"], "passed")
+
+    def test_wrong_standard_and_missing_turns(self):
+        dataset, records = curve_records()
+        dataset["curve_checks"].append({"id": "X", "title": "錯誤標準", "conditions": [
+            {"kind": "at_least", "field": "genuinely_angry", "case": "je_013", "value": 0.15}]})
+        checks = {check["id"]: check for check in emotion_curve(dataset, records)["checks"]}
+        self.assertEqual(checks["X"]["root_cause"]["kind"], "standard_or_parameter")
+        # 只跑到 je_010：引用後段輪次的條件維持 pending，不當成失敗。
+        partial = {check["id"]: check["status"] for check in emotion_curve(dataset, records[:10])["checks"]}
+        self.assertEqual(partial["C6"], "passed")
+        self.assertEqual(partial["C9"], "pending")
+        self.assertEqual(partial["C12"], "pending")

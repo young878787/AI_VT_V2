@@ -153,8 +153,26 @@ def _answer_value(answers, field, key):
     return answer.get(key) if isinstance(answer, dict) else None
 
 
+def _ranked(mood):
+    first, second = rank_mood(mood)
+    return first or "calm", second or "none"
+
+
+def emotion_judgments(expected, mood, jev_changes):
+    """硬條件：第一／第二名落在允許集合；兩軸只看本輪 JEV 造成的變化方向。"""
+    first, second = _ranked(mood) if mood is not None else ("missing", "missing")
+    judgments = [("emotion_first", first in expected["first"], first, expected["first"]),
+                 ("emotion_second", second in expected["second"], second, expected["second"])]
+    for field, direction in expected["axes"].items():
+        change = None if jev_changes is None else jev_changes.get(field, 0.0)
+        valid = change is not None and {"up": change > 0, "down": change < 0,
+                                         "not_up": change <= 0, "not_down": change >= 0}[direction]
+        judgments.append(("emotion_axis_" + field, valid, change, direction))
+    return judgments
+
+
 def emotion_checks(case, record):
-    """以 test_mood_state 同一組純函式重算情緒，分層保存證據並判第一／第二名、兩軸與 R-04 條件。"""
+    """以 test_mood_state 同一組純函式重算情緒，分層保存證據並判第一／第二名與兩軸方向。"""
     expected_emotion = case["oracle"]["emotion"]
     trace = next((t for t in record.get("trace", []) if t.get("stage") == "jev" and t.get("role") == "emotion"), {})
     answers = trace.get("answers") if isinstance(trace.get("answers"), dict) else None
@@ -182,8 +200,7 @@ def emotion_checks(case, record):
     system = _actual_system(context_trace(record))
     projection_ok = (bool(lines) and "\n".join(f"- {line}" for line in lines) in system
                      and not any(field in system for field in EMOTION_FIELDS))
-    first, second = rank_mood(mood) if complete else ("missing", "missing")
-    first, second = first or "calm", second or "none"
+    first, second = _ranked(mood) if complete else ("missing", "missing")
     jev_changes = changes if jev_valid and changes is not None else None
     breakdown = {}
     if current is not None:
@@ -194,27 +211,7 @@ def emotion_checks(case, record):
             breakdown[field] = {"before": round(current[field], 4), "after_retention": round(retained, 4),
                                 "jev_change": jev, "opposition_approx": round(mood.get(field, 0.0) - retained - jev, 4),
                                 "final": round(mood.get(field, 0.0), 4)}
-    judgments = [("emotion_first", first in expected_emotion["first"], first, expected_emotion["first"]),
-                 ("emotion_second", second in expected_emotion["second"], second, expected_emotion["second"])]
-    for field, direction in expected_emotion["axes"].items():
-        change = None if jev_changes is None else jev_changes.get(field, 0.0)
-        valid = change is not None and {"up": change > 0, "down": change < 0,
-                                         "not_up": change <= 0, "not_down": change >= 0}[direction]
-        judgments.append(("emotion_axis_" + field, valid, change, direction))
-    for item in expected_emotion["checks"]:
-        kind = item["kind"]
-        if kind == "no_primary_rise":
-            actual = None if jev_changes is None else {f: jev_changes.get(f, 0.0) for f in PRIMARY_EMOTION_FIELDS}
-            judgments.append(("emotion_no_primary_rise", actual is not None and max(actual.values()) <= item["max"],
-                              actual, item))
-        elif kind == "score_above":
-            actual = scores[item["field"]] if jev_valid else None
-            judgments.append(("emotion_score_above_" + item["field"], actual is not None and actual > item["value"],
-                              actual, item))
-        else:
-            actual = None if jev_changes is None else jev_changes.get(item["field"], 0.0)
-            valid = actual is not None and (actual > 0 if kind == "jev_rise" else actual < 0)
-            judgments.append((f"emotion_{kind}_{item['field']}", valid, actual, item))
+    judgments = emotion_judgments(expected_emotion, mood if complete else None, jev_changes)
     layers = [name for name, ok in (("jev_call", jev_valid), ("computation", computation_ok),
                                     ("projection", projection_ok)) if not ok]
     if not layers and not all(valid for _, valid, _, _ in judgments):
@@ -240,6 +237,113 @@ def emotion_checks(case, record):
     return [{"stage": "emotion", "status": "passed" if valid else "failed", "reason_code": code,
              "actual": actual, "expected": expected, "evidence": evidence}
             for code, valid, actual, expected in checks]
+
+
+def ideal_answers(scores):
+    return {field: {"type": "score", "score": scores[field], "confidence": 1.0} for field in EMOTION_FIELDS}
+
+
+def replay_mood(turns):
+    """turns 為 [(case_id, answers 或 None, message_timestamp)]；從基線依序套用 mood 純函式。"""
+    record, curve = None, {}
+    for index, (case_id, answers, timestamp) in enumerate(turns):
+        current = idle_decayed_mood(record, timestamp)
+        record, changes, _ = apply_mood_turn(record, current, answers, f"replay-{index}", timestamp)
+        curve[case_id] = {"mood": dict(record["mood"]), "changes": changes,
+                          "scores": {field: _answer_value(answers, field, "score") for field in EMOTION_FIELDS}}
+    return curve
+
+
+def _curve_condition(item, curve):
+    """回傳 (成立與否；缺輪次為 None, 實際值)。"""
+    identifiers = item.get("cases") or [item["case"]]
+    if any(identifier not in curve for identifier in identifiers):
+        return None, None
+    kind = item["kind"]
+    if kind == "jev_change_at_most":
+        actual = {identifier: {field: curve[identifier]["changes"].get(field, 0.0) for field in item["fields"]}
+                  for identifier in identifiers}
+        return max(value for row in actual.values() for value in row.values()) <= item["value"], actual
+    if kind == "score_at_most":
+        actual = curve[identifiers[0]]["scores"][item["field"]]
+        return actual is not None and actual <= item["value"], actual
+    if kind == "first":
+        actual = _ranked(curve[identifiers[0]]["mood"])[0]
+        return actual == item["field"], actual
+    values = [curve[identifier]["mood"][item["field"]] for identifier in identifiers]
+    actual = [round(value, 4) for value in values]
+    if kind == "drop_at_least":
+        order = list(curve)
+        position = order.index(identifiers[0])
+        previous = curve[order[position - 1]]["mood"] if position else NEUTRAL_EMOTION_STATE
+        drop = previous[item["field"]] - values[0]
+        return drop >= item["value"], round(drop, 4)
+    if kind == "rise":
+        return all(right > left for left, right in zip(values, values[1:])), actual
+    if kind == "fall":
+        return all(right < left for left, right in zip(values, values[1:])), actual
+    return {"at_least": values[0] >= item["value"], "at_most": values[0] <= item["value"],
+            "below": values[0] < item["value"]}[kind], actual[0]
+
+
+def evaluate_curve(curve_checks, curve):
+    """曲線條件逐條判定：全部成立 passed、任一不成立 failed、引用輪次未執行 pending。"""
+    results = []
+    for check in curve_checks:
+        conditions = []
+        for item in check["conditions"]:
+            valid, actual = _curve_condition(item, curve)
+            conditions.append({**item, "result": valid, "actual": actual})
+        outcomes = [condition["result"] for condition in conditions]
+        status = "pending" if None in outcomes else "passed" if all(outcomes) else "failed"
+        results.append({"id": check["id"], "title": check["title"], "status": status, "conditions": conditions})
+    return results
+
+
+def emotion_curve(dataset, records):
+    """跨輪曲線觀察（不是硬條件）：以實際 score 重放；失敗時逐輪換入理想 score 找主因，供人工判定。"""
+    cases = dataset["cases"]
+    by_case = {record.get("case_id"): record for record in records if record.get("emotion_evidence")}
+    turns, ideal = [], {}
+    for case in cases:
+        evidence = (by_case.get(case["case_id"]) or {}).get("emotion_evidence")
+        after = (evidence or {}).get("persisted_record")
+        if not isinstance(after, dict) or not isinstance(after.get("updated_at"), (int, float)):
+            break
+        scores, confidence = evidence["jev"]["scores"], evidence["jev"]["confidence"]
+        # JEV 失敗輪照 runtime 走 fallback，只回落不套分數。
+        answers = None if "jev_call" in evidence["failure_layers"] else {
+            field: {"type": "score", "score": scores[field], "confidence": confidence[field]} for field in EMOTION_FIELDS}
+        turns.append((case["case_id"], answers, after["updated_at"]))
+        ideal[case["case_id"]] = ideal_answers(case["oracle"]["emotion"]["ideal_scores"])
+    observed = replay_mood(turns)
+    results = evaluate_curve(dataset["curve_checks"], observed)
+    order = [identifier for identifier, _, _ in turns]
+    for result, check in zip(results, dataset["curve_checks"]):
+        if result["status"] != "failed":
+            continue
+        referenced = {identifier for item in check["conditions"] for identifier in item.get("cases") or [item["case"]]}
+        last = max(order.index(identifier) for identifier in referenced)
+
+        def passes(replaced):
+            replay = replay_mood([(identifier, ideal[identifier] if identifier in replaced else answers, timestamp)
+                                  for identifier, answers, timestamp in turns[:last + 1]])
+            return all(row["status"] == "passed" for row in evaluate_curve([check], replay))
+
+        causes = [identifier for identifier in order[:last + 1] if passes({identifier})]
+        kind = ("single_turn" if causes else "multiple_turns" if passes(set(order[:last + 1]))
+                else "standard_or_parameter")
+        result["root_cause"] = {"kind": kind, "case_ids": causes, "details": [
+            {"case_id": identifier, "actual_scores": observed[identifier]["scores"],
+             "ideal_scores": {field: value["score"] for field, value in ideal[identifier].items()}}
+            for identifier in causes]}
+    recompute = [check["status"] for record in by_case.values() for check in record.get("checks", [])
+                 if check.get("reason_code") == "emotion_recompute"]
+    return {"source": "replay_of_actual_scores", "recompute_consistent": bool(recompute) and set(recompute) == {"passed"},
+            "turns": {identifier: {"scores": row["scores"], "mood": {field: round(value, 4) for field, value in row["mood"].items()},
+                                   "first": _ranked(row["mood"])[0], "second": _ranked(row["mood"])[1]}
+                      for identifier, row in observed.items()},
+            "checks": results}
 
 
 def check_turn(suite, case, record, previous, before, state, fixture_ids):

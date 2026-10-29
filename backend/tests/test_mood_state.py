@@ -407,3 +407,39 @@ class MoodProjectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JevEmotionScriptTests(unittest.TestCase):
+    """jev-emotion suite 的理想 score 必須通過自己的逐輪 oracle 與全部曲線條件；參數或標準改動時在此擋下。"""
+
+    def setUp(self):
+        from tools.ai_test_evidence import emotion_judgments, evaluate_curve, ideal_answers, replay_mood
+        from tools.ai_testset import load_suite
+
+        self.emotion_judgments, self.evaluate_curve = emotion_judgments, evaluate_curve
+        self.dataset = load_suite("jev-emotion")
+        self.curve = replay_mood([(case["case_id"], ideal_answers(case["oracle"]["emotion"]["ideal_scores"]), 0.0)
+                                  for case in self.dataset["cases"]])
+
+    def test_ideal_scores_pass_every_turn_oracle(self):
+        for case in self.dataset["cases"]:
+            row = self.curve[case["case_id"]]
+            with self.subTest(case=case["case_id"]):
+                failed = [code for code, valid, _, _ in
+                          self.emotion_judgments(case["oracle"]["emotion"], row["mood"], row["changes"]) if not valid]
+                self.assertEqual(failed, [])
+
+    def test_ideal_scores_pass_every_curve_check(self):
+        results = self.evaluate_curve(self.dataset["curve_checks"], self.curve)
+        self.assertEqual([row["id"] for row in results], [f"C{index}" for index in range(1, 13)])
+        self.assertEqual({row["id"]: row["status"] for row in results if row["status"] != "passed"}, {})
+
+    def test_broken_expectation_is_caught(self):
+        case = self.dataset["cases"][9]
+        row = self.curve[case["case_id"]]
+        broken = {**case["oracle"]["emotion"], "first": ["pleased"]}
+        self.assertIn("emotion_first", [code for code, valid, _, _ in
+                                        self.emotion_judgments(broken, row["mood"], row["changes"]) if not valid])
+        check = {"id": "X", "title": "錯誤期望", "conditions": [
+            {"kind": "at_least", "field": "genuinely_angry", "case": "je_013", "value": 0.15}]}
+        self.assertEqual(self.evaluate_curve([check], self.curve)[0]["status"], "failed")

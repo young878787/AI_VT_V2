@@ -98,12 +98,20 @@ def _validate(data: dict, suite: str) -> None:
         if suite == "jev-emotion":
             _validate_emotion_oracle(oracle["emotion"])
         seen.add(expected)
+    if (suite == "jev-emotion") != ("curve_checks" in data):
+        raise ValueError("只有 jev-emotion 必須帶 curve_checks")
+    if suite == "jev-emotion":
+        _validate_curve_checks(data["curve_checks"], seen)
+
+
+def _score(value) -> bool:
+    return type(value) in (int, float) and 0 <= value <= 4
 
 
 def _validate_emotion_oracle(emotion) -> None:
-    """第一／第二名允許集合（calm=平穩、none=無輔助）、兩軸方向與 R-04 單欄條件。"""
-    if not isinstance(emotion, dict) or set(emotion) != {"first", "second", "axes", "checks"}:
-        raise ValueError("oracle.emotion 只能包含 first、second、axes、checks")
+    """第一／第二名允許集合（calm=平穩、none=無輔助）、兩軸方向與供曲線重算的理想 score。"""
+    if not isinstance(emotion, dict) or set(emotion) != {"first", "second", "axes", "ideal_scores"}:
+        raise ValueError("oracle.emotion 只能包含 first、second、axes、ideal_scores")
     for key, allowed in (("first", {"calm", *PRIMARY_EMOTION_FIELDS}), ("second", {"none", *PRIMARY_EMOTION_FIELDS})):
         values = emotion[key]
         if (not isinstance(values, list) or not values or len(set(values)) != len(values)
@@ -113,34 +121,55 @@ def _validate_emotion_oracle(emotion) -> None:
     if (not isinstance(axes, dict) or not set(axes) <= set(EMOTION_FIELDS) - set(PRIMARY_EMOTION_FIELDS)
             or not set(axes.values()) <= AXIS_DIRECTIONS):
         raise ValueError("oracle.emotion.axes 只接受兩軸與 up／down／not_up／not_down")
-    if not isinstance(emotion["checks"], list):
-        raise ValueError("oracle.emotion.checks 必須為陣列")
-    for item in emotion["checks"]:
-        kind = item.get("kind") if isinstance(item, dict) else None
-        valid = (
-            (kind in {"jev_rise", "jev_fall"} and set(item) == {"kind", "field"} and item["field"] in EMOTION_FIELDS)
-            or (kind == "no_primary_rise" and set(item) == {"kind", "max"}
-                and type(item["max"]) in (int, float) and 0 <= item["max"] < 1)
-            or (kind == "score_above" and set(item) == {"kind", "field", "value"} and item["field"] in EMOTION_FIELDS
-                and type(item["value"]) in (int, float) and 0 <= item["value"] <= 4))
-        if not valid:
-            raise ValueError("oracle.emotion.checks 含未知或格式錯誤的條件")
+    scores = emotion["ideal_scores"]
+    if not isinstance(scores, dict) or set(scores) != set(EMOTION_FIELDS) or not all(_score(v) for v in scores.values()):
+        raise ValueError("oracle.emotion.ideal_scores 必須含六欄且為 0–4 的數值")
 
 
-def _jev_emotion_cases(data: dict) -> list[dict]:
-    """je_001～007 直接引用 chat.json 的輸入與上下文，只附加情緒 oracle；其餘為 R-04 連續情境。"""
-    chat = {case["case_id"]: case for case in json.loads((CASE_DIR / "chat.json").read_text(encoding="utf-8"))["cases"]}
-    shared = []
-    for item in data.pop("chat_cases"):
-        source = chat.get(item.get("chat_case_id"))
-        if source is None or source["depends_on"]:
-            raise ValueError("jev-emotion 只能引用存在且無前序的 chat 案例")
-        case = copy.deepcopy(source)
-        case["case_id"] = item["case_id"]
-        case["context"]["chat_case_id"] = source["case_id"]
-        case["oracle"]["emotion"] = item["emotion"]
-        shared.append(case)
-    return shared + data["cases"]
+def _curve_condition_valid(item, seen: set) -> bool:
+    if not isinstance(item, dict):
+        return False
+    kind = item.get("kind")
+    ids = item.get("cases")
+    if kind in {"rise", "fall"}:
+        return (set(item) == {"kind", "field", "cases"} and item["field"] in EMOTION_FIELDS
+                and isinstance(ids, list) and len(ids) >= 2 and len(set(ids)) == len(ids)
+                and all(isinstance(i, str) and i in seen for i in ids))
+    if kind == "jev_change_at_most":
+        fields = item.get("fields")
+        return (set(item) == {"kind", "fields", "cases", "value"}
+                and isinstance(fields, list) and fields and set(fields) <= set(EMOTION_FIELDS)
+                and isinstance(ids, list) and ids and all(isinstance(i, str) and i in seen for i in ids)
+                and type(item["value"]) in (int, float) and item["value"] >= 0)
+    if kind not in {"first", "at_least", "at_most", "below", "drop_at_least", "score_at_most"}:
+        return False
+    keys = {"kind", "field", "case"} | (set() if kind == "first" else {"value"})
+    if set(item) != keys or item["field"] not in EMOTION_FIELDS:
+        return False
+    if kind == "first" and item["field"] not in PRIMARY_EMOTION_FIELDS:
+        return False
+    if kind != "first" and not (_score(item["value"]) if kind == "score_at_most" else
+                                type(item["value"]) in (int, float) and 0 <= item["value"] <= 1):
+        return False
+    return isinstance(item["case"], str) and item["case"] in seen
+
+
+def _validate_curve_checks(checks, seen: set) -> None:
+    """跨輪曲線條件：只引用本 suite 的案例與合法欄位；只供觀察與人工判定。"""
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("curve_checks 必須為非空陣列")
+    identifiers = set()
+    for check in checks:
+        if (not isinstance(check, dict) or set(check) != {"id", "title", "conditions"}
+                or not isinstance(check["id"], str) or not check["id"]
+                or not isinstance(check["title"], str) or not check["title"]
+                or not isinstance(check["conditions"], list) or not check["conditions"]):
+            raise ValueError("curve_checks 每項必須含 id、title、conditions")
+        if check["id"] in identifiers:
+            raise ValueError(f"curve_checks 的 ID {check['id']} 重複")
+        identifiers.add(check["id"])
+        if not all(_curve_condition_valid(item, seen) for item in check["conditions"]):
+            raise ValueError(f"curve_checks {check['id']} 含未知或格式錯誤的條件")
 
 
 def load_suite(suite: str, scenario=None) -> dict:
@@ -164,8 +193,6 @@ def load_suite(suite: str, scenario=None) -> dict:
         reference = datetime.now(ZoneInfo("Asia/Taipei"))
     fixed = json.loads((CASE_DIR / f"{suite.replace('-', '_')}.json").read_text(encoding="utf-8"))
     fixed.update(suite=suite)
-    if suite == "jev-emotion":
-        fixed["cases"] = _jev_emotion_cases(fixed)
     if suite == "integration":
         # 初始 corpus 本文只有 memory.json 一份來源；依 memory_ids 決定真正植入範圍。
         fixed["memories"] = json.loads((CASE_DIR / "memory.json").read_text(encoding="utf-8"))["memories"]
@@ -208,6 +235,8 @@ def load_suite(suite: str, scenario=None) -> dict:
             raise ValueError("快照不得改寫固定輸入")
         if case["source"] == "generated" and case["input"].strip():
             _validate_followup(case, case["input"])
+    if data.get("curve_checks") != fixed.get("curve_checks"):
+        raise ValueError("快照曲線條件與固定契約不同")
     data["input_source"] = "replayed_inputs"
     return data
 
