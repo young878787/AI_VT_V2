@@ -27,6 +27,7 @@ from domain.emotion_state import (
     apply_mood_turn,
     build_mood_lines,
     idle_decayed_mood,
+    rank_mood,
     validate_mood_record,
 )
 
@@ -358,6 +359,17 @@ class MoodProjectionTests(unittest.TestCase):
         self.assertEqual(build_mood_lines(mood), ["主要情緒：很開心", *CALM[1:]])
         mood = {**NEUTRAL_EMOTION_STATE, "genuinely_angry": 0.7}
         self.assertEqual(build_mood_lines(mood), ["主要情緒：非常生氣，話變少、態度冷淡", *CALM[1:]])
+
+    def test_rank_mood_matches_projection(self):
+        """jev-emotion suite 以同一函式判第一／第二名。"""
+        self.assertEqual(rank_mood(NEUTRAL_EMOTION_STATE), (None, None))
+        self.assertEqual(rank_mood({**NEUTRAL_EMOTION_STATE, "pleased": 0.14, "shy": 0.13}), (None, None))
+        self.assertEqual(rank_mood({**NEUTRAL_EMOTION_STATE, "pleased": 0.53, "shy": 0.30}), ("pleased", "shy"))
+        # 輔助需達「微」且不低於主要情緒一半。
+        self.assertEqual(rank_mood({**NEUTRAL_EMOTION_STATE, "pleased": 0.53, "shy": 0.20}), ("pleased", None))
+        self.assertEqual(rank_mood({**NEUTRAL_EMOTION_STATE, "shy": 0.17, "pleased": 0.14}), ("shy", None))
+        self.assertEqual(rank_mood({**NEUTRAL_EMOTION_STATE, "genuinely_angry": 0.40, "sad_or_hurt": 0.20}),
+                         ("genuinely_angry", "sad_or_hurt"))
 
     def test_impact_line_needs_threshold_and_keeps_largest(self):
         mood = dict(NEUTRAL_EMOTION_STATE)

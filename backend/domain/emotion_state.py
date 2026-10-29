@@ -266,18 +266,26 @@ def _mood_level(value: float) -> int | None:
     return next((level for threshold, level in MOOD_LEVELS if value >= threshold), None)
 
 
-def build_mood_lines(mood: dict[str, float], mood_changes: dict[str, float] | None = None) -> list[str]:
-    """Chat 提詞投影：主要情緒、表達方式、互動意願固定出現；輔助情緒、本輪影響有才列。"""
+def rank_mood(mood: dict[str, float]) -> tuple[str | None, str | None]:
+    """提詞投影的 (主要, 輔助) 主情緒；未達「微」為 None（平穩／無輔助）。"""
     ranked = sorted(PRIMARY_EMOTION_FIELDS, key=lambda field: -mood[field])
     first, second = ranked[0], ranked[1]
-    first_level = _mood_level(mood[first])
-    if first_level is None:
+    if _mood_level(mood[first]) is None:
+        return None, None
+    if _mood_level(mood[second]) is not None and mood[second] >= mood[first] / 2:
+        return first, second
+    return first, None
+
+
+def build_mood_lines(mood: dict[str, float], mood_changes: dict[str, float] | None = None) -> list[str]:
+    """Chat 提詞投影：主要情緒、表達方式、互動意願固定出現；輔助情緒、本輪影響有才列。"""
+    first, second = rank_mood(mood)
+    if first is None:
         lines = ["主要情緒：平穩"]
     else:
-        lines = [f"主要情緒：{MOOD_TEXT[first][first_level]}"]
-        second_level = _mood_level(mood[second])
-        if second_level is not None and mood[second] >= mood[first] / 2:
-            lines.append(f"輔助情緒：{MOOD_TEXT[second][second_level]}")
+        lines = [f"主要情緒：{MOOD_TEXT[first][_mood_level(mood[first])]}"]
+        if second is not None:
+            lines.append(f"輔助情緒：{MOOD_TEXT[second][_mood_level(mood[second])]}")
     impacts = {field: delta for field, delta in (mood_changes or {}).items()
                if field in PRIMARY_EMOTION_FIELDS and abs(delta) >= MOOD_IMPACT_THRESHOLD}
     if impacts:
