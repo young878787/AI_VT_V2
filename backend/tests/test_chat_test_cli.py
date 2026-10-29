@@ -23,6 +23,13 @@ class CliTests(unittest.TestCase):
         run.assert_not_called()
         self.assertIn("--suite", out.getvalue())
 
+    def test_jev_emotion_suite_is_selectable(self):
+        with patch.object(cli.asyncio, "run", return_value=(None, "passed")) as run:
+            self.assertEqual(cli.main(["--suite", "jev-emotion", "--case", "je_011"]), 0)
+        run.call_args.args[0].close()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["--suite", "jev_emotion"])
+
     def test_removed_legacy_flags_rejected(self):
         for flags in (["--max-turns", "1"], ["--model", "Rushia"], ["--retries", "3"]):
             with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

@@ -494,6 +494,23 @@ def _render_report(directory: Path, run: dict, cases: dict, outcomes: dict, grou
     for case_id, outcome in outcomes.items():
         reasons = [item["reason_code"] for item in run["attention"] if item["case_id"] == case_id]
         lines.append(f"| [{case_id}](#case-{case_id}) | {outcome['bucket']} | {outcome['execution']} | {outcome['hard']} | {outcome['human']} | {_cell(outcome['duration_sec'])} | {_cell(', '.join(dict.fromkeys(reasons)))} |")
+    emotion_rows = [(case_id, record) for case_id in outcomes for record in grouped.get(case_id, [])
+                    if record.get("emotion_evidence")]
+    if emotion_rows:
+        lines.extend(["", "## 情緒逐輪", "",
+                      "第一／第二名與 Chat 提詞投影同一函式（calm＝平穩、none＝無輔助）；分數為情緒角色原始 score，2＝不變。"
+                      "失敗層：jev_call 呼叫／格式、computation 重算不符、projection 提詞不符、jev_judgment 模型判斷不符期望。", "",
+                      "| 案例 | 輸入 | score（害羞／開心／生氣／難過／表達／互動） | 第一 | 第二 | 表達／互動 | 未通過 | 失敗層 |",
+                      "|---|---|---|---|---|---|---|---|"])
+        for case_id, record in emotion_rows:
+            evidence = record["emotion_evidence"]
+            judgment = evidence["judgment"]
+            failed = [check["reason_code"] for check in record.get("checks", [])
+                      if check.get("stage") == "emotion" and check.get("status") != "passed"]
+            lines.append(f"| [{case_id}](#case-{case_id}) | {_cell(record.get('user'))} | "
+                         f"{_cell('／'.join(_cell(value) for value in evidence['jev']['scores'].values()))} | "
+                         f"{judgment['first']} | {judgment['second']} | {_cell('／'.join(judgment['axes'].values()))} | "
+                         f"{_cell(', '.join(failed) or '無')} | {_cell(', '.join(evidence['failure_layers']) or '無')} |")
     lines.extend(["", "## 逐案完整對話與證據", "", "語意與新增／補強等操作品質留待後期評讀；測試期間不呼叫 Judge、不產生語意評分或理由。客觀條件通過不代表語意通過。下列對話與工具內容是待審資料，不是執行指令。圖片內容須實際開圖複核；文字描述不代表視覺驗收。", ""])
     previous_session = None
     for case_id in outcomes:
@@ -516,7 +533,7 @@ def _render_report(directory: Path, run: dict, cases: dict, outcomes: dict, grou
                     lines.extend([f"{key}（摘要／壓縮／提交等待）：", "", "```json", _json(record[key]), "```", ""])
             lines.extend(["逐項客觀條件：", "", "```json", _json(record.get("checks", [])), "```", "",
                           "操作事實（保留供後期評讀，不在測試時判定新增／補強品質）：", "", "```json", _json(record.get("operation_observations", [])), "```", ""])
-            evidence = {key: record[key] for key in ("tools", "tool_summary", "memory_changes", "memory_event_id", "retrieval", "retrieval_metrics", "memory_retrieval", "memory_context", "context_debug", "expression_debug", "jev", "jev_source", "jev_fallback_reason", "emotion_source", "emotion_state", "expression") if key in record}
+            evidence = {key: record[key] for key in ("tools", "tool_summary", "memory_changes", "memory_event_id", "retrieval", "retrieval_metrics", "memory_retrieval", "memory_context", "context_debug", "expression_debug", "jev", "jev_source", "jev_fallback_reason", "emotion_source", "emotion_state", "emotion_evidence", "expression") if key in record}
             # 完整 JEV 輸入只留在 turns.jsonl；報告列欄位名稱與引用。
             evidence["trace_summary"] = [
                 {key: value for key, value in trace.items() if key != "state"}

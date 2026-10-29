@@ -1,4 +1,4 @@
-"""四組 AI 驗收唯一入口；僅建立隔離測試 instance 與臨時 schema。"""
+"""分組 AI 驗收唯一入口；僅建立隔離測試 instance 與臨時 schema。"""
 
 import argparse
 import asyncio
@@ -561,6 +561,7 @@ def provenance(dataset):
     files = [*BACKEND_ROOT.glob("tools/ai_test*.py"), *BACKEND_ROOT.glob("tools/ai_test_cases/**/*.json"),
              BACKEND_ROOT / "tools/chat_test_cli.py", BACKEND_ROOT / "domain/agent_a_prompts.py",
              BACKEND_ROOT / "services/chat_service.py", BACKEND_ROOT / "domain/jev_questions.py",
+             BACKEND_ROOT / "domain/emotion_state.py",
              BACKEND_ROOT / "services/memory_llm.py", *BACKEND_ROOT.glob("tools/ai_test_cases/assets/*")]
     return {"git_commit": git("rev-parse", "HEAD").decode().strip(),
             "dirty": bool(git("status", "--porcelain", "--untracked-files=normal")),
@@ -768,9 +769,15 @@ async def run(args):
                 persist()
             before = await asyncio.to_thread(store.case_state)
             foreign_before = await asyncio.to_thread(loader.other_owner_state)
+            emotion_before = (await asyncio.to_thread(read_emotion_record, store, session)
+                              if args.suite == "jev-emotion" else None)
             record = await run_turn(ws, index, case["input"], "Rushia", session, store, args.turn_timeout, mode)
             if record["request_sent"]:
                 await wait_jev_trace(run_dir, record["turn_id"])
+            if args.suite == "jev-emotion":
+                # 情緒重算以 DB 前後紀錄為準；emotion_update 只帶 mood，不含 streak／history。
+                record["emotion_record_before"] = emotion_before
+                record["emotion_record_after"] = await asyncio.to_thread(read_emotion_record, store, session)
             state = record.pop("_db_state", None) or {}
             record.update(case_id=case["case_id"], source=case["source"], phase=case["phase"], test_mode=mode.value,
                           fixture=fixture["metadata"], control=controls, summary_before=summary_before, summary_after=summary_after)
@@ -900,6 +907,13 @@ def retained_summary(context):
                      if max(left, start) < min(right, start+len(summary)))
 
 
+def read_emotion_record(store, session):
+    with store.engine.connect() as connection:
+        return connection.execute(text(f'SELECT emotion_state FROM "{store.schema}".chat_sessions '
+            'WHERE id=:session AND user_id=:user_id AND character_id=:character_id'),
+            {**store.owner, "session": session}).scalar()
+
+
 def read_compressed_texts(store, session, before_cursor, after_cursor):
     with store.engine.connect() as connection:
         return list(connection.execute(text(f'SELECT content FROM "{store.schema}".chat_messages '
@@ -932,8 +946,8 @@ def collect_assets(record, run_dir):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="四組隔離AI測試；必須明確選suite，不執行舊28-case或TXT。")
-    parser.add_argument("--suite", choices=("chat", "memory", "tools", "integration"))
+    parser = argparse.ArgumentParser(description="分組隔離AI測試；必須明確選suite，不執行舊28-case或TXT。")
+    parser.add_argument("--suite", choices=("chat", "memory", "tools", "integration", "jev-emotion"))
     parser.add_argument("--scenario", help="重播該suite的完整cases.json，不重新生成續問")
     parser.add_argument("--case", help="定位單題並重播必要前序；保留全組分母")
     parser.add_argument("--startup-timeout", type=float, default=90)

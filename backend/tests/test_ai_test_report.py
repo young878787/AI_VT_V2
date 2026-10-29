@@ -94,6 +94,24 @@ class AiTestReportTests(unittest.TestCase):
         self.assertEqual(run["acceptance"]["overall"], "failed")
         self.assertIn("jev_question_missing", {item["reason_code"] for item in run["attention"]})
 
+    def test_emotion_rows_show_scores_ranking_and_failure_layer(self):
+        metadata = self.initialize("jev-emotion", [{"case_id": "je_011", "source": "fixed"}])
+        evidence = {"jev": {"scores": {"shy": 2, "pleased": 0, "genuinely_angry": 4, "sad_or_hurt": 3,
+                                       "masking_positive_feeling": 2, "wants_continue_interaction": 1}},
+                    "judgment": {"first": "pleased", "second": "none", "axes": {"masking_positive_feeling": "middle",
+                                                                                "wants_continue_interaction": "middle"}},
+                    "failure_layers": ["jev_judgment"]}
+        row = record("je_011", emotion_evidence=evidence)
+        row["checks"].append({"stage": "emotion", "status": "failed", "reason_code": "emotion_first",
+                              "evidence": {"field": "emotion_evidence"}})
+        self.save([row])
+        run = self.write(metadata, [row])
+        self.assertEqual(run["acceptance"]["overall"], "failed")
+        text = self.report()
+        self.assertIn("## 情緒逐輪", text)
+        self.assertIn("| [je_011](#case-je_011) | 請說明目前進度 | 2／0／4／3／2／1 | pleased | none | middle／middle | "
+                      "emotion_first | jev_judgment |", text)
+
     def test_capacity_failure_fails_overall_but_separates_core(self):
         metadata = self.initialize("memory", [{"case_id": "mem_013"}, {"case_id": "mem_014"}])
         rows = [record("mem_013"), record("mem_014", status="failed")]
