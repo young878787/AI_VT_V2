@@ -40,10 +40,15 @@ import { ParameterMixer } from './runtime/ParameterMixer';
 import { BlinkRuntime } from './runtime/BlinkRuntime';
 import { FaceIdleRuntime } from './runtime/FaceIdleRuntime';
 import type { FaceIdleSample } from './runtime/FaceIdleRuntime';
+import { FaceMicroRuntime } from './runtime/FaceMicroRuntime';
+import type { FaceMicroSample } from './runtime/FaceMicroRuntime';
 
 const NEUTRAL_FACE_IDLE: FaceIdleSample = {
-  eyeL: 1, eyeR: 1, browL: 0, browR: 0, winking: false, kind: 'still',
+  eyeL: 1, eyeR: 1, browLForm: 0, browRForm: 0, browLAngle: 0, browRAngle: 0, winking: false, kind: 'still',
 };
+const NEUTRAL_FACE_MICRO: FaceMicroSample = { mouthForm: 0, mouthPout: 0, mouthAngle: 0, eyeBallForm: 0 };
+// 嘴型基準或張嘴偏移超過這個值，表示說話／表情正在使用嘴，idle 嘴型微動讓出。
+const MOUTH_MICRO_BASE_LIMIT = 0.05;
 
 const DEFAULT_BODY_MOTION_PROFILE: BodyMotionProfile = {
   style: 'calm_sway',
@@ -121,6 +126,9 @@ export class LAppModel extends CubismUserModel {
 
   // 臉部表情擴充參數 ID (AI 控制 - 嘴形、眉毛)
   private _idParamMouthForm: CubismIdHandle;
+  private _idParamMouthPout: CubismIdHandle;   // 尖嘴 `< >`，搭配 MouthAngle（idle 嘴型微動專用）
+  private _idParamMouthAngle: CubismIdHandle;
+  private _idParamEyeBallForm: CubismIdHandle; // 瞳孔縮放（idle 微動專用）
   private _idParamBrowLY: CubismIdHandle;
   private _idParamBrowRY: CubismIdHandle;
   private _idParamBrowLAngle: CubismIdHandle;
@@ -215,8 +223,11 @@ export class LAppModel extends CubismUserModel {
   private readonly _blinkRuntime = new BlinkRuntime();
   private readonly _faceIdleRuntime = new FaceIdleRuntime();
   private _lastFaceIdleSample: FaceIdleSample = { ...NEUTRAL_FACE_IDLE };
+  private readonly _faceMicroRuntime = new FaceMicroRuntime();
+  private _lastFaceMicroSample: FaceMicroSample = { ...NEUTRAL_FACE_MICRO };
   private _faceListening = false;
-  private readonly _ambientMotion = new AmbientMotion();
+  // 漂移與微掃視的 seed 每次載入都不同；runtime 本身仍是確定性的。
+  private readonly _ambientMotion = new AmbientMotion((Math.random() * 0x100000000) >>> 0);
   private _ambientInitialized = false;
   private _ambientBase: BasePoseParams = createNeutralTargetParams();
   private _parameterMixer: ParameterMixer | null = null;
@@ -272,6 +283,9 @@ export class LAppModel extends CubismUserModel {
 
     // 臉部表情擴充參數 ID（嘴形 + 眉毛）
     this._idParamMouthForm = idManager.getId('ParamMouthForm');
+    this._idParamMouthPout = idManager.getId('ParamMouthPout');
+    this._idParamMouthAngle = idManager.getId('ParamMouthAngle');
+    this._idParamEyeBallForm = idManager.getId('ParamEyeBallForm');
     this._idParamBrowLY = idManager.getId('ParamBrowLY');
     this._idParamBrowRY = idManager.getId('ParamBrowRY');
     this._idParamBrowLAngle = idManager.getId('ParamBrowLAngle');
@@ -1257,6 +1271,8 @@ export class LAppModel extends CubismUserModel {
   private resetFaceIdle(): void {
     this._faceIdleRuntime.reset();
     this._lastFaceIdleSample = { ...NEUTRAL_FACE_IDLE };
+    this._faceMicroRuntime.reset();
+    this._lastFaceMicroSample = { ...NEUTRAL_FACE_MICRO };
   }
 
   private cancelIdleEyes(nowMs: number): void {
@@ -1264,7 +1280,7 @@ export class LAppModel extends CubismUserModel {
     this._lastFaceIdleSample = { ...this._lastFaceIdleSample, eyeL: 1, eyeR: 1, winking: false };
   }
 
-  private faceOwnership(nowMs: number): { eyes: boolean; brows: boolean } {
+  private faceOwnership(nowMs: number): { eyes: boolean; brows: boolean; mouth: boolean; pupils: boolean } {
     const eyeIds = ['ParamEyeLOpen', 'ParamEyeROpen'];
     const browIds = ['ParamBrowLY', 'ParamBrowRY', 'ParamBrowLAngle', 'ParamBrowRAngle',
       'ParamBrowLForm', 'ParamBrowRForm', 'ParamBrowLX', 'ParamBrowRX'];
@@ -1290,7 +1306,17 @@ export class LAppModel extends CubismUserModel {
       if (['browLY', 'browRY', 'browLAngle', 'browRAngle', 'browLForm', 'browRForm', 'browLX', 'browRX']
         .some(key => event.patch[key as keyof ExpressionParamPatch] !== undefined)) brows = true;
     }
-    return { eyes, brows };
+    // 嘴：說話、張嘴偏移、表情基準或原生動作／手動控制任一使用中就讓出（尖嘴只作用在閉口）。
+    const mouthIds = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthPout', 'ParamMouthAngle'];
+    let mouth = locked || external(mouthIds) || this._speaking || this._lipSyncValue > 0.01
+      || Math.abs(this._currentMouthForm) > MOUTH_MICRO_BASE_LIMIT
+      || this._currentMouthOpenBias > MOUTH_MICRO_BASE_LIMIT
+      || (activeBase && Math.abs(this._aiMouthForm) > 0.001);
+    for (const event of this._activeExpressionEvents) {
+      if (nowMs < event.startedAtMs || nowMs >= event.startedAtMs + event.durationMs) continue;
+      if (event.patch.mouthForm !== undefined || event.patch.mouthOpenBias !== undefined) mouth = true;
+    }
+    return { eyes, brows, mouth, pupils: !(locked || external(['ParamEyeBallForm'])) };
   }
 
   private sampleBlink(deltaTimeSeconds: number, nowMs: number,
@@ -1317,6 +1343,12 @@ export class LAppModel extends CubismUserModel {
       blinkPaused: this._blinkRuntime.isPaused(),
       blinkReady: this._blinkRuntime.isIdle(),
       eyeLOpen: this._aiEyeBaseLOpen, eyeROpen: this._aiEyeBaseROpen,
+    });
+    this._lastFaceMicroSample = this._faceMicroRuntime.update(deltaTimeSeconds, nowMs, {
+      enabled: this._autoEffectsEnabled && nowMs >= this._manualUntilMs,
+      mouthAllowed: !ownership.mouth,
+      pupilsAllowed: ownership.pupils,
+      listening: this._faceListening,
     });
     if (nativeEyes) return;
     this._model.setParameterValueById(this._idParamEyeLOpen,
@@ -1540,11 +1572,15 @@ export class LAppModel extends CubismUserModel {
   private applyCurrentExpressionParameters(): void {
     const face = this._lastFaceIdleSample;
     const sdkExpression = !!this._expressionManager && !this._expressionManager.isFinished();
-    // Y 通道也在全中性表情下寫回基準，避免上一段眉毛事件殘留或累加。
+    // 眉毛通道也在全中性表情下寫回基準，避免上一段眉毛事件殘留或累加。
     if (!sdkExpression) {
       for (const [id, base, delta] of [
-        [this._idParamBrowLY, this._currentBrowLY, face.browL],
-        [this._idParamBrowRY, this._currentBrowRY, face.browR],
+        [this._idParamBrowLY, this._currentBrowLY, 0],
+        [this._idParamBrowRY, this._currentBrowRY, 0],
+        [this._idParamBrowLAngle, this._currentBrowLAngle, face.browLAngle],
+        [this._idParamBrowRAngle, this._currentBrowRAngle, face.browRAngle],
+        [this._idParamBrowLForm, this._currentBrowLForm, face.browLForm],
+        [this._idParamBrowRForm, this._currentBrowRForm, face.browRForm],
       ] as const) {
         if (!this._nativeMotionParameters.has(id.getString())) {
           this._model.setParameterValueById(id, Math.max(-1, Math.min(1, base + delta)));
@@ -1571,12 +1607,21 @@ export class LAppModel extends CubismUserModel {
 
     for (const [id, value] of [
       [this._idParamCheek, this._currentBlushLevel], [this._idParamMouthForm, this._currentMouthForm],
-      [this._idParamBrowLAngle, this._currentBrowLAngle], [this._idParamBrowRAngle, this._currentBrowRAngle],
-      [this._idParamBrowLForm, this._currentBrowLForm], [this._idParamBrowRForm, this._currentBrowRForm],
       [this._idParamBrowLX, this._currentBrowLX], [this._idParamBrowRX, this._currentBrowRX],
     ] as const) {
       if (sdkExpression && id.getString().startsWith('ParamBrow')) continue;
       if (!this._nativeMotionParameters.has(id.getString())) this._model.setParameterValueById(id, value);
+    }
+  }
+
+  // 嘴型與瞳孔的 idle 微動：在基準之上疊加，所有權由 faceOwnership 判斷（讓出時 sample 已淡出為 0）。
+  private applyFaceMicro(): void {
+    const micro = this._lastFaceMicroSample;
+    for (const [id, value] of [
+      [this._idParamMouthForm, micro.mouthForm], [this._idParamMouthPout, micro.mouthPout],
+      [this._idParamMouthAngle, micro.mouthAngle], [this._idParamEyeBallForm, micro.eyeBallForm],
+    ] as const) {
+      if (value !== 0 && !this._nativeMotionParameters.has(id.getString())) this._model.addParameterValueById(id, value);
     }
   }
 
@@ -1726,6 +1771,7 @@ export class LAppModel extends CubismUserModel {
     this.applyLipSync();
     if (this._expressionActionActive) this.updateBodyMotion(deltaTimeSeconds);
     this.applyCurrentExpressionParameters();
+    this.applyFaceMicro();
     this.applyAmbientMotion(deltaTimeSeconds, nowMs);
     this.applyNativeParamOverrides(true);
 

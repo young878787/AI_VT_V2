@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import './check-blink-runtime.mjs';
 import './check-face-idle-runtime.mjs';
+import './check-face-micro-runtime.mjs';
 import './check-face-composition.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -135,6 +136,7 @@ const modelLoad = createLoader({
 const { LAppModel } = modelLoad('src/live2d/LAppModel.ts');
 const { BlinkRuntime } = load('src/live2d/runtime/BlinkRuntime.ts');
 const { FaceIdleRuntime } = load('src/live2d/runtime/FaceIdleRuntime.ts');
+const { FaceMicroRuntime } = load('src/live2d/runtime/FaceMicroRuntime.ts');
 const model = Object.create(LAppModel.prototype);
 const parameters = new Map([['left', 0.5], ['right', 0.3]]);
 model._model = {
@@ -147,7 +149,10 @@ model._aiEyeBaseLOpen = 0.5;
 model._aiEyeBaseROpen = 0.3;
 model._blinkRuntime = new BlinkRuntime(() => 0.5);
 model._faceIdleRuntime = new FaceIdleRuntime(() => 0);
-model._lastFaceIdleSample = { eyeL: 1, eyeR: 1, browL: 0, browR: 0, winking: false, kind: 'still' };
+model._lastFaceIdleSample = {
+  eyeL: 1, eyeR: 1, browLForm: 0, browRForm: 0, browLAngle: 0, browRAngle: 0, winking: false, kind: 'still',
+};
+model._faceMicroRuntime = new FaceMicroRuntime(() => 0);
 model._faceListening = false;
 model._manualUntilMs = 0;
 model._activeExpressionEvents = [];
@@ -782,7 +787,9 @@ function audioHarness(suspended = false) {
   const { CubismModelMatrix } = load('src/live2d/framework/math/cubismmodelmatrix.ts');
   const defaults = load('src/live2d/framework/cubismdefaultparameterid.ts');
   const { ParameterMixer } = load('src/live2d/runtime/ParameterMixer.ts');
+  const { FIXATION_JITTER } = load('src/live2d/runtime/AmbientMotion.ts');
   let now = 10000;
+  let draws = 0;
   const integrationLoad = createLoader({
     ...Object.fromEntries(sdkNames.map(name => [`@framework/${name}`, {}])),
     '@framework/math/cubismmatrix44': { CubismMatrix44 },
@@ -793,7 +800,9 @@ function audioHarness(suspended = false) {
     './LAppTextureManager': { LAppTextureManager: class {} },
     './LAppDelegate': { LAppDelegate: { getInstance: () => ({ getFrameBuffer: () => null }) } },
     './LAppPal': { LAppPal: { getDeltaTime: () => 1 / 60, log() {}, printLog() {}, printError() {} } },
-  }, { performance: { now: () => now }, console: { log() {}, warn() {}, error() {} } });
+  }, { performance: { now: () => now }, console: { log() {}, warn() {}, error() {} },
+    // 漂移 seed 取自 Math.random；固定後整個整合測試逐幀可重現。
+    Math: Object.assign(Object.create(Math), { random: () => [0.37, 0.81, 0.23, 0.64][draws++ % 4] }) });
   const { LAppModel: RuntimeModel } = integrationLoad('src/live2d/LAppModel.ts');
   const ids = [
     'ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
@@ -933,10 +942,11 @@ function audioHarness(suspended = false) {
   near(values.get('ParamMouthOpenY'), 0.65, 'speech ending releases the mouth back to native motion');
   runtime._motionManager = { isFinished: () => true };
   tick(90);
-  // 自主輸出含持續微動；容差只涵蓋 ParameterMixer 追隨微動的延遲。
+  // 自主輸出含持續微動（峰值速度數 °/s）；容差只涵蓋 ParameterMixer 約 0.1 秒追隨微動的延遲。
   const autonomousAngleX = () => runtime._parameterMixer.normalized('ParamAngleX', runtime.getAmbientDiagnostics().sample.headX);
-  near(values.get('ParamAngleX'), autonomousAngleX(), 'finished native motion smoothly releases back to the latest Python target', 0.1);
-  assert.ok(values.get('ParamEyeBallX') < -0.4, 'finished native gaze releases back to the current autonomous gaze');
+  near(values.get('ParamAngleX'), autonomousAngleX(), 'finished native motion smoothly releases back to the latest Python target', 0.4);
+  // 自主視線目標約 -0.51；微掃視最多偏 0.12，仍遠離原生／事件的接管值。
+  assert.ok(values.get('ParamEyeBallX') < -0.3, 'finished native gaze releases back to the current autonomous gaze');
 
   const emotion = { ...createNeutralTargetParams(), mouthForm: 0.45, blushLevel: 0.3, browLY: 0.2,
     bodyAngleX: 0.25, bodyAngleY: -0.2, bodyAngleZ: 0.15,
@@ -1031,13 +1041,13 @@ function audioHarness(suspended = false) {
   runtime.enqueueScheduledMicroEvent({ kind: 'gaze', patch: { eyeBallX: 0.8 }, durationMs: 1500,
     returnToBase: true }, now + 5000);
   tick(60);
-  assert.ok(values.get('ParamEyeBallX') < -0.4 && runtime.getAmbientDiagnostics().sample.gazeX < -0.5,
+  assert.ok(values.get('ParamEyeBallX') < -0.3 && runtime.getAmbientDiagnostics().sample.gazeX < -0.45,
     'a future queued eye event cannot claim gaze before its scheduled start');
   tick(270);
   assert.ok(values.get('ParamEyeBallX') > 0.4, 'the scheduled eye event owns gaze once its active window begins');
   runtime.cancelExpressionAction();
   tick(60);
-  assert.ok(values.get('ParamEyeBallX') < -0.4, 'cancelling the eye event smoothly restores the autonomous gaze');
+  assert.ok(values.get('ParamEyeBallX') < -0.3, 'cancelling the eye event smoothly restores the autonomous gaze');
 
   runtime.setModelPosition(0, 0.88 - framing.y - meshTop * framing.scale);
   runtime.applyAmbientPlan({ ...plan, sequence: 4, breath: { ...plan.breath, rootAmplitude: 0 },
@@ -1086,6 +1096,8 @@ function audioHarness(suspended = false) {
     'disconnecting a hop does not jump the root breathing envelope');
   assert.equal(runtime.getAmbientDiagnostics().active, true, 'disconnect retains initialized basic breathing');
   const replacement = new RuntimeModel();
+  assert.notEqual(replacement._ambientMotion.seed, runtime._ambientMotion.seed,
+    'each model load gets its own drift seed');
   replacement.inheritAmbientBaseline(runtime);
   assert.equal(replacement.getAmbientDiagnostics().active, true, 'offline replacement keeps the basic runtime initialized');
   assert.deepEqual(structuredClone(replacement._ambientBase), structuredClone(runtime._ambientBase),
@@ -1111,16 +1123,17 @@ function audioHarness(suspended = false) {
     runtime.applyAmbientPlan({ ...plan, sequence: 100 + index,
       target: { ...plan.target, gazeX: x, gazeY: y } });
     tick(60);
-    near(values.get('ParamEyeBallX'), x * 0.85, `${name} reaches final eye X`, 1e-6);
-    near(values.get('ParamEyeBallY'), y, `${name} reaches the stronger final eye Y`, 1e-6);
+    // 注視中的微掃視最多偏離目標 FIXATION_JITTER。
+    near(values.get('ParamEyeBallX'), x * 0.85, `${name} reaches final eye X`, FIXATION_JITTER);
+    near(values.get('ParamEyeBallY'), y, `${name} reaches the stronger final eye Y`, FIXATION_JITTER);
     near(physicsSnapshot.get('ParamEyeBallY'), values.get('ParamEyeBallY'),
       `${name} vertical gaze survives the complete frame`, 1e-6);
   }
   runtime.applyAmbientPlan({ ...plan, sequence: 108, state: 'listening',
     target: { ...plan.target, gazeX: 0, gazeY: 0 } });
   tick(60);
-  near(values.get('ParamEyeBallX'), 0, 'listening returns X to calibrated forward', 1e-6);
-  near(values.get('ParamEyeBallY'), 0, 'listening returns Y to calibrated forward', 1e-6);
+  near(values.get('ParamEyeBallX'), 0, 'listening returns X to calibrated forward', FIXATION_JITTER);
+  near(values.get('ParamEyeBallY'), 0, 'listening returns Y to calibrated forward', FIXATION_JITTER);
   assert.deepEqual(structuredClone(runtime._ambientBase), settledBeforeGaze,
     'eight-direction glances preserve the settled emotion and body baseline');
   runtime.setEyeTrackingEnabled(true);
@@ -1129,7 +1142,7 @@ function audioHarness(suspended = false) {
   near(values.get('ParamEyeBallY'), 0.7 * 0.45 * 0.85, 'stronger autonomous Y preserves pointer amplitude', 1e-6);
   runtime.setEyeTrackingEnabled(false);
   tick(60);
-  near(values.get('ParamEyeBallY'), 0, 'pointer release returns to calibrated autonomous gaze', 1e-6);
+  near(values.get('ParamEyeBallY'), 0, 'pointer release returns to calibrated autonomous gaze', FIXATION_JITTER);
   const smallerEyeRange = new ParameterMixer({ ...core,
     getParameterMinimumValue: index => ids[index] === 'ParamEyeBallY' ? -0.6 : core.getParameterMinimumValue(index),
     getParameterMaximumValue: index => ids[index] === 'ParamEyeBallY' ? 0.7 : core.getParameterMaximumValue(index),
@@ -1142,7 +1155,8 @@ function audioHarness(suspended = false) {
 // Python 自主計畫只由前端連續執行；驗證真實 guard、曲線與收尾，不複製 runtime。
 {
   const { isAmbientPlan } = load('src/types/ambientPlan.ts');
-  const { AmbientMotion, clampRootY } = load('src/live2d/runtime/AmbientMotion.ts');
+  const { AmbientMotion, clampRootY, FIXATION_JITTER } = load('src/live2d/runtime/AmbientMotion.ts');
+  const { ParameterMixer: RigMixer } = load('src/live2d/runtime/ParameterMixer.ts');
   const ambientPlan = (overrides = {}) => ({
     type: 'ambient_plan', sequence: 1, state: 'idle', moveMs: 900,
     target: { headX: 0.8, headY: -0.4, headZ: 0.6, bodyX: 0.3, bodyY: -0.2, bodyZ: 0.5, gazeX: -0.6, gazeY: 0.2 },
@@ -1192,11 +1206,17 @@ function audioHarness(suspended = false) {
   for (const sample of rapidGaze.slice(1)) near(sample.gazeX, rapidGaze[0].gazeX,
     'independent rapid gaze stays continuous at 30/60/120 Hz', 1e-8);
   const layeredMotion = [30, 60, 120].map(rate => {
+    // 同 seed、目標為零的對照組：相減後只剩目標造成的進度，漂移與微掃視互相抵消。
     const runtime = new AmbientMotion();
-    runtime.apply(ambientPlan({ moveMs: 1200,
-      target: { ...ambientPlan().target, headX: 0.8, bodyX: 0.8, gazeX: 0.8 } }), 0);
+    const rest = new AmbientMotion();
+    const moving = ambientPlan({ moveMs: 1200,
+      target: { ...ambientPlan().target, headX: 0.8, bodyX: 0.8, gazeX: 0.8 } });
+    runtime.apply(moving, 0);
+    rest.apply(ambientPlan({ moveMs: 1200, target: { ...moving.target, headX: 0, bodyX: 0, gazeX: 0 } }), 0);
     const sample = advanceAmbient(runtime, rate, 0, 0.5);
-    assert.ok(sample.gazeX > sample.headX + 0.2 && sample.headX > sample.bodyX + 0.1,
+    const base = advanceAmbient(rest, rate, 0, 0.5);
+    const progress = axis => sample[axis] - base[axis];
+    assert.ok(progress('gazeX') > progress('headX') + 0.2 && progress('headX') > progress('bodyX') + 0.05,
       'eyes arrive before the head and the slower torso at each frame rate');
     return sample;
   });
@@ -1217,8 +1237,9 @@ function audioHarness(suspended = false) {
   near(refocused.bodyZ, unchanged.bodyZ, 'a quiet refocus preserves a settled torso', 1e-7);
   assert.ok(Math.abs(refocused.headX - settled.headX) > 1e-4,
     'settled head keeps a subtle continuous drift instead of freezing');
-  assert.ok(refocused.gazeX > 0.024 && refocused.gazeX <= 0.025,
-    'quiet refocus moves only the shared small gaze target');
+  // 同 seed 的微掃視兩邊相同，差值就是重新對焦的距離。
+  near(refocused.gazeX - unchanged.gazeX, 0.025 - quietTarget.gazeX,
+    'quiet refocus moves only the shared small gaze target', 1e-9);
   assert.ok(Math.abs(refocused.breath - settled.breath) > 0.01,
     'quiet posture holds retain the running breathing phase');
   const shortBody = new AmbientMotion();
@@ -1239,8 +1260,10 @@ function audioHarness(suspended = false) {
   for (const axis of ['headX', 'headY', 'headZ', 'bodyX', 'bodyY', 'bodyZ']) {
     near(glanced[axis], unglanced[axis], `mid-motion gaze-only plan keeps the ${axis} trajectory`, 1e-9);
   }
-  assert.ok(Math.abs(glanced.gazeX - 0.3) < 0.01 && Math.abs(glanced.gazeY + 0.2) < 0.01,
-    'gaze-only plan still moves the eyes');
+  // 對照組沿用 ambientPlan() 的原視線目標，同 seed 的微掃視相同，差值就是新舊目標的距離。
+  const baseTarget = ambientPlan().target;
+  near(glanced.gazeX - unglanced.gazeX, 0.3 - baseTarget.gazeX, 'gaze-only plan still moves the eyes in X', 1e-9);
+  near(glanced.gazeY - unglanced.gazeY, -0.2 - baseTarget.gazeY, 'gaze-only plan still moves the eyes in Y', 1e-9);
   // 眼睛立即移動；頭 80 ms、身體 200 ms 後才離開原曲線。
   const staged = new AmbientMotion();
   const resting = new AmbientMotion();
@@ -1268,7 +1291,10 @@ function audioHarness(suspended = false) {
   const continuedEarly = advanceAmbient(continuing, 1000, 500, 0.06);
   near(turnedEarly.headX, continuedEarly.headX, 'a mid-motion retarget keeps head velocity during its lag', 1e-12);
   near(turnedEarly.bodyX, continuedEarly.bodyX, 'a mid-motion retarget keeps torso velocity during its lag', 1e-12);
-  assert.ok(advanceAmbient(turning, 60, 560, 2.5).headX < -0.7, 'the lagged retarget still reaches the new target');
+  // 預設計畫 headZ=0.6 會依 TILT_FACE 把臉往同向帶，終點是 -0.8 加上耦合量。
+  const { TILT_FACE } = load('src/live2d/runtime/AmbientMotion.ts');
+  assert.ok(advanceAmbient(turning, 60, 560, 2.5).headX < -0.8 + TILT_FACE.x * 0.6 + 0.1,
+    'the lagged retarget still reaches the new target');
   const steady = new AmbientMotion();
   const refreshed = new AmbientMotion();
   steady.apply(ambientPlan(), 0);
@@ -1286,10 +1312,172 @@ function audioHarness(suspended = false) {
   refreshed.apply(ambientPlan({ sequence: 3, target: { ...ambientPlan().target, headX: -0.8 } }), 2000);
   near(refreshed.update(0, 2000, true).headX, refreshedSample.headX,
     'opposite targets start from the current rendered position');
-  assert.ok(advanceAmbient(refreshed, 60, 2000, 2).headX < -0.7,
+  assert.ok(advanceAmbient(refreshed, 60, 2000, 2).headX < -0.8 + TILT_FACE.x * 0.6 + 0.1,
     'an interrupted trajectory reaches the new target without resetting the runtime');
   assert.ok(Object.values(refreshed.update(NaN, Infinity, true, Infinity, NaN)).every(Number.isFinite),
     'invalid local timing or weights cannot poison future frames');
+
+  // 歪頭連動：headZ 的曲線值帶動同向 headX 與一律抬起的 headY（與同 seed、headZ=0 的對照組相減）。
+  {
+    const zero = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyY: 0, bodyZ: 0, gazeX: 0, gazeY: 0 };
+    const tiltFace = (z) => {
+      const tilted = new AmbientMotion(5);
+      const control = new AmbientMotion(5);
+      tilted.apply(ambientPlan({ moveMs: 1500, target: { ...zero, headZ: z } }), 0);
+      control.apply(ambientPlan({ moveMs: 1500, target: zero }), 0);
+      const a = advanceAmbient(tilted, 60, 0, 4);
+      const b = advanceAmbient(control, 60, 0, 4);
+      return { x: a.headX - b.headX, y: a.headY - b.headY, z: a.headZ - b.headZ };
+    };
+    const right = tiltFace(0.6);
+    const left = tiltFace(-0.6);
+    assert.ok(right.z > 0.4 && left.z < -0.4, 'both tilts reach their roll target');
+    assert.ok(right.x > 0.15 && left.x < -0.15, `the face turns with the tilt: ${right.x}, ${left.x}`);
+    assert.ok(right.y > 0.1 && left.y > 0.1, `either tilt lifts the chin slightly: ${right.y}, ${left.y}`);
+    near(right.x, TILT_FACE.x * right.z, 'face turn follows the roll curve', 0.06);
+    near(right.y, TILT_FACE.y * Math.abs(right.z), 'chin lift follows the roll curve', 0.06);
+    assert.ok(Math.abs(tiltFace(0).x) < 0.02 && Math.abs(tiltFace(0).y) < 0.02, 'no tilt, no coupling');
+  }
+
+  // 確定性漂移：同 seed 逐幀相同、換 seed 就不同；停住時持續微動且幅度有界。
+  const traceOf = (seed, plan = ambientPlan(), frames = 600) => {
+    const runtime = new AmbientMotion(seed);
+    runtime.apply(plan, 0);
+    return Array.from({ length: frames }, (_, index) => runtime.update(1 / 60, (index + 1) * 1000 / 60, true));
+  };
+  assert.deepEqual(traceOf(1234), traceOf(1234), 'the same seed reproduces every frame');
+  assert.ok(traceOf(1234).some((sample, index) => Math.abs(sample.headX - traceOf(4321)[index].headX) > 0.01),
+    'a different seed produces a different drift');
+  {
+    const zero = ambientPlan({ target: Object.fromEntries(Object.keys(ambientPlan().target).map(axis => [axis, 0])) });
+    const hold = traceOf(7, zero, 60 * 120);
+    const degrees = { headX: 35, headY: 24, headZ: 23 };
+    let slow = 0;
+    for (let index = 1; index < hold.length; index++) {
+      const speed = Math.hypot(...Object.entries(degrees).map(([axis, limit]) =>
+        (hold[index][axis] - hold[index - 1][axis]) * limit * 60));
+      if (speed < 1) slow += 1;
+    }
+    assert.ok(slow / hold.length < 0.4, 'a held pose keeps moving instead of freezing (head under 1 deg/s < 40% of the time)');
+    assert.ok(hold.every(sample => Math.abs(sample.headX) < 0.25 && Math.abs(sample.headY) < 0.25 && Math.abs(sample.bodyX) < 0.3),
+      'held-pose drift stays within a small bounded amplitude');
+    assert.ok(Math.max(...hold.map(sample => sample.headX)) - Math.min(...hold.map(sample => sample.headX)) > 0.05,
+      'held-pose drift is large enough to read as motion');
+  }
+  // 掃視：90% 到位 <= 90 ms（不含 mixer），而且不是瞬移。
+  {
+    const still = Object.fromEntries(Object.keys(ambientPlan().target).map(axis => [axis, 0]));
+    const saccade = new AmbientMotion(9);
+    const control = new AmbientMotion(9);
+    saccade.apply(ambientPlan({ target: still }), 0);
+    control.apply(ambientPlan({ target: still }), 0);
+    let reached = null;
+    for (let ms = 1; ms <= 2200; ms++) {
+      if (ms === 2000) saccade.apply(ambientPlan({ sequence: 2, target: { ...still, gazeX: 0.6 } }), 2000);
+      const progress = (saccade.update(0.001, ms, true).gazeX - control.update(0.001, ms, true).gazeX) / 0.6;
+      if (ms > 2000 && reached === null && progress >= 0.9) reached = ms - 2000;
+    }
+    assert.ok(reached !== null && reached >= 25 && reached <= 90,
+      `a 0.6 saccade reaches 90% quickly but not instantly (${reached} ms)`);
+  }
+  // 注視中的微掃視：偏離目標有明確上限，而且確實看得到。
+  {
+    const fixation = traceOf(3, ambientPlan({ target: { ...ambientPlan().target, gazeX: 0.3, gazeY: 0 } }), 60 * 30);
+    const offsets = fixation.slice(60).map(sample => Math.hypot(sample.gazeX - 0.3, sample.gazeY));
+    assert.ok(Math.max(...offsets) <= FIXATION_JITTER + 1e-9, 'fixation jitter never exceeds its limit');
+    assert.ok(offsets.filter(offset => offset > 0.03).length > 200, 'fixation jitter is large enough to see');
+  }
+  // 頭部過衝：扣掉同 seed 的漂移後，步階目標有小幅過衝，並在合理時間內到位。
+  {
+    const still = Object.fromEntries(Object.keys(ambientPlan().target).map(axis => [axis, 0]));
+    const stepping = new AmbientMotion(5);
+    const control = new AmbientMotion(5);
+    stepping.apply(ambientPlan({ moveMs: 1000, target: { ...still, headX: 0.4 } }), 0);
+    control.apply(ambientPlan({ moveMs: 1000, target: still }), 0);
+    let peak = 0;
+    let arrived = null;
+    let progress = 0;
+    for (let frame = 1; frame <= 60 * 8; frame++) {
+      const ms = frame * 1000 / 60;
+      progress = stepping.update(1 / 60, ms, true).headX - control.update(1 / 60, ms, true).headX;
+      peak = Math.max(peak, progress);
+      if (arrived === null && progress >= 0.9 * 0.4) arrived = ms;
+    }
+    assert.ok(peak > 0.4 * 1.02 && peak < 0.4 * 1.15, `head overshoots a step slightly (${(peak / 0.4 - 1).toFixed(3)})`);
+    assert.ok(arrived <= 1100, `head follow does not delay arrival (${arrived} ms for a 1000 ms move)`);
+    near(progress, 0.4, 'head settles exactly on its target after the overshoot', 1e-4);
+  }
+  // 出發／歸位的兩段軌跡：過衝與微彈的大小與移動時間無關；歪頭另有峰速上限與持住沉回。
+  {
+    const still = Object.fromEntries(Object.keys(ambientPlan().target).map(axis => [axis, 0]));
+    // 與同 seed、目標為零的對照組相減，扣掉漂移；前 5 秒走出發，之後換成零目標走歸位。
+    const shape = (axis, amplitude, moveMs) => {
+      const moving = new AmbientMotion(5);
+      const control = new AmbientMotion(5);
+      moving.apply(ambientPlan({ moveMs, target: { ...still, [axis]: amplitude } }), 0);
+      control.apply(ambientPlan({ moveMs, target: still }), 0);
+      const up = [];
+      const down = [];
+      for (let frame = 1; frame <= 60 * 10; frame++) {
+        const ms = frame * 1000 / 60;
+        if (frame === 60 * 5) {
+          moving.apply(ambientPlan({ sequence: 2, moveMs, target: still }), ms);
+          control.apply(ambientPlan({ sequence: 2, moveMs, target: still }), ms);
+        }
+        (frame <= 60 * 5 ? up : down).push(moving.update(1 / 60, ms, true)[axis] - control.update(1 / 60, ms, true)[axis]);
+      }
+      return { up, down };
+    };
+    const firstAtOrAbove = (values, level) => values.findIndex(value => value >= level) / 60;
+    for (const moveMs of [800, 1600]) {
+      const { up, down } = shape('headX', 0.4, moveMs);
+      const overshoot = Math.max(...up) / 0.4 - 1;
+      const bounce = -Math.min(...down) / 0.4;
+      assert.ok(overshoot > 0.04 && overshoot < 0.07, `departure overshoots about 5% at ${moveMs} ms (${overshoot.toFixed(3)})`);
+      assert.ok(bounce > 0.02 && bounce < 0.04, `return only bounces about 3% at ${moveMs} ms (${bounce.toFixed(3)})`);
+      near(up.at(-1), 0.4, 'a departure settles exactly on its target without sag on yaw', 1e-6);
+      near(down.at(-1), 0, 'a return settles exactly on neutral', 1e-6);
+    }
+    // 歪頭：峰速不超過上限、歸位比出發更慢、持住時沉回一點；小幅歪頭幾乎不沉回。
+    const tilt = shape('headZ', 0.8, 900);
+    const tiltSpeed = Math.max(...tilt.up.slice(1).map((value, index) => Math.abs(value - tilt.up[index]) * 60 * 23));
+    assert.ok(tiltSpeed < 21, `an 18 degree tilt stays under the roll speed cap (${tiltSpeed.toFixed(1)} deg/s)`);
+    assert.ok(firstAtOrAbove(tilt.down.map(value => -value), -0.08) > firstAtOrAbove(tilt.up, 0.72),
+      'returning from a tilt takes longer than tilting');
+    const sag = 1 - tilt.up.at(-1) / 0.8;
+    assert.ok(sag > 0.08 && sag < 0.2, `a held tilt sags back a little (${sag.toFixed(3)})`);
+    const slightTilt = shape('headZ', 0.04, 900);
+    assert.ok(Math.abs(1 - slightTilt.up.at(-1) / 0.04) < 0.5, 'a slight tilt is not sagged');
+    // 回彈途中換目標：位置不跳。
+    const bouncing = new AmbientMotion(5);
+    bouncing.apply(ambientPlan({ moveMs: 1200, target: { ...still, headX: 0.4 } }), 0);
+    for (let frame = 1; frame <= 90; frame++) bouncing.update(1 / 60, frame * 1000 / 60, true);
+    const mid = bouncing.update(1 / 60, 1510, true);
+    bouncing.apply(ambientPlan({ sequence: 2, moveMs: 1200, target: { ...still, headX: -0.3 } }), 1510);
+    near(bouncing.update(0, 1510, true).headX, mid.headX, 'retargeting during the bounce keeps the position', 1e-4);
+  }
+  {
+    // 以 rig 實際範圍建立 mixer，驗證轉頭上限與眼球追隨速度。
+    const rigRanges = { ParamAngleX: 45, ParamAngleY: 30, ParamAngleZ: 30,
+      ParamBodyAngleX: 10, ParamBodyAngleY: 10, ParamBodyAngleZ: 10, ParamEyeBallX: 1, ParamEyeBallY: 1 };
+    const rigIds = Object.keys(rigRanges);
+    const rigValues = new Map(rigIds.map(id => [id, 0]));
+    const mixer = new RigMixer({
+      getParameterCount: () => rigIds.length, getParameterId: index => ({ getString: () => rigIds[index] }),
+      getParameterDefaultValue: () => 0, getParameterMinimumValue: index => -rigRanges[rigIds[index]],
+      getParameterMaximumValue: index => rigRanges[rigIds[index]],
+      getParameterValueByIndex: index => rigValues.get(rigIds[index]),
+      setParameterValueByIndex: (index, value) => rigValues.set(rigIds[index], value),
+    });
+    near(mixer.normalized('ParamAngleX', 1), 35, 'autonomous yaw uses 35 of the rig 45 degrees');
+    near(mixer.normalized('ParamAngleY', -1), -24, 'autonomous pitch uses 24 of the rig 30 degrees');
+    near(mixer.normalized('ParamAngleZ', 1), 23, 'autonomous roll range is unchanged');
+    near(mixer.normalized('ParamBodyAngleX', 1), 8, 'autonomous body range is unchanged');
+    let eye = 0;
+    for (let frame = 0; frame < 3; frame++) eye = mixer.write('ParamEyeBallX', 1, 1 / 60);
+    const eyeGoal = mixer.normalized('ParamEyeBallX', 1);
+    assert.ok(eye >= 0.9 * eyeGoal, `the eye mixer follows a saccade within 50 ms (${(eye / eyeGoal).toFixed(3)})`);
+  }
 
   const hopping = new AmbientMotion();
   const noRootBreath = { periodSec: 4.8, amplitude: 0.5, rootAmplitude: 0 };

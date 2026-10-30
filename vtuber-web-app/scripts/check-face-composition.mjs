@@ -59,7 +59,14 @@ const { LAppModel } = load('src/live2d/LAppModel.ts');
 const { BlinkRuntime } = load('src/live2d/runtime/BlinkRuntime.ts');
 const { FaceIdleRuntime } = load('src/live2d/runtime/FaceIdleRuntime.ts');
 const { createNeutralTargetParams } = load('src/live2d/expression/expressionState.ts');
-const neutralFace = () => ({ eyeL: 1, eyeR: 1, browL: 0, browR: 0, winking: false, kind: 'still' });
+const neutralFace = () => ({
+  eyeL: 1, eyeR: 1, browLForm: 0, browRForm: 0, browLAngle: 0, browRAngle: 0, winking: false, kind: 'still',
+});
+// eyes／brows 的所有權斷言只看這兩組；嘴與瞳孔另有專屬斷言。
+const faceGroups = (model, atMs) => {
+  const { eyes, brows } = model.faceOwnership(atMs);
+  return { eyes, brows };
+};
 
 function harness(random = () => 0) {
   nowMs = 0;
@@ -67,6 +74,7 @@ function harness(random = () => 0) {
   const values = new Map();
   model._model = {
     setParameterValueById: (id, value) => values.set(id.getString(), value),
+    addParameterValueById: (id, value) => values.set(id.getString(), (values.get(id.getString()) ?? 0) + value),
     getParameterValueById: id => values.get(id.getString()) ?? 0,
   };
   model._eyeBlinkIds = [idFor('ParamEyeLOpen'), idFor('ParamEyeROpen')];
@@ -119,21 +127,25 @@ function fixedFace(model, sample, blink = 1) {
 // 中性時眉毛也要寫回，反覆事件不可殘留或累加。
 {
   const { model, values } = harness();
-  model._lastFaceIdleSample = { ...neutralFace(), browL: 0.04, browR: -0.03 };
+  model._lastFaceIdleSample = { ...neutralFace(), browLForm: 0.4, browRForm: -0.3, browLAngle: -0.2, browRAngle: -0.25 };
   for (let index = 0; index < 100; index += 1) model.applyCurrentExpressionParameters();
-  near(values.get('ParamBrowLY'), 0.04, 'neutral left brow detail is visible without accumulation');
-  near(values.get('ParamBrowRY'), -0.03, 'neutral right brow detail is visible without accumulation');
-  near(model._currentBrowLY, 0, 'brow detail does not alter the smoothed baseline');
-  near(model._aiBrowLY, 0, 'brow detail does not alter the AI target');
+  near(values.get('ParamBrowLForm'), 0.4, 'neutral left brow form is visible without accumulation');
+  near(values.get('ParamBrowRForm'), -0.3, 'neutral right brow form is visible without accumulation');
+  near(values.get('ParamBrowLAngle'), -0.2, 'neutral left brow angle is visible without accumulation');
+  near(values.get('ParamBrowRAngle'), -0.25, 'neutral right brow angle is visible without accumulation');
+  near(values.get('ParamBrowLY'), 0, 'idle brow events no longer move BrowY');
+  near(model._currentBrowLForm, 0, 'brow detail does not alter the smoothed baseline');
+  near(model._aiBrowLForm, 0, 'brow detail does not alter the AI target');
   model._lastFaceIdleSample = neutralFace();
   model.applyCurrentExpressionParameters();
-  near(values.get('ParamBrowLY'), 0, 'finished neutral detail restores left baseline');
-  near(values.get('ParamBrowRY'), 0, 'finished neutral detail restores right baseline');
-  model._currentBrowLY = 0.99;
-  model._lastFaceIdleSample.browL = 0.06;
+  for (const id of ['ParamBrowLForm', 'ParamBrowRForm', 'ParamBrowLAngle', 'ParamBrowRAngle']) {
+    near(values.get(id), 0, `finished neutral detail restores ${id}`);
+  }
+  model._currentBrowLForm = 0.99;
+  model._lastFaceIdleSample.browLForm = 0.3;
   model.applyCurrentExpressionParameters();
-  near(values.get('ParamBrowLY'), 1, 'brow output remains bounded');
-  near(model._currentBrowLY, 0.99, 'clamping output cannot change its baseline');
+  near(values.get('ParamBrowLForm'), 1, 'brow output remains bounded');
+  near(model._currentBrowLForm, 0.99, 'clamping output cannot change its baseline');
 }
 
 // Face ownership 依當下活動的 patch 與通道分組，未來／rest 不提早接管。
@@ -141,7 +153,7 @@ function fixedFace(model, sample, blink = 1) {
   const { model } = harness();
   const owns = (patch, expected, label, startedAtMs = 100) => {
     model._activeExpressionEvents = [{ patch, startedAtMs, durationMs: 200 }];
-    assert.deepEqual({ ...model.faceOwnership(200) }, expected, label);
+    assert.deepEqual(faceGroups(model, 200), expected, label);
   };
   const free = { eyes: false, brows: false };
   for (const patch of [{}, { bodyAngleY: 0.4 }, { eyeBallX: 0.5 }, { mouthForm: 0.2 }, { breathLevel: 0.7 }]) {
@@ -159,22 +171,22 @@ function fixedFace(model, sample, blink = 1) {
 
   model._activeExpressionEvents = [];
   model.applyBasePose({ durationSec: 1, params: { ...createNeutralTargetParams(), bodyAngleY: 0.3, eyeSync: false } });
-  assert.deepEqual({ ...model.faceOwnership(200) }, free, 'body-only base and Rushia eyeSync=false do not own face');
+  assert.deepEqual(faceGroups(model, 200), free, 'body-only base and Rushia eyeSync=false do not own face');
   model._aiEyeLOpen = 0.7;
-  assert.deepEqual({ ...model.faceOwnership(200) }, { eyes: true, brows: false }, 'active half-eye base owns eyes');
+  assert.deepEqual(faceGroups(model, 200), { eyes: true, brows: false }, 'active half-eye base owns eyes');
   model._aiEyeLOpen = 1;
   model._aiBrowRAngle = -0.4;
-  assert.deepEqual({ ...model.faceOwnership(200) }, { eyes: false, brows: true }, 'active brow base owns eyebrows');
+  assert.deepEqual(faceGroups(model, 200), { eyes: false, brows: true }, 'active brow base owns eyebrows');
   model._aiBehaviorTimer = 0;
   assert.equal(model._expressionActionActive, true, 'scheduler action can outlive the base timer');
-  assert.deepEqual({ ...model.faceOwnership(200) }, free, 'expired base timer releases face while scheduler still runs');
+  assert.deepEqual(faceGroups(model, 200), free, 'expired base timer releases face while scheduler still runs');
 }
 
 // native/manual 的通道及五秒期限、SDK 管理器接管都不能被自主覆寫。
 {
   const { model, values } = harness();
   model._nativeMotionParameters.add('ParamEyeLOpen');
-  assert.deepEqual({ ...model.faceOwnership(6000) }, { eyes: true, brows: false });
+  assert.deepEqual(faceGroups(model, 6000), { eyes: true, brows: false });
   values.set('ParamEyeLOpen', 0.22);
   values.set('ParamEyeROpen', 0.61);
   model.updateEyeBlink(1 / 60, 6000, true);
@@ -182,22 +194,24 @@ function fixedFace(model, sample, blink = 1) {
   near(values.get('ParamEyeROpen'), 0.61, 'native eye group retains both values');
   model._nativeMotionParameters.clear();
   model._nativeParamOverrides.set('ParamBrowRY', { value: -0.7, lastSetAt: 1000 });
-  assert.deepEqual({ ...model.faceOwnership(6000) }, { eyes: false, brows: true }, 'manual brow ownership lasts exactly five seconds');
-  assert.deepEqual({ ...model.faceOwnership(6001) }, { eyes: false, brows: false }, 'expired manual brow releases only its group');
+  assert.deepEqual(faceGroups(model, 6000), { eyes: false, brows: true }, 'manual brow ownership lasts exactly five seconds');
+  assert.deepEqual(faceGroups(model, 6001), { eyes: false, brows: false }, 'expired manual brow releases only its group');
   model._nativeParamOverrides.clear();
   model._manualUntilMs = 7000;
-  assert.deepEqual({ ...model.faceOwnership(6000) }, { eyes: true, brows: true }, 'global manual lock claims face');
+  assert.deepEqual(faceGroups(model, 6000), { eyes: true, brows: true }, 'global manual lock claims face');
   model._manualUntilMs = 0;
   model._expressionManager = { isFinished: () => false };
-  assert.deepEqual({ ...model.faceOwnership(6000) }, { eyes: true, brows: true }, 'running SDK expression manager owns face');
+  assert.deepEqual(faceGroups(model, 6000), { eyes: true, brows: true }, 'running SDK expression manager owns face');
   model._currentBrowLY = 0.3;
   model._currentBrowLAngle = 0.4;
-  model._lastFaceIdleSample = { ...neutralFace(), browL: 0.05 };
+  model._lastFaceIdleSample = { ...neutralFace(), browLForm: 0.3, browLAngle: -0.2 };
   values.set('ParamBrowLY', -0.65);
   values.set('ParamBrowLAngle', -0.85);
+  values.set('ParamBrowLForm', -0.4);
   model.applyCurrentExpressionParameters();
   near(values.get('ParamBrowLY'), -0.65, 'SDK brow Y survives the normal expression writer');
   near(values.get('ParamBrowLAngle'), -0.85, 'SDK brow angle survives the normal expression writer');
+  near(values.get('ParamBrowLForm'), -0.4, 'SDK brow form survives the normal expression writer');
   model._expressionManager = { isFinished: () => true };
   model._lastFaceIdleSample = neutralFace();
   model.applyCurrentExpressionParameters();
@@ -217,9 +231,10 @@ for (const [random, expected] of [[0.66, 'deep'], [0.88, 'brow']]) {
       near(model._currentEyeLOpen, 1, 'real relaxation leaves its current baseline unchanged');
       observed = true;
     }
-    if (expected === 'brow' && Math.abs(sample.browR) > 0.02) {
-      near(values.get('ParamBrowRY'), sample.browR, 'real brow event reaches neutral model output');
-      near(model._currentBrowRY, 0, 'real brow event leaves its current baseline unchanged');
+    if (expected === 'brow' && Math.abs(sample.browRForm) > 0.1) {
+      near(values.get('ParamBrowRForm'), sample.browRForm, 'real brow event reaches neutral model output');
+      near(values.get('ParamBrowRAngle'), sample.browRAngle, 'real brow angle reaches neutral model output');
+      near(model._currentBrowRForm, 0, 'real brow event leaves its current baseline unchanged');
       observed = true;
     }
   }
@@ -237,11 +252,11 @@ for (const [random, expected] of [[0.66, 'deep'], [0.88, 'brow']]) {
     assert.ok(Math.max(values.get('ParamEyeLOpen'), values.get('ParamEyeROpen')) > 0.99,
       'the other eye stays open through a real autonomous wink');
     assert.equal(model.getBlinkState().paused, false, 'wink suppression cannot change the public pause state');
-    model._lastFaceIdleSample.browL = 0.035;
+    model._lastFaceIdleSample.browLForm = 0.25;
     model.forceBlink();
     near(model._lastFaceIdleSample.eyeL, 1, 'force immediately clears autonomous left eye coefficient');
     near(model._lastFaceIdleSample.eyeR, 1, 'force immediately clears autonomous right eye coefficient');
-    near(model._lastFaceIdleSample.browL, 0.035, 'force does not clear the independent brow sample');
+    near(model._lastFaceIdleSample.browLForm, 0.25, 'force does not clear the independent brow sample');
     assert.equal(model._lastFaceIdleSample.winking, false, 'force cancels autonomous wink ownership');
     let closed = false;
     for (let step = 0; step < 30; step += 1) {
@@ -293,13 +308,13 @@ for (const [random, expected] of [[0.66, 'deep'], [0.88, 'brow']]) {
   let observed = false;
   for (let frame = 0; frame < 3300; frame += 1) {
     const sample = tick();
-    if (!sample.winking || sample.eyeL > 0.2 || sample.browL < 0.015) continue;
+    if (!sample.winking || sample.eyeL > 0.2 || sample.browLForm < 0.1) continue;
     observed = true;
     model.forceBlink();
     const after = tick();
     assert.equal(after.winking, false, 'force cancels the actual runtime wink event');
-    assert.ok(after.browL > 0.015, 'independent brow envelope survives force in the actual event');
-    near(values.get('ParamBrowLY'), after.browL, 'surviving brow envelope still reaches the model');
+    assert.ok(after.browLForm > 0.1, 'independent brow envelope survives force in the actual event');
+    near(values.get('ParamBrowLForm'), after.browLForm, 'surviving brow envelope still reaches the model');
     break;
   }
   assert.ok(observed, 'the scripted random source must produce a genuine wink with a brow accent');
@@ -315,7 +330,7 @@ for (const [random, expected] of [[0.66, 'deep'], [0.88, 'brow']]) {
   assert.equal(model._faceListening, true, 'accepted plan sets face listening');
   model.applyAmbientPlan({ ...plan, state: 'idle' });
   assert.equal(model._faceListening, true, 'stale plan cannot modify face listening');
-  model._lastFaceIdleSample = { ...neutralFace(), eyeL: 0, browR: 0.04, winking: true, kind: 'winkLeft' };
+  model._lastFaceIdleSample = { ...neutralFace(), eyeL: 0, browRForm: 0.3, winking: true, kind: 'winkLeft' };
   model._ambientBase.eyeLOpen = 0.82;
   const { model: replacement } = harness();
   replacement.inheritAmbientBaseline(model);
@@ -330,6 +345,66 @@ for (const [random, expected] of [[0.66, 'deep'], [0.88, 'brow']]) {
   assert.deepEqual({ ...model._lastFaceIdleSample }, neutralFace(), 'emotion reset clears short facial details');
   near(model._ambientBase.eyeLOpen, 1, 'emotion reset restores its neutral settled baseline');
   assert.equal(model.getBlinkState().paused, true, 'emotion reset cannot silently resume public blink pause');
+}
+
+// 嘴與瞳孔的 idle 微動：說話、表情基準、原生／手動控制任一使用中就讓出；瞳孔只在 SDK 表情／手動／原生時讓出。
+{
+  const { model, values } = harness();
+  const micro = nowMs => { const { mouth, pupils } = model.faceOwnership(nowMs); return { mouth, pupils }; };
+  assert.deepEqual(micro(200), { mouth: false, pupils: true }, 'idle face leaves mouth and pupils to the micro layer');
+  model._speaking = true;
+  assert.deepEqual(micro(200), { mouth: true, pupils: true }, 'speaking owns the mouth only');
+  model._speaking = false;
+  model._lipSyncValue = 0.3;
+  assert.equal(micro(200).mouth, true, 'lip sync value owns the mouth');
+  model._lipSyncValue = 0;
+  model._currentMouthForm = 0.2;
+  assert.equal(micro(200).mouth, true, 'a settled expression mouth form owns the mouth');
+  model._currentMouthForm = 0;
+  model._currentMouthOpenBias = 0.2;
+  assert.equal(micro(200).mouth, true, 'an open-mouth bias owns the mouth');
+  model._currentMouthOpenBias = 0;
+  model._nativeMotionParameters.add('ParamMouthPout');
+  assert.deepEqual(micro(200), { mouth: true, pupils: true }, 'native pout motion owns the mouth');
+  model._nativeMotionParameters.clear();
+  model._nativeMotionParameters.add('ParamEyeBallForm');
+  assert.deepEqual(micro(200), { mouth: false, pupils: false }, 'native pupil motion owns the pupils only');
+  model._nativeMotionParameters.clear();
+  model._activeExpressionEvents = [{ patch: { mouthForm: 0.2 }, startedAtMs: 100, durationMs: 200 }];
+  assert.equal(micro(200).mouth, true, 'an active mouth patch owns the mouth');
+  assert.equal(micro(400).mouth, false, 'an expired mouth patch releases the mouth');
+  model._activeExpressionEvents = [];
+  model._aiBehaviorTimer = 1;
+  model._expressionActionActive = true;
+  model._aiMouthForm = 0.4;
+  assert.equal(micro(200).mouth, true, 'an active expression base owns the mouth');
+  model._expressionActionActive = false;
+  model._aiMouthForm = 0;
+  model._expressionManager = { isFinished: () => false };
+  assert.deepEqual(micro(200), { mouth: true, pupils: false }, 'a running SDK expression owns both');
+  model._expressionManager = null;
+  model._manualUntilMs = 7000;
+  assert.deepEqual(micro(6000), { mouth: true, pupils: false }, 'manual lock owns both');
+  model._manualUntilMs = 0;
+
+  model._lastFaceMicroSample = { mouthForm: 0.2, mouthPout: 0.6, mouthAngle: 30, eyeBallForm: -0.25 };
+  for (const id of ['ParamMouthForm', 'ParamMouthPout', 'ParamMouthAngle', 'ParamEyeBallForm']) values.set(id, 0);
+  model.applyFaceMicro();
+  near(values.get('ParamMouthForm'), 0.2, 'mouth form micro layer is added');
+  near(values.get('ParamMouthPout'), 0.6, 'pout micro layer is added');
+  near(values.get('ParamMouthAngle'), 30, 'pout angle micro layer is added');
+  near(values.get('ParamEyeBallForm'), -0.25, 'pupil micro layer is added');
+  model.applyFaceMicro();
+  near(values.get('ParamMouthForm'), 0.4, 'the micro layer adds on the per-frame parameter state, not on a stored baseline');
+  values.set('ParamMouthPout', 0);
+  model._nativeMotionParameters.add('ParamMouthPout');
+  model.applyFaceMicro();
+  near(values.get('ParamMouthPout'), 0, 'a native motion parameter is never written by the micro layer');
+  model._nativeMotionParameters.clear();
+
+  model.disconnectAmbient();
+  assert.deepEqual({ ...model._lastFaceMicroSample }, { mouthForm: 0, mouthPout: 0, mouthAngle: 0, eyeBallForm: 0 },
+    'disconnect clears the mouth and pupil micro layer');
 }
 
 console.log('Face composition checks passed: expression/blink layering, per-group ownership, controls, SDK/manual priority and lifecycle.');
