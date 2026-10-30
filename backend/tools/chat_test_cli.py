@@ -549,20 +549,20 @@ async def control_step(ws, action: str, session_id: str, timeout: float, test_mo
 
 
 def provenance(dataset):
-    from tools.ai_testset import fingerprint
-    from infrastructure.memory_repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
-    from services.memory_retriever import MEMORY_CHAR_BUDGET
+    from tools.ai_test.testset import fingerprint
+    from infrastructure.memory.repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
+    from services.memory.retriever import MEMORY_CHAR_BUDGET
     root = BACKEND_ROOT.parent
 
     def git(*args):
         response = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
         return response.stdout
 
-    files = [*BACKEND_ROOT.glob("tools/ai_test*.py"), *BACKEND_ROOT.glob("tools/ai_test_cases/**/*.json"),
+    files = [*BACKEND_ROOT.glob("tools/ai_test/*.py"), *BACKEND_ROOT.glob("tools/ai_test/cases/**/*.json"),
              BACKEND_ROOT / "tools/chat_test_cli.py", BACKEND_ROOT / "domain/agent_a_prompts.py",
-             BACKEND_ROOT / "services/chat_service.py", BACKEND_ROOT / "domain/jev_questions.py",
+             BACKEND_ROOT / "services/chat/service.py", BACKEND_ROOT / "domain/jev_questions.py",
              BACKEND_ROOT / "domain/emotion_state.py",
-             BACKEND_ROOT / "services/memory_llm.py", *BACKEND_ROOT.glob("tools/ai_test_cases/assets/*")]
+             BACKEND_ROOT / "services/memory/llm.py", *BACKEND_ROOT.glob("tools/ai_test/cases/assets/*")]
     return {"git_commit": git("rev-parse", "HEAD").decode().strip(),
             "dirty": bool(git("status", "--porcelain", "--untracked-files=normal")),
             "patch_sha256": hashlib.sha256(git("diff", "HEAD", "--", "backend")).hexdigest(),
@@ -659,11 +659,11 @@ def update_cost(metadata, records, loader, started):
 
 
 async def run(args):
-    from domain.memory_settings import load_memory_settings
-    from tools.ai_testset import load_suite, select_cases, generate_followup
-    from tools.ai_test_evidence import case_mode, check_turn, context_trace, emotion_curve
-    from tools.ai_test_fixtures import FixtureLoader
-    from tools.ai_test_report import initialize_report, write_reports
+    from domain.memory.settings import load_memory_settings
+    from tools.ai_test.testset import load_suite, select_cases, generate_followup
+    from tools.ai_test.evidence import case_mode, check_turn, context_trace, emotion_curve
+    from tools.ai_test.fixtures import FixtureLoader
+    from tools.ai_test.report import initialize_report, write_reports
 
     # 重播latest時先完整讀取及驗證，再覆寫固定產物。沒有suite不啟動任何依賴。
     dataset = load_suite(args.suite, args.scenario)
@@ -871,7 +871,7 @@ async def run(args):
             metadata["cleanup"]["temporary"] = "removed"
         except Exception:
             metadata["cleanup"]["temporary"] = "failed"
-        from infrastructure.ai_client import _role_clients
+        from infrastructure.llm.ai_client import _role_clients
         for client in list(_role_clients.values()):
             await client.close()
         _role_clients.clear()
@@ -928,7 +928,7 @@ def read_compressed_texts(store, session, before_cursor, after_cursor):
 
 
 def state_difference(before, after):
-    from tools.ai_testset import fingerprint
+    from tools.ai_test.testset import fingerprint
     return {"baseline_sha256": fingerprint(before), "final_sha256": fingerprint(after),
             "changed_tables": [key for key in sorted(set(before) | set(after)) if before.get(key) != after.get(key)]}
 

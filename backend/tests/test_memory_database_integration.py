@@ -27,18 +27,18 @@ if str(BACKEND_ROOT) not in sys.path:
 load_dotenv(BACKEND_ROOT.parent / ".env", override=False)
 
 from domain.emotion_state import EMOTION_FIELDS, NEUTRAL_EMOTION_STATE, apply_mood_turn
-from domain.memory_scope import MemoryScope, conversation_id, message_id
-from domain.memory_routing import MemoryRouting
-from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
-from infrastructure.memory_database import check_schema, make_pool
-from infrastructure.chat_session_repository import ChatSessionRepository, ChatSessionStaleError
-from infrastructure.memory_repository import MemoryRepository
-from infrastructure.memory_store import load_session_messages, save_session_messages
-from services.memory_db_manager import MemoryDBManager
-from services.memory_import import read_legacy_entries
-from services.memory_library import MemoryLibraryService
-from services.memory_retriever import MemoryRetriever
-from services.memory_worker import MemoryWorker
+from domain.memory.scope import MemoryScope, conversation_id, message_id
+from domain.memory.routing import MemoryRouting
+from domain.memory.source import MemoryEventConflict, MemoryEventReplay, build_user_message
+from infrastructure.memory.database import check_schema, make_pool
+from infrastructure.session.repository import ChatSessionRepository, ChatSessionStaleError
+from infrastructure.memory.repository import MemoryRepository
+from infrastructure.memory.store import load_session_messages, save_session_messages
+from services.memory.db_manager import MemoryDBManager
+from services.memory.legacy_import import read_legacy_entries
+from services.memory.library import MemoryLibraryService
+from services.memory.retriever import MemoryRetriever
+from services.memory.worker import MemoryWorker
 from tools.chat_test_cli import MemoryRunStore, wait_memory_job
 
 
@@ -287,7 +287,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 item.setdefault("confidence", .8)
                 item.setdefault("retention_class", "normal")
             if item["action"] == "FORGET":
-                from domain.memory_routing import forget_scope
+                from domain.memory.routing import forget_scope
                 item["forget_scope"] = forget_scope(job["source_text"])
             applied.append(item)
         snapshots = {row["id"]: row for row in await self.repo.read_memories(targets)}
@@ -382,7 +382,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "session", turn, content, timestamp=original_time.timestamp(), generation=generation,
             ))
         with tempfile.TemporaryDirectory() as directory, patch(
-            "infrastructure.memory_store.CHAT_SESSION_DIR", directory
+            "infrastructure.memory.store.CHAT_SESSION_DIR", directory
         ):
             save_session_messages("session", history)
             history = load_session_messages("session")
@@ -542,7 +542,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         similarity = 0.48741912766809126
         below = [similarity, math.sqrt(1 - similarity ** 2)] + [0.0] * 1022
         embedding = SimpleNamespace(embed=AsyncMock(return_value=below))
-        with patch("services.memory_retriever.trace") as retrieval_trace:
+        with patch("services.memory.retriever.trace") as retrieval_trace:
             _, relevant = await MemoryRetriever(self.repo, embedding).retrieve(
                 "依照我的喜好和今晚的安排，現在喝什麼好？",
                 recent_dialogue=[dict(role="user", content="我今晚要早睡，今天暫時避開咖啡因。")],
@@ -969,8 +969,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.repo.queue_health())["retry_exhausted_jobs"], 1)
 
     async def test_timeout_after_accepted_proposal_retries_without_partial_write(self):
-        from services import memory_worker
-        from services.memory_llm import MemoryLLM
+        from services.memory import worker as memory_worker
+        from services.memory.llm import MemoryLLM
         from backend.tests.test_memory_agents import tool_response
         event = await self.repo.accept("session", "timeout-after-proposal")
         await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
@@ -1007,7 +1007,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 1)
 
     async def test_cancelled_worker_recovers_lease_and_commits_only_once(self):
-        from services.memory_llm import MemoryLLM
+        from services.memory.llm import MemoryLLM
         from backend.tests.test_memory_agents import tool_response
         event = await self.repo.accept("session", "cancel-agent")
         await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
@@ -1053,7 +1053,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 0)
 
     async def test_validation_retry_receives_error_and_commits_corrected_result(self):
-        from services.memory_llm import MemoryLLM
+        from services.memory.llm import MemoryLLM
         from backend.tests.test_memory_agents import tool_response
         event = await self.repo.accept("session", "invalid-key")
         await self.repo.route(event, MemoryRouting(None), "我的飲食計畫以高蛋白質為主", [])
@@ -1203,9 +1203,9 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
 import asyncio, os, sys
 from uuid import UUID
 sys.path.insert(0, 'backend')
-from domain.memory_scope import MemoryScope
-from infrastructure.memory_database import make_pool
-from infrastructure.memory_repository import MemoryRepository
+from domain.memory.scope import MemoryScope
+from infrastructure.memory.database import make_pool
+from infrastructure.memory.repository import MemoryRepository
 async def main():
     scope = MemoryScope(UUID(sys.argv[1]), UUID(sys.argv[2]), sys.argv[3])
     pool = await make_pool(os.environ['MEMORY_TEST_DATABASE_URL'])
@@ -1295,7 +1295,7 @@ asyncio.run(main())
             await self._apply(job, [decision], set(), {0: VECTOR}, (held,))
 
     async def test_worker_query_reused_during_focused_search(self):
-        from services.memory_llm import MemoryLLM
+        from services.memory.llm import MemoryLLM
         from backend.tests.test_memory_agents import tool_response
         item = await self._create()
         event = await self.repo.accept("session", "cache")

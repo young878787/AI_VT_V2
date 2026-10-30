@@ -6,7 +6,7 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.expression_intent_parser import parse_expression_intent
+from services.expression.intent_parser import parse_expression_intent
 
 
 class ExpressionIntentParserTests(unittest.TestCase):

@@ -13,8 +13,8 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-import tts_service
-from services.chat_service import synthesize_and_send_voice
+from services import tts_service
+from services.chat.service import synthesize_and_send_voice
 
 
 def _wav_bytes(sample_rate: int = 22050, duration_ms: int = 100) -> bytes:

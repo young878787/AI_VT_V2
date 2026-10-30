@@ -189,7 +189,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         await self._memory_run(failure_stage="retrieval", full_suite=True)
 
     async def _memory_run(self, failure_stage=None, prepare_failure=False, full_suite=False):
-        from tools.ai_testset import load_suite
+        from tools.ai_test.testset import load_suite
         dataset = load_suite("memory")
         sent = []
         store = SimpleNamespace(open=Mock(), close=Mock(), case_state=Mock(return_value={}), created=True)
@@ -226,11 +226,11 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
             }
             for name, value in replacements.items():
                 stack.enter_context(patch.object(cli, name, value))
-            stack.enter_context(patch("tools.ai_test_fixtures.FixtureLoader", return_value=loader))
-            stack.enter_context(patch("domain.memory_settings.load_memory_settings", return_value=settings))
-            stack.enter_context(patch("tools.ai_test_evidence.check_turn", side_effect=check))
-            ai_client = stack.enter_context(patch("infrastructure.ai_client.chat_create_with_fallback", side_effect=AssertionError("No runtime Judge allowed")))
-            stack.enter_context(patch("infrastructure.ai_client._role_clients", {}))
+            stack.enter_context(patch("tools.ai_test.fixtures.FixtureLoader", return_value=loader))
+            stack.enter_context(patch("domain.memory.settings.load_memory_settings", return_value=settings))
+            stack.enter_context(patch("tools.ai_test.evidence.check_turn", side_effect=check))
+            ai_client = stack.enter_context(patch("infrastructure.llm.ai_client.chat_create_with_fallback", side_effect=AssertionError("No runtime Judge allowed")))
+            stack.enter_context(patch("infrastructure.llm.ai_client._role_clients", {}))
             args = argparse.Namespace(suite="memory", case=None if full_suite else "mem_006", scenario=None, turn_timeout=1, startup_timeout=1)
             run_dir, status = await cli.run(args)
             result = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -263,7 +263,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         store.close.assert_called_once()
 
     async def test_jev_emotion_runs_all_turns_after_failure_and_archives_history(self):
-        from tools.ai_testset import load_suite
+        from tools.ai_test.testset import load_suite
         dataset = load_suite("jev-emotion")
         sent = []
         store = SimpleNamespace(open=Mock(), close=Mock(), case_state=Mock(return_value={}), created=True)
@@ -297,9 +297,9 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
             }
             for name, value in replacements.items():
                 stack.enter_context(patch.object(cli, name, value))
-            stack.enter_context(patch("tools.ai_test_fixtures.FixtureLoader", return_value=loader))
-            stack.enter_context(patch("domain.memory_settings.load_memory_settings", return_value=settings))
-            stack.enter_context(patch("tools.ai_test_evidence.check_turn", side_effect=check))
+            stack.enter_context(patch("tools.ai_test.fixtures.FixtureLoader", return_value=loader))
+            stack.enter_context(patch("domain.memory.settings.load_memory_settings", return_value=settings))
+            stack.enter_context(patch("tools.ai_test.evidence.check_turn", side_effect=check))
             args = argparse.Namespace(suite="jev-emotion", case=None, scenario=None, turn_timeout=1, startup_timeout=1)
             for _ in range(2):
                 run_dir, status = await cli.run(args)
@@ -344,7 +344,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         await self._integration_run(generation_failure=True)
 
     async def _integration_run(self, generation_failure=False):
-        from tools.ai_testset import load_suite
+        from tools.ai_test.testset import load_suite
         dataset = load_suite("integration")
         sent, generated = [], []
         store = SimpleNamespace(open=Mock(), close=Mock(), case_state=Mock(return_value={}), created=True)
@@ -394,12 +394,12 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
             }
             for name, value in replacements.items():
                 stack.enter_context(patch.object(cli, name, value))
-            stack.enter_context(patch("tools.ai_test_fixtures.FixtureLoader", return_value=loader))
-            stack.enter_context(patch("domain.memory_settings.load_memory_settings", return_value=settings))
-            stack.enter_context(patch("tools.ai_test_evidence.check_turn", side_effect=check))
-            ai_client = stack.enter_context(patch("infrastructure.ai_client.chat_create_with_fallback", side_effect=AssertionError("No runtime Judge allowed")))
-            stack.enter_context(patch("tools.ai_testset.generate_followup", side_effect=generate))
-            stack.enter_context(patch("infrastructure.ai_client._role_clients", {}))
+            stack.enter_context(patch("tools.ai_test.fixtures.FixtureLoader", return_value=loader))
+            stack.enter_context(patch("domain.memory.settings.load_memory_settings", return_value=settings))
+            stack.enter_context(patch("tools.ai_test.evidence.check_turn", side_effect=check))
+            ai_client = stack.enter_context(patch("infrastructure.llm.ai_client.chat_create_with_fallback", side_effect=AssertionError("No runtime Judge allowed")))
+            stack.enter_context(patch("tools.ai_test.testset.generate_followup", side_effect=generate))
+            stack.enter_context(patch("infrastructure.llm.ai_client._role_clients", {}))
             args = argparse.Namespace(suite="integration", case=None, scenario=None, turn_timeout=1, startup_timeout=1)
             run_dir, status = await cli.run(args)
             result = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))

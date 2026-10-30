@@ -9,7 +9,7 @@ from domain.emotion_state import (
     MOOD_HISTORY_LIMIT,
     PERSONALITY,
 )
-from domain.expression_intent_schema import (
+from domain.expression.intent_schema import (
     ALLOWED_ARCS,
     ALLOWED_EMOTIONS,
     ALLOWED_PERFORMANCE_MODES,

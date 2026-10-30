@@ -13,7 +13,7 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.chat_service import _VisibleTextFilter, build_chat_context, estimate_token_count
+from services.chat.service import _VisibleTextFilter, build_chat_context, estimate_token_count
 from domain.agent_a_prompts import build_agent_a_prompt, build_turn_scope_hint
 from domain.emotion_state import EMOTION_FIELDS
 from api.routes.chat_ws import websocket_endpoint

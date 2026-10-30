@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tools.ai_testset import fingerprint, generate_followup, load_suite, select_cases
+from tools.ai_test.testset import fingerprint, generate_followup, load_suite, select_cases
 
 
 FOLLOWUP_14 = "剛才處理完後，你還知道我的飲料偏好、測試暗號和最喜歡的電影有哪些嗎？"
@@ -206,7 +206,7 @@ class GenerationTests(unittest.IsolatedAsyncioTestCase):
     def client_modules(self, call):
         return patch.dict(sys.modules, {
             "core.config": SimpleNamespace(CHAT_MODEL_NAME="stub-chat"),
-            "infrastructure.ai_client": SimpleNamespace(chat_create_with_fallback=call),
+            "infrastructure.llm.ai_client": SimpleNamespace(chat_create_with_fallback=call),
         })
 
     async def test_generator_receives_only_visible_conversation_and_public_request(self):

@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from core.utils import env_flag
-from services.memory_library import MemoryLibraryService
+from services.memory.library import MemoryLibraryService
 
 router = APIRouter()
 

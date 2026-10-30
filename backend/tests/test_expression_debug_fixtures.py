@@ -1,8 +1,8 @@
 import unittest
 
-from domain.expression_debug_fixtures import build_fake_expression_debug_case
-from services.expression_compiler import compile_expression_plan
-from services.expression_intent_parser import parse_expression_intent
+from domain.expression.debug_fixtures import build_fake_expression_debug_case
+from services.expression.compiler import compile_expression_plan
+from services.expression.intent_parser import parse_expression_intent
 
 
 class ExpressionDebugFixturesTest(unittest.TestCase):

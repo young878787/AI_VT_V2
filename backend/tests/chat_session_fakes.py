@@ -2,8 +2,8 @@
 
 from copy import deepcopy
 
-from infrastructure.in_memory_chat_session_repository import InMemoryChatSessionRepository
-from services.chat_session_service import ChatSessionService
+from infrastructure.session.in_memory_repository import InMemoryChatSessionRepository
+from services.chat.session_service import ChatSessionService
 
 
 class FakeChatSessionRepository(InMemoryChatSessionRepository):

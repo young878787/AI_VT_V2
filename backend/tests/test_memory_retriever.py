@@ -9,10 +9,10 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.memory_retriever import MemoryRetriever, build_retrieval_query, _format_memory_projection
-from domain.memory_scope import MemoryScope
-from infrastructure.memory_repository import MemoryRepository, MIN_RETRIEVAL_SIMILARITY
-from infrastructure.memory_repository import CHAT_RETRIEVAL_MIN_SIMILARITY, CHAT_RETRIEVAL_LIMIT
+from services.memory.retriever import MemoryRetriever, build_retrieval_query, _format_memory_projection
+from domain.memory.scope import MemoryScope
+from infrastructure.memory.repository import MemoryRepository, MIN_RETRIEVAL_SIMILARITY
+from infrastructure.memory.repository import CHAT_RETRIEVAL_MIN_SIMILARITY, CHAT_RETRIEVAL_LIMIT
 
 
 class _EmptyCursor:
@@ -186,7 +186,7 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
                  "similarity": .9, "exact_match": True} for index in range(5)]
         repository = SimpleNamespace(related_items=AsyncMock(return_value=rows))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
-        with patch("services.memory_retriever.trace") as trace:
+        with patch("services.memory.retriever.trace") as trace:
             _, relevant = await MemoryRetriever(repository, embedding).retrieve("完整配置", uuid4())
         evidence = trace.call_args.args[1]
         selected = {projection["id"] for projection in evidence["projections"]}
@@ -206,7 +206,7 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
                  "similarity": .9, "exact_match": False} for text in ("請簡短", "請詳細")]
         repository = SimpleNamespace(related_items=AsyncMock(return_value=rows))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
-        with patch("services.memory_retriever.trace") as trace:
+        with patch("services.memory.retriever.trace") as trace:
             profile, relevant = await MemoryRetriever(repository, embedding).retrieve("回覆風格", uuid4())
         self.assertEqual(profile, {"communication_style": "請詳細"})
         self.assertEqual(relevant, "")
@@ -221,7 +221,7 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         from datetime import datetime, timezone
         from domain.agent_a_prompts import build_agent_a_prompt
         from domain.emotion_state import NEUTRAL_EMOTION_STATE
-        from services.chat_service import build_chat_context
+        from services.chat.service import build_chat_context
         facts = ["星舟助手使用 3D Avatar 顯示角色。", "星舟助手由 Emotion Engine 維護情緒。",
                  "星舟助手由 Emotion Engine 負責即時、規劃中與結束時的動作。",
                  "星舟助手的核心對話由 Dialogue Model 產生。", "星舟助手的 Recall Store 在背景運行。"]
@@ -230,7 +230,7 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
                  "valid_from": datetime(2026, 10, 14, 23, 50, 1, 123456, tzinfo=timezone.utc),
                  "valid_to": None, "similarity": .8, "exact_match": True} for fact in facts]
         repo = SimpleNamespace(related_items=AsyncMock(return_value=rows))
-        with patch("services.memory_retriever.trace") as trace:
+        with patch("services.memory.retriever.trace") as trace:
             profile, notes = await MemoryRetriever(repo, SimpleNamespace(embed=AsyncMock(return_value=[1.0]))).retrieve("整體架構")
         self.assertEqual(repo.related_items.await_args.kwargs["limit"], 5)
         self.assertEqual(len(trace.call_args.args[1]["projections"]), 5)

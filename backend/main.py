@@ -14,9 +14,9 @@ from api.routes.display_ws import router as display_router
 from api.routes.expression_debug_router import router as expression_debug_router
 from api.routes.memory_router import router as memory_router
 from api.routes.voice_ws import initialize_voice_runtime, router as voice_router
-from services.chat_session_service import ChatSessionService
-from services.memory_runtime import open_memory_backend
-from services.context_tools import close_desktop_reader
+from services.chat.session_service import ChatSessionService
+from services.memory.runtime import open_memory_backend
+from services.context.tools import close_desktop_reader
 
 
 @asynccontextmanager

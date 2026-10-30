@@ -8,7 +8,7 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.memory_import import import_summary, read_legacy_entries
+from services.memory.legacy_import import import_summary, read_legacy_entries
 
 
 class MemoryImportTests(unittest.TestCase):

@@ -7,11 +7,11 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from domain.memory_decisions import validate_decisions
-from domain.memory_routing import route_memory
-from domain.memory_scope import MemoryScope, conversation_id, message_id
-from domain.memory_embedding import format_embedding_input, normalize_embedding, query_document
-from domain.memory_settings import load_memory_settings, RETRIEVAL_INSTRUCTION
+from domain.memory.decisions import validate_decisions
+from domain.memory.routing import route_memory
+from domain.memory.scope import MemoryScope, conversation_id, message_id
+from domain.memory.embedding import format_embedding_input, normalize_embedding, query_document
+from domain.memory.settings import load_memory_settings, RETRIEVAL_INSTRUCTION
 from domain.jev_questions import build_memory_questions
 
 

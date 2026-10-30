@@ -11,8 +11,8 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.chat_service import build_chat_context, generate_context_summary
-from services.chat_session_service import ChatSessionService
+from services.chat.service import build_chat_context, generate_context_summary
+from services.chat.session_service import ChatSessionService
 
 
 class ChatContextConvergenceTests(unittest.IsolatedAsyncioTestCase):
@@ -20,7 +20,7 @@ class ChatContextConvergenceTests(unittest.IsolatedAsyncioTestCase):
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="合併後摘要"))],
         )
-        with patch("services.chat_service.chat_create_with_fallback",
+        with patch("services.chat.service.chat_create_with_fallback",
                    new=AsyncMock(return_value=response)) as create:
             result = await generate_context_summary(
                 "早期重要事實",
@@ -34,7 +34,7 @@ class ChatContextConvergenceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_summary_does_not_become_a_successful_result(self):
         response = SimpleNamespace(choices=[])
-        with patch("services.chat_service.chat_create_with_fallback",
+        with patch("services.chat.service.chat_create_with_fallback",
                    new=AsyncMock(return_value=response)):
             with self.assertRaisesRegex(ValueError, "有效內容"):
                 await generate_context_summary("舊摘要", [{"role": "user", "content": "一批對話"}])
@@ -59,7 +59,7 @@ class ChatContextConvergenceTests(unittest.IsolatedAsyncioTestCase):
                 raise RuntimeError("temporary provider failure")
             return False
 
-        with patch("services.chat_session_service.CHAT_COMPRESSION_RETRY_INTERVAL_SEC", 0.01):
+        with patch("services.chat.session_service.CHAT_COMPRESSION_RETRY_INTERVAL_SEC", 0.01):
             task = await service.ensure_compression(worker, force=True)
             await asyncio.wait_for(task, timeout=1)
         self.assertEqual(calls, [True, False])

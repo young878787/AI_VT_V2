@@ -45,7 +45,7 @@ class ChatTestModeTests(unittest.TestCase):
                 'AI_VT_TEST_MODE': 'true' if test_instance else 'false', 'AI_VT_MEMORY_DIR': directory}), \
                 patch.object(chat_ws, 'call_jev', side_effect=jev), \
                 patch.object(chat_ws, 'stream_agent_a', side_effect=chat), \
-                patch('services.context_tools.ContextTools.snapshot', new=AsyncMock(side_effect=lambda turn, stamp:
+                patch('services.context.tools.ContextTools.snapshot', new=AsyncMock(side_effect=lambda turn, stamp:
                     make_turn_snapshot(turn, stamp, context_result('unavailable', reason='test_source')))), \
                 patch.object(chat_ws, 'broadcast_to_displays'), \
                 patch.object(chat_ws, 'synthesize_and_send_voice', new=AsyncMock()), \

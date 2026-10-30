@@ -12,9 +12,9 @@ import httpx
 from openai import BadRequestError
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from services import memory_agent_client, memory_worker
-from services.memory_agent_client import MemoryAgentClient, CUMULATIVE_DIAGNOSTIC_FIELDS
-from services.memory_worker import MemoryWorker
+from services.memory import agent_client as memory_agent_client, worker as memory_worker
+from services.memory.agent_client import MemoryAgentClient, CUMULATIVE_DIAGNOSTIC_FIELDS
+from services.memory.worker import MemoryWorker
 
 
 async def blocked(*args, **kwargs):

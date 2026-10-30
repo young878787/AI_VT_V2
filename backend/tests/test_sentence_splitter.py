@@ -7,7 +7,7 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from infrastructure.piper_tts import SentenceSplitter
+from infrastructure.speech.piper_tts import SentenceSplitter
 
 
 class SentenceSplitterTests(unittest.TestCase):

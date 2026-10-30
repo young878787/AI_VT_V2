@@ -15,15 +15,15 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from domain.memory_routing import MemoryRouting
-from domain.memory_scope import MemoryScope
-from domain.memory_source import build_user_message, read_memory_source
+from domain.memory.routing import MemoryRouting
+from domain.memory.scope import MemoryScope
+from domain.memory.source import build_user_message, read_memory_source
 from domain.emotion_state import NEUTRAL_EMOTION_STATE
 from domain.jev_questions import build_emotion_context
-from infrastructure.memory_repository import MemoryRepository
-from infrastructure.memory_store import load_session_messages, save_session_messages
-from services.chat_service import build_chat_context
-from services.memory_runtime import MemoryRuntime
+from infrastructure.memory.repository import MemoryRepository
+from infrastructure.memory.store import load_session_messages, save_session_messages
+from services.chat.service import build_chat_context
+from services.memory.runtime import MemoryRuntime
 
 
 class _RecordingConnection:
@@ -79,7 +79,7 @@ class MemorySourcePolicyTests(unittest.IsolatedAsyncioTestCase):
                 corrupted["memory_source"][field] = value
                 self.assertIsNone(read_memory_source(corrupted))
                 with tempfile.TemporaryDirectory() as directory, patch(
-                    "infrastructure.memory_store.CHAT_SESSION_DIR", directory
+                    "infrastructure.memory.store.CHAT_SESSION_DIR", directory
                 ):
                     # 同時驗證已在磁碟中的損壞 metadata 與再次持久化；
                     # 不能因單筆來源失效而丟掉整份短期歷史。
@@ -123,7 +123,7 @@ class MemorySourcePolicyTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_store_policy_survives_truncation_and_session_reload(self):
         for boundary in (499, 500, 501, 4000, 4001, 4002):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory, patch(
-                "infrastructure.memory_store.CHAT_SESSION_DIR", directory
+                "infrastructure.memory.store.CHAT_SESSION_DIR", directory
             ):
                 text = "甲" * boundary + "不要記住這件事"
                 message = build_user_message(
@@ -184,7 +184,7 @@ class MemorySourcePolicyTests(unittest.IsolatedAsyncioTestCase):
             "memory_source": {"version": 1, "policy": "observe"},
         }
         with tempfile.TemporaryDirectory() as directory, patch(
-            "infrastructure.memory_store.CHAT_SESSION_DIR", directory
+            "infrastructure.memory.store.CHAT_SESSION_DIR", directory
         ):
             save_session_messages("session_1", [incomplete])
             self.assertEqual(

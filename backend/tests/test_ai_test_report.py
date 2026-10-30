@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from backend.tools.ai_test_report import (
+from backend.tools.ai_test.report import (
     file_sha256, fingerprint, initialize_report, rebuild_report, write_reports,
 )
 

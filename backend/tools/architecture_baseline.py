@@ -81,8 +81,8 @@ def configured_profile() -> dict:
     """只盤點本機非秘密契約；不載入到環境，也不把 endpoint／key／DB URL 寫入產物。"""
     from dotenv import dotenv_values
     from core.ai_request_params import provider_from_url
-    from domain.memory_settings import MemorySettings, RETRIEVAL_INSTRUCTION
-    from domain.memory_scope import MemoryScope
+    from domain.memory.settings import MemorySettings, RETRIEVAL_INSTRUCTION
+    from domain.memory.scope import MemoryScope
     from uuid import UUID
 
     values = dotenv_values(ROOT / ".env", interpolate=False)
@@ -145,10 +145,10 @@ def contracts() -> dict:
     from domain.agent_a_prompts import build_agent_a_prompt
     from domain.emotion_state import NEUTRAL_EMOTION_STATE
     from domain.jev_questions import build_role_questions
-    from domain.memory_decisions import agent_tools
-    from domain.memory_settings import load_memory_settings
-    from services.memory_llm import PROMPT
-    from tools.ai_testset import load_suite
+    from domain.memory.decisions import agent_tools
+    from domain.memory.settings import load_memory_settings
+    from services.memory.llm import PROMPT
+    from tools.ai_test.testset import load_suite
 
     def fingerprint(value):
         return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
@@ -224,7 +224,7 @@ def main() -> int:
                 with patch.object(prompt_logger, "_LOG_DIR", Path(directory)), \
                         patch.object(prompt_logger, "_LOG_FILE", Path(directory) / "prompt.log"):
                     report["contracts"] = contracts()
-                    from services import chat_service
+                    from services.chat import service as chat_service
                     if chat_service._encoding is None:
                         raise RuntimeError("cl100k_base cache unavailable; tokenizer fallback is not a reproducible baseline")
                     report["baseline_suite"] = run_suite(SUITE, output)

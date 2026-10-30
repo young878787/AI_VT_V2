@@ -17,14 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.tests.test_context_tools import FakeStream, native, rejection, selection
 from domain.runtime_context import CONTEXT_TOOL_NAMES, make_turn_snapshot, project_snapshot, result
 from infrastructure.windows_desktop import WindowsDesktop
-from services.chat_service import build_chat_context, stream_agent_a
-from services.context_tools import ContextTools, close_desktop_reader, desktop_reader
+from services.chat.service import build_chat_context, stream_agent_a
+from services.context.tools import ContextTools, close_desktop_reader, desktop_reader
 from tools import chat_test_cli as cli
-from tools.ai_test_evidence import check_turn
+from tools.ai_test.evidence import check_turn
 from tools.context_test_evidence import collect_tools, summarize_tools
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE_REF = "backend/tools/ai_test_cases/assets/desktop.png"
+FIXTURE_REF = "backend/tools/ai_test/cases/assets/desktop.png"
 FIXTURE = ROOT / FIXTURE_REF
 
 
@@ -44,7 +44,7 @@ def checks(record, *, required_tools=(), rejection_expected=False, memory_probe=
 
 class ContextEvidenceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        trace_dir = patch("services.chat_service.test_log_dir", return_value=FIXTURE.parent)
+        trace_dir = patch("services.chat.service.test_log_dir", return_value=FIXTURE.parent)
         trace_dir.start()
         self.addCleanup(trace_dir.stop)
 
@@ -85,9 +85,9 @@ class ContextEvidenceTests(unittest.IsolatedAsyncioTestCase):
         if reject_image:
             responses.append(rejection())
         responses.append(FakeStream("看到 Live2D 預覽與程式編輯器，畫面仍在測試，無法確認模型修好了。"))
-        with patch("services.chat_service.trace", side_effect=trace), \
-             patch("services.context_tools.trace", side_effect=trace), \
-             patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=responses)) as create:
+        with patch("services.chat.service.trace", side_effect=trace), \
+             patch("services.context.tools.trace", side_effect=trace), \
+             patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=responses)) as create:
             record["reply"] = await stream_agent_a(messages, AsyncMock(), context_tools=tools,
                                                    context_diagnostics=diagnostics)
         final = next(t for t in reversed(record["trace"]) if t["stage"] == "chat_request")
@@ -167,7 +167,7 @@ class ContextEvidenceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unexpected_tool_failure_becomes_sanitized_receipt(self):
         with patch.object(ContextTools, "_execute", new=AsyncMock(side_effect=RuntimeError("private-path"))), \
-             patch("services.context_tools.trace") as trace:
+             patch("services.context.tools.trace") as trace:
             receipt = await ContextTools().execute("get_datetime", "{}", call_id="failed")
         self.assertEqual(receipt["reason"], "tool_execution_failed")
         self.assertEqual(trace.call_args.args[1]["result"]["reason"], "tool_execution_failed")
@@ -182,9 +182,9 @@ class ContextEvidenceTests(unittest.IsolatedAsyncioTestCase):
         def trace(stage, payload):
             events.append(dict(stage=stage, **copy.deepcopy(payload)))
 
-        with patch("services.chat_service.trace", side_effect=trace), \
-             patch("services.context_tools.trace", side_effect=trace), \
-             patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service.trace", side_effect=trace), \
+             patch("services.context.tools.trace", side_effect=trace), \
+             patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
                  selection([native("get_activity_context")], finish="tool_calls"), FakeStream(title)])):
             await stream_agent_a([dict(role="system", content="角色"), dict(role="user", content="標題？")],
                                  AsyncMock(), context_tools=tools)

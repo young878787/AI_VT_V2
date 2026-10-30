@@ -12,7 +12,7 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from infrastructure.vad_engine import AutoGain, SpeechSegmenter, VadWrapper, segment_samples
+from infrastructure.speech.vad_engine import AutoGain, SpeechSegmenter, VadWrapper, segment_samples
 
 SR = 16000
 

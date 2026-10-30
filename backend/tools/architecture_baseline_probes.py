@@ -16,7 +16,7 @@ def record(identifier, reproduced, observed):
 
 
 def policy_probe():
-    from domain.memory_routing import instruction_policy
+    from domain.memory.routing import instruction_policy
     texts = ("請幫我寫一句「忘記我的地址」的台詞", "忘記我生日的是我朋友",
              "不要忘記我喜歡茶", "請忘記我的地址")
     observed = [instruction_policy(text) for text in texts]
@@ -25,9 +25,9 @@ def policy_probe():
 
 
 async def source_probe():
-    from domain.memory_routing import instruction_policy, MemoryRouting
-    from domain.memory_scope import MemoryScope
-    from infrastructure.memory_repository import MemoryRepository
+    from domain.memory.routing import instruction_policy, MemoryRouting
+    from domain.memory.scope import MemoryScope
+    from infrastructure.memory.repository import MemoryRepository
 
     class Connection:
         def __init__(self):
@@ -71,7 +71,7 @@ def response(text):
 
 
 async def summary_probe():
-    from services.chat_service import compress_context
+    from services.chat.service import compress_context
     captured = []
 
     async def summarize(**kwargs):
@@ -80,8 +80,8 @@ async def summary_probe():
 
     messages = [{"role": "user", "content": "最早事實"}] + [
         {"role": "assistant", "content": f"回覆 {i}"} for i in range(21)]
-    with patch("services.chat_service.chat_create_with_fallback", side_effect=summarize), \
-            patch("services.chat_service.save_session_summary"):
+    with patch("services.chat.service.chat_create_with_fallback", side_effect=summarize), \
+            patch("services.chat.service.save_session_summary"):
         first = await compress_context(messages, SimpleNamespace(send_json=AsyncMock()), "baseline")
         first.extend({"role": "user", "content": f"新一輪 {i}"} for i in range(21))
         second = await compress_context(first, SimpleNamespace(send_json=AsyncMock()), "baseline")
@@ -93,7 +93,7 @@ async def summary_probe():
 
 
 async def compression_race_probe():
-    from services.chat_service import compress_context
+    from services.chat.service import compress_context
     started, release = asyncio.Event(), asyncio.Event()
 
     async def summarize(**kwargs):
@@ -103,8 +103,8 @@ async def compression_race_probe():
 
     messages = [{"role": "user", "content": str(i)} for i in range(22)]
     tail = [{"role": "user", "content": "併發新問題"}, {"role": "assistant", "content": "併發新回答"}]
-    with patch("services.chat_service.chat_create_with_fallback", side_effect=summarize), \
-            patch("services.chat_service.save_session_summary"):
+    with patch("services.chat.service.chat_create_with_fallback", side_effect=summarize), \
+            patch("services.chat.service.save_session_summary"):
         task = asyncio.create_task(compress_context(messages, SimpleNamespace(send_json=AsyncMock()), "baseline"))
         try:
             await started.wait()
@@ -120,8 +120,8 @@ async def compression_race_probe():
 
 
 async def projection_probe(future=False):
-    from domain.memory_decisions import normalize_proposal
-    from services.memory_retriever import MemoryRetriever
+    from domain.memory.decisions import normalize_proposal
+    from services.memory.retriever import MemoryRetriever
     source_id, memory_id = uuid4(), uuid4()
     text = "請詳細回答" if future else "測" * 801
     proposal = normalize_proposal({
@@ -135,7 +135,7 @@ async def projection_probe(future=False):
            "valid_from": "2099-01-01T00:00:00+00:00", "valid_to": "2099-02-01T00:00:00+00:00"}
     repository = SimpleNamespace(related_items=AsyncMock(return_value=[row]))
     embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0] + [0.0] * 1023))
-    with patch("services.memory_retriever.trace") as trace:
+    with patch("services.memory.retriever.trace") as trace:
         profile, memory = await MemoryRetriever(repository, embedding).retrieve("未來的回覆風格" if future else "測試配置")
     if future:
         observed = {"profile": profile, "memory_empty": not memory,
@@ -233,7 +233,7 @@ def voice_probe():
 def prompt_probe():
     from domain.agent_a_prompts import build_agent_a_prompt
     from domain.emotion_state import NEUTRAL_EMOTION_STATE
-    from services.chat_service import build_chat_context, estimate_token_count
+    from services.chat.service import build_chat_context, estimate_token_count
     prompt = build_agent_a_prompt({}, "", NEUTRAL_EMOTION_STATE, "Rushia")
     small = build_chat_context(prompt, [], "嗨", budget=512)[0]["content"]
     normal = build_chat_context(prompt, [], "嗨", budget=8192)[0]["content"]

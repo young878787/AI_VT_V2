@@ -13,8 +13,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from domain.emotion_state import EMOTION_FIELDS, apply_mood_turn, build_mood_lines, idle_decayed_mood
-from tools.ai_test_evidence import case_mode, check_turn, emotion_checks, emotion_curve, jev_evidence, linked_targets
-from tools.ai_testset import load_suite
+from tools.ai_test.evidence import case_mode, check_turn, emotion_checks, emotion_curve, jev_evidence, linked_targets
+from tools.ai_test.testset import load_suite
 
 
 EVENT = "12345678-1234-1234-1234-123456789abc"
@@ -275,11 +275,11 @@ class AiTestEvidenceTests(unittest.TestCase):
                 "backend_status": "unavailable", "backend_reason": "unsupported_platform", "receipt_delivered": True,
                 "delivery_status": "unavailable", "delivery_reason": "unsupported_platform", "receipt_matches_backend": True,
                 "title_in_answer": False, "result": {"status": "unavailable", "data": None}}
-        with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
+        with mock.patch("tools.ai_test.evidence.collect_tools", return_value=[tool]):
             checks = run_checks(case, record, state, suite="integration")
         self.assertEqual(checks["required_get_activity_context"]["status"], "failed")
         tool.update(backend_status="ok", delivery_status="ok")
-        with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
+        with mock.patch("tools.ai_test.evidence.collect_tools", return_value=[tool]):
             checks = run_checks(case, record, state, suite="integration")
         self.assertEqual(checks["required_get_activity_context"]["status"], "passed")
         self.assertNotIn("activity_title_used", checks)
@@ -330,15 +330,15 @@ class AiTestEvidenceTests(unittest.TestCase):
                     "image_sha256": "a" * 64, "source": {"sha256": "b" * 64}}}}
         record["trace"].append({"stage": "chat_request", "messages": [{"role": "tool",
             "tool_call_id": "screen", "content": json.dumps(tool["result"])}]})
-        with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
+        with mock.patch("tools.ai_test.evidence.collect_tools", return_value=[tool]):
             checks = run_checks(case, record, state)
         self.assertEqual(checks["image_hash"]["status"], "passed")
         tool["image_accepted"] = False
-        with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
+        with mock.patch("tools.ai_test.evidence.collect_tools", return_value=[tool]):
             self.assertEqual(run_checks(case, record, state)["image_hash"]["status"], "failed")
 
     def test_to005_uses_real_fixture_source_hash_without_comparing_to_jpeg_hash(self):
-        data = json.loads((BACKEND_ROOT / "tools/ai_test_cases/tools.json").read_text(encoding="utf-8"))
+        data = json.loads((BACKEND_ROOT / "tools/ai_test/cases/tools.json").read_text(encoding="utf-8"))
         case = next(case for case in data["cases"] if case["case_id"] == "to_005")
         _, record, state, _ = fixture()
         reference = case["context"]["tools"]["capture_screenshot"]["asset"]
@@ -350,11 +350,11 @@ class AiTestEvidenceTests(unittest.TestCase):
                     "image_sha256": "a" * 64, "source": {"kind": "fixture_image", "ref": reference, "sha256": source_hash}}}}
         record["trace"].append({"stage": "chat_request", "messages": [{"role": "tool",
             "tool_call_id": "screen", "content": json.dumps(tool["result"])}]})
-        with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
+        with mock.patch("tools.ai_test.evidence.collect_tools", return_value=[tool]):
             checks = run_checks(case, record, state, suite="tools")
         self.assertEqual(checks["image_fixture_hash"]["status"], "passed")
         tool["result"]["data"]["source"]["sha256"] = "bad"
-        with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
+        with mock.patch("tools.ai_test.evidence.collect_tools", return_value=[tool]):
             self.assertEqual(run_checks(case, record, state, suite="tools")["image_fixture_hash"]["status"], "failed")
 
     def test_vision_rejection_requires_actual_replacement_receipt_and_rejection_trace(self):
@@ -368,12 +368,12 @@ class AiTestEvidenceTests(unittest.TestCase):
         record["trace"].extend([{"stage": "context_tool_image", "status": "unsupported",
             "reason": "vision_not_supported", "call_ids": ["screen"]}, {"stage": "chat_request", "messages": [
                 {"role": "tool", "tool_call_id": "screen", "content": json.dumps(final)}]}])
-        with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
+        with mock.patch("tools.ai_test.evidence.collect_tools", return_value=[tool]):
             checks = run_checks(case, record, state)
         self.assertEqual(checks["expected_vision_rejection"]["status"], "passed")
         self.assertEqual(checks["receipt_content"]["status"], "passed")
         record["trace"][-1]["messages"][0]["content"] = json.dumps({**final, "data": {"old_image": "leaked"}})
-        with mock.patch("tools.ai_test_evidence.collect_tools", return_value=[tool]):
+        with mock.patch("tools.ai_test.evidence.collect_tools", return_value=[tool]):
             self.assertEqual(run_checks(case, record, state)["receipt_content"]["status"], "failed")
 
 

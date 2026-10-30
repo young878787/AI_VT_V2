@@ -13,9 +13,9 @@ from openai import BadRequestError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from domain.runtime_context import local_time, result
-from services.chat_service import _structured_prompt_sections, _tool_context, build_chat_context, estimate_token_count, stream_agent_a
-from services.context_tools import ContextTools
-from services.taiwan_weather import _REGIONS, get_weather, grounded_location, js_literal, parse_forecast, search_regions
+from services.chat.service import _structured_prompt_sections, _tool_context, build_chat_context, estimate_token_count, stream_agent_a
+from services.context.tools import ContextTools
+from services.context.taiwan_weather import _REGIONS, get_weather, grounded_location, js_literal, parse_forecast, search_regions
 
 
 def native(name="get_datetime", arguments="{}", call_id="call1"):
@@ -134,7 +134,7 @@ class ContextToolsTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_batch_does_not_start_even_immediate_tool(self):
         tools = ContextTools()
         tools.execute = AsyncMock()
-        with patch("services.context_tools.BATCH_TIMEOUT_SECONDS", 0):
+        with patch("services.context.tools.BATCH_TIMEOUT_SECONDS", 0):
             receipts = await tools.execute_batch([native().model_dump()])
         self.assertEqual(receipts[0]["reason"], "tool_deadline")
         tools.execute.assert_not_awaited()
@@ -170,7 +170,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
             result("ok", {"text": "a " * 850}),
             *[result("error", reason="tool_call_limit") for _ in range(7)],
         ])
-        with patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
             selection(calls, finish="tool_calls"), FakeStream()])) as create:
             await stream_agent_a([{"role": "system", "content": "規則"}, {"role": "user", "content": "任務"}],
                                  AsyncMock(), context_tools=tools)
@@ -190,8 +190,8 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
                      "content": json.dumps(result("unavailable", reason="tool_result_budget"), ensure_ascii=False)}
                     for call in calls]
         budget = estimate_token_count([assistant, *receipts]) + 511
-        with patch("services.chat_service.CHAT_CONTEXT_TOKEN_BUDGET", budget), patch(
-            "services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service.CHAT_CONTEXT_TOKEN_BUDGET", budget), patch(
+            "services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
                 selection(calls, finish="tool_calls"), FakeStream("結果預算不足")])) as create:
             reply = await stream_agent_a(
                 [{"role": "system", "content": "規則"}, {"role": "user", "content": "任務"}],
@@ -218,7 +218,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_tool_call_does_not_make_second_model_request(self):
         pieces = []
-        with patch("services.chat_service.chat_create_with_fallback",
+        with patch("services.chat.service.chat_create_with_fallback",
                    new=AsyncMock(return_value=selection(content="你好<think>不可见</think>！"))) as create:
             reply = await stream_agent_a([{"role": "system", "content": "規則"}, {"role": "user", "content": "你好"}],
                                          AsyncMock(side_effect=pieces.append), context_tools=ContextTools())
@@ -234,7 +234,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
             return [result("ok", {"time": "12:00"})]
         tools.execute_batch = AsyncMock(side_effect=execute)
         stream = FakeStream()
-        with patch("services.chat_service.chat_create_with_fallback",
+        with patch("services.chat.service.chat_create_with_fallback",
                    new=AsyncMock(side_effect=[selection([native()], "我查好了", "tool_calls"), stream])) as create:
             reply = await stream_agent_a([{"role": "system", "content": "規則"}, {"role": "user", "content": "需要時間"}],
                                          AsyncMock(side_effect=pieces.append), context_tools=tools)
@@ -250,7 +250,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_rejection_falls_back_without_executing_tools(self):
         tools = ContextTools()
         tools.execute_batch = AsyncMock()
-        with patch("services.chat_service.chat_create_with_fallback",
+        with patch("services.chat.service.chat_create_with_fallback",
                    new=AsyncMock(side_effect=[rejection(), FakeStream("工具不可用")])):
             reply = await stream_agent_a([{"role": "system", "content": "規則"}, {"role": "user", "content": "你好"}],
                                          AsyncMock(), context_tools=tools)
@@ -261,7 +261,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
         tools = ContextTools()
         tools.execute_batch = AsyncMock()
         malformed = SimpleNamespace(model_dump=lambda **_: {"id": "call1", "type": "function", "function": None})
-        with patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
                 selection([malformed], finish="tool_calls"), FakeStream("工具要求無效")])):
             reply = await stream_agent_a([dict(role="system", content="角色"), dict(role="user", content="任務")],
                                          AsyncMock(), context_tools=tools)
@@ -273,7 +273,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
         receipt = result("ok", {"width": 10, "height": 10, "mime_type": "image/jpeg"})
         receipt["image"] = b"synthetic-image"
         tools.execute_batch = AsyncMock(return_value=[receipt])
-        with patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
             selection([native("capture_screenshot")], finish="tool_calls"), rejection(), FakeStream("圖片能力未支援")])) as create:
             reply = await stream_agent_a([{"role": "system", "content": "規則"}, {"role": "user", "content": "任務"}],
                                          AsyncMock(), context_tools=tools)
@@ -289,7 +289,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await asyncio.Event().wait()
         tools.execute_batch = AsyncMock(side_effect=slow)
-        with patch("services.chat_service.chat_create_with_fallback",
+        with patch("services.chat.service.chat_create_with_fallback",
                    new=AsyncMock(return_value=selection([native()], finish="tool_calls"))) as create:
             task = asyncio.create_task(stream_agent_a(
                 [{"role": "system", "content": "規則"}, {"role": "user", "content": "任務"}],
@@ -308,7 +308,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
         messages = [{"role": "system", "content": "規則"}, *[
             {"role": "assistant", "content": "前文" * 100} for _ in range(10)],
             {"role": "user", "content": "最新問題"}]
-        with patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
             selection([native("capture_screenshot")], finish="tool_calls"), FakeStream()])) as create:
             await stream_agent_a(messages, AsyncMock(), context_tools=tools)
         final = create.await_args_list[-1].kwargs["messages"]
@@ -322,7 +322,7 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
         tools.execute_batch = AsyncMock(return_value=[receipt])
         user = "請看這張圖：" + "🦊" * 900
         messages = [dict(role="system", content="規則" * 800), dict(role="user", content=user)]
-        with patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
                 selection([native("capture_screenshot")], finish="tool_calls"), FakeStream("圖片因預算不足未提供")])) as create:
             await stream_agent_a(messages, AsyncMock(), context_tools=tools)
         final = create.await_args_list[-1].kwargs["messages"]
@@ -335,9 +335,9 @@ class ContextToolRoundtripTests(unittest.IsolatedAsyncioTestCase):
         tools = ContextTools()
         tools.execute_batch = AsyncMock(return_value=[result("ok", {"datetime": "2026-10-09T12:00:00+08:00"})])
         messages = [dict(role="system", content="規則"), dict(role="user", content="現在時間？")]
-        with patch("services.chat_service._tool_context", side_effect=ValueError("tool_context_budget")), \
-                patch("services.chat_service.trace") as trace, \
-                patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service._tool_context", side_effect=ValueError("tool_context_budget")), \
+                patch("services.chat.service.trace") as trace, \
+                patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
                     selection([native()], finish="tool_calls"), FakeStream("查詢結果無法提供")])) as create:
             reply = await stream_agent_a(messages, AsyncMock(), context_tools=tools)
         final = create.await_args_list[-1].kwargs["messages"]

@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from domain.memory_decisions import normalize_proposal, agent_tools, validate_batch
-from domain.memory_routing import forget_scope, instruction_policy
-from services.memory_llm import MemoryLLM, PROMPT
-from services.memory_db_manager import _memory_keywords
+from domain.memory.decisions import normalize_proposal, agent_tools, validate_batch
+from domain.memory.routing import forget_scope, instruction_policy
+from services.memory.llm import MemoryLLM, PROMPT
+from services.memory.db_manager import _memory_keywords
 
 
 def tool_response(name, arguments):

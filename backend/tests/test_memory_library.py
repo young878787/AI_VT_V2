@@ -14,7 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from api.routes.memory_router import _ensure_local_management
 from domain.emotion_state import NEUTRAL_EMOTION_STATE, apply_mood_turn
 from backend.tests.chat_session_fakes import FakeChatSessionRepository
-from services.memory_library import MemoryLibraryService
+from services.memory.library import MemoryLibraryService
 
 
 class MemoryLibrarySessionTests(unittest.IsolatedAsyncioTestCase):

@@ -19,7 +19,7 @@ from core.config import (
 from core.prompt_logger import log_turn, reset_log, trace, trace_event, trace_turn, bind_trace_event
 from domain.agent_a_prompts import build_agent_a_prompt, build_turn_scope_hint
 from domain.emotion_state import EMOTION_FIELDS, NEUTRAL_EMOTION_STATE, apply_mood_turn, idle_decayed_mood
-from domain.expression_intent_schema import (
+from domain.expression.intent_schema import (
     ALLOWED_EMOTIONS,
     ALLOWED_PERFORMANCE_MODES,
     normalize_expression_intent,
@@ -27,8 +27,8 @@ from domain.expression_intent_schema import (
 from domain.input_event import normalize_chat_input
 from domain.runtime_context import context_status, desktop_access_allowed, project_snapshot, snapshot_context_status
 from domain.chat_test_mode import resolve_test_mode
-from domain.memory_routing import instruction_policy, POLICY_VERSION
-from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
+from domain.memory.routing import instruction_policy, POLICY_VERSION
+from domain.memory.source import MemoryEventConflict, MemoryEventReplay, build_user_message
 from domain.jev_questions import (
     BASE_EMOTION_CRITERIA,
     CONFIDENCE_THRESHOLD,
@@ -41,13 +41,13 @@ from domain.jev_questions import (
     map_answers_to_intent,
     question_hash,
 )
-from infrastructure.chat_session_repository import (
+from infrastructure.session.repository import (
     ChatSessionStaleError,
     ChatSessionTurnConflict,
     ChatSessionTurnReplay,
 )
-from infrastructure.typesafe_client import call_jev
-from services.chat_service import (
+from infrastructure.llm.typesafe_client import call_jev
+from services.chat.service import (
     stream_agent_a,
     build_chat_context,
     retained_prompt_ranges,
@@ -55,13 +55,13 @@ from services.chat_service import (
     estimate_token_count,
     synthesize_and_send_voice,
 )
-from services.expression_compiler import compile_expression_plan
-from services.expression_legacy_renderer import render_legacy_behavior_payload
-from services.chat_session_service import ChatSessionInUseError
-from services.context_tools import ContextTools
-from services.ai_test_context import fixture_timestamp
-from services.memory_events import recent_memory_events, subscribe_memory_events
-from services.avatar_runtime import AvatarRuntime
+from services.expression.compiler import compile_expression_plan
+from services.expression.legacy_renderer import render_legacy_behavior_payload
+from services.chat.session_service import ChatSessionInUseError
+from services.context.tools import ContextTools
+from services.context.ai_test_context import fixture_timestamp
+from services.memory.events import recent_memory_events, subscribe_memory_events
+from services.expression.avatar_runtime import AvatarRuntime
 
 
 router = APIRouter()

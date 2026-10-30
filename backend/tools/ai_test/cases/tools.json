@@ -1,0 +1,553 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "case_id": "to_001",
+      "input": "我在對電腦時鐘，再讀一次現在時間，精確到秒。",
+      "phase": "conversation",
+      "session": "to_001",
+      "depends_on": [],
+      "context": {
+        "scenario": "clock_refresh",
+        "history": [
+          {
+            "role": "user",
+            "content": "剛才時間是 11:48:00。"
+          },
+          {
+            "role": "assistant",
+            "content": "剛才讀到的是 11:48:00。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe",
+                "Live2D.exe"
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "tools": {
+          "get_datetime": {
+            "status": "ok",
+            "data": {
+              "datetime": "2026-10-23T12:00:17+08:00",
+              "weekday": 5,
+              "timezone": "Asia/Taipei"
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "使用本輪工具時間 12:00:17",
+          "Asia/Taipei"
+        ],
+        "forbidden_claims": [
+          "沿用 11:48:00"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [
+          "get_datetime"
+        ],
+        "required_sources": [
+          "tool"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_003"
+      ]
+    },
+    {
+      "case_id": "to_002",
+      "input": "那我晚點出去，要穿外套、帶傘嗎？",
+      "phase": "conversation",
+      "session": "to_002",
+      "depends_on": [],
+      "context": {
+        "scenario": "weather_context",
+        "history": [
+          {
+            "role": "user",
+            "content": "我晚點要去新北市板橋區散步。"
+          },
+          {
+            "role": "assistant",
+            "content": "出門前可以看天氣。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe",
+                "Live2D.exe"
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "tools": {
+          "get_weather": {
+            "status": "ok",
+            "data": {
+              "location": "新北市板橋區",
+              "kind": "gridded_forecast",
+              "published_at": "2026-10-23T11:00:00+08:00",
+              "forecast": [
+                {
+                  "valid_at": "2026-10-23T12:00:00+08:00",
+                  "temperature_c": 19,
+                  "apparent_temperature_c": 18,
+                  "condition": "多雲",
+                  "weather_code": "02"
+                },
+                {
+                  "valid_at": "2026-10-23T15:00:00+08:00",
+                  "temperature_c": 18,
+                  "apparent_temperature_c": 17,
+                  "condition": "多雲",
+                  "weather_code": "02"
+                }
+              ],
+              "precipitation_mm": null,
+              "source": "synthetic_weather_fixture"
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "依板橋區時段預報約 18–19 度建議保暖",
+          "降雨資訊缺少所以無法確定是否下雨"
+        ],
+        "forbidden_claims": [
+          "缺降雨資訊代表不會下雨",
+          "將預報當實測"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [
+          "get_weather"
+        ],
+        "expected_tool_arguments": {
+          "get_weather": {
+            "location": "新北市板橋區"
+          }
+        },
+        "required_sources": [
+          "tool",
+          "history"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_003"
+      ]
+    },
+    {
+      "case_id": "to_003",
+      "input": "中正區現在天氣怎麼樣？",
+      "phase": "conversation",
+      "session": "to_003",
+      "depends_on": [],
+      "context": {
+        "scenario": "ambiguous_weather",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe",
+                "Live2D.exe"
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "tools": {
+          "get_weather": {
+            "status": "unavailable",
+            "reason": "ambiguous_region",
+            "data": {
+              "candidates": [
+                "臺北市中正區",
+                "基隆市中正區"
+              ],
+              "candidate_count": 2
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "需澄清臺北市或基隆市等中正區"
+        ],
+        "forbidden_claims": [
+          "擅自選擇臺北市或基隆市並回答確定天氣"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "allowed_tools": [
+          "get_weather"
+        ],
+        "tool_result_requirements": [
+          "若呼叫天氣只可回候選與模糊地點"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_003"
+      ]
+    },
+    {
+      "case_id": "to_004",
+      "input": "剛剛切換視窗了，現在前景標題是什麼？",
+      "phase": "conversation",
+      "session": "to_004",
+      "depends_on": [],
+      "context": {
+        "scenario": "foreground_refresh",
+        "history": [
+          {
+            "role": "user",
+            "content": "剛才前景視窗是 old_notes.txt。"
+          },
+          {
+            "role": "assistant",
+            "content": "剛才標題是 old_notes.txt。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe",
+                "Live2D.exe"
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "tools": {
+          "get_activity_context": {
+            "status": "ok",
+            "data": {
+              "foreground": {
+                "status": "ok",
+                "app": "code.exe",
+                "title": "AI VT ? expression.ts ? Visual Studio Code"
+              },
+              "open_apps": {
+                "status": "ok",
+                "apps": [
+                  "code.exe",
+                  "Live2D.exe"
+                ],
+                "truncated": false
+              }
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "目前前景標題 AI VT — expression.ts — Visual Studio Code"
+        ],
+        "forbidden_claims": [
+          "目前仍為 old_notes.txt",
+          "以 code.exe 代替視窗標題"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [
+          "get_activity_context"
+        ],
+        "required_sources": [
+          "tool"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_003"
+      ]
+    },
+    {
+      "case_id": "to_005",
+      "input": "你現在看到什麼，能看出我已經修好模型了嗎？",
+      "phase": "conversation",
+      "session": "to_005",
+      "depends_on": [],
+      "context": {
+        "scenario": "screenshot_understanding",
+        "history": [
+          {
+            "role": "user",
+            "content": "我在討論 Live2D 模型的物理測試。"
+          },
+          {
+            "role": "assistant",
+            "content": "可以看看目前可見畫面。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe",
+                "Live2D.exe"
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "tools": {
+          "capture_screenshot": {
+            "status": "ok",
+            "asset": "backend/tools/ai_test/cases/assets/desktop.png"
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "正確描述至少兩項可見畫面內容",
+          "無法由單張畫面證明模型已修好"
+        ],
+        "forbidden_claims": [
+          "模型已經修好"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [
+          "capture_screenshot"
+        ],
+        "visible_facts": [
+          "Live2D Preview",
+          "Physics test in progress",
+          "expression.ts"
+        ],
+        "required_sources": [
+          "tool"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_004"
+      ]
+    },
+    {
+      "case_id": "to_006",
+      "input": "幫我看看現在 CPU、記憶體和系統磁碟，卡頓原因能確定嗎？",
+      "phase": "conversation",
+      "session": "to_006",
+      "depends_on": [],
+      "context": {
+        "scenario": "computer_status",
+        "history": [
+          {
+            "role": "user",
+            "content": "電腦現在有點卡頓。"
+          },
+          {
+            "role": "assistant",
+            "content": "可以讀取一次資源狀態。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe",
+                "Live2D.exe"
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "tools": {
+          "get_computer_status": {
+            "status": "ok",
+            "data": {
+              "cpu_percent": 82.5,
+              "ram": {
+                "used_bytes": 12884901888,
+                "total_bytes": 17179869184
+              },
+              "system_disk": {
+                "free_bytes": 107374182400,
+                "total_bytes": 536870912000
+              },
+              "battery": null
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "CPU 使用率 82.5%",
+          "記憶體使用 12 GiB / 16 GiB",
+          "系統磁碟剩餘 100 GiB / 500 GiB",
+          "單次取樣無法確定卡頓原因"
+        ],
+        "forbidden_claims": [
+          "捏造 GPU 數值",
+          "斷定卡頓原因已確定"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [
+          "get_computer_status"
+        ],
+        "required_sources": [
+          "tool"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_003"
+      ]
+    },
+    {
+      "case_id": "to_007",
+      "input": "再看一次現在的畫面，跟剛剛有什麼不同？",
+      "phase": "conversation",
+      "session": "to_007",
+      "depends_on": [],
+      "context": {
+        "scenario": "vision_rejection",
+        "history": [
+          {
+            "role": "user",
+            "content": "請看剛剛的畫面。"
+          },
+          {
+            "role": "assistant",
+            "content": "剛剛圖片有 Live2D 預覽和編輯器。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe",
+                "Live2D.exe"
+              ],
+              "truncated": false
+            }
+          }
+        },
+        "tools": {
+          "capture_screenshot": {
+            "status": "ok",
+            "asset": "backend/tools/ai_test/cases/assets/desktop.png"
+          }
+        },
+        "vision_rejection": true
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "本輪圖片被拒收而無法判讀差異"
+        ],
+        "forbidden_claims": [
+          "沿用上一張圖片宣稱看到了現在畫面",
+          "捏造新舊畫面的差異"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [
+          "capture_screenshot"
+        ],
+        "tool_result_requirements": [
+          "capture_success",
+          "vision_provider_rejected",
+          "replacement_receipt"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    }
+  ]
+}

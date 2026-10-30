@@ -14,8 +14,8 @@ from domain.agent_a_prompts import build_agent_a_prompt
 from domain.emotion_state import NEUTRAL_EMOTION_STATE
 from domain.runtime_context import desktop_access_allowed, local_time, make_turn_snapshot, project_snapshot, result
 from infrastructure.windows_desktop import DesktopReader, WindowsDesktop
-from services.chat_service import build_chat_context, estimate_token_count
-from services.context_tools import ContextTools
+from services.chat.service import build_chat_context, estimate_token_count
+from services.context.tools import ContextTools
 
 
 class RuntimeContextTests(unittest.TestCase):
@@ -97,7 +97,7 @@ class RuntimeContextTests(unittest.TestCase):
         self.assertEqual(len(snapshot["open_apps"]["apps"]), 6)
 
     def test_fallback_estimator_does_not_count_image_base64_as_text(self):
-        with patch("services.chat_service._encoding", None):
+        with patch("services.chat.service._encoding", None):
             self.assertEqual(estimate_token_count([{"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + "A" * 100000}}
             ]}]), 4100)

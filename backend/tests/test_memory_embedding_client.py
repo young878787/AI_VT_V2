@@ -11,8 +11,8 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from domain.memory_settings import load_memory_settings
-from infrastructure.memory_embedding_client import MemoryEmbeddingClient
+from domain.memory.settings import load_memory_settings
+from infrastructure.memory.embedding_client import MemoryEmbeddingClient
 
 
 class MemoryEmbeddingClientTests(unittest.IsolatedAsyncioTestCase):
@@ -35,7 +35,7 @@ class MemoryEmbeddingClientTests(unittest.IsolatedAsyncioTestCase):
         })
         response = SimpleNamespace(model="jina-retrieval", data=[SimpleNamespace(embedding=[0.0] * 1023 + [1.0])])
 
-        with patch("infrastructure.memory_embedding_client.AsyncOpenAI") as openai_factory:
+        with patch("infrastructure.memory.embedding_client.AsyncOpenAI") as openai_factory:
             openai = openai_factory.return_value
             openai.embeddings.create = AsyncMock(return_value=response)
             client = MemoryEmbeddingClient(settings)

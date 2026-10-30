@@ -30,7 +30,7 @@ from domain.jev_questions import (
     question_hash,
 )
 from api.routes.memory_router import reset_memory
-from infrastructure.memory_store import (
+from infrastructure.memory.store import (
     load_session_emotion_state,
     reset_session_emotion_state,
     save_session_emotion_state,
@@ -206,7 +206,7 @@ class EmotionContractTests(unittest.TestCase):
 
     def test_session_state_is_isolated_validated_and_reset(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch(
-            "infrastructure.memory_store.EMOTION_STATE_DIR", directory
+            "infrastructure.memory.store.EMOTION_STATE_DIR", directory
         ):
             first = dict.fromkeys(EMOTION_FIELDS, 0.2)
             second = dict.fromkeys(EMOTION_FIELDS, 0.8)

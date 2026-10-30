@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from domain.runtime_context import context_status, make_turn_snapshot, project_snapshot, result, snapshot_context_status
-from services.chat_service import build_chat_context, stream_agent_a
-from services.context_tools import ContextTools
+from services.chat.service import build_chat_context, stream_agent_a
+from services.context.tools import ContextTools
 from backend.tests.test_context_tools import FakeStream, native, rejection, selection
 from backend.tests import test_emotion_chat_ws as chat_ws_tests
 
@@ -80,7 +80,7 @@ class ContextStatusDeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs["messages"], messages)
             return FakeStream()
 
-        with patch("services.chat_service.chat_create_with_fallback", side_effect=create):
+        with patch("services.chat.service.chat_create_with_fallback", side_effect=create):
             await stream_agent_a(messages, AsyncMock(), context_diagnostics=diagnostics, on_context_status=emit)
         self.assertEqual([event["status"] for event in events], ["sending", "sent"])
 
@@ -89,7 +89,7 @@ class ContextStatusDeliveryTests(unittest.IsolatedAsyncioTestCase):
         messages = build_chat_context("規則", [], "問題", runtime_context=project_snapshot(
             make_turn_snapshot("turn", 0, result("ok", desktop_data()))), diagnostics=diagnostics)
         emit = AsyncMock()
-        with patch("services.chat_service.chat_create_with_fallback", side_effect=RuntimeError("transport failed")):
+        with patch("services.chat.service.chat_create_with_fallback", side_effect=RuntimeError("transport failed")):
             with self.assertRaises(RuntimeError):
                 await stream_agent_a(messages, AsyncMock(), context_diagnostics=diagnostics, on_context_status=emit)
         self.assertEqual([call.args[0]["status"] for call in emit.await_args_list], ["sending", "unconfirmed"])
@@ -100,7 +100,7 @@ class ContextStatusDeliveryTests(unittest.IsolatedAsyncioTestCase):
             make_turn_snapshot("turn", 0, result("ok", desktop_data()))), diagnostics=diagnostics)
         stream = FakeStream()
         emit = AsyncMock(side_effect=[None, asyncio.CancelledError()])
-        with patch("services.chat_service.chat_create_with_fallback", return_value=stream):
+        with patch("services.chat.service.chat_create_with_fallback", return_value=stream):
             with self.assertRaises(asyncio.CancelledError):
                 await stream_agent_a(messages, AsyncMock(), context_diagnostics=diagnostics, on_context_status=emit)
         self.assertTrue(stream.closed)
@@ -111,7 +111,7 @@ class ContextStatusDeliveryTests(unittest.IsolatedAsyncioTestCase):
         reader = SimpleNamespace(read=AsyncMock(return_value=receipt))
         tools, emit = ContextTools(desktop_allowed=True, reader=reader), AsyncMock()
         messages = messages or [dict(role="system", content="規則"), dict(role="user", content="請看畫面")]
-        with patch("services.chat_service.chat_create_with_fallback", new=AsyncMock(side_effect=[
+        with patch("services.chat.service.chat_create_with_fallback", new=AsyncMock(side_effect=[
                 selection(calls or [native("capture_screenshot", '{"target":"screen"}')], finish="tool_calls"), *responses])) as create:
             await stream_agent_a(messages, AsyncMock(), context_tools=tools, on_context_status=emit)
         return emit, create, reader
@@ -147,7 +147,7 @@ class ContextStatusDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emit.await_args_list[-1].args[0]["status"], "sent")
 
     async def test_unfittable_tool_context_reports_omission(self):
-        with patch("services.chat_service._tool_context", side_effect=ValueError("tool_context_budget")):
+        with patch("services.chat.service._tool_context", side_effect=ValueError("tool_context_budget")):
             emit, _, _ = await self.run_screenshot([FakeStream()])
         self.assertEqual(emit.await_args_list[-1].args[0]["reason"], "tool_context_budget")
         self.assertNotIn("sent", [call.args[0]["status"] for call in emit.await_args_list])
@@ -161,7 +161,7 @@ class ContextStatusDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         tools = ContextTools(desktop_allowed=True, reader=SimpleNamespace(read=read))
         emit = AsyncMock()
-        with patch("services.chat_service.chat_create_with_fallback", return_value=selection(
+        with patch("services.chat.service.chat_create_with_fallback", return_value=selection(
                 [native("capture_screenshot")], finish="tool_calls")) as create:
             task = asyncio.create_task(stream_agent_a([dict(role="system", content="規則"), dict(role="user", content="問題")],
                 AsyncMock(), context_tools=tools, on_context_status=emit))
@@ -185,7 +185,7 @@ class ContextStatusWebSocketTests(unittest.TestCase):
             return reply
 
         with patch("api.routes.chat_ws.ContextTools", return_value=tools), \
-             patch("services.chat_service.chat_create_with_fallback", side_effect=[
+             patch("services.chat.service.chat_create_with_fallback", side_effect=[
                  selection(content="第一句回覆"), selection(content="第二句回覆")]):
             socket, captured = chat_ws_tests.EmotionWebSocketTests()._run([
                 {"content": "第一句", "turn_id": "first"}, {"content": "第二句", "turn_id": "second"}],

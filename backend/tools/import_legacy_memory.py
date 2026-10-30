@@ -13,12 +13,12 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from domain.memory_scope import MemoryScope
-from domain.memory_settings import load_memory_settings
-from infrastructure.memory_database import check_schema, make_pool
-from infrastructure.memory_embedding_client import MemoryEmbeddingClient
-from services.memory_db_manager import MemoryDBManager
-from services.memory_import import import_summary, read_legacy_entries
+from domain.memory.scope import MemoryScope
+from domain.memory.settings import load_memory_settings
+from infrastructure.memory.database import check_schema, make_pool
+from infrastructure.memory.embedding_client import MemoryEmbeddingClient
+from services.memory.db_manager import MemoryDBManager
+from services.memory.legacy_import import import_summary, read_legacy_entries
 
 
 async def apply_import(entries, memory_dir: Path, database: str, schema: str | None) -> int:

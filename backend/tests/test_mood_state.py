@@ -413,8 +413,8 @@ class JevEmotionScriptTests(unittest.TestCase):
     """jev-emotion suite 的理想 score 必須通過自己的逐輪 oracle 與全部曲線條件；參數或標準改動時在此擋下。"""
 
     def setUp(self):
-        from tools.ai_test_evidence import emotion_judgments, evaluate_curve, ideal_answers, replay_mood
-        from tools.ai_testset import load_suite
+        from tools.ai_test.evidence import emotion_judgments, evaluate_curve, ideal_answers, replay_mood
+        from tools.ai_test.testset import load_suite
 
         self.emotion_judgments, self.evaluate_curve = emotion_judgments, evaluate_curve
         self.dataset = load_suite("jev-emotion")

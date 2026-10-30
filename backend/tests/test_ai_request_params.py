@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from core.ai_request_params import no_thinking_extra_body, provider_from_url
-from infrastructure import ai_client
-from services.memory_agent_client import MemoryAgentClient
+from infrastructure.llm import ai_client
+from services.memory.agent_client import MemoryAgentClient
 
 
 class AIRequestParamsTests(unittest.IsolatedAsyncioTestCase):

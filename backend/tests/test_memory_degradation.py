@@ -13,11 +13,11 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from api.routes.chat_ws import websocket_endpoint
 from api.routes.memory_router import _runtime
-from infrastructure.chat_session_repository import ChatSessionRepository
-from infrastructure.in_memory_chat_session_repository import InMemoryChatSessionRepository
-from services.chat_session_service import ChatSessionService
-from services import memory_runtime as memory_runtime_module
-from services.memory_runtime import DisabledMemoryRuntime, MemoryRuntime, open_memory_backend
+from infrastructure.session.repository import ChatSessionRepository
+from infrastructure.session.in_memory_repository import InMemoryChatSessionRepository
+from services.chat.session_service import ChatSessionService
+from services.memory import runtime as memory_runtime_module
+from services.memory.runtime import DisabledMemoryRuntime, MemoryRuntime, open_memory_backend
 from backend.tests.test_emotion_chat_ws import FakeWebSocket, jev_answers
 
 

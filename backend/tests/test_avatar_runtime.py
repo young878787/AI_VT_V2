@@ -15,7 +15,7 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.avatar_runtime import (
+from services.expression.avatar_runtime import (
     AvatarRuntime, HUM_BEAT_OVERLAP, IDLE_ACTIONS, LIVELY_ACTIONS, TARGET_FIELDS, TILT_MAX_DELTA,
 )
 from api.routes.chat_ws import websocket_endpoint

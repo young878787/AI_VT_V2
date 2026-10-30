@@ -26,9 +26,9 @@ from domain.emotion_state import (
     build_mood_lines,
     idle_decayed_mood,
 )
-from domain.memory_source import MemoryEventConflict, MemoryEventReplay
+from domain.memory.source import MemoryEventConflict, MemoryEventReplay
 from backend.tests.chat_session_fakes import FakeChatSessionRepository, make_chat_session_service
-from services.chat_session_service import ChatSessionService
+from services.chat.session_service import ChatSessionService
 
 
 def emotion_answers(**scores):
@@ -220,7 +220,7 @@ class EmotionWebSocketTests(unittest.TestCase):
         return payloads, routes, {"chat_sessions": chat_sessions, "emotion_states": emotion_states}
 
     def test_runtime_snapshots_are_rebuilt_and_do_not_become_memory_sources(self):
-        from services.context_tools import ContextTools
+        from services.context.tools import ContextTools
         from domain.runtime_context import make_turn_snapshot, result
         tools = ContextTools()
         tools.snapshot = AsyncMock(side_effect=[make_turn_snapshot(str(index), index, result("ok", {

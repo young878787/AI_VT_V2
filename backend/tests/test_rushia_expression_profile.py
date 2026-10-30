@@ -12,8 +12,8 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from api.routes.expression_debug_router import ExpressionPlanDebugRequest, compile_debug_expression_plan
 from domain.input_event import normalize_chat_input
-from domain.rushia_expression_profile import FAMILY_POSES
-from services.expression_compiler import compile_expression_plan
+from domain.expression.rushia_profile import FAMILY_POSES
+from services.expression.compiler import compile_expression_plan
 
 
 class RushiaExpressionProfileTests(unittest.TestCase):

@@ -30,8 +30,8 @@ from core.config import (
     ASR_USE_AGC,
     VAD_MODEL_DIR,
 )
-from infrastructure.asr_engine import build_online_recognizer, transcribe_online_streaming
-from infrastructure.vad_engine import AutoGain, SpeechSegmenter, VadWrapper
+from infrastructure.speech.asr_engine import build_online_recognizer, transcribe_online_streaming
+from infrastructure.speech.vad_engine import AutoGain, SpeechSegmenter, VadWrapper
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

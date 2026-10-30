@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from backend.services.avatar_runtime import AvatarRuntime  # noqa: E402
+from backend.services.expression.avatar_runtime import AvatarRuntime  # noqa: E402
 
 SEEDS = (7, 11, 23)
 HEAD_Z_DEG = 23

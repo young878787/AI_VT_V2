@@ -6,7 +6,7 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.expression_compiler import (
+from services.expression.compiler import (
     build_blink_plan,
     build_expression_sequence,
     build_micro_events,
@@ -16,7 +16,7 @@ from services.expression_compiler import (
     resolve_topic_guard,
     select_base_pose,
 )
-from services.expression_legacy_renderer import render_legacy_behavior_payload
+from services.expression.legacy_renderer import render_legacy_behavior_payload
 
 
 def estimate_native_body_ranges(plan: dict) -> dict:

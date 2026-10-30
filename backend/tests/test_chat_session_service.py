@@ -9,7 +9,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from backend.tests.chat_session_fakes import FakeChatSessionRepository
-from services.chat_session_service import ChatSessionInUseError, ChatSessionService
+from services.chat.session_service import ChatSessionInUseError, ChatSessionService
 
 
 class ChatSessionServiceTests(unittest.IsolatedAsyncioTestCase):

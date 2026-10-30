@@ -18,11 +18,11 @@ from sqlalchemy.engine import make_url
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from domain.memory_settings import MemorySettings
-from domain.memory_scope import MemoryScope
-from services.ai_test_context import active_fixture, fixture_timestamp, reject_fixture_image
-from services.context_tools import ContextTools
-from tools.ai_test_fixtures import DocumentVectors, FixtureLoader
+from domain.memory.settings import MemorySettings
+from domain.memory.scope import MemoryScope
+from services.context.ai_test_context import active_fixture, fixture_timestamp, reject_fixture_image
+from services.context.tools import ContextTools
+from tools.ai_test.fixtures import DocumentVectors, FixtureLoader
 
 ROOT = Path(__file__).resolve().parents[2]
 VECTOR = [1.0] + [0.0] * 1023
@@ -130,7 +130,7 @@ class RuntimeFixtureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_synthetic_image_receipt_and_report_asset_share_actual_payload_hash(self):
         self.write_manifest(tools={"capture_screenshot": {"status": "ok",
-            "asset": "backend/tools/ai_test_cases/assets/desktop.png"}})
+            "asset": "backend/tools/ai_test/cases/assets/desktop.png"}})
         receipt = await ContextTools(desktop_allowed=True).execute("capture_screenshot", "{}")
         self.assertEqual(receipt["status"], "ok")
         asset = self.path.parent / receipt["data"]["source"]["report_asset"]
@@ -139,15 +139,15 @@ class RuntimeFixtureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt["data"]["source"]["kind"], "fixture_image")
 
     async def test_rejection_is_test_only_and_runs_existing_receipt_replacement(self):
-        from services.chat_service import stream_agent_a
+        from services.chat.service import stream_agent_a
         from backend.tests.test_context_tools import native, selection, FakeStream
         self.write_manifest(vision_rejection=True, case_id="to_007", tools={"capture_screenshot": {
-            "status": "ok", "asset": "backend/tools/ai_test_cases/assets/desktop.png"}})
+            "status": "ok", "asset": "backend/tools/ai_test/cases/assets/desktop.png"}})
         events = []
         model = AsyncMock(side_effect=[selection([native("capture_screenshot")], finish="tool_calls"),
                                       FakeStream("本輪圖片無法判讀")])
-        with patch("services.chat_service.trace", side_effect=lambda stage, data: events.append((stage, data))), \
-                patch("services.chat_service.chat_create_with_fallback", model):
+        with patch("services.chat.service.trace", side_effect=lambda stage, data: events.append((stage, data))), \
+                patch("services.chat.service.chat_create_with_fallback", model):
             reply = await stream_agent_a([{"role": "system", "content": "角色"},
                                           {"role": "user", "content": "再看一次"}], AsyncMock(),
                                          context_tools=ContextTools(desktop_allowed=True))
@@ -196,7 +196,7 @@ _safe_database = bool(_test_url and _production_url and
 class FixtureDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_fixed_memory_scenarios_seed_legal_complete_provenance(self):
         from tools.chat_test_cli import MemoryRunStore
-        from tools.ai_testset import load_suite
+        from tools.ai_test.testset import load_suite
         store = MemoryRunStore(_test_url, "test_" + uuid4().hex, uuid4(), uuid4())
         store.open()
         try:
