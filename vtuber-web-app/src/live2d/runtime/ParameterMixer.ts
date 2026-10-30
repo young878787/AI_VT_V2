@@ -8,8 +8,8 @@ interface ParameterModel {
   setParameterValueByIndex(index: number, value: number): void;
 }
 
-const LIMITS: Record<string, number> = {
-  ParamAngleX: 22, ParamAngleY: 16, ParamAngleZ: 23,
+export const LIMITS: Record<string, number> = {
+  ParamAngleX: 35, ParamAngleY: 24, ParamAngleZ: 23,
   ParamBodyAngleX: 8, ParamBodyAngleY: 7, ParamBodyAngleZ: 9,
   ParamEyeBallX: 0.85, ParamEyeBallY: 1,
 };
@@ -59,7 +59,7 @@ export class ParameterMixer {
       channel.x = goal;
       channel.v = 0;
     } else {
-      const omega = id.startsWith('ParamEyeBall') ? 40 : 18;
+      const omega = id.startsWith('ParamEyeBall') ? 120 : 18;
       const delta = channel.x - goal;
       const j = channel.v + omega * delta;
       const decay = Math.exp(-omega * dt);

@@ -14,8 +14,10 @@ export type FaceIdleKind = 'still' | 'relax' | 'half' | 'deep' | 'asymmetric' | 
 export interface FaceIdleSample {
   eyeL: number;
   eyeR: number;
-  browL: number;
-  browR: number;
+  browLForm: number;
+  browRForm: number;
+  browLAngle: number;
+  browRAngle: number;
   winking: boolean;
   kind: FaceIdleKind;
 }
@@ -38,7 +40,13 @@ const WINK_COOLDOWN_MS = 45000;
 // 事件之間的間隔；臉部細節維持常見但不密集。
 const EVENT_GAP_MS = [3000, 7000] as const;
 const MAX_FRAME_GAP_MS = 1000;
-const neutral = (): FaceIdleSample => ({ eyeL: 1, eyeR: 1, browL: 0, browR: 0, winking: false, kind: 'still' });
+// 眉毛事件的強度（event.browL/R，正為上揚、負為下壓）換成 BrowForm／BrowAngle：BrowY 行程只有 0.8px，
+// Form 約 3px、Angle 約 3.9px 才看得見。上揚搭配內側上提、下壓搭配內側下壓；Angle 左右符號相反才是對稱。
+export const BROW_FORM_GAIN = 6.5;
+export const BROW_ANGLE_GAIN = 6;
+const neutral = (): FaceIdleSample => ({
+  eyeL: 1, eyeR: 1, browLForm: 0, browRForm: 0, browLAngle: 0, browRAngle: 0, winking: false, kind: 'still',
+});
 const clamp = (value: number, minimum: number, maximum: number) => Math.max(minimum, Math.min(maximum, value));
 const ease = (value: number) => value * value * (3 - 2 * value);
 const isWink = (kind: FaceIdleKind) => kind === 'winkLeft' || kind === 'winkRight';
@@ -152,11 +160,15 @@ export class FaceIdleRuntime {
 
     const event = this.event;
     const weight = eventWeight(event, now);
+    const browL = event.brows ? event.browL * weight : 0;
+    const browR = event.brows ? event.browR * weight : 0;
     return {
       eyeL: event.eyes ? 1 + (event.eyeL - 1) * weight : 1,
       eyeR: event.eyes ? 1 + (event.eyeR - 1) * weight : 1,
-      browL: event.brows ? event.browL * weight : 0,
-      browR: event.brows ? event.browR * weight : 0,
+      browLForm: browL * BROW_FORM_GAIN,
+      browRForm: browR * BROW_FORM_GAIN,
+      browLAngle: -browL * BROW_ANGLE_GAIN,
+      browRAngle: browR * BROW_ANGLE_GAIN,
       winking: event.eyes && isWink(event.kind),
       kind: event.eyes ? event.kind : event.brows ? 'brow' : 'still',
     };

@@ -13,8 +13,9 @@ const code = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
   fileName: filename,
 }).outputText;
 vm.runInNewContext(code, { module, exports: module.exports }, { filename });
-const { FaceIdleRuntime } = module.exports;
+const { FaceIdleRuntime, BROW_FORM_GAIN, BROW_ANGLE_GAIN } = module.exports;
 
+const BROW_KEYS = ['eyeL', 'eyeR', 'browLForm', 'browRForm', 'browLAngle', 'browRAngle'];
 const baseContext = {
   enabled: true, eyesAllowed: true, browsAllowed: true, listening: false,
   blinkPaused: false, blinkReady: true, eyeLOpen: 1, eyeROpen: 1,
@@ -42,7 +43,8 @@ function rig(context = {}) {
         const next = Math.min(target, now + step);
         sample = runtime.update((next - now) / 1000, next, state);
         for (const value of [sample.eyeL, sample.eyeR]) assert.ok(value >= 0 && value <= 1, 'eye multipliers stay within 0..1');
-        for (const value of [sample.browL, sample.browR]) assert.ok(Math.abs(value) <= 0.14, 'brow deltas stay within +/-0.14');
+        for (const value of [sample.browLForm, sample.browRForm]) assert.ok(Math.abs(value) <= 0.14 * BROW_FORM_GAIN + 1e-9, 'brow form deltas stay bounded');
+        for (const value of [sample.browLAngle, sample.browRAngle]) assert.ok(Math.abs(value) <= 0.14 * BROW_ANGLE_GAIN + 1e-9, 'brow angle deltas stay bounded');
         now = next;
       }
       return sample;
@@ -69,7 +71,7 @@ for (const [pick, kind, minimum, maximum] of [
   const draws = test.draws();
   for (let index = 0; index < 10; index += 1) {
     const repeated = test.at(3800);
-    for (const key of ['eyeL', 'eyeR', 'browL', 'browR']) near(repeated[key], sample[key], 'repeated sampling never accumulates');
+    for (const key of BROW_KEYS) near(repeated[key], sample[key], 'repeated sampling never accumulates');
   }
   assert.equal(test.draws(), draws, 'stable sampling must not draw random numbers');
   near(test.at(5100).eyeL, 1, 'event returns to the expression baseline');
@@ -117,16 +119,16 @@ for (const context of [{ listening: true }, { eyeLOpen: 0.5 }]) {
     Object.assign(test.context, context);
     const release = test.at(3800);
     assert.equal(release.kind, 'relax');
-    for (const key of ['eyeL', 'eyeR', 'browL', 'browR']) near(release[key], before[key], `continuous release ${key}`);
+    for (const key of BROW_KEYS) near(release[key], before[key], `continuous release ${key}`);
     assert.equal(test.draws(), draws, 'release does not redraw targets');
     const middle = test.at(4050);
     near(middle.eyeL, (before.eyeL + 1) / 2, 'release left eye reaches midpoint after 250ms');
     near(middle.eyeR, (before.eyeR + 1) / 2, 'release right eye reaches midpoint after 250ms');
-    near(middle.browL, before.browL / 2, 'release keeps the brow envelope continuous');
+    near(middle.browLForm, before.browLForm / 2, 'release keeps the brow envelope continuous');
     const ended = test.at(4300);
     near(ended.eyeL, 1, 'release finishes within 500ms');
     near(ended.eyeR, 1, 'release finishes both eyes');
-    near(ended.browL, 0, 'release finishes remaining brows');
+    near(ended.browLForm, 0, 'release finishes remaining brows');
     assert.equal(ended.kind, 'still', 'persistent context must not restart the release every frame');
   }
 }
@@ -222,17 +224,17 @@ for (const context of [
   test.at(2999);
   test.values.push(0.4);
   const active = test.at(3800);
-  assert.ok(active.eyeL < 1 && active.browL !== 0);
+  assert.ok(active.eyeL < 1 && active.browLForm !== 0);
   test.context.eyesAllowed = false;
   const browsOnly = test.at(3800);
   near(browsOnly.eyeL, 1, 'eyes owner suppresses eyes only');
-  assert.ok(browsOnly.browL !== 0, 'remaining brow event continues');
+  assert.ok(browsOnly.browLForm !== 0, 'remaining brow event continues');
   test.context.eyesAllowed = true;
   near(test.at(3900).eyeL, 1, 'restored eye ownership does not replay eyes');
   test.context.browsAllowed = false;
-  near(test.at(3900).browL, 0, 'brow owner suppresses brows');
+  near(test.at(3900).browLForm, 0, 'brow owner suppresses brows');
   test.context.browsAllowed = true;
-  near(test.at(4000).browL, 0, 'restored brow ownership does not replay brows');
+  near(test.at(4000).browLForm, 0, 'restored brow ownership does not replay brows');
 }
 
 {
@@ -243,16 +245,16 @@ for (const context of [
   test.context.browsAllowed = false;
   const eyesOnly = test.at(3800);
   assert.ok(eyesOnly.eyeL < 1, 'eyes continue after brow ownership changes');
-  near(eyesOnly.browL, 0, 'brow delta immediately clears');
+  near(eyesOnly.browLForm, 0, 'brow delta immediately clears');
   test.context.browsAllowed = true;
-  near(test.at(3900).browL, 0, 'old brow event never returns');
+  near(test.at(3900).browLForm, 0, 'old brow event never returns');
   test.runtime.cancelEyes(3900);
   near(test.at(4000).eyeL, 1, 'cancelEyes discards current eyelids');
   test.fallback(0.8);
   near(test.at(6899).eyeL, 1, 'cancelEyes imposes a complete new interval');
 }
 
-// 眉毛僅提供 Y 偏移，單獨 brow 事件不影響眼開度。
+// 眉毛事件用 BrowForm／BrowAngle（BrowY 行程只有 0.8px 看不見）：上揚配內側上提，左右 Angle 符號相反才對稱。
 {
   const test = rig();
   test.at(2999);
@@ -260,8 +262,10 @@ for (const context of [
   const sample = test.at(3800);
   assert.equal(sample.kind, 'brow');
   near(sample.eyeL, 1, 'brow-only event preserves eyes');
-  near(Math.abs(sample.browL), 0.06, 'smallest brow delta');
-  near(sample.browR, 0, 'brow sides may remain independent');
+  near(Math.abs(sample.browLForm), 0.06 * BROW_FORM_GAIN, 'smallest brow form delta');
+  near(sample.browLAngle, -sample.browLForm * BROW_ANGLE_GAIN / BROW_FORM_GAIN, 'left angle opposes the left form');
+  near(sample.browRForm, 0, 'brow sides may remain independent');
+  near(sample.browRAngle, 0, 'untouched side keeps its angle');
 }
 
 // 關閉、背景大 gap、reset 均回到基準，不補播舊事件。
@@ -272,7 +276,7 @@ for (const context of [
   assert.ok(test.at(3800).eyeL < 1);
   const resumed = test.gap(10000);
   near(resumed.eyeL, 1, 'background gap discards old eye events');
-  near(resumed.browL, 0, 'background gap discards old brow events');
+  near(resumed.browLForm, 0, 'background gap discards old brow events');
   test.context.enabled = false;
   near(test.at(13800).eyeL, 1, 'global disable is neutral');
   test.context.enabled = true;
@@ -296,7 +300,7 @@ for (const context of [
   });
   for (let rate = 1; rate < results.length; rate += 1) {
     results[0].forEach((expected, index) => {
-      for (const key of ['eyeL', 'eyeR', 'browL', 'browR']) near(results[rate][index][key], expected[key], `frame independent ${key}`);
+      for (const key of BROW_KEYS) near(results[rate][index][key], expected[key], `frame independent ${key}`);
       assert.equal(results[rate][index].kind, expected.kind);
     });
   }
@@ -316,7 +320,7 @@ for (const context of [
     const sample = runtime.update(1 / 60, now, context);
     if (sample.kind !== 'still' && previous === 'still') starts.push(now);
     if (sample.kind === 'relax') deepestRelax = Math.min(deepestRelax, sample.eyeL);
-    strongestBrow = Math.max(strongestBrow, Math.abs(sample.browL), Math.abs(sample.browR));
+    strongestBrow = Math.max(strongestBrow, Math.abs(sample.browLForm), Math.abs(sample.browRForm));
     previous = sample.kind;
   }
   const perMinute = starts.length / 10;
@@ -324,7 +328,7 @@ for (const context of [
   assert.ok(Math.max(...starts.slice(1).map((start, index) => start - starts[index])) <= 25000,
     'the face never stays idle for long stretches');
   assert.ok(deepestRelax <= 0.86, `relaxation reaches a visible depth: ${deepestRelax}`);
-  assert.ok(strongestBrow >= 0.1, `brow accents reach a visible size: ${strongestBrow}`);
+  assert.ok(strongestBrow >= 0.1 * BROW_FORM_GAIN, `brow accents reach a visible size: ${strongestBrow}`);
 }
 
 console.log('Face idle runtime checks passed: bounded events, balanced wink cooldown, blink guards, group ownership, cancellation, reset and sampling.');

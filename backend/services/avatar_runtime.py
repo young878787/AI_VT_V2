@@ -31,6 +31,10 @@ IDLE_ACTIONS = {
     "stretch": (0.35, 60.0),
 }
 LIVELY_ACTIONS = frozenset({"hum_sway", "hop", "stretch"})
+# 哼歌搖擺在上一拍走到這個比例時就送出下一拍，折返點像鐘擺而不是停車再起步。
+HUM_BEAT_OVERLAP = 0.55
+# 好奇歪頭相對目前歪斜（headZ，正規化）的最大變化量，約 18 度。
+TILT_MAX_DELTA = 0.78
 
 
 def _bounded(value: float, limit: float = 1.0) -> float:
@@ -243,19 +247,25 @@ class AvatarRuntime:
             return steps
         if action == "curious_tilt":
             side = self._side()
-            tilted = self._pose((u(-0.2, 0.2), u(0.0, 0.2), side * u(0.5, 0.8)),
+            tilted = self._pose((u(-0.2, 0.2), u(0.0, 0.2), side * u(0.45, 0.72)),
                                 (u(-0.15, 0.15), u(-0.1, 0.1), side * u(0.1, 0.3)))
+            # 從另一側歪過來時，單次歪斜變化量不超過上限。
+            tilted["headZ"] = _bounded(max(current["headZ"] - TILT_MAX_DELTA,
+                                           min(current["headZ"] + TILT_MAX_DELTA, tilted["headZ"])))
             return [self._move(tilted, (900, 1400), (0.9, 1.8)),
                     self._look(tilted, self._saccade(), (0.5, 1.0)),
                     self._look(tilted, (0.0, 0.0), (0.4, 0.8)),
                     self._move(self._settled(), (1000, 1500), (0.5, 1.0))]
         if action == "hum_sway":
-            side, beat = self._side(), rng.randint(650, 850)
+            side, beat = self._side(), rng.randint(1200, 1500)
             steps = []
             for _ in range(rng.randint(4, 6)):
-                beat_pose = self._pose((-side * u(0.04, 0.1), u(0.0, 0.12), side * u(0.2, 0.3)),
-                                       (side * u(0.2, 0.35), u(-0.05, 0.1), side * u(0.3, 0.45)))
-                steps.append(self._move(beat_pose, (beat, beat), (0.03, 0.08)))
+                beat_pose = self._pose((-side * u(0.04, 0.1), u(0.0, 0.12), side * u(0.3, 0.42)),
+                                       (side * u(0.28, 0.45), u(-0.05, 0.1), side * u(0.4, 0.58)))
+                step = self._move(beat_pose, (beat, beat), (0.0, 0.0))
+                # 不等到這拍走完：前端從目前位置與速度接續，折返點自然圓滑。
+                step["delay"] = step["moveMs"] / 1000 * HUM_BEAT_OVERLAP
+                steps.append(step)
                 side = -side
             self._last_side = -side
             settled = self._settled()
