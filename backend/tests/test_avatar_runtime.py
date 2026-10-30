@@ -15,7 +15,9 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.avatar_runtime import AvatarRuntime, IDLE_ACTIONS, LIVELY_ACTIONS, TARGET_FIELDS
+from services.avatar_runtime import (
+    AvatarRuntime, HUM_BEAT_OVERLAP, IDLE_ACTIONS, LIVELY_ACTIONS, TARGET_FIELDS, TILT_MAX_DELTA,
+)
 from api.routes.chat_ws import websocket_endpoint
 from backend.tests.chat_session_fakes import make_chat_session_service
 from backend.tests.test_emotion_chat_ws import jev_answers
@@ -169,10 +171,13 @@ class AvatarTargetTests(unittest.TestCase):
         self.assertEqual(runtime._last_side, 0.0)
 
     def test_seeded_targets_are_bounded_and_have_varied_amplitudes_and_deadlines(self):
-        _, plans, _ = simulate(42, 300)
+        _, plans, actions = simulate(42, 300)
         self.assertEqual([plan["sequence"] for plan, _ in plans], list(range(1, 301)))
         previous = dict.fromkeys(TARGET_FIELDS, 0.0)
+        clock = 0.0
         for plan, delay in plans:
+            action = [name for name, started in actions if started <= clock + 1e-9][-1]
+            clock += delay
             self.assertEqual(plan["state"], "idle")
             self.assertNotIn("turn_id", plan)
             self.assertEqual(set(plan["target"]), set(TARGET_FIELDS))
@@ -180,7 +185,11 @@ class AvatarTargetTests(unittest.TestCase):
                                 for value in plan["target"].values()))
             self.assertTrue(300 <= plan["moveMs"] <= 3000)
             if any(plan["target"][field] != previous[field] for field in POSE_FIELDS):
-                self.assertGreater(delay, plan["moveMs"] / 1000)
+                # 哼歌搖擺刻意在上一拍走完前送出下一拍；其餘動作仍須等移動完成。
+                if action == "hum_sway":
+                    self.assertGreaterEqual(delay, plan["moveMs"] / 1000 * HUM_BEAT_OVERLAP - 1e-9)
+                else:
+                    self.assertGreater(delay, plan["moveMs"] / 1000)
             self.assertGreater(delay, 0)
             self.assertTrue(3 <= plan["breath"]["periodSec"] <= 8)
             self.assertTrue(0 <= plan["breath"]["amplitude"] <= 1)
@@ -197,6 +206,27 @@ class AvatarTargetTests(unittest.TestCase):
         self.assertTrue(any("hop" in plan for plan, _ in plans))
         self.assertGreater(len({plan["moveMs"] for plan, _ in plans}), 60)
         self.assertGreater(len({round(delay, 2) for _, delay in plans}), 100)
+
+    def test_hum_sway_beats_overlap_and_curious_tilt_is_limited(self):
+        beats = tilts = 0
+        for seed in range(40):
+            runtime = AvatarRuntime(AsyncMock(), rng=random.Random(seed))
+            runtime._target["headZ"] = round(random.Random(seed).uniform(-0.7, 0.7), 4)
+            before = runtime._target["headZ"]
+            for step in runtime._plan_action("curious_tilt"):
+                self.assertLessEqual(abs(step["target"]["headZ"] - before), TILT_MAX_DELTA + 1e-6)
+                tilts += 1
+                break
+            moves = [step for step in runtime._plan_action("hum_sway") if step["moveMs"]]
+            for step in moves[:-1]:
+                self.assertAlmostEqual(step["delay"], step["moveMs"] / 1000 * HUM_BEAT_OVERLAP, places=6)
+                self.assertGreaterEqual(step["moveMs"], 1200)
+                beats += 1
+            last_beat = moves[-2]["target"]["headZ"]
+            self.assertNotEqual(math.copysign(1, moves[-3]["target"]["headZ"]), math.copysign(1, last_beat),
+                                "hum beats alternate sides")
+        self.assertGreater(beats, 100)
+        self.assertEqual(tilts, 40)
 
     def test_eye_steps_keep_pose_breath_and_every_action_ends_on_the_viewer(self):
         runtime = AvatarRuntime(AsyncMock(), rng=random.Random(29))
