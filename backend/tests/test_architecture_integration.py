@@ -44,7 +44,9 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                 "nvidia", "chat-key", "https://integrate.api.nvidia.com/v1", "test-chat"
             ))
             with patch.dict("os.environ", {"CHAT_AI_API_KEY": ""}):
-                with self.assertRaisesRegex(RuntimeError, "CHAT_AI_API_KEY"):
+                self.assertEqual(role_model_config("CHAT")[1], "")
+            with patch.dict("os.environ", {"CHAT_AI_BASE_URL": ""}):
+                with self.assertRaisesRegex(RuntimeError, "CHAT_AI_BASE_URL"):
                     role_model_config("CHAT")
         self.assertEqual(provider_from_url("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"), "qwen")
         self.assertEqual(provider_from_url("https://gateway.example/v1"), "custom")
