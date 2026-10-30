@@ -1,7 +1,6 @@
-"""Chat WebSocket：JEV Emotion → 共用 state 的 Chat / JEV Action。"""
+"""Chat WebSocket：JEV 情緒／動作／記憶粗篩三角色並行 → Chat / 表情 / 記憶路由。"""
 
 import asyncio
-import hashlib
 import json
 import math
 import time
@@ -19,13 +18,14 @@ from core.config import (
 )
 from core.prompt_logger import log_turn, reset_log, trace, trace_event, trace_turn, bind_trace_event
 from domain.agent_a_prompts import build_agent_a_prompt, build_turn_scope_hint
-from domain.emotion_state import EMOTION_FIELDS, resolve_emotion_state, NEUTRAL_EMOTION_STATE
+from domain.emotion_state import EMOTION_FIELDS, NEUTRAL_EMOTION_STATE, apply_mood_turn, idle_decayed_mood
 from domain.expression_intent_schema import (
     ALLOWED_EMOTIONS,
     ALLOWED_PERFORMANCE_MODES,
     normalize_expression_intent,
 )
 from domain.input_event import normalize_chat_input
+from domain.runtime_context import context_status, desktop_access_allowed, project_snapshot, snapshot_context_status
 from domain.chat_test_mode import resolve_test_mode
 from domain.memory_routing import instruction_policy, POLICY_VERSION
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
@@ -33,10 +33,13 @@ from domain.jev_questions import (
     BASE_EMOTION_CRITERIA,
     CONFIDENCE_THRESHOLD,
     JEV_DECISION_CRITERIA_VERSION,
+    build_action_context,
     build_action_questions,
-    build_jev_context,
-    build_jev_questions,
+    build_emotion_context,
+    build_memory_context,
+    build_role_questions,
     map_answers_to_intent,
+    question_hash,
 )
 from infrastructure.chat_session_repository import (
     ChatSessionStaleError,
@@ -55,7 +58,10 @@ from services.chat_service import (
 from services.expression_compiler import compile_expression_plan
 from services.expression_legacy_renderer import render_legacy_behavior_payload
 from services.chat_session_service import ChatSessionInUseError
+from services.context_tools import ContextTools
+from services.ai_test_context import fixture_timestamp
 from services.memory_events import recent_memory_events, subscribe_memory_events
+from services.avatar_runtime import AvatarRuntime
 
 
 router = APIRouter()
@@ -227,6 +233,10 @@ async def _produce_and_send_action_plan(
 @router.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    context_tools = ContextTools(desktop_allowed=desktop_access_allowed(websocket))
+    tool_schema_tokens = estimate_token_count([{
+        "role": "system", "content": json.dumps(context_tools.schemas, ensure_ascii=False),
+    }])
     app = getattr(websocket, "app", None)
     memory_runtime = getattr(getattr(app, "state", None), "memory_runtime", None)
     chat_sessions = getattr(getattr(app, "state", None), "chat_session_service", None)
@@ -267,6 +277,17 @@ async def websocket_endpoint(websocket: WebSocket):
     async def send(payload: dict) -> None:
         async with send_lock:
             await websocket.send_json(payload)
+            if payload.get("type") == "expression_plan":
+                avatar_runtime.adopt_expression_plan(payload)
+
+    avatar_runtime = AvatarRuntime(send)
+    avatar_task: asyncio.Task | None = None
+
+    def consume_avatar_failure(task: asyncio.Task) -> None:
+        if not task.cancelled():
+            failure = task.exception()
+            if failure is not None:
+                print(f"[Avatar runtime] 自主動畫停止: {type(failure).__name__}")
 
     def consume_task_failure(task: asyncio.Task) -> None:
         """Retrieve late DB task failures after the caller's timeout path."""
@@ -400,9 +421,10 @@ async def websocket_endpoint(websocket: WebSocket):
             interrupted_text = active_turn_text
             was_committed = active_turn_committed
             interrupted_event_id = active_event_id
-            memory_routed = active_memory_routed
             active_task.cancel()
             await asyncio.gather(active_task, return_exceptions=True)
+            # 記憶角色可能在取消生效前完成路由，須於回合 task 結束後再讀取。
+            memory_routed = active_memory_routed
             if interrupted_turn_id:
                 persistence_failed = False
                 partial = active_turn_partial if not was_committed else ""
@@ -494,64 +516,114 @@ async def websocket_endpoint(websocket: WebSocket):
         nonlocal messages, emotion_state, expression_state, version, active_turn_partial
         nonlocal active_turn_committed, active_memory_routed, session_failed
         action_task: asyncio.Task | None = None
+        memory_task: asyncio.Task | None = None
+        cancelled = False
+        confirmed_context_kinds: set[str] = set()
+
+        async def send_context_status(payload: dict) -> None:
+            if active_turn_id != turn_id:
+                return
+            kind = payload["kind"]
+            if kind in confirmed_context_kinds and payload["status"] != "sent":
+                return
+            await send({"type": "context_status", "turn_id": turn_id, **payload})
+            if payload["status"] == "sent":
+                confirmed_context_kinds.add(kind)
+
         try:
-            context = build_jev_context(
-                text,
-                snapshot["messages"],
-                snapshot["emotion"],
-                snapshot["expression"],
-                snapshot["memory"],
-                snapshot["action"],
+            history = snapshot["messages"]
+            role_questions = build_role_questions()
+            mood_record = snapshot["emotion"]
+            current_mood = idle_decayed_mood(mood_record, snapshot["message_timestamp"])
+            emotion_context = build_emotion_context(
+                text, history, current_mood, mood_record["history"] if mood_record else None,
             )
-            questions = build_jev_questions()
-            question_hash = hashlib.sha256(
-                json.dumps(questions, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            ).hexdigest()[:12]
-            try:
-                jev_started = time.monotonic()
-                answers = await call_jev(context, questions)
-            except Exception as exc:
-                print(f"[JEV Decision] 呼叫失敗，使用 fallback: {exc}")
-                answers = None
-            trace("jev", {"answers": answers, "duration_sec": round(time.monotonic() - jev_started, 4),
-                "policy": instruction_policy(text), "policy_version": POLICY_VERSION,
-                "question_hash": question_hash, "error": "jev_call_failed" if answers is None else None})
-            if event_id is not None:
-                memory_runtime.route_background(
-                    event_id, text, answers, snapshot["messages"], turn_id=turn_id,
+            action_context = build_action_context(text, history, snapshot["expression"], snapshot["action"])
+            memory_context = build_memory_context(text, history)
+
+            async def ask_jev(role: str, context: dict, extra: dict | None = None) -> dict | None:
+                questions = role_questions[role]
+                started = time.monotonic()
+                try:
+                    answers = await call_jev(context, questions)
+                except Exception as exc:
+                    print(f"[JEV {role}] 呼叫失敗，使用 fallback: {exc}")
+                    answers = None
+                trace("jev", {"role": role, "criteria_version": JEV_DECISION_CRITERIA_VERSION,
+                    "question_hash": question_hash(questions), "question_keys": list(questions),
+                    "state": context, "answers": answers,
+                    "duration_sec": round(time.monotonic() - started, 4),
+                    "error": "jev_call_failed" if answers is None else None, **(extra or {})})
+                return answers
+
+            async def run_action() -> dict:
+                answers = await ask_jev("action", action_context)
+                return await _produce_and_send_action_plan(
+                    websocket,
+                    model_name,
+                    answers,
+                    snapshot["expression"],
+                    len(action_context["recent_dialogue"]),
+                    question_hash(role_questions["action"]),
+                    turn_id,
+                    legacy,
+                    send,
                 )
-                active_memory_routed = True
+
+            async def run_memory_route() -> None:
+                nonlocal active_memory_routed
+                answers = await ask_jev("memory", memory_context,
+                                        {"policy": instruction_policy(text), "policy_version": POLICY_VERSION})
+                if event_id is not None:
+                    memory_runtime.route_background(event_id, text, answers, history, turn_id=turn_id)
+                    active_memory_routed = True
+
+            # 三角色並行；Chat 只等待情緒角色。
+            action_task = asyncio.create_task(run_action())
+            memory_task = asyncio.create_task(run_memory_route())
+            answers = await ask_jev("emotion", emotion_context)
             emotion_answers = (
                 {field: answers.get(field) for field in EMOTION_FIELDS}
                 if isinstance(answers, dict) else None
             )
-            next_emotion, source = resolve_emotion_state(emotion_answers, snapshot["emotion"])
+            next_record, mood_changes, source = apply_mood_turn(
+                mood_record, current_mood, emotion_answers, turn_id, snapshot["message_timestamp"],
+            )
             if active_turn_id != turn_id:
                 return
-            emotion_state = next_emotion
+            emotion_state = next_record
             version += 1
             if short_term_enabled:
-                await persist_emotion(next_emotion)
-            await send({"type": "emotion_update", "state": next_emotion, "source": source,
+                await persist_emotion(next_record)
+            await send({"type": "emotion_update", "state": next_record["mood"], "source": source,
                         "turn_id": turn_id, "version": version})
 
-            prompt = build_agent_a_prompt(snapshot["profile"], snapshot["memory"], next_emotion, model_name=model_name)
+            prompt = build_agent_a_prompt(snapshot["profile"], snapshot["memory"], next_record["mood"],
+                                          model_name=model_name,
+                                          message_timestamp=snapshot["message_timestamp"],
+                                          tools_enabled=snapshot["tools_enabled"], mood_changes=mood_changes)
             if snapshot["summary"]:
                 prompt += "\n\n本 session 已完成的對話摘要：\n" + snapshot["summary"][:4000]
             scope_hint = build_turn_scope_hint(text, snapshot["messages"])
             if scope_hint:
                 prompt += "\n\n本輪對象約束：\n" + scope_hint
-            chat_messages = build_chat_context(prompt, snapshot["messages"], text)
+            context_diagnostics = {}
+            chat_messages = build_chat_context(prompt, snapshot["messages"], text,
+                runtime_context=project_snapshot(snapshot["runtime_context"]),
+                tools=context_tools.schemas if snapshot["tools_enabled"] else None, diagnostics=context_diagnostics)
             profile_marker = "<untrusted_user_profile>\n"
             profile_marker_start = prompt.find(profile_marker)
             profile_start = (profile_marker_start + len(profile_marker)
                              if profile_marker_start >= 0 else prompt.find("使用者資料：\n") + len("使用者資料：\n"))
             trace("chat_context", {"messages": chat_messages, "session_id": session_id,
+                "message_origins": context_diagnostics["message_origins"],
+                "runtime_context": snapshot["runtime_context"],
+                "tools_available": [schema["function"]["name"] for schema in context_tools.schemas] if snapshot["tools_enabled"] else [],
                 "token_budget": CHAT_CONTEXT_TOKEN_BUDGET, "history_limit": len(snapshot["messages"]),
                 "history_count": len(snapshot["messages"]), "history": snapshot["messages"],
                 "summary": snapshot["summary"],
                 "summary_section_start": prompt.find("本 session 已完成的對話摘要：\n") + len("本 session 已完成的對話摘要：\n") if snapshot["summary"] else None,
-                "jev_recent_dialogue": context["recent_dialogue"],
+                "jev_recent_dialogue": emotion_context["recent_dialogue"],
                 "system_prompt_original_chars": len(prompt),
                 "system_prompt_trimmed": chat_messages[0]["content"] != prompt,
                 "system_retained_ranges": retained_prompt_ranges(prompt, chat_messages[0]["content"]),
@@ -559,17 +631,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 "profile_section_start": profile_start,
                 "profile": snapshot["profile"], "projected_memory": snapshot["memory"],
                 "token_estimate": estimate_token_count(chat_messages)})
-            action_task = asyncio.create_task(_produce_and_send_action_plan(
-                websocket,
-                model_name,
-                answers,
-                snapshot["expression"],
-                len(context["recent_dialogue"]),
-                question_hash,
-                turn_id,
-                legacy,
-                send,
-            ))
 
             first_token_latency_ms: float | None = None
 
@@ -584,7 +645,12 @@ async def websocket_endpoint(websocket: WebSocket):
                         active_turn_partial += piece
 
             generation_started = time.monotonic()
-            reply = await stream_agent_a(chat_messages, send_chunk)
+            context_tools.used_names.clear()
+            context_tools.user_context = [item["content"] for item in snapshot["messages"]
+                if item.get("role") == "user" and isinstance(item.get("content"), str)] + [text]
+            reply = await stream_agent_a(chat_messages, send_chunk,
+                context_tools=context_tools if snapshot["tools_enabled"] else None,
+                context_diagnostics=context_diagnostics, on_context_status=send_context_status)
             if not reply:
                 reply = "嗯……"
                 await send_chunk(reply)
@@ -597,7 +663,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await chat_sessions.ensure_compression(compress_once)
             log_turn(turn_count=sum(item.get("role") == "user" for item in messages),
                      system_prompt=prompt, user_message=text, dialogue_agent_output=reply,
-                     tool_names=[], output_tokens=estimate_token_count([{"role": "assistant", "content": reply}]))
+                     tool_names=list(context_tools.used_names),
+                     output_tokens=estimate_token_count([{"role": "assistant", "content": reply}]))
             generation_ms = round((time.monotonic() - generation_started) * 1000, 1)
             output_tokens = estimate_token_count([{"role": "assistant", "content": reply}])
             tokens_per_second = round(output_tokens / max(generation_ms / 1000, 0.001), 1)
@@ -622,7 +689,10 @@ async def websocket_endpoint(websocket: WebSocket):
             action_task = None
             if active_turn_id == turn_id:
                 expression_state = result["plan"].get("carryState")
+            await memory_task
+            memory_task = None
         except asyncio.CancelledError:
+            cancelled = True
             raise
         except Exception as exc:
             print(f"[Chat error][{CHAT_PROVIDER.upper()}] Model={CHAT_MODEL_NAME} | {exc}")
@@ -637,9 +707,15 @@ async def websocket_endpoint(websocket: WebSocket):
             if action_task is not None and not action_task.done():
                 action_task.cancel()
                 await asyncio.gather(action_task, return_exceptions=True)
+            if memory_task is not None and not memory_task.done():
+                # 取消時交由 cancel_active() 補路由；其餘提前結束仍等待記憶路由，避免工作停在 pending。
+                if cancelled:
+                    memory_task.cancel()
+                await asyncio.gather(memory_task, return_exceptions=True)
 
     async def prepare_and_run_turn(
         turn_id: str, text: str, model_name: str, legacy: bool, user_message: dict, mode=None,
+        *, message_timestamp: float,
     ) -> None:
         """將記憶接收／檢索與生成放在同一個可取消的回合 task。"""
         nonlocal active_event_id
@@ -654,8 +730,14 @@ async def websocket_endpoint(websocket: WebSocket):
         turn_action = current_action
         trace_turn.set(turn_id)
         trace_event.set(None)
-        write_enabled = mode is None or mode.memory_write
-        read_enabled = mode is None or mode.memory_read
+        await send({"type": "context_status", "turn_id": turn_id, **context_status("desktop", "reading")})
+        runtime_context = await context_tools.snapshot(turn_id, message_timestamp)
+        if active_turn_id != turn_id:
+            return
+        await send({"type": "context_status", "turn_id": turn_id, **snapshot_context_status(runtime_context)})
+        long_term_enabled = getattr(memory_runtime, "long_term_enabled", True)
+        write_enabled = long_term_enabled and (mode is None or mode.memory_write)
+        read_enabled = long_term_enabled and (mode is None or mode.memory_read)
         trace("test_mode", {"mode": mode.value if mode else "normal",
             "short_term_enabled": short_term_enabled, "memory_read_enabled": read_enabled,
             "memory_write_enabled": write_enabled})
@@ -717,6 +799,9 @@ async def websocket_endpoint(websocket: WebSocket):
             "memory": relevant_memory,
             "summary": summary,
             "user_message": user_message,
+            "message_timestamp": message_timestamp,
+            "runtime_context": runtime_context,
+            "tools_enabled": CHAT_CONTEXT_TOKEN_BUDGET >= tool_schema_tokens + 512,
         }
         await run_turn(
             turn_id, text, model_name, snapshot, legacy, event_id,
@@ -740,11 +825,19 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         await send({"type": "session_ready", "session_id": session_id})
+        avatar_task = asyncio.create_task(avatar_runtime.run())
+        avatar_task.add_done_callback(consume_avatar_failure)
         if short_term_enabled:
             await chat_sessions.ensure_compression(compress_once)
         while True:
             data = json.loads(await websocket.receive_text())
             if not isinstance(data, dict):
+                continue
+            if data.get("type") == "avatar_state":
+                try:
+                    avatar_runtime.update_state(data)
+                except ValueError as exc:
+                    await send({"type": "error", "code": "invalid_avatar_state", "content": str(exc)})
                 continue
             try:
                 mode = resolve_test_mode(data.get("test_mode"))
@@ -768,6 +861,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 emotion_state = test_snapshot["emotion_state"] if next_short_term else None
                 expression_state = None
                 current_action = None
+                avatar_runtime.reset()
                 short_term_enabled = next_short_term
                 version = 0
                 await send({"type": "session_ready", "session_id": session_id,
@@ -777,6 +871,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 short_term_enabled = next_short_term
                 expression_state = None
                 current_action = None
+                avatar_runtime.reset()
                 if short_term_enabled:
                     restored = await chat_sessions.repository.load_context(session_id)
                     if restored is None:
@@ -808,6 +903,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 else:
                     reset_state = await chat_sessions.repository.reset(session_id)
                 messages, emotion_state, expression_state = [], None, None
+                avatar_runtime.reset()
                 session_generation = reset_state["generation"]
                 session_summary = ""
                 session_failed = False
@@ -819,7 +915,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await send({"type": "reset_done"})
                 continue
             if control_type == "sync":
-                await send({"type": "emotion_update", "state": emotion_state or dict(NEUTRAL_EMOTION_STATE),
+                await send({"type": "emotion_update",
+                            "state": emotion_state["mood"] if emotion_state else dict(NEUTRAL_EMOTION_STATE),
                             "source": "previous_fallback" if emotion_state else "neutral_fallback",
                             "version": version})
                 continue
@@ -896,6 +993,7 @@ async def websocket_endpoint(websocket: WebSocket):
             active_task = asyncio.create_task(prepare_and_run_turn(
                 turn_id, text, model_name, data.get("legacy_payloads") is True,
                 next_user_message, mode,
+                message_timestamp=fixture_timestamp(input_event["timestamp"]),
             ))
     except WebSocketDisconnect:
         print("Client disconnected")
@@ -903,6 +1001,9 @@ async def websocket_endpoint(websocket: WebSocket):
         try:
             await cancel_active()
         finally:
+            if avatar_task is not None:
+                avatar_task.cancel()
+                await asyncio.gather(avatar_task, return_exceptions=True)
             unsubscribe_memory_events()
             memory_event_task.cancel()
             session_invalidation_task.cancel()

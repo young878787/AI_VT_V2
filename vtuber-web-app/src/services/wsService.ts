@@ -2,7 +2,10 @@ import { useAppStore } from '../store/appStore';
 import { TTSPlayer } from '../audio/TTSPlayer';
 import { isBlinkAction, isExpressionPlanPayload } from '../types/expressionPlan';
 import { isEmotionUpdatePayload } from '../types/emotionState';
+import { isContextStatusPayload } from '../types/contextStatus';
 import { actionScheduler } from './actionScheduler';
+import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
+import { isAmbientPlan } from '../types/ambientPlan';
 
 class WSService {
     private ws: WebSocket | null = null;
@@ -15,12 +18,28 @@ class WSService {
     private readonly MAX_RETRIES = 5;
     private readonly RETRY_DELAY_MS = 3000;
     private sessionId: string | null = null;
+    private previousSessionId: string | null = null;
+    private avatarListening = false;
     
     // TTS 播放器
     private ttsPlayer: TTSPlayer;
 
     constructor() {
         this.ttsPlayer = TTSPlayer.getInstance();
+        useAppStore.subscribe((state, previous) => {
+            if (state.autoPlayEnabled !== previous.autoPlayEnabled) this.sendAvatarState();
+        });
+    }
+
+    public setAvatarListening(listening: boolean): void {
+        this.avatarListening = listening;
+        this.sendAvatarState();
+    }
+
+    private sendAvatarState(): void {
+        if (this.ws?.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ type: 'avatar_state', listening: this.avatarListening,
+            enabled: useAppStore.getState().autoPlayEnabled }));
     }
 
     public connect() {
@@ -35,7 +54,9 @@ class WSService {
         this.ws.onopen = () => {
             console.log('WebSocket connected');
             this.retryCount = 0; // 成功連線後重置重試計數
+            useAppStore.getState().resetChatContext();
             this.ws?.send(JSON.stringify({ type: 'sync' }));
+            this.sendAvatarState();
             actionScheduler.setReporter((status, action) => {
                 if (this.ws?.readyState === WebSocket.OPEN) {
                     this.ws.send(JSON.stringify({ type: 'action_state', status,
@@ -48,8 +69,27 @@ class WSService {
             try {
                 const data = JSON.parse(event.data);
                 const store = useAppStore.getState();
+                if (data.type === 'ambient_plan') {
+                    if (isAmbientPlan(data)) store.setAmbientPlan(data);
+                    else console.warn('Received invalid ambient_plan payload');
+                    return;
+                }
                 if (data.type === 'session_ready') {
+                    if (this.previousSessionId && this.previousSessionId !== data.session_id) {
+                        LAppLive2DManager.getInstance().getActiveModel()?.resetAmbientEmotion();
+                        useAppStore.setState({ expressionPlan: null });
+                    }
                     this.sessionId = typeof data.session_id === 'string' ? data.session_id : null;
+                    this.previousSessionId = this.sessionId;
+                    return;
+                }
+                if (data.type === 'reset_done') {
+                    LAppLive2DManager.getInstance().getActiveModel()?.resetAmbientEmotion();
+                    useAppStore.setState({ expressionPlan: null });
+                    return;
+                }
+                if (data.type === 'error' && data.code === 'invalid_avatar_state') {
+                    console.warn('Avatar control rejected:', data.content);
                     return;
                 }
                 if (data.type === 'turn_cancelled') {
@@ -66,6 +106,8 @@ class WSService {
                             this.currentAssistantMessageId = null;
                             this.activeTurnStartedAt = null;
                             store.setAiTyping(false);
+                            store.finishChatContext('cancelled');
+                            this.activeTurnId = null;
                         }
                     }
                     return;
@@ -73,7 +115,9 @@ class WSService {
                 if (typeof data.turn_id === 'string' && data.turn_id !== this.activeTurnId
                     && data.type !== 'memory_status') return;
 
-                if (data.type === 'text_stream') {
+                if (data.type === 'context_status') {
+                    if (isContextStatusPayload(data)) store.receiveContextStatus(data);
+                } else if (data.type === 'text_stream') {
                     if (store.chatPerformance.firstTokenLatencyMs === null && this.activeTurnStartedAt !== null) {
                         store.setChatPerformance({
                             firstTokenLatencyMs: performance.now() - this.activeTurnStartedAt,
@@ -156,6 +200,7 @@ class WSService {
                     }
                     this.activeTurnStartedAt = null;
                     store.setAiTyping(false);
+                    store.finishChatContext('completed');
                 } else if (data.type === 'voice') {
                     // TTS 語音播放
                     this.playVoice(data.audio, data.format || 'wav');
@@ -176,6 +221,8 @@ class WSService {
                 } else if (data.type === 'error') {
                     store.appendChatMessage({ role: 'system', content: data.content });
                     store.setAiTyping(false);
+                    store.finishChatContext('failed');
+                    this.activeTurnId = null;
                     this.currentAssistantMessageId = null;
                 }
             } catch (e) {
@@ -184,6 +231,8 @@ class WSService {
         };
 
         this.ws.onclose = () => {
+            this.avatarListening = false;
+            useAppStore.getState().disconnectAmbient();
             actionScheduler.cancel();
             this.ttsPlayer.stop();
             actionScheduler.setReporter(null);
@@ -199,6 +248,7 @@ class WSService {
             // 防呆：斷線時確保 AI 狀態歸零
             store.setAiTyping(false);
             store.setCompressing(false);
+            store.resetChatContext('disconnected');
 
             this.retryCount++;
             if (this.retryCount >= this.MAX_RETRIES) {
@@ -217,6 +267,7 @@ class WSService {
             console.error('WebSocket error:', error);
             // 防呆：連線錯誤時確保 AI 打字狀態歸零
             useAppStore.getState().setAiTyping(false);
+            useAppStore.getState().resetChatContext('disconnected');
         };
     }
 
@@ -234,6 +285,7 @@ class WSService {
             this.activeTurnId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
                 ? crypto.randomUUID() : `turn_${Date.now()}_${Math.random().toString(36).slice(2)}`;
             this.activeTurnStartedAt = performance.now();
+            store.beginChatContext(this.activeTurnId);
             this.appliedPlanTurnId = null;
             // 送出訊息前停止當前 TTS 播放
             this.ttsPlayer.stop();
@@ -243,11 +295,21 @@ class WSService {
                 turn_id: this.activeTurnId,
                 source,
             };
-            this.ws!.send(JSON.stringify(payload));
+            try {
+                this.ws!.send(JSON.stringify(payload));
+            } catch {
+                console.error('WebSocket message send failed');
+                this.activeTurnId = null;
+                this.activeTurnStartedAt = null;
+                store.setAiTyping(false);
+                store.resetChatContext('disconnected');
+                store.appendChatMessage({ role: 'system', content: '系統提示：訊息送出失敗，請確認後端連線後重試。' });
+            }
         } else {
             console.error('WebSocket is not connected');
             store.appendChatMessage({ role: 'system', content: '系統提示：無法送出訊息，請確認 Python 後端伺服器 (FastAPI) 是否已啟動。' });
             store.setAiTyping(false);
+            store.resetChatContext('disconnected');
         }
     }
 
@@ -273,6 +335,8 @@ class WSService {
     /** REST owner reset 會使後端關閉舊寫入連線；此處只清理前端回合狀態。 */
     public syncResetSession(): void {
         actionScheduler.cancel();
+        LAppLive2DManager.getInstance().getActiveModel()?.resetAmbientEmotion();
+        useAppStore.setState({ expressionPlan: null });
         this.activeTurnId = null;
         this.activeTurnStartedAt = null;
         this.currentAssistantMessageId = null;
@@ -280,6 +344,7 @@ class WSService {
         this.appliedPlanTurnId = null;
         this.ttsPlayer.stop();
         useAppStore.getState().clearChatPerformance();
+        useAppStore.getState().resetChatContext();
     }
 
     public getSessionId(): string | null {

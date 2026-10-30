@@ -28,6 +28,11 @@ class Live2DAdapter {
     LAppLive2DManager.getInstance().getActiveModel()?.cancelExpressionAction();
     useAppStore.getState().setBlinkControl('resume');
   }
+
+  finish(): void {
+    LAppLive2DManager.getInstance().getActiveModel()?.finishExpressionAction();
+    useAppStore.getState().setBlinkControl('resume');
+  }
 }
 
 export class ActionScheduler {
@@ -75,7 +80,8 @@ export class ActionScheduler {
         plan.basePose.durationSec * 1000,
         sequenceEnd,
         ...plan.microEvents.map(event => event.durationMs),
-        plan.motionPlan?.durationMs ?? 0,
+        (plan.motionPlan?.durationMs ?? 0) + (plan.motionPlan?.blendOutMs ?? 0),
+        plan.eyeMotionPlan?.durationMs ?? 0,
         plan.idlePlan?.enterAfterMs ?? 0,
       ),
     };
@@ -123,6 +129,7 @@ export class ActionScheduler {
     this.cooldownTimer = null;
     this.cancelCurrent();
     this.manualUntil = performance.now() + durationMs;
+    LAppLive2DManager.getInstance().getActiveModel()?.setManualControl(durationMs);
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -191,7 +198,10 @@ export class ActionScheduler {
     this.awaitingSpeechEnd = false;
     const action = this.current;
     this.current = null;
-    if (action) this.report?.('finished', action);
+    if (action) {
+      this.adapter.finish();
+      this.report?.('finished', action);
+    }
     const pending = this.pending;
     this.pending = null;
     if (pending) this.start(pending);

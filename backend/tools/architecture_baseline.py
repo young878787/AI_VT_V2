@@ -30,7 +30,7 @@ SUITE = (
 SUPPLEMENT = (
     "backend.tests.test_architecture_baseline",
     "backend.tests.test_memory_source_policy",
-    "backend.tests.test_memory_testset",
+    "backend.tests.test_ai_testset",
     "backend.tests.test_ai_request_params",
 )
 
@@ -144,11 +144,11 @@ def contracts() -> dict:
     from core import config
     from domain.agent_a_prompts import build_agent_a_prompt
     from domain.emotion_state import NEUTRAL_EMOTION_STATE
-    from domain.jev_questions import build_jev_questions
+    from domain.jev_questions import build_role_questions
     from domain.memory_decisions import agent_tools
     from domain.memory_settings import load_memory_settings
     from services.memory_llm import PROMPT
-    from tools.memory_testset import CORE_PATH, validate_cases
+    from tools.ai_testset import load_suite
 
     def fingerprint(value):
         return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
@@ -160,14 +160,15 @@ def contracts() -> dict:
         "MEMORY_DEFAULT_CHARACTER_ID": "00000000-0000-0000-0000-000000000002",
         "MEMORY_DATABASE_SCHEMA": "baseline",
     })
-    core = validate_cases(json.loads(CORE_PATH.read_text(encoding="utf-8")), source="Gold", count=23)
+    groups = {name: load_suite(name) for name in ("chat", "memory", "tools", "integration")}
     return {
         "configuration_source": "synthetic_isolated_environment_not_production",
         "roles": {role: {"provider": "custom", "model": os.environ[f"{role}_AI_MODEL"]}
                   for role in ("CHAT", "JEV", "MEMORY", "EMBEDDING")},
         "prompt_sha256": {
             "chat_empty_context": fingerprint(build_agent_a_prompt({}, "", NEUTRAL_EMOTION_STATE, "Rushia")),
-            "jev_questions": fingerprint(build_jev_questions()),
+            **{f"jev_{role}_questions": fingerprint(questions)
+               for role, questions in build_role_questions().items()},
             "memory_system": fingerprint(PROMPT),
             "memory_tools_observe": fingerprint(agent_tools(False)),
             "memory_tools_forget": fingerprint(agent_tools(True)),
@@ -176,9 +177,9 @@ def contracts() -> dict:
                       "dimension": settings.embedding_dimension, "query_prefix": settings.embedding_query_prefix,
                       "document_prefix": settings.embedding_document_prefix, "normalization": "l2-v1",
                       "contract": settings.embedding_contract},
-        "core_cases": {"count": len(core), "manifest_sha256": digest(CORE_PATH),
-                       "extension_ids": [case["case_id"] for case in core[-3:]],
-                       "generated_cases_executed": 0, "semantic_review": "not_executed"},
+        "grouped_cases": {name: {"count": len(data["cases"]), "manifest_sha256": fingerprint(data),
+                                  "generated_cases_executed": 0}
+                          for name, data in groups.items()},
         "context_token_budget": config.CHAT_CONTEXT_TOKEN_BUDGET,
     }
 

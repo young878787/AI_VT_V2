@@ -14,6 +14,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from api.routes import chat_ws
 from core import prompt_logger
 from domain.chat_test_mode import resolve_test_mode
+from domain.runtime_context import make_turn_snapshot, result as context_result
 from backend.tests.test_emotion_chat_ws import FakeWebSocket, jev_answers
 from backend.tests.chat_session_fakes import make_chat_session_service
 
@@ -28,9 +29,13 @@ class ChatTestModeTests(unittest.TestCase):
         socket.app = SimpleNamespace(state=SimpleNamespace(
             memory_runtime=runtime, chat_session_service=chat_sessions,
         ))
-        contexts, jev_contexts = [], []
-        async def chat(messages, send):
+        socket.client = SimpleNamespace(host='127.0.0.1')
+        socket.headers = {'origin': 'http://localhost:' + os.getenv('FRONTEND_PORT', '5173')}
+        contexts, jev_contexts, diagnostics, tools = [], [], [], []
+        async def chat(messages, send, **kwargs):
             contexts.append(messages)
+            diagnostics.append(kwargs['context_diagnostics'])
+            tools.append(kwargs['context_tools'])
             await send('reply')
             return 'reply'
         async def jev(context, questions):
@@ -40,6 +45,8 @@ class ChatTestModeTests(unittest.TestCase):
                 'AI_VT_TEST_MODE': 'true' if test_instance else 'false', 'AI_VT_MEMORY_DIR': directory}), \
                 patch.object(chat_ws, 'call_jev', side_effect=jev), \
                 patch.object(chat_ws, 'stream_agent_a', side_effect=chat), \
+                patch('services.context_tools.ContextTools.snapshot', new=AsyncMock(side_effect=lambda turn, stamp:
+                    make_turn_snapshot(turn, stamp, context_result('unavailable', reason='test_source')))), \
                 patch.object(chat_ws, 'broadcast_to_displays'), \
                 patch.object(chat_ws, 'synthesize_and_send_voice', new=AsyncMock()), \
                 patch.object(chat_ws, 'log_turn'):
@@ -47,14 +54,15 @@ class ChatTestModeTests(unittest.TestCase):
             trace_file = pathlib.Path(directory) / 'trace.jsonl'
             traces = [json.loads(line) for line in trace_file.read_text().splitlines()] if trace_file.exists() else []
         return SimpleNamespace(runtime=runtime, contexts=contexts, jev=jev_contexts, traces=traces,
-            chat_sessions=chat_sessions, socket=socket)
+            chat_sessions=chat_sessions, socket=socket, diagnostics=diagnostics, tools=tools)
 
     def test_short_only_has_history_but_never_calls_long_term(self):
         result = self.run_modes(['short_only', 'short_only'])
         result.runtime.accept.assert_not_called()
         result.runtime.retrieve.assert_not_called()
         result.runtime.route_background.assert_not_called()
-        self.assertEqual(len(result.contexts[1][1:-1]), 2)
+        self.assertEqual(result.diagnostics[1]['message_origins'].count('history'), 2)
+        self.assertTrue(all(len(tool.schemas) == 5 for tool in result.tools))
         contexts = [t for t in result.traces if t['stage'] == 'chat_context']
         self.assertEqual([t['turn_id'] for t in contexts], ['turn_0', 'turn_1'])
         self.assertTrue(all('memory_event_id' not in t for t in contexts))
@@ -67,7 +75,8 @@ class ChatTestModeTests(unittest.TestCase):
         self.assertTrue(all(c.kwargs['recent_dialogue'] == [] and c.kwargs['summary'] == ''
                             for c in result.runtime.retrieve.await_args_list))
         self.assertEqual(result.chat_sessions.repository.revision, 0)
-        self.assertTrue(all(len(c) == 2 for c in result.contexts))
+        self.assertTrue(all(d['message_origins'] == ['system', 'runtime_context', 'input'] for d in result.diagnostics))
+        self.assertTrue(all(len(tool.schemas) == 5 for tool in result.tools))
         self.assertTrue(all(not c['recent_dialogue'] for c in result.jev))
         self.assertTrue(all(c[-1]['content'].startswith('query') for c in result.contexts))
 
@@ -93,7 +102,7 @@ class ChatTestModeTests(unittest.TestCase):
         self.assertEqual(result.runtime.retrieve.await_count, 3)
         result.runtime.accept.assert_awaited_once()
         result.runtime.route_background.assert_called_once()
-        self.assertEqual(len(result.contexts[2][1:-1]), 4)
+        self.assertEqual(result.diagnostics[2]['message_origins'].count('history'), 4)
         self.assertIn('DB fact', result.contexts[2][0]['content'])
 
     def test_production_ignores_even_invalid_mode(self):
@@ -105,7 +114,7 @@ class ChatTestModeTests(unittest.TestCase):
 
     def test_mode_transition_clears_prior_short_term_before_probe(self):
         result = self.run_modes(['short_only', 'memory_probe', 'memory_probe'])
-        self.assertTrue(all(len(c) == 2 for c in result.contexts[1:]))
+        self.assertTrue(all(d['message_origins'] == ['system', 'runtime_context', 'input'] for d in result.diagnostics[1:]))
         self.assertTrue(all(not c['recent_dialogue'] for c in result.jev[1:]))
 
     def test_invalid_mode_rejected_in_test_instance(self):
@@ -136,7 +145,7 @@ class ChatTestModeTests(unittest.TestCase):
                     async def send_json(self, payload):
                         payloads.append(payload)
                         if payload.get('type') == 'stream_end': completed.set()
-                async def chat(messages, send):
+                async def chat(messages, send, **kwargs):
                     contexts.append(messages)
                     if messages[-1]['content'] == 'first':
                         await send('sent partial')
@@ -162,7 +171,7 @@ class ChatTestModeTests(unittest.TestCase):
                 self.assertEqual(cancelled['partial_text'], 'sent partial')
                 if mode == 'memory_probe':
                     self.assertEqual(chat_sessions.repository.revision, 0)
-                    self.assertEqual(len(contexts[1]), 2)
+                    self.assertEqual(len(contexts[1]), 3)
                 else:
                     self.assertTrue(any(m.get('role') == 'assistant' and m.get('content') == 'sent partial'
                                         for m in contexts[1]))

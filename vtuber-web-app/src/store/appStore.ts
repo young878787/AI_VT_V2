@@ -2,10 +2,13 @@
  * 應用程式狀態管理 - 使用 Zustand
  */
 import { create } from 'zustand';
-import { FixedModel } from '../live2d/LAppDefine';
+import { getDefaultModel } from '../live2d/LAppDefine';
 import { LAppLive2DManager } from '../live2d/LAppLive2DManager';
 import type { BlinkAction, ExpressionEyeMotionPlan, ExpressionIdlePlan, ExpressionMicroEvent, ExpressionMotionPlan, ExpressionPlanPayload } from '../types/expressionPlan';
 import type { EmotionSource, EmotionState } from '../types/emotionState';
+import type { AmbientPlan } from '../types/ambientPlan';
+import { beginChatContext, emptyChatContext, finishChatContext, receiveContextStatus } from '../types/contextStatus';
+import type { ChatContextState, ContextStatusPayload } from '../types/contextStatus';
 
 export interface ChatMessage {
   id: string;
@@ -47,6 +50,7 @@ interface AppState {
 
   // 固定角色名稱，供聊天與表情除錯識別模型。
   readonly currentModelName: string;
+  readonly currentModelDirectory: string;
 
   // 視線追蹤狀態
   eyeTrackingEnabled: boolean;
@@ -70,6 +74,7 @@ interface AppState {
   isSpeaking: boolean;
   isCompressing: boolean;
   chatPerformance: ChatPerformance;
+  chatContext: ChatContextState;
   aiBehavior: {
     headIntensity: number;
     blushLevel: number;
@@ -77,6 +82,7 @@ interface AppState {
     eyeROpen: number;
   };
   expressionPlan: ExpressionPlanPayload | null;
+  ambientPlan: AmbientPlan | null;
   expressionEvents: ExpressionMicroEvent[];
 
   // 動作
@@ -98,9 +104,15 @@ interface AppState {
   setCompressing: (isCompressing: boolean) => void;
   setChatPerformance: (metrics: Partial<ChatPerformance>) => void;
   clearChatPerformance: () => void;
+  beginChatContext: (turnId: string) => void;
+  receiveContextStatus: (payload: ContextStatusPayload) => void;
+  finishChatContext: (phase: 'completed' | 'cancelled' | 'failed') => void;
+  resetChatContext: (phase?: 'idle' | 'disconnected') => void;
   setAiBehavior: (headIntensity: number, blushLevel: number, eyeLOpen: number, eyeROpen: number, durationSec?: number, mouthForm?: number, browLY?: number, browRY?: number, browLAngle?: number, browRAngle?: number, browLForm?: number, browRForm?: number, eyeSync?: boolean, eyeLSmile?: number, eyeRSmile?: number, browLX?: number, browRX?: number, bodyAngleX?: number, bodyAngleY?: number, bodyAngleZ?: number, breathLevel?: number, physicsImpulse?: number, eyeBallX?: number, eyeBallY?: number) => void;
   setBlinkControl: (action: BlinkAction, durationSec?: number, intervalMin?: number, intervalMax?: number) => void;
   setExpressionPlan: (plan: ExpressionPlanPayload) => void;
+  setAmbientPlan: (plan: AmbientPlan) => void;
+  disconnectAmbient: () => void;
   enqueueExpressionEvents: (events: ExpressionMicroEvent[]) => void;
   clearExpressionEvents: () => void;
 
@@ -128,8 +140,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   modelLoading: false,
   modelLoaded: false,
   modelError: null,
-  eyeTrackingEnabled: true,
-  autoPlayEnabled: false,
+  eyeTrackingEnabled: false,
+  autoPlayEnabled: true,
   showControls: true,
 
   // 模型變換初始狀態
@@ -148,6 +160,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   ],
   isAiTyping: false,
+  chatContext: emptyChatContext(),
   isSpeaking: false,
   isCompressing: false,
   chatPerformance: {
@@ -162,13 +175,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     eyeROpen: 1
   },
   expressionPlan: null,
+  ambientPlan: null,
   expressionEvents: [],
 
   // JEV 情緒初始狀態
   emotionState: null,
   emotionSource: null,
 
-  currentModelName: FixedModel.name,
+  currentModelName: getDefaultModel().name,
+  currentModelDirectory: getDefaultModel().directory,
 
   // 動作實作
   toggleMicrophone: () =>
@@ -253,6 +268,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setEmotionState: (state, source) => set({ emotionState: state, emotionSource: source }),
 
   clearChatHistory: () => set({
+    chatContext: emptyChatContext(),
     chatHistory: [{
       id: "system-init",
       role: 'system',
@@ -286,6 +302,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setAiTyping: (isTyping) => set({ isAiTyping: isTyping }),
+  beginChatContext: (turnId) => set({ chatContext: beginChatContext(turnId) }),
+  receiveContextStatus: (payload) => set((state) => ({ chatContext: receiveContextStatus(state.chatContext, payload) })),
+  finishChatContext: (phase) => set((state) => ({ chatContext: finishChatContext(state.chatContext, phase) })),
+  resetChatContext: (phase = 'idle') => set({ chatContext: emptyChatContext(phase) }),
 
   setSpeaking: (isSpeaking) => set({ isSpeaking }),
 
@@ -352,6 +372,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         break;
     }
+  },
+
+  setAmbientPlan: (plan) => {
+    const current = get().ambientPlan;
+    if (current && plan.sequence <= current.sequence) return;
+    set({ ambientPlan: plan });
+    LAppLive2DManager.getInstance().getActiveModel()?.applyAmbientPlan(plan);
+  },
+
+  disconnectAmbient: () => {
+    set({ ambientPlan: null });
+    LAppLive2DManager.getInstance().getActiveModel()?.disconnectAmbient();
   },
 
   setExpressionPlan: (plan) => {

@@ -44,7 +44,9 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                 "nvidia", "chat-key", "https://integrate.api.nvidia.com/v1", "test-chat"
             ))
             with patch.dict("os.environ", {"CHAT_AI_API_KEY": ""}):
-                with self.assertRaisesRegex(RuntimeError, "CHAT_AI_API_KEY"):
+                self.assertEqual(role_model_config("CHAT")[1], "")
+            with patch.dict("os.environ", {"CHAT_AI_BASE_URL": ""}):
+                with self.assertRaisesRegex(RuntimeError, "CHAT_AI_BASE_URL"):
                     role_model_config("CHAT")
         self.assertEqual(provider_from_url("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"), "qwen")
         self.assertEqual(provider_from_url("https://gateway.example/v1"), "custom")
@@ -136,7 +138,7 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                 await asyncio.Event().wait()
             return jev_answers(0.7)
 
-        async def fake_chat(messages, send_chunk):
+        async def fake_chat(messages, send_chunk, **kwargs):
             await send_chunk("第二句回覆")
             return "第二句回覆"
 
@@ -201,7 +203,7 @@ class ArchitectureIntegrationTests(unittest.TestCase):
                 await release_jev.wait()
             return jev_answers(0.7)
 
-        async def fake_chat(messages, send_chunk):
+        async def fake_chat(messages, send_chunk, **kwargs):
             current_input = messages[-1]["content"]
             if current_input == "第一句":
                 await send_chunk("只送出的半句")
@@ -234,13 +236,16 @@ class ArchitectureIntegrationTests(unittest.TestCase):
         cancelled = next(payload for payload in payloads if payload["type"] == "turn_cancelled")
         self.assertEqual(cancelled["status"], "interrupted")
         self.assertEqual(cancelled["partial_text"], "只送出的半句")
-        self.assertEqual(
-            contexts[1]["recent_dialogue"],
-            [
-                {"role": "user", "text": "第一句"},
-                {"role": "assistant", "text": "只送出的半句"},
-            ],
-        )
+        second_turn = [context for context in contexts if context["current_user_input"] == "插話"]
+        self.assertEqual(len(second_turn), 3)
+        for context in second_turn:
+            self.assertEqual(
+                context["recent_dialogue"],
+                [
+                    {"role": "user", "text": "第一句"},
+                    {"role": "assistant", "text": "只送出的半句"},
+                ],
+            )
         self.assertTrue(any(
             item.get("role") == "assistant"
             and item.get("content") == "只送出的半句"

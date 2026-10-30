@@ -8,7 +8,7 @@ const LABELS: Record<EmotionField, string> = {
   pleased: '開心',
   genuinely_angry: '真的生氣',
   sad_or_hurt: '難過／受傷',
-  masking_positive_feeling: '掩飾正面情緒',
+  masking_positive_feeling: '撒嬌 ↔ 嘴硬',
   wants_continue_interaction: '想繼續互動',
 };
 
@@ -34,7 +34,7 @@ export const EmotionSidebar = () => {
       clearChatHistory();
       useAppStore.getState().setEmotionState({
         shy: 0, pleased: 0, genuinely_angry: 0, sad_or_hurt: 0,
-        masking_positive_feeling: 0, wants_continue_interaction: 0.5,
+        masking_positive_feeling: 0.5, wants_continue_interaction: 0.5,
       }, 'neutral_fallback');
       wsService.syncResetSession();
     } catch (error) {

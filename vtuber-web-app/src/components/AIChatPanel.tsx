@@ -3,6 +3,7 @@ import { useAppStore } from '@store/appStore';
 import { MicrophoneManager } from '../audio/MicrophoneManager';
 import { voiceWsService } from '../services/voiceWsService';
 import { wsService } from '../services/wsService';
+import { formatContextStatus } from '../types/contextStatus';
 import './AIChatPanel.css';
 
 type VoiceCaptureState = 'idle' | 'connecting' | 'permission' | 'starting' | 'listening' | 'processing';
@@ -22,6 +23,7 @@ export const AIChatPanel = () => {
         isAiTyping,
         isCompressing,
         chatPerformance,
+        chatContext,
         microphonePermission,
         setMicrophonePermission,
     } = useAppStore();
@@ -39,6 +41,7 @@ export const AIChatPanel = () => {
     }, []);
 
     const stopVoiceCapture = useCallback(() => {
+        wsService.setAvatarListening(false);
         voiceCaptureRef.current = false;
         voiceHasSoundRef.current = false;
         if (voiceMonitorRef.current !== null) {
@@ -61,6 +64,12 @@ export const AIChatPanel = () => {
         if (!useAppStore.getState().microphoneEnabled) microphone.disable();
         setVoiceState('idle');
     }, []);
+
+    useEffect(() => useAppStore.subscribe((state, previous) => {
+        if (state.chatContext.phase === 'disconnected' && previous.chatContext.phase !== 'disconnected') {
+            stopVoiceCapture();
+        }
+    }), [stopVoiceCapture]);
 
     useEffect(() => {
         const removeHandlers = voiceWsService.setHandlers({
@@ -164,6 +173,7 @@ export const AIChatPanel = () => {
         }
 
         voiceWsService.setGate(true);
+        wsService.setAvatarListening(true);
         setVoiceState('listening');
 
         noSpeechTimerRef.current = window.setTimeout(() => {
@@ -229,6 +239,7 @@ export const AIChatPanel = () => {
                 </div>
             </div>
             <div className="ai-chat-panel__footer">
+                <p className="context-note">每次送出會讀取本機應用現況；露西亞會按需查詢臺灣天氣或擷取單張畫面。現況與畫面會送給聊天模型，不持續監控。</p>
                 <div className="input-area">
                     <button
                         type="button"
@@ -255,6 +266,18 @@ export const AIChatPanel = () => {
                     >
                         發送
                     </button>
+                </div>
+                <div className="chat-context-status" role="status" aria-live="polite" aria-atomic="true">
+                    {chatContext.phase === 'disconnected' ? (
+                        <span className="chat-context-status__item warning">桌面：連線中斷，請確認後端連線</span>
+                    ) : !chatContext.items.desktop ? (
+                        <span className="chat-context-status__item neutral">桌面：每次送出時更新</span>
+                    ) : (['desktop', 'activity', 'screenshot'] as const).map(kind => {
+                        const item = chatContext.items[kind];
+                        if (!item) return null;
+                        const status = formatContextStatus(item, chatContext.phase);
+                        return <span key={kind} className={`chat-context-status__item ${status.tone}`} title={status.title}>{status.text}</span>;
+                    })}
                 </div>
                 {voiceState !== 'idle' && (
                     <div className="voice-status" role="status" aria-live="polite">

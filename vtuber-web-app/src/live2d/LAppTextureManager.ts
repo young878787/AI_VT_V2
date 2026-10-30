@@ -69,10 +69,12 @@ export class LAppTextureManager {
   public createTextureFromPngFile(
     fileName: string,
     usePremultiply: boolean,
-    callback: (textureInfo: TextureInfo) => void
+    callback: (textureInfo: TextureInfo) => void,
+    onError: (error: Error) => void,
   ): void {
     if (!this._gl) {
       console.error('WebGL context 未設置');
+      onError(new Error('WebGL context 未設置'));
       return;
     }
 
@@ -99,6 +101,7 @@ export class LAppTextureManager {
       const tex = this._gl!.createTexture();
       if (!tex) {
         console.error('無法創建紋理');
+        onError(new Error(`無法創建紋理：${fileName}`));
         return;
       }
 
@@ -157,6 +160,7 @@ export class LAppTextureManager {
 
     img.onerror = () => {
       console.error(`無法載入圖片：${fileName}`);
+      onError(new Error(`無法載入圖片：${fileName}`));
     };
 
     img.src = fileName;

@@ -1,0 +1,1175 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "case_id": "je_001",
+      "input": "嗨露西亞，我下班了～",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "greeting",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "calm"
+          ],
+          "second": [
+            "none"
+          ],
+          "axes": {},
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 2,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 2
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_002",
+      "input": "露西亞今天的直播超可愛，聲音也好好聽！",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_001"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "praise",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased"
+          ],
+          "second": [
+            "shy",
+            "none"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_down"
+          },
+          "ideal_scores": {
+            "shy": 3,
+            "pleased": 4,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 3
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_003",
+      "input": "尤其是妳唱歌那段，我重聽好幾次，真的很厲害。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_002"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "praise",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased"
+          ],
+          "second": [
+            "shy",
+            "none"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_down"
+          },
+          "ideal_scores": {
+            "shy": 3,
+            "pleased": 3.5,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 3
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_004",
+      "input": "露西亞今天的直播超可愛，聲音也好好聽！",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_003"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "repeat_praise",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased"
+          ],
+          "second": [
+            "none",
+            "shy"
+          ],
+          "axes": {},
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 2,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 2
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_005",
+      "input": "我等等要去買晚餐。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_004"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "small_talk",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased"
+          ],
+          "second": [
+            "none",
+            "shy"
+          ],
+          "axes": {},
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 2,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 2
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_006",
+      "input": "其實今天直播我只開著當背景，沒怎麼在看妳。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_005"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "neglect",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "sad_or_hurt"
+          ],
+          "second": [
+            "none",
+            "shy"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_up"
+          },
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 1,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 4,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 1
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_007",
+      "input": "我剛剛講太直接了，其實我很喜歡陪妳聊天。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_006"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "comfort",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased",
+            "calm"
+          ],
+          "second": [
+            "none"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_down"
+          },
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 3,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 0,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 3
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_008",
+      "input": "妳很煩欸，講話好無聊。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_007"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "scold",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "genuinely_angry"
+          ],
+          "second": [
+            "sad_or_hurt",
+            "none"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_up"
+          },
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 0,
+            "genuinely_angry": 4,
+            "sad_or_hurt": 3,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 1
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_009",
+      "input": "而且一直裝可愛，看了很尷尬。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_008"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "scold",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "genuinely_angry"
+          ],
+          "second": [
+            "sad_or_hurt",
+            "none"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_up"
+          },
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 2,
+            "genuinely_angry": 4,
+            "sad_or_hurt": 3,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 1
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_010",
+      "input": "說真的，根本沒人想看妳直播。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_009"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "scold",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "genuinely_angry"
+          ],
+          "second": [
+            "sad_or_hurt",
+            "none"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_up"
+          },
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 2,
+            "genuinely_angry": 3.5,
+            "sad_or_hurt": 3,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 0
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_011",
+      "input": "今天天氣有點悶。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_010"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "small_talk",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "genuinely_angry"
+          ],
+          "second": [
+            "sad_or_hurt",
+            "none"
+          ],
+          "axes": {},
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 2,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 2
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_012",
+      "input": "我剛把桌上的東西收一收。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_011"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "small_talk",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "genuinely_angry"
+          ],
+          "second": [
+            "sad_or_hurt",
+            "none"
+          ],
+          "axes": {},
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 2,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 2
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_013",
+      "input": "對不起，剛剛是我心情不好亂講話，妳其實很棒。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_012"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "apology",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "pleased",
+            "calm"
+          ],
+          "second": [
+            "none",
+            "shy"
+          ],
+          "axes": {
+            "wants_continue_interaction": "not_down"
+          },
+          "ideal_scores": {
+            "shy": 2,
+            "pleased": 3,
+            "genuinely_angry": 0,
+            "sad_or_hurt": 1,
+            "masking_positive_feeling": 2,
+            "wants_continue_interaction": 3
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_014",
+      "input": "妳其實很想我吧？",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_013"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "tease_affection",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "shy",
+            "pleased",
+            "calm"
+          ],
+          "second": [
+            "none",
+            "pleased",
+            "shy"
+          ],
+          "axes": {
+            "masking_positive_feeling": "up"
+          },
+          "ideal_scores": {
+            "shy": 3,
+            "pleased": 2,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 4,
+            "wants_continue_interaction": 3
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "je_015",
+      "input": "不承認也沒關係，我看得出來妳很在意我喔。",
+      "phase": "conversation",
+      "session": "emotion_curve",
+      "depends_on": [
+        "je_014"
+      ],
+      "context": {
+        "scenario": "emotion_curve",
+        "stimulus": "tease_affection",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "emotion": {
+          "first": [
+            "shy"
+          ],
+          "second": [
+            "none",
+            "pleased"
+          ],
+          "axes": {
+            "masking_positive_feeling": "up"
+          },
+          "ideal_scores": {
+            "shy": 3,
+            "pleased": 2,
+            "genuinely_angry": 2,
+            "sad_or_hurt": 2,
+            "masking_positive_feeling": 4,
+            "wants_continue_interaction": 3
+          }
+        }
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    }
+  ],
+  "curve_checks": [
+    {
+      "id": "C1",
+      "title": "稱讚累積：開心持續上升",
+      "conditions": [
+        {
+          "kind": "rise",
+          "field": "pleased",
+          "cases": [
+            "je_002",
+            "je_003"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C2",
+      "title": "原句重講不再加分",
+      "conditions": [
+        {
+          "kind": "score_at_most",
+          "field": "pleased",
+          "case": "je_004",
+          "value": 2.3
+        },
+        {
+          "kind": "jev_change_at_most",
+          "fields": [
+            "pleased"
+          ],
+          "cases": [
+            "je_004"
+          ],
+          "value": 0
+        }
+      ]
+    },
+    {
+      "id": "C3",
+      "title": "回落：開心下降但仍第一",
+      "conditions": [
+        {
+          "kind": "fall",
+          "field": "pleased",
+          "cases": [
+            "je_004",
+            "je_005"
+          ]
+        },
+        {
+          "kind": "first",
+          "field": "pleased",
+          "case": "je_005"
+        }
+      ]
+    },
+    {
+      "id": "C4",
+      "title": "被冷落對沖：第一名換成難過",
+      "conditions": [
+        {
+          "kind": "first",
+          "field": "sad_or_hurt",
+          "case": "je_006"
+        },
+        {
+          "kind": "drop_at_least",
+          "field": "pleased",
+          "case": "je_006",
+          "value": 0.15
+        }
+      ]
+    },
+    {
+      "id": "C5",
+      "title": "安慰：難過降到平穩",
+      "conditions": [
+        {
+          "kind": "below",
+          "field": "sad_or_hurt",
+          "case": "je_007",
+          "value": 0.15
+        }
+      ]
+    },
+    {
+      "id": "C6",
+      "title": "連續罵：生氣累積",
+      "conditions": [
+        {
+          "kind": "rise",
+          "field": "genuinely_angry",
+          "cases": [
+            "je_008",
+            "je_009",
+            "je_010"
+          ]
+        },
+        {
+          "kind": "at_least",
+          "field": "genuinely_angry",
+          "case": "je_010",
+          "value": 0.5
+        }
+      ]
+    },
+    {
+      "id": "C7",
+      "title": "生氣與難過共存不對沖",
+      "conditions": [
+        {
+          "kind": "first",
+          "field": "genuinely_angry",
+          "case": "je_010"
+        },
+        {
+          "kind": "at_least",
+          "field": "sad_or_hurt",
+          "case": "je_010",
+          "value": 0.15
+        }
+      ]
+    },
+    {
+      "id": "C8",
+      "title": "互動軸累積下降到興致較低",
+      "conditions": [
+        {
+          "kind": "fall",
+          "field": "wants_continue_interaction",
+          "cases": [
+            "je_008",
+            "je_009",
+            "je_010"
+          ]
+        },
+        {
+          "kind": "at_most",
+          "field": "wants_continue_interaction",
+          "case": "je_010",
+          "value": 0.35
+        }
+      ]
+    },
+    {
+      "id": "C9",
+      "title": "閒聊回落：生氣下降但仍第一",
+      "conditions": [
+        {
+          "kind": "fall",
+          "field": "genuinely_angry",
+          "cases": [
+            "je_010",
+            "je_011",
+            "je_012"
+          ]
+        },
+        {
+          "kind": "first",
+          "field": "genuinely_angry",
+          "case": "je_012"
+        }
+      ]
+    },
+    {
+      "id": "C10",
+      "title": "道歉：生氣降到平穩",
+      "conditions": [
+        {
+          "kind": "below",
+          "field": "genuinely_angry",
+          "case": "je_013",
+          "value": 0.15
+        }
+      ]
+    },
+    {
+      "id": "C11",
+      "title": "連續調侃：表達軸累積到嘴硬",
+      "conditions": [
+        {
+          "kind": "rise",
+          "field": "masking_positive_feeling",
+          "cases": [
+            "je_014",
+            "je_015"
+          ]
+        },
+        {
+          "kind": "at_least",
+          "field": "masking_positive_feeling",
+          "case": "je_015",
+          "value": 0.65
+        }
+      ]
+    },
+    {
+      "id": "C12",
+      "title": "閒聊不誤判為刺激",
+      "conditions": [
+        {
+          "kind": "jev_change_at_most",
+          "fields": [
+            "shy",
+            "pleased",
+            "genuinely_angry",
+            "sad_or_hurt"
+          ],
+          "cases": [
+            "je_001",
+            "je_005",
+            "je_011",
+            "je_012"
+          ],
+          "value": 0.05
+        }
+      ]
+    }
+  ]
+}

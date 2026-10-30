@@ -1,6 +1,6 @@
 /**
  * Live2D 應用程式常數定義和模型配置
- * 固定使用 Rushia HD 模型
+ * Rushia 模型資源共用同一套角色與表情管線
  */
 
 /**
@@ -66,9 +66,9 @@ export const ResourcePath = {
 } as const;
 
 /**
- * 固定模型配置；所有畫面與聊天共用同一份 Rushia 資源。
+ * 可切換的 Rushia 資源；name 保持一致，供聊天與表情 compiler 識別角色。
  */
-export const FixedModel: Readonly<ModelConfig> = Object.freeze({
+const defaultModel: Readonly<ModelConfig> = Object.freeze({
   name: 'Rushia',
   directory: 'Rushia',
   fileName: 'RushiaHD.model3.json',
@@ -77,6 +77,15 @@ export const FixedModel: Readonly<ModelConfig> = Object.freeze({
   scale: 1.0,
   position: Object.freeze({ x: 0.0, y: 0.0 }),
 });
+
+export const AvailableModels: ReadonlyArray<Readonly<ModelConfig>> = Object.freeze([
+  defaultModel,
+  Object.freeze({
+    ...defaultModel,
+    directory: 'Rushia_hd',
+    displayName: 'Rushia_hd',
+  }),
+]);
 
 /**
  * 動作組定義
@@ -142,5 +151,5 @@ export function getModelJsonPath(modelConfig: ModelConfig): string {
  * 取得預設模型
  */
 export function getDefaultModel(): ModelConfig {
-  return FixedModel;
+  return defaultModel;
 }

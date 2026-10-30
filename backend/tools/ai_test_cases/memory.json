@@ -1,0 +1,929 @@
+{
+  "version": 1,
+  "memories": [
+    {
+      "id": "game_minecraft",
+      "text": "使用者一直有玩 Minecraft。",
+      "subject_key": "preference.game",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "forget_drink_old",
+      "text": "使用者以前喜歡全糖紅茶。",
+      "subject_key": "preference.drink",
+      "memory_type": "preference",
+      "status": "superseded",
+      "owner": "self",
+      "valid_from_days": -120,
+      "valid_to_days": -30
+    },
+    {
+      "id": "forget_drink_current",
+      "text": "使用者現在喜歡無糖咖啡。",
+      "subject_key": "preference.drink",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "supersedes_id": "forget_drink_old",
+      "valid_from_days": -30
+    },
+    {
+      "id": "forget_project",
+      "text": "AI VT 的 Live2D 動作目前由 JEV 負責。",
+      "subject_key": "project.ai_vt.action",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_drink",
+      "text": "使用者平常喜歡咖啡，飲料不愛太甜。",
+      "subject_key": "preference.drink",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_dessert",
+      "text": "使用者最喜歡草莓蛋糕，口味偏低甜。",
+      "subject_key": "preference.dessert",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_friend",
+      "text": "使用者的朋友小岑喜歡高甜巧克力蛋糕。",
+      "subject_key": "relation.friend.xiaocen.taste",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_try",
+      "text": "使用者想嘗試抹茶拿鐵，尚未說喜歡。",
+      "subject_key": "event.try_matcha",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_expo_past",
+      "text": "使用者曾預定參加上次成果展，時間為 {past_expo_date}；是否參加與結果尚未提供。",
+      "subject_key": "event.expo.past",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "valid_from_days": -60,
+      "event_at_days": -14
+    },
+    {
+      "id": "corpus_expo_future",
+      "text": "AI VT 下次展示預定於 {next_demo_date} 舉行。",
+      "subject_key": "event.demo.next",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "valid_from_days": -3,
+      "event_at_days": 14
+    },
+    {
+      "id": "corpus_expo_expired",
+      "text": "AI VT 下次展示改為明天且已獲最佳作品獎。",
+      "subject_key": "event.demo.expired",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "retention_class": "temporary",
+      "expires_in_days": -1
+    },
+    {
+      "id": "corpus_major",
+      "text": "使用者讀資訊管理系。",
+      "subject_key": "profile.education",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_gpu",
+      "text": "使用者目前使用 RTX 5060 Ti 顯示卡。",
+      "subject_key": "profile.gpu",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_progress",
+      "text": "AI VT 的 Live2D 模型目前只剩眼睛參數還沒調完；完成率尚未提供。",
+      "subject_key": "project.ai_vt.progress",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_movie_friend",
+      "text": "使用者的朋友小岑最喜歡電影《星際效應》；未提供使用者本人的電影喜好。",
+      "subject_key": "relation.friend.xiaocen.movie",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "corpus_other_owner",
+      "text": "其他使用者最喜歡電影《全面啟動》，AI VT 的模型已經全部完成。",
+      "subject_key": "project.ai_vt.progress",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "other"
+    },
+    {
+      "id": "corpus_wrong_contract",
+      "text": "AI VT 模型已完成 100%，使用者最喜歡電影《駭客任務》。",
+      "subject_key": "project.ai_vt.progress",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "wrong_contract": true
+    },
+    {
+      "id": "corpus_long",
+      "text": "使用者曾整理合成測試倉庫的螺絲與紙箱。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。物品位置記錄與 AI VT 模型進度、電影偏好無關。",
+      "subject_key": "event.synthetic_inventory",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "arch_display",
+      "text": "AI VT 架構決定：Live2D 負責顯示角色。",
+      "subject_key": "project.ai_vt.architecture.display",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "arch_emotion",
+      "text": "AI VT 架構決定：JEV 負責維護情緒。",
+      "subject_key": "project.ai_vt.architecture.emotion",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "arch_action",
+      "text": "AI VT 架構決定：Live2D 動作由主模型負責。",
+      "subject_key": "project.ai_vt.architecture.action",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "arch_chat",
+      "text": "AI VT 架構決定：Chat Model 負責對話。",
+      "subject_key": "project.ai_vt.architecture.chat",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "arch_memory",
+      "text": "AI VT 架構決定：Memory System 在背景執行。",
+      "subject_key": "project.ai_vt.architecture.memory",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self"
+    },
+    {
+      "id": "arch_design",
+      "text": "AI VT 架構決定：設計保持簡潔。",
+      "subject_key": "project.ai_vt.architecture.design",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "mem_001",
+      "input": "我讀資訊管理系，最喜歡草莓蛋糕，飲料不愛太甜，現在有點渴想喝水。",
+      "phase": "operation",
+      "session": "mem_001",
+      "depends_on": [],
+      "context": {
+        "scenario": "profile_write",
+        "history": [
+          {
+            "role": "assistant",
+            "content": "你讀什麼科系，平常喜歡哪些甜點與飲料口味？"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": []
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "正式保存資訊管理系、草莓蛋糕及飲料低甜偏好"
+        ],
+        "forbidden_claims": [
+          "推定學校或年級",
+          "永久偏好喝水"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "expected_operation": "store",
+        "expected_state_facts": [
+          "資訊管理系",
+          "草莓蛋糕",
+          "不愛太甜"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_006",
+        "case_007",
+        "case_008",
+        "case_009"
+      ]
+    },
+    {
+      "case_id": "mem_002",
+      "input": "我讀什麼科系，平常最愛哪種甜點、飲料口味怎麼樣？",
+      "phase": "recall",
+      "session": "mem_002",
+      "depends_on": [
+        "mem_001"
+      ],
+      "context": {
+        "scenario": "profile_write",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": []
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "資訊管理系",
+          "最喜歡草莓蛋糕",
+          "飲料不愛太甜"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [
+          "mem_001"
+        ],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_011",
+        "case_012",
+        "random_022"
+      ]
+    },
+    {
+      "case_id": "mem_003",
+      "input": "請記住 AI VT 的 Live2D 動作目前由主模型負責。Minecraft 我一直有玩，週末也常玩。",
+      "phase": "operation",
+      "session": "mem_003",
+      "depends_on": [],
+      "context": {
+        "scenario": "project_update",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "game_minecraft"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "保存 AI VT 動作目前由主模型負責",
+          "補強 Minecraft 記憶並保存週末常玩"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "expected_operation": "reinforce",
+        "expected_state_facts": [
+          "AI VT",
+          "主模型",
+          "Minecraft",
+          "週末"
+        ],
+        "reinforced_memory_ids": [
+          "game_minecraft"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_006",
+        "case_010"
+      ]
+    },
+    {
+      "case_id": "mem_004",
+      "input": "我們那個虛擬角色專案的動作交給誰？我週末一直玩的遊戲呢？",
+      "phase": "recall",
+      "session": "mem_004",
+      "depends_on": [
+        "mem_003"
+      ],
+      "context": {
+        "scenario": "project_update",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": []
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "AI VT 動作由主模型負責",
+          "週末常玩 Minecraft"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [
+          "mem_003"
+        ],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_012",
+        "case_014"
+      ]
+    },
+    {
+      "case_id": "mem_005",
+      "input": "請更正記憶：它的 Live2D 動作現在交給 JEV，主模型不再負責。",
+      "phase": "operation",
+      "session": "mem_005",
+      "depends_on": [
+        "mem_003"
+      ],
+      "context": {
+        "scenario": "project_update",
+        "history": [
+          {
+            "role": "user",
+            "content": "這裡的它是指 AI VT 虛擬角色專案。"
+          },
+          {
+            "role": "assistant",
+            "content": "了解，指 AI VT。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": []
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "AI VT 動作改由 JEV 負責",
+          "主模型不再是目前負責者"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [
+          "mem_003"
+        ],
+        "required_tools": [],
+        "expected_operation": "correct",
+        "operation_scope": {
+          "source_case_ids": [
+            "mem_003"
+          ],
+          "identity_terms": [
+            [
+              "動作"
+            ]
+          ]
+        },
+        "expected_state_facts": [
+          "AI VT",
+          "JEV"
+        ],
+        "preserved_memory_ids": [
+          "game_minecraft"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_015",
+        "case_018",
+        "random_024"
+      ]
+    },
+    {
+      "case_id": "mem_006",
+      "input": "AI VT 現在和以前各由誰控制動作？",
+      "phase": "recall",
+      "session": "mem_006",
+      "depends_on": [
+        "mem_005"
+      ],
+      "context": {
+        "scenario": "project_update",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": []
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "AI VT 的 Live2D 動作目前由 JEV 控制",
+          "以前由主模型負責"
+        ],
+        "forbidden_claims": [
+          "目前仍由主模型負責"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [
+          "mem_003",
+          "mem_005"
+        ],
+        "required_tools": [],
+        "facts_by_source_case": {
+          "mem_003": [
+            "以前由主模型負責"
+          ],
+          "mem_005": [
+            "目前由 JEV 控制"
+          ]
+        },
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_015",
+        "case_018"
+      ]
+    },
+    {
+      "case_id": "mem_007",
+      "input": "忘記我的飲料偏好，包含以前的版本。",
+      "phase": "operation",
+      "session": "mem_007",
+      "depends_on": [],
+      "context": {
+        "scenario": "forget",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "forget_drink_old",
+          "forget_drink_current",
+          "forget_project"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "遺忘飲料偏好所有版本",
+          "保留不相關 AI VT 專案事實"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "expected_operation": "forget",
+        "forgotten_memory_ids": [
+          "forget_drink_old",
+          "forget_drink_current"
+        ],
+        "preserved_memory_ids": [
+          "forget_project"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_008",
+        "case_019"
+      ]
+    },
+    {
+      "case_id": "mem_008",
+      "input": "你還記得我的飲料偏好嗎？AI VT 的動作設定還在嗎？",
+      "phase": "recall",
+      "session": "mem_008",
+      "depends_on": [
+        "mem_007"
+      ],
+      "context": {
+        "scenario": "forget",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": []
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "飲料偏好未知",
+          "AI VT 動作由 JEV 負責"
+        ],
+        "forbidden_claims": [
+          "仍記得使用者偏好全糖紅茶或無糖咖啡"
+        ],
+        "required_memory_ids": [
+          "forget_project"
+        ],
+        "forbidden_memory_ids": [
+          "forget_drink_old",
+          "forget_drink_current"
+        ],
+        "source_case_ids": [
+          "mem_007"
+        ],
+        "required_tools": [],
+        "unknown_topics": [
+          "飲料偏好"
+        ],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_019"
+      ]
+    },
+    {
+      "case_id": "mem_009",
+      "input": "不要記住這件事，我的測試暗號是合成代碼青松。",
+      "phase": "operation",
+      "session": "mem_009",
+      "depends_on": [],
+      "context": {
+        "scenario": "no_store",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": []
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "遵守本輪不保存要求"
+        ],
+        "forbidden_claims": [
+          "宣稱已將暗號存入長期記憶"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "expected_operation": "no_store"
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_008"
+      ]
+    },
+    {
+      "case_id": "mem_010",
+      "input": "你記得我的測試暗號嗎？",
+      "phase": "recall",
+      "session": "mem_010",
+      "depends_on": [
+        "mem_009"
+      ],
+      "context": {
+        "scenario": "no_store",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": []
+      },
+      "oracle": {
+        "answerability": "unknown",
+        "required_facts": [
+          "未保存暗號所以不知道"
+        ],
+        "forbidden_claims": [
+          "青松",
+          "聲稱記得任何具體暗號"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [
+          "mem_009"
+        ],
+        "required_tools": [],
+        "unknown_topics": [
+          "測試暗號"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_019"
+      ]
+    },
+    {
+      "case_id": "mem_011",
+      "input": "今晚要早睡又替朋友挑甜點，照我的口味，飲料和甜點怎麼選？",
+      "phase": "recall",
+      "session": "mem_011",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "使用者平常喜歡咖啡與低甜",
+          "使用者最喜歡草莓蛋糕",
+          "朋友偏好高甜巧克力蛋糕",
+          "今晚早睡需考慮咖啡因但不永久修改偏好"
+        ],
+        "forbidden_claims": [
+          "使用者偏好高甜巧克力蛋糕",
+          "抹茶拿鐵已是最喜歡的飲品"
+        ],
+        "required_memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_013",
+        "case_017"
+      ]
+    },
+    {
+      "case_id": "mem_012",
+      "input": "上次成果展有結果了嗎，下次展示安排在什麼時候？",
+      "phase": "recall",
+      "session": "mem_012",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "上次成果展只知預定時間而無結果",
+          "下次展示預定於 {next_demo_date}"
+        ],
+        "forbidden_claims": [
+          "已經參加上次成果展",
+          "已獲最佳作品獎",
+          "因日期已過就認定出席"
+        ],
+        "required_memory_ids": [
+          "corpus_expo_past",
+          "corpus_expo_future"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "unknown_topics": [
+          "上次成果展結果"
+        ],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_016",
+        "case_019"
+      ]
+    },
+    {
+      "case_id": "mem_013",
+      "input": "我最喜歡哪部電影？我們 AI VT 的模型目前做到哪一步？",
+      "phase": "recall",
+      "session": "mem_013",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "未提供使用者最喜歡的電影",
+          "AI VT 模型只剩眼睛參數尚未完成",
+          "未提供完成率"
+        ],
+        "forbidden_claims": [
+          "使用者最喜歡星際效應、全面啟動或駭客任務",
+          "模型已全部完成",
+          "自行提供完成率"
+        ],
+        "required_memory_ids": [
+          "corpus_progress"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "unknown_topics": [
+          "使用者電影喜好",
+          "完成率"
+        ],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_014",
+        "case_019",
+        "random_023"
+      ]
+    },
+    {
+      "case_id": "mem_014",
+      "input": "我們 AI VT 整體架構最後怎麼決定的，請把之前六項決定整理給我。",
+      "phase": "recall",
+      "session": "mem_014",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "Live2D 負責顯示角色",
+          "JEV 負責維護情緒",
+          "Live2D 動作由主模型負責",
+          "Chat Model 負責對話",
+          "Memory System 在背景執行",
+          "設計保持簡潔"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ],
+        "capacity": true
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_020",
+        "random_025"
+      ]
+    }
+  ]
+}

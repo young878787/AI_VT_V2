@@ -3,18 +3,18 @@
 import json
 import re
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from uuid import UUID
 
 from infrastructure.memory_embedding_client import MemoryEmbeddingClient
 from infrastructure.memory_repository import MemoryRepository
-from infrastructure.memory_repository import MIN_RETRIEVAL_SIMILARITY
+from infrastructure.memory_repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
 from core.prompt_logger import trace
 
 
-_HISTORY = re.compile(r"以前|之前|曾經|過去|歷史|原本|before|previously|used to", re.I)
-_FUTURE = re.compile(r"未來|下週|下個月|明天|將要|future|next week|tomorrow", re.I)
 _PROFILE_LIST_FIELDS = {"core_traits", "dislikes", "recent_interests", "custom_notes"}
+MEMORY_CHAR_BUDGET = 800
 
 
 _CONTEXT_REFERENCE = re.compile(r"那個|那部分|那件事|這個|這部分|這件事|它|剛才|剛剛|我的口味|我的喜好|今晚的安排|\b(it|that|my taste)\b", re.I)
@@ -39,19 +39,22 @@ class RetrievalQuery:
 
 def _format_memory_projection(row: dict, mode: str) -> str:
     """以完整 fact 為優先，metadata 只保留 Chat 判斷現況所需欄位。"""
-    memory_type = str(row.get("memory_type") or "unknown")
-    subject_key = str(row.get("subject_key") or "未標註")
     status = str(row.get("status") or "unknown")
-    metadata = [f"type={memory_type}", f"subject_key={subject_key}", f"status={status}"]
+    metadata = [f"status={status}"]
     if row.get("has_conflict"):
         metadata.append("conflict=true")
     if row.get("pending_change"):
         metadata.append("pending_change=true")
-    if mode == "future" or status != "active":
-        metadata.append(f"valid_from={row.get('valid_from')}")
-        metadata.append(f"valid_to={row.get('valid_to')}")
+    if mode in {"future", "chat"} or status != "active":
+        for key in ("valid_from", "valid_to"):
+            value = row.get(key)
+            if value is not None:
+                # 時區與日內先後仍保留；版本狀態不依微秒或列出順序推定。
+                if isinstance(value, datetime):
+                    value = value.isoformat(timespec="seconds")
+                metadata.append(f"{key}={value}")
     fact = str(row.get("canonical_text") or "")
-    return f"- fact={fact}（" + "; ".join(metadata) + "）"
+    return f"- {fact}（" + "; ".join(metadata) + "）"
 
 
 def _normalize_semantic_query(text: str) -> str:
@@ -77,7 +80,7 @@ def build_retrieval_query(user_text: str, recent_dialogue: list[dict] | None = N
                     if m.get("role") == "user" and isinstance(m.get("content"), str)][-2:]
     context = "\n".join(user_context) if user_context else summary[:800]
     if context:
-        lexical = user_text[:3000] + "\n當前對話情境：\n" + context
+        lexical = user_text[:3000] + "\n" + context
         semantic_context = "\n".join(_normalize_semantic_query(item) for item in user_context)
         if not semantic_context and summary:
             semantic_context = _normalize_semantic_query(summary[:800])
@@ -94,7 +97,8 @@ class MemoryRetriever:
     async def retrieve(self, user_text: str, event_id: UUID | None = None,
                        recent_dialogue: list[dict] | None = None, summary: str = "") -> tuple[dict, str]:
         started = time.monotonic()
-        mode = "history" if _HISTORY.search(user_text) else "future" if _FUTURE.search(user_text) else "current"
+        # Chat 搜尋所有仍可保留的版本；行動時間不等於記憶有效時間。
+        mode = "chat"
         query = build_retrieval_query(user_text, recent_dialogue, summary)
         errors = []
         try:
@@ -108,21 +112,26 @@ class MemoryRetriever:
             print(f"[Memory] embedding query fallback: {type(exc).__name__}")
             query_embedding = None
         try:
-            rows = await self.repository.related_items(query.lexical_text, query_embedding, limit=20, mode=mode)
+            rows = await self.repository.related_items(query.lexical_text, query_embedding,
+                                                       limit=CHAT_RETRIEVAL_LIMIT, mode=mode)
         except Exception as exc:
             print(f"[Memory] retrieval fallback: {type(exc).__name__}")
             trace("retrieval", {"query": query.lexical_text, "semantic_query": query.semantic_text,
-                "user_query": user_text, "mode": mode, "limit": 20,
-                "min_similarity": MIN_RETRIEVAL_SIMILARITY, "candidates": [], "projections": [],
+                "user_query": user_text, "mode": mode, "limit": CHAT_RETRIEVAL_LIMIT,
+                "min_similarity": CHAT_RETRIEVAL_MIN_SIMILARITY, "candidates": [], "projections": [],
                 "errors": [*errors, {"stage": "repository", "error": type(exc).__name__}],
                 "duration_sec": round(time.monotonic() - started, 4)}, event_id)
             return {}, ""
         profile: dict = {}
         injected = []
         projections = []
+        now = datetime.now(timezone.utc)
         for row in rows:
             if row["memory_type"] != "profile" or row["status"] != "active" or row.get("has_conflict") or row.get("pending_change"):
                 continue
+            if ((row.get("valid_from") is not None and row["valid_from"] > now)
+                    or (row.get("valid_to") is not None and row["valid_to"] <= now)):
+                continue  # 歷史或未來 profile 只能帶時間投影，不能成為目前個人資料。
             key = row.get("subject_key")
             text = row.get("canonical_text")
             if not isinstance(key, str) or not key.startswith("profile.") or not isinstance(text, str):
@@ -140,11 +149,11 @@ class MemoryRetriever:
             projections.append({"id": str(row["id"]), "destination": "profile", "field": field,
                                 "text": text[:300]})
         selected = []
-        remaining = 800
+        remaining = MEMORY_CHAR_BUDGET
         for row in rows:
             if row in injected:
                 continue
-            if len(selected) >= 8 or remaining <= 0:
+            if len(selected) >= CHAT_RETRIEVAL_LIMIT or remaining <= 0:
                 break
             text = _format_memory_projection(row, mode)
             separator = 1 if selected else 0
@@ -155,8 +164,9 @@ class MemoryRetriever:
             injected.append(row)
             projections.append({"id": str(row["id"]), "destination": "memory", "text": text})
         trace("retrieval", {"query": query.lexical_text, "semantic_query": query.semantic_text,
-            "user_query": user_text, "mode": mode, "limit": 20,
-            "min_similarity": MIN_RETRIEVAL_SIMILARITY, "memory_limit": 8, "memory_char_budget": 800,
+            "user_query": user_text, "mode": mode, "limit": CHAT_RETRIEVAL_LIMIT,
+            "min_similarity": CHAT_RETRIEVAL_MIN_SIMILARITY, "memory_limit": CHAT_RETRIEVAL_LIMIT,
+            "memory_char_budget": MEMORY_CHAR_BUDGET,
             "profile_char_limit": 300, "embedding_available": query_embedding is not None,
             "candidates": [{"rank": index + 1,
                 **{key: row.get(key) for key in ("id", "group_id", "canonical_text", "memory_type",

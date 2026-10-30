@@ -8,7 +8,7 @@ from core.config import FALLBACK_MODEL, CHAT_PROVIDER, CHAT_API_KEY, CHAT_BASE_U
 
 # Chat 使用指定的 OpenAI 相容端點；長期記憶由 MemoryLLM 經 MemorySettings 自行管理。
 _role_clients = {
-    "chat": AsyncOpenAI(base_url=CHAT_BASE_URL, api_key=CHAT_API_KEY),
+    "chat": AsyncOpenAI(base_url=CHAT_BASE_URL, api_key=CHAT_API_KEY or "missing-api-key"),
 }
 
 

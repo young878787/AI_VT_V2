@@ -23,11 +23,13 @@ print(f"[ENV] Loaded from: {ENV_PATH}")
 # AI 路線設定（從 .env 讀取）
 # ============================================================
 def role_model_config(role: str) -> tuple[str, str, str, str]:
-    """各路線直接使用自己的 key、URL、model，缺少任一項即報錯。"""
+    """各路線直接使用自己的 key、URL、model；缺 key 只警告，缺 URL／model 即報錯。"""
     api_key = (os.getenv(f"{role}_AI_API_KEY") or "").strip()
     base_url = (os.getenv(f"{role}_AI_BASE_URL") or "").strip()
     model = (os.getenv(f"{role}_AI_MODEL") or "").strip()
-    for name, value in (("API_KEY", api_key), ("BASE_URL", base_url), ("MODEL", model)):
+    if not api_key:
+        print(f"[WARN] {role}_AI_API_KEY 未設定，呼叫該路線時將失敗")
+    for name, value in (("BASE_URL", base_url), ("MODEL", model)):
         if not value:
             raise RuntimeError(f"{role}_AI_{name} 未設定，請檢查 .env 檔案")
     parsed_url = urlparse(base_url)
@@ -86,13 +88,15 @@ CHAT_SESSION_MAX_MESSAGES: int = max(2, int(os.getenv("CHAT_SESSION_MAX_MESSAGES
 OPENROUTER_SYSTEMONE_URL: str = "https://openrouter.ai/api/v1/systemone"
 
 JEV_AI_API_KEY: str = (os.getenv("JEV_AI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "").strip()
-JEV_AI_BASE_URL: str = (os.getenv("JEV_AI_BASE_URL") or OPENROUTER_SYSTEMONE_URL).strip()
+JEV_AI_BASE_URL: str = (os.getenv("JEV_AI_BASE_URL") or OPENROUTER_SYSTEMONE_URL).strip().rstrip("/")
+# 本機 Kev 等 TypeSafe 相容服務只填到 /v1 時補上 /systemone
+if JEV_AI_BASE_URL.endswith("/v1"):
+    JEV_AI_BASE_URL += "/systemone"
 JEV_AI_MODEL: str = (os.getenv("JEV_AI_MODEL") or "jev-latest").strip() or "jev-latest"
 JEV_TIMEOUT_SEC: float = float(os.getenv("JEV_TIMEOUT_SEC", "2.0"))
-if not JEV_AI_API_KEY.strip():
-    raise RuntimeError(
-        "JEV_AI_API_KEY（或 OPENROUTER_API_KEY）未設定，JEV Emotion / Action 需要 OpenRouter System One"
-    )
+# 缺 key 只警告不擋啟動；本機 Kev 未設 KEV_API_KEY 時為開放服務，不需警告
+if not JEV_AI_API_KEY.strip() and "openrouter.ai" in JEV_AI_BASE_URL:
+    print("[WARN] JEV_AI_API_KEY（或 OPENROUTER_API_KEY）未設定，JEV Emotion / Action 呼叫將失敗")
 
 print(f"[AI Route] JEV Model: {JEV_AI_MODEL} | URL: {JEV_AI_BASE_URL}")
 print(f"[AI Route] CHAT({CHAT_PROVIDER.upper()}) Model: {CHAT_MODEL_NAME} | URL: {CHAT_BASE_URL}")

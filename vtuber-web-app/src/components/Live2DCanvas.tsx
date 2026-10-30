@@ -22,8 +22,9 @@ export const Live2DCanvas = () => {
     modelLoaded,
     modelLoading,
     modelError,
-    isAiTyping,
     isSpeaking,
+    ambientPlan,
+    autoPlayEnabled,
     modelScale,
     setModelScale,
   } = useAppStore();
@@ -154,9 +155,14 @@ export const Live2DCanvas = () => {
 
   useEffect(() => {
     const model = delegateRef.current?.getActiveModel();
-    model?.setThinking(isAiTyping && !isSpeaking);
     model?.setSpeaking(isSpeaking);
-  }, [modelLoaded, isAiTyping, isSpeaking]);
+    model?.setAutoEffectsEnabled(autoPlayEnabled);
+    if (ambientPlan) {
+      const currentTargets = { ...ambientPlan };
+      delete currentTargets.hop;
+      model?.applyAmbientPlan(currentTargets);
+    }
+  }, [modelLoaded, isSpeaking, autoPlayEnabled, ambientPlan]);
 
   // 處理滑鼠移動（視線追蹤和拖移）
   useEffect(() => {

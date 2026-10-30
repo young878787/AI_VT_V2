@@ -1,0 +1,468 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "case_id": "ch_001",
+      "input": "今天寫程式有點累，陪我聊一下好嗎？",
+      "phase": "conversation",
+      "session": "ch_001",
+      "depends_on": [],
+      "context": {
+        "scenario": "ordinary_chat",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "承接寫程式疲累並自然陪聊"
+        ],
+        "forbidden_claims": [
+          "捏造使用者先前經歷"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": []
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "ch_002",
+      "input": "那個快做好了，接下來先檢查什麼？",
+      "phase": "conversation",
+      "session": "ch_002",
+      "depends_on": [],
+      "context": {
+        "scenario": "reference_live2d",
+        "history": [
+          {
+            "role": "user",
+            "content": "我正在做 Live2D 模型，現在快完成了。"
+          },
+          {
+            "role": "assistant",
+            "content": "快到收尾階段了，辛苦了。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "那個指 Live2D 模型",
+          "建議符合接近完成的檢查階段"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "history"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_001",
+        "random_021"
+      ]
+    },
+    {
+      "case_id": "ch_003",
+      "input": "那部分還在抖，你知道我說哪裡、原本想先修什麼嗎？",
+      "phase": "conversation",
+      "session": "ch_003",
+      "depends_on": [],
+      "context": {
+        "scenario": "hair_damping",
+        "history": [
+          {
+            "role": "user",
+            "content": "角色的頭髮物理還是會抖，下一步想先修阻尼。"
+          },
+          {
+            "role": "assistant",
+            "content": "那就先檢查頭髮物理的阻尼設定。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "頭髮物理仍會抖",
+          "原本想先修阻尼"
+        ],
+        "forbidden_claims": [
+          "阻尼已修好",
+          "頭髮問題已解決"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "history"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_002",
+        "case_003"
+      ]
+    },
+    {
+      "case_id": "ch_004",
+      "input": "我更正後現在用哪張顯示卡？",
+      "phase": "conversation",
+      "session": "ch_004",
+      "depends_on": [],
+      "context": {
+        "scenario": "gpu_correction",
+        "history": [
+          {
+            "role": "user",
+            "content": "我用 RTX 3060。"
+          },
+          {
+            "role": "assistant",
+            "content": "知道了。"
+          },
+          {
+            "role": "user",
+            "content": "我剛才說錯了，現在實際用的是 RTX 5060 Ti，不是 RTX 3060。"
+          },
+          {
+            "role": "assistant",
+            "content": "以你更正的 RTX 5060 Ti 為準。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "現在使用 RTX 5060 Ti"
+        ],
+        "forbidden_claims": [
+          "目前使用 RTX 3060"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "history"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_005"
+      ]
+    },
+    {
+      "case_id": "ch_005",
+      "input": "回到剛剛那個模型，我是在調哪個部分？",
+      "phase": "conversation",
+      "session": "ch_005",
+      "depends_on": [],
+      "context": {
+        "scenario": "topic_return",
+        "history": [
+          {
+            "role": "user",
+            "content": "我現在在調 Live2D 模型的眼睛參數。"
+          },
+          {
+            "role": "assistant",
+            "content": "可以先看眨眼與眼睛開合。"
+          },
+          {
+            "role": "user",
+            "content": "先休息一下，中午吃了飯，也給你看過測試桌面圖。"
+          },
+          {
+            "role": "assistant",
+            "content": "先吃飯休息，再回來調模型。"
+          }
+        ],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "調整 Live2D 模型的眼睛參數"
+        ],
+        "forbidden_claims": [
+          "正在調午餐",
+          "以桌面細節代替模型進度"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "history"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_004"
+      ]
+    },
+    {
+      "case_id": "ch_006",
+      "input": "一開始模型遇到什麼問題，下一步是什麼？",
+      "phase": "conversation",
+      "session": "ch_006",
+      "depends_on": [],
+      "context": {
+        "scenario": "summary_adoption",
+        "history": [
+          {
+            "role": "user",
+            "content": "剛才先去喝水了。"
+          },
+          {
+            "role": "assistant",
+            "content": "休息一下也好。"
+          }
+        ],
+        "summary": "使用者在調 Live2D 模型，頭髮物理仍會抖；下一步打算先修阻尼，尚未宣稱修好。",
+        "compress_before": false,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "一開始頭髮物理會抖",
+          "下一步先修阻尼"
+        ],
+        "forbidden_claims": [
+          "問題已解決"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "summary"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_003"
+      ]
+    },
+    {
+      "case_id": "ch_007",
+      "input": "整理後，我現在還沒完成的是哪個部分？",
+      "phase": "conversation",
+      "session": "ch_007",
+      "depends_on": [],
+      "context": {
+        "scenario": "summary_compression",
+        "history": [
+          {
+            "role": "user",
+            "content": "補充更正：阻尼已經調好了，頭髮不再抖，現在只剩眼睛參數還沒完成。"
+          },
+          {
+            "role": "assistant",
+            "content": "了解，剩下眼睛參數。"
+          },
+          {
+            "role": "user",
+            "content": "我先把工作桌整理一下，然後繼續。"
+          },
+          {
+            "role": "assistant",
+            "content": "好的，整理好再接著做。"
+          },
+          {
+            "role": "user",
+            "content": "我先調整一下椅子的位置。"
+          },
+          {
+            "role": "assistant",
+            "content": "坐得舒服一點也好。"
+          },
+          {
+            "role": "user",
+            "content": "剛才把水杯放到旁邊了。"
+          },
+          {
+            "role": "assistant",
+            "content": "留一點桌面空間。"
+          },
+          {
+            "role": "user",
+            "content": "我想稍微伸展一下。"
+          },
+          {
+            "role": "assistant",
+            "content": "休息一下，再繼續也可以。"
+          },
+          {
+            "role": "user",
+            "content": "好，現在回來了。"
+          },
+          {
+            "role": "assistant",
+            "content": "歡迎回來。"
+          }
+        ],
+        "summary": "使用者在做 Live2D 模型，頭髮物理仍會抖，下一步想修阻尼。",
+        "compress_before": true,
+        "memory_ids": [],
+        "snapshot": {
+          "status": "ok",
+          "data": {
+            "foreground": {
+              "status": "ok",
+              "app": "code.exe"
+            },
+            "open_apps": {
+              "status": "ok",
+              "apps": [
+                "code.exe"
+              ],
+              "truncated": false
+            }
+          }
+        }
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "尚未完成的是眼睛參數",
+          "阻尼已調好"
+        ],
+        "forbidden_claims": [
+          "阻尼仍未修好",
+          "頭髮仍會抖"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "summary"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": [
+        "case_003",
+        "case_005"
+      ]
+    }
+  ]
+}

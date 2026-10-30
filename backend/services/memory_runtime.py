@@ -3,9 +3,12 @@
 import asyncio
 from uuid import UUID
 
+from core.utils import env_flag
 from domain.memory_routing import route_memory
 from domain.memory_source import bind_source_generation
-from domain.memory_settings import load_memory_settings
+from domain.memory_settings import load_memory_database_settings, load_memory_settings
+from infrastructure.chat_session_repository import ChatSessionRepository
+from infrastructure.in_memory_chat_session_repository import InMemoryChatSessionRepository
 from infrastructure.memory_database import check_schema, make_pool
 from infrastructure.memory_embedding_client import MemoryEmbeddingClient
 from infrastructure.memory_repository import MemoryRepository
@@ -16,7 +19,12 @@ from services.memory_retriever import MemoryRetriever
 from services.memory_worker import MemoryWorker
 
 
+DATABASE_CONNECT_TIMEOUT_SEC = 5.0
+
+
 class MemoryRuntime:
+    long_term_enabled = True
+
     def __init__(self, pool, repository, embedding, llm, retriever, worker) -> None:
         self.pool = pool
         self.repository = repository
@@ -27,12 +35,12 @@ class MemoryRuntime:
         self._route_tasks: set[asyncio.Task] = set()
 
     @classmethod
-    async def create(cls) -> "MemoryRuntime":
+    async def create(cls, pool) -> "MemoryRuntime":
+        """在已驗證 schema 的 pool 上啟用長期記憶；失敗時 pool 仍由呼叫端持有。"""
         settings = load_memory_settings()
-        pool = await make_pool(settings.database_url)
+        embedding = MemoryEmbeddingClient(settings)
+        llm = None
         try:
-            await check_schema(pool, settings.scope)
-            embedding = MemoryEmbeddingClient(settings)
             repository = MemoryRepository(
                 pool, settings.scope, settings.embedding_model, settings.embedding_contract,
             )
@@ -47,7 +55,9 @@ class MemoryRuntime:
             worker = MemoryWorker(repository, embedding, llm, manager)
             return cls(pool, repository, embedding, llm, retriever, worker)
         except Exception:
-            await pool.close()
+            await embedding.client.close()
+            if llm is not None:
+                await llm.client.close()
             raise
 
     def start(self) -> None:
@@ -118,3 +128,53 @@ class MemoryRuntime:
             async with connection.transaction():
                 await self.repository.reset(connection=connection)
                 return await chat_repository.reset(session_id, connection=connection)
+
+
+class DisabledMemoryRuntime:
+    """長期記憶停用；Chat 只保留短期 session，pool 若存在仍由此關閉。"""
+
+    long_term_enabled = False
+    repository = None
+
+    def __init__(self, pool=None) -> None:
+        self.pool = pool
+
+    def start(self) -> None:
+        pass
+
+    async def close(self) -> None:
+        if self.pool is not None:
+            await self.pool.close()
+
+    async def reset(self) -> None:
+        pass
+
+    async def reset_chat_and_memory(self, chat_repository, session_id: str) -> dict[str, int]:
+        return await chat_repository.reset(session_id)
+
+
+async def open_memory_backend() -> tuple[MemoryRuntime | DisabledMemoryRuntime, object]:
+    """依可用程度分級啟動：完整記憶 → 僅 PostgreSQL session → 記憶體 session。"""
+    if not env_flag("MEMORY_DB_ENABLED", True):
+        print("[Memory] MEMORY_DB_ENABLED=false，長期記憶停用，Chat session 改存記憶體（重啟即清空）")
+        return DisabledMemoryRuntime(), InMemoryChatSessionRepository()
+    pool = None
+    try:
+        database_url, scope = load_memory_database_settings()
+        pool = await make_pool(database_url)
+        await pool.wait(timeout=DATABASE_CONNECT_TIMEOUT_SEC)
+        await check_schema(pool, scope)
+    except Exception as exc:
+        if pool is not None:
+            await pool.close()
+        print(f"[WARN] PostgreSQL 無法使用（{type(exc).__name__}: {exc}），"
+              "長期記憶停用，Chat session 改存記憶體（重啟即清空）")
+        return DisabledMemoryRuntime(), InMemoryChatSessionRepository()
+    chat_repository = ChatSessionRepository(pool, scope)
+    try:
+        runtime = await MemoryRuntime.create(pool)
+    except Exception as exc:
+        print(f"[WARN] 長期記憶初始化失敗（{type(exc).__name__}: {exc}），"
+              "長期記憶停用，Chat session 仍保存在 PostgreSQL")
+        return DisabledMemoryRuntime(pool), chat_repository
+    return runtime, chat_repository

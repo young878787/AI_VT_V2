@@ -10,38 +10,45 @@ import { CubismModelMatrix } from '@framework/math/cubismmodelmatrix';
 import { CubismDefaultParameterId } from '@framework/cubismdefaultparameterid';
 import type { CubismIdHandle } from '@framework/id/cubismid';
 import { CubismFramework } from '@framework/live2dcubismframework';
-import { CubismEyeBlink } from '@framework/effect/cubismeyeblink';
-import { CubismBreath } from '@framework/effect/cubismbreath';
-import type { BreathParameterData } from '@framework/effect/cubismbreath';
 import type { CubismMotionQueueEntryHandle } from '@framework/motion/cubismmotionqueuemanager';
 import { InvalidMotionQueueEntryHandleValue } from '@framework/motion/cubismmotionqueuemanager';
 import { ACubismMotion } from '@framework/motion/acubismmotion';
 import { CubismMotion } from '@framework/motion/cubismmotion';
 import { LAppPal } from './LAppPal';
 import type { ModelConfig } from './LAppDefine';
-import { ResourcePath, Priority } from './LAppDefine';
+import { ResourcePath } from './LAppDefine';
 import { LAppTextureManager, TextureInfo } from './LAppTextureManager';
 import { LAppDelegate } from './LAppDelegate';
 import type {
   BodyMotionProfile,
   ExpressionBasePose,
   ExpressionEyeMotionPlan,
-  ExpressionIdleAmbientState,
   ExpressionIdlePlan,
   ExpressionMotionPlan,
 } from '../types/expressionPlan';
 import {
-  clampExpressionOverlayValue,
-  randomBetween,
-  shuffleIndices,
   type ActiveExpressionEvent,
   type BasePoseParams,
-  type ExpressionOverlayKey,
   type ExpressionParamPatch,
 } from './expression/expressionParams';
 import { applyActiveExpressionEvents } from './expression/expressionEventRuntime';
 import { createNeutralTargetParams } from './expression/expressionState';
 import { resolveHalfBodyFraming } from './modelFraming';
+import type { AmbientPlan } from '../types/ambientPlan';
+import { AmbientMotion, clampRootY } from './runtime/AmbientMotion';
+import { ParameterMixer } from './runtime/ParameterMixer';
+import { BlinkRuntime } from './runtime/BlinkRuntime';
+import { FaceIdleRuntime } from './runtime/FaceIdleRuntime';
+import type { FaceIdleSample } from './runtime/FaceIdleRuntime';
+import { FaceMicroRuntime } from './runtime/FaceMicroRuntime';
+import type { FaceMicroSample } from './runtime/FaceMicroRuntime';
+
+const NEUTRAL_FACE_IDLE: FaceIdleSample = {
+  eyeL: 1, eyeR: 1, browLForm: 0, browRForm: 0, browLAngle: 0, browRAngle: 0, winking: false, kind: 'still',
+};
+const NEUTRAL_FACE_MICRO: FaceMicroSample = { mouthForm: 0, mouthPout: 0, mouthAngle: 0, eyeBallForm: 0 };
+// 嘴型基準或張嘴偏移超過這個值，表示說話／表情正在使用嘴，idle 嘴型微動讓出。
+const MOUTH_MICRO_BASE_LIMIT = 0.05;
 
 const DEFAULT_BODY_MOTION_PROFILE: BodyMotionProfile = {
   style: 'calm_sway',
@@ -51,17 +58,6 @@ const DEFAULT_BODY_MOTION_PROFILE: BodyMotionProfile = {
   twistScale: 1,
   breathScale: 1,
   headScale: 1,
-};
-
-const IDLE_BODY_MOTION_PROFILES: Record<ExpressionIdlePlan['name'], BodyMotionProfile> = {
-  happy_idle:       { style: 'calm_sway',      speed: 0.8,  swayScale: 0.35, bobScale: 0.25, twistScale: 0.2,  breathScale: 0.5,  headScale: 1 },
-  angry_glare_idle: { style: 'locked_tense',    speed: 0.7,  swayScale: 0.3,  bobScale: 0.2,  twistScale: 0.3,  breathScale: 0.5,  headScale: 1 },
-  crying_idle:      { style: 'small_sad_bob',   speed: 0.6,  swayScale: 0.25, bobScale: 0.3,  twistScale: 0.15, breathScale: 0.4,  headScale: 1 },
-  shy_idle:         { style: 'shy_side_sway',   speed: 0.7,  swayScale: 0.35, bobScale: 0.2,  twistScale: 0.25, breathScale: 0.5,  headScale: 1 },
-  gloomy_idle:      { style: 'heavy_slow_sink', speed: 0.45, swayScale: 0.2,  bobScale: 0.35, twistScale: 0.15, breathScale: 0.35, headScale: 1 },
-  neutral_idle:     { style: 'calm_sway',       speed: 0.8,  swayScale: 0.3,  bobScale: 0.2,  twistScale: 0.15, breathScale: 0.5,  headScale: 1 },
-  surprised_idle:   { style: 'calm_sway',       speed: 0.85, swayScale: 0.35, bobScale: 0.25, twistScale: 0.2,  breathScale: 0.55, headScale: 1 },
-  conflicted_idle:  { style: 'uneasy_shift',    speed: 0.75, swayScale: 0.35, bobScale: 0.25, twistScale: 0.3,  breathScale: 0.5,  headScale: 1 },
 };
 
 const BODY_MOTION_NATIVE_SCALE = {
@@ -130,6 +126,9 @@ export class LAppModel extends CubismUserModel {
 
   // 臉部表情擴充參數 ID (AI 控制 - 嘴形、眉毛)
   private _idParamMouthForm: CubismIdHandle;
+  private _idParamMouthPout: CubismIdHandle;   // 尖嘴 `< >`，搭配 MouthAngle（idle 嘴型微動專用）
+  private _idParamMouthAngle: CubismIdHandle;
+  private _idParamEyeBallForm: CubismIdHandle; // 瞳孔縮放（idle 微動專用）
   private _idParamBrowLY: CubismIdHandle;
   private _idParamBrowRY: CubismIdHandle;
   private _idParamBrowLAngle: CubismIdHandle;
@@ -146,8 +145,8 @@ export class LAppModel extends CubismUserModel {
   private _lipSyncIds: CubismIdHandle[] = [];
 
   // 控制開關
-  private _autoEffectsEnabled: boolean = false;  // 自動效果（眨眼、呼吸）
-  private _eyeTrackingEnabled: boolean = true;  // 視線追蹤
+  private _autoEffectsEnabled: boolean = true;  // 自動效果（眨眼、呼吸）
+  private _eyeTrackingEnabled: boolean = false;  // 視線追蹤
   private _physicsEnabled: boolean = true;      // 物理效果
 
   // Draw debug 旗標（私有屬性，切換模型時會自動重置）
@@ -179,7 +178,6 @@ export class LAppModel extends CubismUserModel {
   private _aiMouthOpenBias = 0;
   private _currentMouthOpenBias = 0;
   private _speaking = false;
-  private _thinking = false;
   private _aiBrowLY: number = 0.0;
   private _aiBrowRY: number = 0.0;
   private _aiBrowLAngle: number = 0.0;
@@ -222,15 +220,30 @@ export class LAppModel extends CubismUserModel {
   // key = paramId (string), value = { value, lastSetAt (performance.now ms) }
   private _nativeParamOverrides: Map<string, { value: number; lastSetAt: number }> = new Map();
   private _activeExpressionEvents: ActiveExpressionEvent[] = [];
-  private _activeIdlePlan: ExpressionIdlePlan | null = null;
-  private _idlePlanActivateAtMs: number = 0;
-  private _idleLoopNextAtMs: number = 0;
-  private _ambientIdleStartAtMs: number = 0;
-  private _ambientIdleNextSwitchAtMs: number = 0;
-  private _ambientIdleStateOrder: number[] = [];
-  private _ambientIdleStateOrderIndex: number = 0;
-  private _ambientIdleActiveState: ExpressionIdleAmbientState | null = null;
-  private _ambientIdleActivePose: BasePoseParams | null = null;
+  private readonly _blinkRuntime = new BlinkRuntime();
+  private readonly _faceIdleRuntime = new FaceIdleRuntime();
+  private _lastFaceIdleSample: FaceIdleSample = { ...NEUTRAL_FACE_IDLE };
+  private readonly _faceMicroRuntime = new FaceMicroRuntime();
+  private _lastFaceMicroSample: FaceMicroSample = { ...NEUTRAL_FACE_MICRO };
+  private _faceListening = false;
+  // 漂移與微掃視的 seed 每次載入都不同；runtime 本身仍是確定性的。
+  private readonly _ambientMotion = new AmbientMotion((Math.random() * 0x100000000) >>> 0);
+  private _ambientInitialized = false;
+  private _ambientBase: BasePoseParams = createNeutralTargetParams();
+  private _parameterMixer: ParameterMixer | null = null;
+  private _rootOffset = 0;
+  private _requestedRoot = 0;
+  private _requestedRootPeak = 0;
+  private _rootScale = 1;
+  private _rootScaleVelocity = 0;
+  private _breathOutput = 0;
+  private _nativeMotionParameters = new Set<string>();
+  private readonly _motionParameters = new Map<ACubismMotion, Set<string>>();
+  private _expressionActionActive = false;
+  private _expressionChannels = new Set<string>();
+  private _directBehaviorUntilMs = 0;
+  private _manualUntilMs = 0;
+  private _lastAmbientSample: ReturnType<AmbientMotion['update']> | null = null;
   private _bodyMotionPhase: number = 0;
   private _aiBodyMotionProfile: BodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
   private _activeBodyMotionProfile: BodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
@@ -270,6 +283,9 @@ export class LAppModel extends CubismUserModel {
 
     // 臉部表情擴充參數 ID（嘴形 + 眉毛）
     this._idParamMouthForm = idManager.getId('ParamMouthForm');
+    this._idParamMouthPout = idManager.getId('ParamMouthPout');
+    this._idParamMouthAngle = idManager.getId('ParamMouthAngle');
+    this._idParamEyeBallForm = idManager.getId('ParamEyeBallForm');
     this._idParamBrowLY = idManager.getId('ParamBrowLY');
     this._idParamBrowRY = idManager.getId('ParamBrowRY');
     this._idParamBrowLAngle = idManager.getId('ParamBrowLAngle');
@@ -434,7 +450,7 @@ export class LAppModel extends CubismUserModel {
       const texturePath = `${this._modelHomeDir}${textureFileName}`;
       console.log(`[Live2D] 載入紋理 ${modelTextureNumber}: ${texturePath}`);
 
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
         this._textureManager.createTextureFromPngFile(
           texturePath,
           usePremultiply,
@@ -446,10 +462,12 @@ export class LAppModel extends CubismUserModel {
                 textureInfo.id
               );
             } else {
-              console.warn(`[Live2D] ✗ 紋理 ${modelTextureNumber} 綁定失敗`);
+              reject(new Error(`紋理 ${modelTextureNumber} 綁定失敗`));
+              return;
             }
             resolve();
-          }
+          },
+          reject,
         );
       });
 
@@ -463,11 +481,6 @@ export class LAppModel extends CubismUserModel {
    */
   private setupEffects(): void {
     if (!this._modelSetting) return;
-
-    // 眨眼
-    if (this._modelSetting.getEyeBlinkParameterCount() > 0) {
-      this._eyeBlink = CubismEyeBlink.create(this._modelSetting);
-    }
 
     // 設置眨眼參數 ID 陣列
     const eyeBlinkIdCount = this._modelSetting.getEyeBlinkParameterCount();
@@ -485,52 +498,15 @@ export class LAppModel extends CubismUserModel {
     }
     LAppPal.log(`嘴型同步參數數量: ${lipSyncIdCount}`);
 
-    // 呼吸
-    this._breath = CubismBreath.create();
-    const breathParameters: BreathParameterData[] = [
-      {
-        parameterId: this._idParamAngleX,
-        offset: 0.0,
-        peak: 15.0,
-        cycle: 6.5345,
-        weight: 0.5
-      },
-      {
-        parameterId: this._idParamAngleY,
-        offset: 0.0,
-        peak: 8.0,
-        cycle: 3.5345,
-        weight: 0.5
-      },
-      {
-        parameterId: this._idParamAngleZ,
-        offset: 0.0,
-        peak: 10.0,
-        cycle: 5.5345,
-        weight: 0.5
-      },
-      {
-        parameterId: this._idParamBodyAngleX,
-        offset: 0.0,
-        peak: 4.0,
-        cycle: 15.5345,
-        weight: 0.5
-      },
-      {
-        parameterId: this._idParamBreath,
-        offset: 0.5,
-        peak: 0.5,
-        cycle: 4.8,
-        weight: 0.35
-      }
-    ];
-    this._breath.setParameters(breathParameters);
+    // 快取真實模型通道，統一合成自主與明確動作。
+    this._parameterMixer = new ParameterMixer(this._model);
   }
 
   /**
    * 設置自動效果啟用狀態（眼睛眨眼、呼吸）
    */
   public setAutoEffectsEnabled(enabled: boolean): void {
+    if (enabled !== this._autoEffectsEnabled) this.resetFaceIdle();
     this._autoEffectsEnabled = enabled;
   }
 
@@ -562,9 +538,9 @@ export class LAppModel extends CubismUserModel {
    * @param pauseAfterSec 眨眼完成後暫停自動眨眼的時間（秒），0=不暫停
    */
   public forceBlink(pauseAfterSec: number = 0): void {
-    if (this._eyeBlink) {
-      this._eyeBlink.forceBlink(pauseAfterSec);
-    }
+    this.cancelIdleEyes(performance.now());
+    this.sampleBlink(0, performance.now());
+    this._blinkRuntime.forceBlink(pauseAfterSec);
   }
 
   /**
@@ -572,18 +548,18 @@ export class LAppModel extends CubismUserModel {
    * @param durationSec 暫停時間（秒），0=無期限（需手動 resume）
    */
   public pauseAutoBlink(durationSec: number = 0): void {
-    if (this._eyeBlink) {
-      this._eyeBlink.pause(durationSec);
-    }
+    this.cancelIdleEyes(performance.now());
+    this.sampleBlink(0, performance.now());
+    this._blinkRuntime.pause(durationSec);
   }
 
   /**
    * 恢復自動眨眼
    */
   public resumeAutoBlink(): void {
-    if (this._eyeBlink) {
-      this._eyeBlink.resume();
-    }
+    this.cancelIdleEyes(performance.now());
+    this.sampleBlink(0, performance.now());
+    this._blinkRuntime.resume();
   }
 
   /**
@@ -592,23 +568,16 @@ export class LAppModel extends CubismUserModel {
    * @param maxSec 最大間隔（秒）
    */
   public setBlinkInterval(minSec: number, maxSec: number): void {
-    if (this._eyeBlink) {
-      this._eyeBlink.setBlinkingIntervalRange(minSec, maxSec);
-    }
+    this.sampleBlink(0, performance.now());
+    this._blinkRuntime.setBlinkingIntervalRange(minSec, maxSec);
   }
 
   /**
    * 取得眨眼狀態（供 UI 顯示）
    */
   public getBlinkState(): { paused: boolean; intervalMin: number; intervalMax: number } {
-    if (this._eyeBlink) {
-      return {
-        paused: this._eyeBlink.isPaused(),
-        intervalMin: this._eyeBlink['_blinkingIntervalMin'],
-        intervalMax: this._eyeBlink['_blinkingIntervalMax'],
-      };
-    }
-    return { paused: false, intervalMin: 1.0, intervalMax: 4.0 };
+    const interval = this._blinkRuntime.getIntervalRange();
+    return { paused: this._blinkRuntime.isPaused(), intervalMin: interval.min, intervalMax: interval.max };
   }
 
   /**
@@ -618,6 +587,10 @@ export class LAppModel extends CubismUserModel {
     this._modelPositionX = x;
     this._modelPositionY = y;
     this.updateModelMatrix();
+  }
+
+  public getModelPosition(): { x: number; y: number } {
+    return { x: this._modelPositionX, y: this._modelPositionY };
   }
 
   /**
@@ -651,7 +624,7 @@ export class LAppModel extends CubismUserModel {
     const framing = resolveHalfBodyFraming(this._canvasWidth, this._canvasHeight, this._modelScale);
     this._modelMatrix.loadIdentity();
     this._modelMatrix.setHeight(2.0);
-    this._modelMatrix.translate(this._modelPositionX, framing.y + this._modelPositionY);
+    this._modelMatrix.translate(this._modelPositionX, framing.y + this._modelPositionY + this._rootOffset);
     this._modelMatrix.scaleRelative(framing.scale, framing.scale);
   }
 
@@ -783,7 +756,16 @@ export class LAppModel extends CubismUserModel {
 
             // 關鍵：設置眨眼和嘴型同步的效果 ID
             motion.setEffectIds(this._eyeBlinkIds, this._lipSyncIds);
-
+            const definition = JSON.parse(new TextDecoder().decode(arrayBuffer)) as {
+              Curves?: Array<{ Target: string; Id: string }> };
+            const parameters = new Set<string>();
+            for (const curve of definition.Curves ?? []) {
+              if (curve.Target === 'Parameter') parameters.add(curve.Id);
+              if (curve.Target === 'Model' && curve.Id === 'EyeBlink') {
+                this._eyeBlinkIds.forEach(id => parameters.add(id.getString()));
+              }
+            }
+            this._motionParameters.set(motion, parameters);
             motions.push(motion);
             LAppPal.log(`  ✓ ${motionFileName}`);
           }
@@ -826,10 +808,6 @@ export class LAppModel extends CubismUserModel {
 
   public setSpeaking(speaking: boolean): void {
     this._speaking = speaking;
-  }
-
-  public setThinking(thinking: boolean): void {
-    this._thinking = thinking;
   }
 
   /**
@@ -919,19 +897,23 @@ export class LAppModel extends CubismUserModel {
     this._aiEyeBallX = clampEyeBall(eyeBallX);
     this._aiEyeBallY = clampEyeBall(eyeBallY);
     this._aiBehaviorTimer = durationSec;
+    this._expressionActionActive = durationSec > 0;
+    this._directBehaviorUntilMs = performance.now() + Math.max(0, durationSec) * 1000;
+    this._expressionChannels.clear();
+    if (headIntensity > 0) ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ'].forEach(id => this._expressionChannels.add(id));
+    if (Math.abs(bodyAngleX) > 0 || physicsImpulse > 0) this._expressionChannels.add('ParamBodyAngleX');
+    if (Math.abs(bodyAngleY) > 0 || physicsImpulse > 0) this._expressionChannels.add('ParamBodyAngleY');
+    if (Math.abs(bodyAngleZ) > 0 || physicsImpulse > 0) this._expressionChannels.add('ParamBodyAngleZ');
+    if (Math.abs(breathLevel - 0.35) > 0.001) this._expressionChannels.add('ParamBreath');
+    if (Math.abs(eyeBallX) > 0 || Math.abs(eyeBallY) > 0) {
+      this._expressionChannels.add('ParamEyeBallX');
+      this._expressionChannels.add('ParamEyeBallY');
+    }
   }
 
   public applyBasePose(basePose: ExpressionBasePose): void {
     this._activeExpressionEvents = [];
-    this._activeIdlePlan = null;
-    this._idlePlanActivateAtMs = 0;
-    this._idleLoopNextAtMs = 0;
-    this._ambientIdleStartAtMs = 0;
-    this._ambientIdleNextSwitchAtMs = 0;
-    this._ambientIdleStateOrder = [];
-    this._ambientIdleStateOrderIndex = 0;
-    this._ambientIdleActiveState = null;
-    this._ambientIdleActivePose = null;
+    this._expressionActionActive = true;
     this._activeEyeMotionPlan = null;
     this._eyeMotionPlanStartedAtMs = 0;
     this._aiBodyMotionProfile = basePose.bodyMotionProfile ?? DEFAULT_BODY_MOTION_PROFILE;
@@ -962,14 +944,56 @@ export class LAppModel extends CubismUserModel {
       basePose.params.eyeBallY ?? 0,
     );
     this._aiMouthOpenBias = Math.max(0, Math.min(1, basePose.params.mouthOpenBias ?? 0));
+    this._directBehaviorUntilMs = 0;
   }
 
   public cancelExpressionAction(): void {
     this._activeExpressionEvents = [];
     this._activeMotionPlan = null;
     this._activeEyeMotionPlan = null;
-    this._activeIdlePlan = null;
-    this.setAiBehavior(0, 0, 1, 1, 0.2);
+    this._expressionActionActive = false;
+    this._expressionChannels.clear();
+    this._aiBehaviorTimer = 0;
+    this._aiHeadIntensity = 0;
+    this._directBehaviorUntilMs = 0;
+  }
+
+  public finishExpressionAction(): void {
+    this.cancelExpressionAction();
+  }
+
+  public setManualControl(durationMs: number): void {
+    this._manualUntilMs = performance.now() + durationMs;
+  }
+
+  public applyAmbientPlan(plan: AmbientPlan): void {
+    if (this._ambientMotion.apply(plan, performance.now())) {
+      this._ambientInitialized = true;
+      this._faceListening = plan.state === 'listening';
+    }
+  }
+
+  public disconnectAmbient(): void {
+    this._ambientMotion.disconnect(performance.now());
+    this._faceListening = false;
+    this.resetFaceIdle();
+  }
+
+  public resetAmbientEmotion(): void {
+    this.cancelExpressionAction();
+    this._ambientBase = createNeutralTargetParams();
+    this.resetFaceIdle();
+  }
+
+  public inheritAmbientBaseline(previous: LAppModel): void {
+    this._ambientInitialized = previous._ambientInitialized;
+    this._ambientBase = { ...previous._ambientBase };
+  }
+
+  public getAmbientDiagnostics() {
+    return { active: this._ambientInitialized, sample: this._lastAmbientSample,
+      rootOffset: this._rootOffset, action: this._expressionActionActive,
+      pointer: this._eyeTrackingEnabled, face: { ...this._lastFaceIdleSample } };
   }
 
   public applyMotionPlan(motionPlan?: ExpressionMotionPlan): void {
@@ -999,130 +1023,9 @@ export class LAppModel extends CubismUserModel {
   }
 
   public applyIdlePlan(idlePlan: ExpressionIdlePlan): void {
-    const nowMs = performance.now();
-    const enterAfterMs = Math.max(0, idlePlan.enterAfterMs);
-    const activateAtMs = nowMs + enterAfterMs;
-    const ambientEnterAfterMs = idlePlan.ambientEnterAfterMs;
-    const ambientStartDelayMs =
-      typeof ambientEnterAfterMs === 'number' && Number.isFinite(ambientEnterAfterMs)
-        ? Math.max(0, ambientEnterAfterMs)
-        : Number.POSITIVE_INFINITY;
-    this._activeIdlePlan = idlePlan;
-    this._idlePlanActivateAtMs = activateAtMs;
-    this._idleLoopNextAtMs = activateAtMs;
-    this._ambientIdleStartAtMs = Number.isFinite(ambientStartDelayMs)
-      ? nowMs + ambientStartDelayMs
-      : Number.POSITIVE_INFINITY;
-    this._ambientIdleNextSwitchAtMs = 0;
-    this._ambientIdleStateOrder = [];
-    this._ambientIdleStateOrderIndex = 0;
-    this._ambientIdleActiveState = null;
-    this._ambientIdleActivePose = null;
-
-    const ambientStates = idlePlan.ambientPlan?.states.map((state) => state.kind).join(',') ?? 'none';
-    const ambientStartSummary = Number.isFinite(ambientStartDelayMs) ? Math.round(ambientStartDelayMs) : 'disabled';
-    LAppPal.log(
-      `[ExpressionIdle] idlePlan=${idlePlan.name} enterAfterMs=${Math.round(enterAfterMs)} `
-      + `ambientEnterAfterMs=${ambientStartSummary} `
-      + `ambientSwitchIntervalMs=${idlePlan.ambientSwitchIntervalMs ?? 'default'} `
-      + `ambientStates=${ambientStates}`,
-    );
-  }
-
-  private buildAmbientStateParams(state: ExpressionIdleAmbientState): BasePoseParams {
-    const params: BasePoseParams = { ...state.params };
-    const mutableParams = params as Record<keyof BasePoseParams, number | boolean>;
-    const jitterMap: Partial<Record<keyof BasePoseParams, number>> = {
-      headIntensity: 0.015,
-      blushLevel: 0.05,
-      eyeLOpen: 0.05,
-      eyeROpen: 0.05,
-      mouthForm: 0.04,
-      browLY: 0.04,
-      browRY: 0.04,
-      browLAngle: 0.05,
-      browRAngle: 0.05,
-      browLForm: 0.04,
-      browRForm: 0.04,
-      eyeLSmile: 0.03,
-      eyeRSmile: 0.03,
-      browLX: 0.03,
-      browRX: 0.03,
-      eyeBallX: 0.08,
-      eyeBallY: 0.04,
-      bodyAngleX: 0.03,
-      bodyAngleY: 0.03,
-      bodyAngleZ: 0.03,
-      breathLevel: 0.05,
-      physicsImpulse: 0.03,
-    };
-
-    for (const [key, spread] of Object.entries(jitterMap) as Array<[keyof BasePoseParams, number]>) {
-      const currentValue = params[key];
-      if (typeof currentValue !== 'number') {
-        continue;
-      }
-      const jitteredValue = currentValue + randomBetween(-spread, spread);
-      mutableParams[key] = clampExpressionOverlayValue(key as ExpressionOverlayKey, jitteredValue);
-    }
-
-    return params;
-  }
-
-  private activateAmbientState(nowMs: number): void {
-    const ambientPlan = this._activeIdlePlan?.ambientPlan;
-    if (!ambientPlan?.states?.length) {
-      this._ambientIdleActiveState = null;
-      this._ambientIdleActivePose = null;
-      this._ambientIdleNextSwitchAtMs = 0;
-      return;
-    }
-
-    if (this._ambientIdleStateOrder.length !== ambientPlan.states.length) {
-      this._ambientIdleStateOrder = shuffleIndices(ambientPlan.states.length);
-      this._ambientIdleStateOrderIndex = 0;
-    } else if (this._ambientIdleStateOrderIndex >= this._ambientIdleStateOrder.length) {
-      this._ambientIdleStateOrderIndex = 0;
-    }
-
-    const stateIndex = this._ambientIdleStateOrder[this._ambientIdleStateOrderIndex];
-    this._ambientIdleActiveState = ambientPlan.states[stateIndex];
-    this._ambientIdleActivePose = this.buildAmbientStateParams(this._ambientIdleActiveState);
-    const switchIntervalMs = Math.max(1000, this._activeIdlePlan?.ambientSwitchIntervalMs ?? 7000);
-    this._ambientIdleNextSwitchAtMs = nowMs + switchIntervalMs;
-    this._activeExpressionEvents = [];
-    LAppPal.log(
-      `[ExpressionIdle] ambient enter state=${this._ambientIdleActiveState.kind} `
-      + `nextSwitchMs=${Math.round(switchIntervalMs)}`,
-    );
-  }
-
-  private advanceAmbientState(nowMs: number): void {
-    const ambientPlan = this._activeIdlePlan?.ambientPlan;
-    if (!ambientPlan?.states?.length) {
-      this._ambientIdleActiveState = null;
-      this._ambientIdleActivePose = null;
-      this._ambientIdleNextSwitchAtMs = 0;
-      return;
-    }
-
-    if (this._ambientIdleStateOrder.length !== ambientPlan.states.length) {
-      this._ambientIdleStateOrder = shuffleIndices(ambientPlan.states.length);
-      this._ambientIdleStateOrderIndex = 0;
-    } else {
-      this._ambientIdleStateOrderIndex = (this._ambientIdleStateOrderIndex + 1) % this._ambientIdleStateOrder.length;
-    }
-
-    const stateIndex = this._ambientIdleStateOrder[this._ambientIdleStateOrderIndex];
-    this._ambientIdleActiveState = ambientPlan.states[stateIndex];
-    this._ambientIdleActivePose = this.buildAmbientStateParams(this._ambientIdleActiveState);
-    const switchIntervalMs = Math.max(1000, this._activeIdlePlan?.ambientSwitchIntervalMs ?? 7000);
-    this._ambientIdleNextSwitchAtMs = nowMs + switchIntervalMs;
-    this._activeExpressionEvents = [];
-    LAppPal.log(
-      `[ExpressionIdle] ambient switch state=${this._ambientIdleActiveState.kind} `
-      + `nextSwitchMs=${Math.round(switchIntervalMs)}`,
-    );
+    // Python owns autonomous timing; retain the last emotion's settled pose.
+    this._ambientBase = { ...idlePlan.settlePose.params,
+      headIntensity: 0, physicsImpulse: 0, eyeBallX: 0, eyeBallY: 0, mouthOpenBias: 0 };
   }
 
   public enqueueMicroEvent(event: {
@@ -1273,6 +1176,7 @@ export class LAppModel extends CubismUserModel {
    * @param value    目標值（會被 clamp 到模型 min/max）
    */
   public setNativeParamOverride(paramId: string, value: number): void {
+    if (!Number.isFinite(value)) return;
     this._nativeParamOverrides.set(paramId, { value, lastSetAt: performance.now() });
   }
 
@@ -1357,33 +1261,100 @@ export class LAppModel extends CubismUserModel {
   }
 
   private updateMotion(deltaTimeSeconds: number): void {
-    if (this._autoEffectsEnabled) {
-      if (this._motionManager.isFinished()) {
-        this.startRandomMotion('Idle', Priority.Idle);
-      } else {
-        this._motionManager.updateMotion(this._model, deltaTimeSeconds);
-      }
-    } else if (!this._motionManager.isFinished()) {
+    if (!this._motionManager.isFinished()) {
       this._motionManager.updateMotion(this._model, deltaTimeSeconds);
+    } else {
+      this._nativeMotionParameters.clear();
     }
   }
 
-  private updateEyeBlink(deltaTimeSeconds: number): void {
-    if (!this._eyeBlink) {
-      return;
-    }
+  private resetFaceIdle(): void {
+    this._faceIdleRuntime.reset();
+    this._lastFaceIdleSample = { ...NEUTRAL_FACE_IDLE };
+    this._faceMicroRuntime.reset();
+    this._lastFaceMicroSample = { ...NEUTRAL_FACE_MICRO };
+  }
 
-    // 眨眼從 1 計算，再乘表情開合；暫停眨眼時也不會將半閉眼平方。
-    this._model.setParameterValueById(this._idParamEyeLOpen, 1);
-    this._model.setParameterValueById(this._idParamEyeROpen, 1);
-    this._eyeBlink.updateParameters(this._model, deltaTimeSeconds);
+  private cancelIdleEyes(nowMs: number): void {
+    this._faceIdleRuntime.cancelEyes(nowMs);
+    this._lastFaceIdleSample = { ...this._lastFaceIdleSample, eyeL: 1, eyeR: 1, winking: false };
+  }
 
-    {
-      const blinkL = this._model.getParameterValueById(this._idParamEyeLOpen);
-      const blinkR = this._model.getParameterValueById(this._idParamEyeROpen);
-      this._model.setParameterValueById(this._idParamEyeLOpen, blinkL * this._aiEyeBaseLOpen);
-      this._model.setParameterValueById(this._idParamEyeROpen, blinkR * this._aiEyeBaseROpen);
+  private faceOwnership(nowMs: number): { eyes: boolean; brows: boolean; mouth: boolean; pupils: boolean } {
+    const eyeIds = ['ParamEyeLOpen', 'ParamEyeROpen'];
+    const browIds = ['ParamBrowLY', 'ParamBrowRY', 'ParamBrowLAngle', 'ParamBrowRAngle',
+      'ParamBrowLForm', 'ParamBrowRForm', 'ParamBrowLX', 'ParamBrowRX'];
+    const external = (ids: string[]) => ids.some(id => {
+      const override = this._nativeParamOverrides.get(id);
+      return this._nativeMotionParameters.has(id)
+        || (override !== undefined && nowMs - override.lastSetAt <= 5000);
+    });
+    const locked = nowMs < this._manualUntilMs
+      || (!!this._expressionManager && !this._expressionManager.isFinished());
+    const activeBase = this._expressionActionActive && this._aiBehaviorTimer > 0;
+    let eyes = locked || external(eyeIds) || (activeBase && (
+      this._aiEyeLOpen < 0.999 || this._aiEyeROpen < 0.999
+      || this._aiEyeLSmile > 0.001 || this._aiEyeRSmile > 0.001));
+    let brows = locked || external(browIds) || (activeBase && [this._aiBrowLY, this._aiBrowRY,
+      this._aiBrowLAngle, this._aiBrowRAngle, this._aiBrowLForm, this._aiBrowRForm,
+      this._aiBrowLX, this._aiBrowRX].some(value => Math.abs(value) > 0.001));
+    for (const event of this._activeExpressionEvents) {
+      if (nowMs < event.startedAtMs || nowMs >= event.startedAtMs + event.durationMs) continue;
+      if (event.patch.eyeSync !== undefined) eyes = brows = true;
+      if (['eyeLOpen', 'eyeROpen', 'eyeLSmile', 'eyeRSmile'].some(key =>
+        event.patch[key as keyof ExpressionParamPatch] !== undefined)) eyes = true;
+      if (['browLY', 'browRY', 'browLAngle', 'browRAngle', 'browLForm', 'browRForm', 'browLX', 'browRX']
+        .some(key => event.patch[key as keyof ExpressionParamPatch] !== undefined)) brows = true;
     }
+    // 嘴：說話、張嘴偏移、表情基準或原生動作／手動控制任一使用中就讓出（尖嘴只作用在閉口）。
+    const mouthIds = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthPout', 'ParamMouthAngle'];
+    let mouth = locked || external(mouthIds) || this._speaking || this._lipSyncValue > 0.01
+      || Math.abs(this._currentMouthForm) > MOUTH_MICRO_BASE_LIMIT
+      || this._currentMouthOpenBias > MOUTH_MICRO_BASE_LIMIT
+      || (activeBase && Math.abs(this._aiMouthForm) > 0.001);
+    for (const event of this._activeExpressionEvents) {
+      if (nowMs < event.startedAtMs || nowMs >= event.startedAtMs + event.durationMs) continue;
+      if (event.patch.mouthForm !== undefined || event.patch.mouthOpenBias !== undefined) mouth = true;
+    }
+    return { eyes, brows, mouth, pupils: !(locked || external(['ParamEyeBallForm'])) };
+  }
+
+  private sampleBlink(deltaTimeSeconds: number, nowMs: number,
+    nativeEyes = this._nativeMotionParameters.has('ParamEyeLOpen')
+      || this._nativeMotionParameters.has('ParamEyeROpen')): number {
+    const manualEyes = ['ParamEyeLOpen', 'ParamEyeROpen'].some(id => {
+      const override = this._nativeParamOverrides.get(id);
+      return override !== undefined && nowMs - override.lastSetAt <= 5000;
+    });
+    // 控制指令也先同步時鐘，背景恢復時的新指令才不會被當成過期事件。
+    return this._blinkRuntime.update(deltaTimeSeconds, nowMs,
+      !nativeEyes && !manualEyes && this._eyeBlinkIds.length > 0,
+      this._autoEffectsEnabled && !this._lastFaceIdleSample.winking);
+  }
+
+  private updateEyeBlink(deltaTimeSeconds: number, nowMs: number, nativeEyes = false): void {
+    const blink = this.sampleBlink(deltaTimeSeconds, nowMs, nativeEyes);
+    const ownership = this.faceOwnership(nowMs);
+    this._lastFaceIdleSample = this._faceIdleRuntime.update(deltaTimeSeconds, nowMs, {
+      enabled: this._autoEffectsEnabled && nowMs >= this._manualUntilMs,
+      eyesAllowed: !ownership.eyes && !this._blinkRuntime.isPaused() && this._eyeBlinkIds.length > 0,
+      browsAllowed: !ownership.brows,
+      listening: this._faceListening,
+      blinkPaused: this._blinkRuntime.isPaused(),
+      blinkReady: this._blinkRuntime.isIdle(),
+      eyeLOpen: this._aiEyeBaseLOpen, eyeROpen: this._aiEyeBaseROpen,
+    });
+    this._lastFaceMicroSample = this._faceMicroRuntime.update(deltaTimeSeconds, nowMs, {
+      enabled: this._autoEffectsEnabled && nowMs >= this._manualUntilMs,
+      mouthAllowed: !ownership.mouth,
+      pupilsAllowed: ownership.pupils,
+      listening: this._faceListening,
+    });
+    if (nativeEyes) return;
+    this._model.setParameterValueById(this._idParamEyeLOpen,
+      blink * this._aiEyeBaseLOpen * this._lastFaceIdleSample.eyeL);
+    this._model.setParameterValueById(this._idParamEyeROpen,
+      blink * this._aiEyeBaseROpen * this._lastFaceIdleSample.eyeR);
   }
 
   private updateExpressionManager(deltaTimeSeconds: number): void {
@@ -1397,7 +1368,7 @@ export class LAppModel extends CubismUserModel {
       return;
     }
 
-    const weight = this._activeIdlePlan || this._aiBehaviorTimer > 0 ? 0.35 : 1;
+    const weight = this._expressionActionActive ? 0.35 : 1;
     this._model.addParameterValueById(this._idParamAngleX, this._dragX * 6 * weight);
     this._model.addParameterValueById(this._idParamAngleY, this._dragY * 4 * weight);
     this._model.addParameterValueById(this._idParamAngleZ, this._dragX * this._dragY * -2 * weight);
@@ -1482,11 +1453,12 @@ export class LAppModel extends CubismUserModel {
       return;
     }
 
-    this._model.addParameterValueById(this._idParamEyeBallX, eyeBallX);
-    this._model.addParameterValueById(this._idParamEyeBallY, eyeBallY);
+    if (!this._nativeMotionParameters.has('ParamEyeBallX')) this._model.addParameterValueById(this._idParamEyeBallX, eyeBallX);
+    if (!this._nativeMotionParameters.has('ParamEyeBallY')) this._model.addParameterValueById(this._idParamEyeBallY, eyeBallY);
   }
 
   private applyLipSync(): void {
+    if (this._nativeMotionParameters.has('ParamMouthOpenY') && !this._speaking && this._lipSyncValue <= 0.01) return;
     const opening = this._speaking || this._lipSyncValue > 0.01
       ? this._lipSyncValue : this._currentMouthOpenBias;
     this._model.setParameterValueById(this._idParamMouthOpenY, opening);
@@ -1598,6 +1570,23 @@ export class LAppModel extends CubismUserModel {
   }
 
   private applyCurrentExpressionParameters(): void {
+    const face = this._lastFaceIdleSample;
+    const sdkExpression = !!this._expressionManager && !this._expressionManager.isFinished();
+    // 眉毛通道也在全中性表情下寫回基準，避免上一段眉毛事件殘留或累加。
+    if (!sdkExpression) {
+      for (const [id, base, delta] of [
+        [this._idParamBrowLY, this._currentBrowLY, 0],
+        [this._idParamBrowRY, this._currentBrowRY, 0],
+        [this._idParamBrowLAngle, this._currentBrowLAngle, face.browLAngle],
+        [this._idParamBrowRAngle, this._currentBrowRAngle, face.browRAngle],
+        [this._idParamBrowLForm, this._currentBrowLForm, face.browLForm],
+        [this._idParamBrowRForm, this._currentBrowRForm, face.browRForm],
+      ] as const) {
+        if (!this._nativeMotionParameters.has(id.getString())) {
+          this._model.setParameterValueById(id, Math.max(-1, Math.min(1, base + delta)));
+        }
+      }
+    }
     const hasExpression = this._aiBehaviorTimer > 0
       || this._currentBlushLevel > 0.01
       || Math.abs(this._currentMouthForm) > 0.01
@@ -1616,16 +1605,24 @@ export class LAppModel extends CubismUserModel {
       return;
     }
 
-    this._model.setParameterValueById(this._idParamCheek, this._currentBlushLevel);
-    this._model.setParameterValueById(this._idParamMouthForm, this._currentMouthForm);
-    this._model.setParameterValueById(this._idParamBrowLY, this._currentBrowLY);
-    this._model.setParameterValueById(this._idParamBrowRY, this._currentBrowRY);
-    this._model.setParameterValueById(this._idParamBrowLAngle, this._currentBrowLAngle);
-    this._model.setParameterValueById(this._idParamBrowRAngle, this._currentBrowRAngle);
-    this._model.setParameterValueById(this._idParamBrowLForm, this._currentBrowLForm);
-    this._model.setParameterValueById(this._idParamBrowRForm, this._currentBrowRForm);
-    this._model.setParameterValueById(this._idParamBrowLX, this._currentBrowLX);
-    this._model.setParameterValueById(this._idParamBrowRX, this._currentBrowRX);
+    for (const [id, value] of [
+      [this._idParamCheek, this._currentBlushLevel], [this._idParamMouthForm, this._currentMouthForm],
+      [this._idParamBrowLX, this._currentBrowLX], [this._idParamBrowRX, this._currentBrowRX],
+    ] as const) {
+      if (sdkExpression && id.getString().startsWith('ParamBrow')) continue;
+      if (!this._nativeMotionParameters.has(id.getString())) this._model.setParameterValueById(id, value);
+    }
+  }
+
+  // 嘴型與瞳孔的 idle 微動：在基準之上疊加，所有權由 faceOwnership 判斷（讓出時 sample 已淡出為 0）。
+  private applyFaceMicro(): void {
+    const micro = this._lastFaceMicroSample;
+    for (const [id, value] of [
+      [this._idParamMouthForm, micro.mouthForm], [this._idParamMouthPout, micro.mouthPout],
+      [this._idParamMouthAngle, micro.mouthAngle], [this._idParamEyeBallForm, micro.eyeBallForm],
+    ] as const) {
+      if (value !== 0 && !this._nativeMotionParameters.has(id.getString())) this._model.addParameterValueById(id, value);
+    }
   }
 
   private getAiTargetParams(): BasePoseParams {
@@ -1658,15 +1655,7 @@ export class LAppModel extends CubismUserModel {
   }
 
   private getNeutralTargetParams(): BasePoseParams {
-    const params = createNeutralTargetParams();
-    if (this._thinking) {
-      params.eyeSync = false;
-      params.eyeBallX = 0.12;
-      params.eyeBallY = 0.08;
-      params.browLY = 0.12;
-      params.browRY = 0.22;
-    }
-    return params;
+    return { ...this._ambientBase };
   }
 
   private updateAiHeadMotion(deltaTimeSeconds: number): void {
@@ -1700,78 +1689,17 @@ export class LAppModel extends CubismUserModel {
     }
   }
 
-  private updateIdleHeadMotion(): void {
-    const profile = this._activeBodyMotionProfile;
-    const intensityMod = 0.9 + 0.2 * Math.sin(this._bodyMotionPhase * 0.09);
-    const headIntensity = this._aiHeadIntensity * intensityMod * profile.headScale;
-
-    if (headIntensity < 0.001) {
-      return;
+  private resolveExpressionTargets(deltaTimeSeconds: number): BasePoseParams {
+    if (this._directBehaviorUntilMs > 0 && performance.now() >= this._directBehaviorUntilMs) {
+      this.cancelExpressionAction();
     }
-
-    const resonanceMod = 0.95 + 0.1 * Math.sin(this._bodyMotionPhase * 0.13);
-    const headPhase = this._bodyMotionPhase * resonanceMod * profile.speed;
-    const ampZ = 14 * headIntensity;
-    const ampX = 10 * headIntensity;
-    const ampY = 6 * headIntensity;
-
-    this._model.addParameterValueById(this._idParamAngleZ, Math.sin(headPhase) * ampZ);
-    this._model.addParameterValueById(this._idParamAngleX, Math.cos(headPhase * 0.58) * ampX);
-    this._model.addParameterValueById(this._idParamAngleY, Math.cos((headPhase * 0.48) + Math.PI / 4) * ampY);
-  }
-
-  private resolveExpressionTargets(deltaTimeSeconds: number, nowMs: number): BasePoseParams {
-    if (this._aiBehaviorTimer > 0) {
+    if (this._expressionActionActive && this._aiBehaviorTimer > 0) {
       this._activeBodyMotionProfile = this._aiBodyMotionProfile;
       this.updateAiHeadMotion(deltaTimeSeconds);
       return this.getAiTargetParams();
     }
-
-    if (this._activeIdlePlan && nowMs >= this._idlePlanActivateAtMs) {
-      this._activeMotionPlan = null;
-      this._motionPlanStartedAtMs = 0;
-      this._activeBodyMotionProfile = this._activeIdlePlan.settlePose.bodyMotionProfile
-        ?? IDLE_BODY_MOTION_PROFILES[this._activeIdlePlan.name];
-      const ambientPlan = this._activeIdlePlan.ambientPlan;
-      const ambientReady = !!ambientPlan?.states?.length && nowMs >= this._ambientIdleStartAtMs;
-
-      if (ambientReady) {
-        if (!this._ambientIdleActiveState) {
-          this.activateAmbientState(nowMs);
-        } else if (nowMs >= this._ambientIdleNextSwitchAtMs) {
-          this.advanceAmbientState(nowMs);
-        }
-
-        const ambientParams = this._ambientIdleActivePose ?? this._activeIdlePlan.settlePose.params;
-        this._aiEyeSync = ambientParams.eyeSync;
-        this._aiHeadIntensity = ambientParams.headIntensity;
-        this.updateIdleHeadMotion();
-        return ambientParams;
-      }
-
-      const idleParams = this._activeIdlePlan.settlePose.params;
-      this._aiHeadIntensity = idleParams.headIntensity;
-      this.updateIdleHeadMotion();
-      this._aiEyeSync = idleParams.eyeSync;
-
-      if (nowMs >= this._idleLoopNextAtMs) {
-        for (const event of this._activeIdlePlan.loopEvents) {
-          this.enqueueMicroEvent(event);
-        }
-        this._idleLoopNextAtMs = nowMs + Math.max(500, this._activeIdlePlan.loopIntervalMs);
-      }
-
-      return idleParams;
-    }
-
-    if (this._activeIdlePlan) {
-      this._aiHeadIntensity = 0;
-      this._activeBodyMotionProfile = this._aiBodyMotionProfile;
-      return this.getAiTargetParams();
-    }
-
-    this._aiHeadIntensity = 0;
-    this._activeBodyMotionProfile = DEFAULT_BODY_MOTION_PROFILE;
+    this._aiBehaviorTimer = Math.max(0, this._aiBehaviorTimer - deltaTimeSeconds);
+    this._activeBodyMotionProfile = this._aiBodyMotionProfile;
     return this.getNeutralTargetParams();
   }
 
@@ -1820,7 +1748,7 @@ export class LAppModel extends CubismUserModel {
   public update(): void {
     if (!this._model) return;
 
-    const deltaTimeSeconds = LAppPal.getDeltaTime();
+    const deltaTimeSeconds = Math.min(0.1, Math.max(0, LAppPal.getDeltaTime()));
 
     // 更新動作
     this.updateDrag(deltaTimeSeconds);
@@ -1829,30 +1757,33 @@ export class LAppModel extends CubismUserModel {
     this._model.saveParameters();
 
     const nowMs = performance.now();
-    const expressionTargets = this.resolveExpressionTargets(deltaTimeSeconds, nowMs);
+    const expressionTargets = this.resolveExpressionTargets(deltaTimeSeconds);
     const expressionEventResult = applyActiveExpressionEvents(expressionTargets, this._activeExpressionEvents, nowMs);
     this._activeExpressionEvents = expressionEventResult.activeEvents;
     this.smoothExpressionTargets(expressionEventResult.targets, deltaTimeSeconds);
 
-    this.updateEyeBlink(deltaTimeSeconds);
+    const nativeEyes = this._nativeMotionParameters.has('ParamEyeLOpen')
+      || this._nativeMotionParameters.has('ParamEyeROpen');
+    this.updateEyeBlink(deltaTimeSeconds, nowMs, nativeEyes);
     this.updateExpressionManager(deltaTimeSeconds);
-    this.applyEyeTracking();
+    if (!this._ambientInitialized) this.applyEyeTracking();
     this.applyEyeGaze(nowMs);
     this.applyLipSync();
-    this.updateBodyMotion(deltaTimeSeconds);
+    if (this._expressionActionActive) this.updateBodyMotion(deltaTimeSeconds);
     this.applyCurrentExpressionParameters();
+    this.applyFaceMicro();
+    this.applyAmbientMotion(deltaTimeSeconds, nowMs);
+    this.applyNativeParamOverrides(true);
 
     this.updateBreathPhysicsPose(deltaTimeSeconds);
     this.applyNativeParamOverrides();
 
     this._model.update();
+    this.limitRootToViewport(deltaTimeSeconds);
+    this.updateModelMatrix();
   }
 
   private updateBreathPhysicsPose(deltaTimeSeconds: number): void {
-    if (this._breath && this._autoEffectsEnabled) {
-      this._breath.updateParameters(this._model, deltaTimeSeconds);
-    }
-
     if (this._physics && this._physicsEnabled) {
       this._physics.evaluate(this._model, deltaTimeSeconds);
     }
@@ -1862,7 +1793,96 @@ export class LAppModel extends CubismUserModel {
     }
   }
 
-  private applyNativeParamOverrides(): void {
+  private applyAmbientMotion(dt: number, nowMs: number): void {
+    if (!this._ambientInitialized || !this._parameterMixer) return;
+    const manual = nowMs < this._manualUntilMs;
+    const native = this._nativeMotionParameters;
+    const explicit = this._expressionActionActive;
+    const ownedChannels = new Set(explicit ? this._expressionChannels : []);
+    if (this._activeMotionPlan) {
+      ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ']
+        .forEach(id => ownedChannels.add(id));
+    }
+    for (const event of this._activeExpressionEvents) {
+      if (nowMs < event.startedAtMs || nowMs >= event.startedAtMs + event.durationMs) continue;
+      for (const [key, id] of [['bodyAngleX', 'ParamBodyAngleX'], ['bodyAngleY', 'ParamBodyAngleY'],
+        ['bodyAngleZ', 'ParamBodyAngleZ'], ['eyeBallX', 'ParamEyeBallX'], ['eyeBallY', 'ParamEyeBallY'],
+        ['breathLevel', 'ParamBreath']] as const) {
+        if (event.patch[key] !== undefined) ownedChannels.add(id);
+      }
+    }
+    const gazeOwned = manual || this._eyeTrackingEnabled || !!this._activeEyeMotionPlan
+      || ownedChannels.has('ParamEyeBallX') || ownedChannels.has('ParamEyeBallY')
+      || native.has('ParamEyeBallX') || native.has('ParamEyeBallY');
+    const sample = this._ambientMotion.update(dt, nowMs, this._autoEffectsEnabled,
+      manual ? 0 : 1, gazeOwned ? 0 : 1);
+    this._lastAmbientSample = sample;
+    const mixer = this._parameterMixer;
+    const axes = [
+      ['ParamAngleX', sample.headX], ['ParamAngleY', sample.headY], ['ParamAngleZ', sample.headZ],
+      ['ParamBodyAngleX', sample.bodyX], ['ParamBodyAngleY', sample.bodyY], ['ParamBodyAngleZ', sample.bodyZ],
+    ] as const;
+    for (const [id, value] of axes) {
+      const owns = manual || ownedChannels.has(id) || native.has(id);
+      const bias = id === 'ParamBodyAngleX' ? this._ambientBase.bodyAngleX * BODY_MOTION_NATIVE_SCALE.xPose
+        : id === 'ParamBodyAngleY' ? this._ambientBase.bodyAngleY * BODY_MOTION_NATIVE_SCALE.yPose
+          : id === 'ParamBodyAngleZ' ? this._ambientBase.bodyAngleZ * BODY_MOTION_NATIVE_SCALE.zPose : 0;
+      const target = owns
+        ? this._model.getParameterValueById(CubismFramework.getIdManager().getId(id))
+        : mixer.normalized(id, value) + bias;
+      mixer.write(id, target, dt, manual, !owns);
+    }
+    for (const [id, value, pointer] of [
+      ['ParamEyeBallX', sample.gazeX, this._dragX * 0.55],
+      // 自主上下眼位使用完整 Rig 行程；pointer 維持原本的垂直幅度。
+      ['ParamEyeBallY', sample.gazeY, this._dragY * 0.45 * 0.85],
+    ] as const) {
+      const owned = manual || native.has(id) || !!this._activeEyeMotionPlan
+        || ownedChannels.has(id);
+      const target = owned ? this._model.getParameterValueById(CubismFramework.getIdManager().getId(id))
+        : mixer.normalized(id, this._eyeTrackingEnabled ? pointer : value);
+      mixer.write(id, target, dt, manual, !owned);
+    }
+    if (!native.has('ParamBreath')) {
+      const breath = ownedChannels.has('ParamBreath')
+        ? this._model.getParameterValueById(this._idParamBreath) : sample.breath;
+      this._breathOutput += (1 - Math.exp(-18 * dt)) * (breath - this._breathOutput);
+      this._model.setParameterValueById(this._idParamBreath, this._breathOutput);
+    } else {
+      this._breathOutput = this._model.getParameterValueById(this._idParamBreath);
+    }
+    this._requestedRoot = sample.rootY;
+    this._requestedRootPeak = sample.rootPeak;
+  }
+
+  private limitRootToViewport(dt: number): void {
+    // Use the current deformed mesh. Existing half-body bottom cropping is preserved.
+    let top = Number.NEGATIVE_INFINITY;
+    for (let index = 0; index < this._model.getDrawableCount(); index += 1) {
+      if (this._model.getDrawableOpacity(index) <= 0.01) continue;
+      const vertices = this._model.getDrawableVertices(index);
+      for (let offset = 1; offset < vertices.length; offset += 2) top = Math.max(top, vertices[offset]);
+    }
+    const baselineTop = Number.isFinite(top)
+      ? this._modelMatrix.transformY(top) - this._rootOffset : 1;
+    const topMargin = (1 - baselineTop) / 2;
+    const available = clampRootY(0.2, topMargin);
+    const targetScale = this._requestedRootPeak > 0 ? Math.min(1, available / this._requestedRootPeak) : 1;
+    // 先縮整段活動的幅度，避免跳動大半時間頂在硬上限。換 envelope 時保持 gain 的位置／速度，
+    // 呼吸便不會因 hop 開始、結束或取消而瞬間改變高度；最後的硬限制仍處理即時 mesh 形變。
+    const omega = targetScale < this._rootScale ? 32 : 8;
+    const offset = this._rootScale - targetScale;
+    const change = (this._rootScaleVelocity + omega * offset) * dt;
+    const decay = Math.exp(-omega * dt);
+    this._rootScale = targetScale + (offset + change) * decay;
+    this._rootScaleVelocity = (this._rootScaleVelocity - omega * change) * decay;
+    const boundedScale = Math.max(0, Math.min(1, this._rootScale));
+    if (boundedScale !== this._rootScale) this._rootScaleVelocity = 0;
+    this._rootScale = boundedScale;
+    this._rootOffset = clampRootY(this._requestedRoot * this._rootScale, topMargin) * 2;
+  }
+
+  private applyNativeParamOverrides(beforePhysics = false): void {
     if (this._nativeParamOverrides.size <= 0) {
       return;
     }
@@ -1873,10 +1893,14 @@ export class LAppModel extends CubismUserModel {
       if (nowMs - override.lastSetAt > 5000) {
         toExpire.push(paramId);
       } else {
-        this._model.setParameterValueById(
-          CubismFramework.getIdManager().getId(paramId),
-          override.value
-        );
+        const input = paramId.startsWith('ParamAngle') || paramId.startsWith('ParamBodyAngle') || paramId === 'ParamBreath';
+        if (input !== beforePhysics) continue;
+        if (paramId === 'ParamBreath') this._breathOutput = Math.max(0, Math.min(1, override.value));
+        if (this._parameterMixer?.has(paramId)) {
+          this._parameterMixer.write(paramId, override.value, 0, true, false);
+        } else {
+          this._model.setParameterValueById(CubismFramework.getIdManager().getId(paramId), override.value);
+        }
       }
     }
     for (const paramId of toExpire) {
@@ -1956,6 +1980,7 @@ export class LAppModel extends CubismUserModel {
     }
 
     const motion = motions[no];
+    this._nativeMotionParameters = new Set(this._motionParameters.get(motion) ?? []);
     return this._motionManager.startMotionPriority(motion, false, priority);
   }
 
@@ -2013,7 +2038,8 @@ export class LAppModel extends CubismUserModel {
     this._textureManager.release();
     this._expressions.clear();
     this._motions.clear();
-
+    this._motionParameters.clear();
+    this._ambientMotion.reset();
     super.release();
   }
 }

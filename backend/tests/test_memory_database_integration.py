@@ -5,6 +5,7 @@ import json
 import math
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -25,6 +26,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 load_dotenv(BACKEND_ROOT.parent / ".env", override=False)
 
+from domain.emotion_state import EMOTION_FIELDS, NEUTRAL_EMOTION_STATE, apply_mood_turn
 from domain.memory_scope import MemoryScope, conversation_id, message_id
 from domain.memory_routing import MemoryRouting
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
@@ -121,6 +123,59 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ChatSessionStaleError):
             await self.chat_repo.append_user(session["session_id"], 0, user)
         self.assertEqual((await self.chat_repo.load(session["session_id"]))["messages"], [])
+
+    async def test_chat_session_mood_record_round_trip(self):
+        session = await self.chat_repo.get_or_create_active()
+        record, _, _ = apply_mood_turn(
+            None, dict(NEUTRAL_EMOTION_STATE),
+            {field: {"type": "score", "score": 4 if field == "pleased" else 2, "confidence": 0.9}
+             for field in EMOTION_FIELDS},
+            "mood-turn", 1761600000.5,
+        )
+        with self.assertRaises(ValueError):
+            await self.chat_repo.update_emotion(session["session_id"], 0, dict(NEUTRAL_EMOTION_STATE))
+        await self.chat_repo.update_emotion(session["session_id"], 0, record)
+        self.assertEqual((await self.chat_repo.load_context(session["session_id"]))["emotion_state"], record)
+        detail = await self.chat_repo.load_session_messages(session["session_id"])
+        self.assertEqual(detail["emotion_state"], record["mood"])
+        await self._query("UPDATE chat_sessions SET emotion_state = %s::jsonb WHERE id = %s",
+                          (json.dumps(NEUTRAL_EMOTION_STATE), session["session_id"]))
+        self.assertIsNone((await self.chat_repo.load_context(session["session_id"]))["emotion_state"])
+        self.assertIsNone((await self.chat_repo.load_session_messages(session["session_id"]))["emotion_state"])
+
+    async def test_0009_migration_clears_legacy_emotion_state_only(self):
+        schema = "test_" + uuid4().hex
+        try:
+            with self.engine.begin() as connection:
+                config = Config(str(BACKEND_ROOT / "alembic.ini"))
+                config.attributes.update(connection=connection, schema=schema)
+                command.upgrade(config, "0008_chat_context_convergence")
+                owner = {"user": self.scope.user_id, "character": self.scope.character_id}
+                connection.execute(text(f"""INSERT INTO "{schema}".chat_sessions
+                    (id,user_id,character_id,revision,summary,emotion_state)
+                    VALUES ('legacy',:user,:character,3,'舊摘要',CAST(:emotion AS jsonb))"""),
+                    {**owner, "emotion": json.dumps(NEUTRAL_EMOTION_STATE)})
+                connection.execute(text(f"""INSERT INTO "{schema}".chat_messages
+                    (session_id,user_id,character_id,generation,sequence,turn_id,role,content,turn_state)
+                    VALUES ('legacy',:user,:character,0,0,'t1','user','舊訊息','completed')"""), owner)
+                session_query = text(f"""SELECT id,generation,revision,summary,emotion_state,updated_at,
+                    summary_through_sequence,next_message_sequence FROM "{schema}".chat_sessions""")
+                message_query = text(f'SELECT * FROM "{schema}".chat_messages')
+                before = connection.execute(session_query).one()
+                messages = connection.execute(message_query).all()
+                self.assertIsNotNone(before.emotion_state)
+                command.upgrade(config, "head")
+                after = connection.execute(session_query).one()
+                self.assertIsNone(after.emotion_state)
+                self.assertEqual(after._replace(emotion_state=None), before._replace(emotion_state=None))
+                self.assertEqual(connection.execute(message_query).all(), messages)
+                self.assertEqual(connection.execute(text(
+                    f'SELECT version_num FROM "{schema}".alembic_version')).scalar_one(), "0009_mood_v1_emotion")
+                command.downgrade(config, "0008_chat_context_convergence")
+                self.assertIsNone(connection.execute(session_query).one().emotion_state)
+        finally:
+            with self.engine.begin() as connection:
+                connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
     async def test_deleting_chat_session_does_not_delete_long_term_memory(self):
         item = await self._create("chat-delete-boundary")
@@ -449,6 +504,64 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(traces[1]["excluded_candidates"][0]["rejection_reason"], "embedding_contract_mismatch")
         self.assertIsNone(traces[1]["excluded_candidates"][0]["similarity"])
         self.assertEqual(traces[2]["excluded_candidates"], [])
+
+    async def test_chat_candidates_include_temporal_versions_without_lowering_management_gate(self):
+        item = await self._create()
+        medium = [.6, .8] + [0.0] * 1022
+        self.assertEqual(await self.repo.related_items("無關主題", medium, mode="management"), [])
+        for status, start_days, end_days in (("active", 7, None), ("superseded", -60, -7)):
+            await self._query("UPDATE memory_items SET status=%s, valid_from=now() + %s * interval '1 day', "
+                              "valid_to=CASE WHEN %s::integer IS NULL THEN NULL ELSE now() + %s * interval '1 day' END "
+                              "WHERE id=%s", (status, start_days, end_days, end_days, item["id"]))
+            rows = await self.repo.related_items("無關主題", medium, mode="chat", limit=3)
+            self.assertEqual([r["id"] for r in rows], [item["id"]])
+            self.assertEqual(rows[0]["status"], status)
+        await self._query("UPDATE memory_items SET expires_at=now()-interval '1 day' WHERE id=%s", (item["id"],))
+        self.assertEqual(await self.repo.related_items("無關主題", medium, mode="chat"), [])
+
+    async def test_chat_vector_ranking_precedes_low_similarity_lexical_match(self):
+        first = await self._create()
+        job = await self._job("other-topic", "請記住我平常喜歡天文觀測")
+        await self._apply(job, [{"action":"CREATE", "canonical_text":"使用者平常喜歡天文觀測",
+            "memory_type":"preference", "target_memory_ids":[], "reason":"explicit"}], set(), {0:[0.0, 1.0]+[0.0]*1022})
+        rows = await self.repo.related_items("天文", VECTOR, mode="chat", limit=3)
+        self.assertEqual(rows[0]["id"], first["id"])
+        self.assertFalse(rows[0]["exact_match"])
+        self.assertTrue(rows[1]["exact_match"])
+        legacy = await self.repo.related_items("天文", VECTOR, mode="management", limit=3)
+        self.assertTrue(legacy[0]["exact_match"] or legacy[0]["similarity"] >= .75)
+
+    async def test_coffee_preference_recalled_with_temporary_context_below_similarity_gate(self):
+        canonical = "使用者平常很喜歡咖啡。"
+        job = await self._job("coffee-preference", "請記住我平常很喜歡咖啡。")
+        self.assertTrue(await self._apply(job, [{
+            "action": "CREATE", "canonical_text": canonical, "memory_type": "preference",
+            "subject_key": "user", "search_terms": ["咖啡", "咖啡偏好", "喜歡咖啡"],
+            "target_memory_ids": [], "reason": "user preference",
+        }], set(), {0: VECTOR}))
+        similarity = 0.48741912766809126
+        below = [similarity, math.sqrt(1 - similarity ** 2)] + [0.0] * 1022
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=below))
+        with patch("services.memory_retriever.trace") as retrieval_trace:
+            _, relevant = await MemoryRetriever(self.repo, embedding).retrieve(
+                "依照我的喜好和今晚的安排，現在喝什麼好？",
+                recent_dialogue=[dict(role="user", content="我今晚要早睡，今天暫時避開咖啡因。")],
+            )
+        self.assertIn(canonical, relevant)
+        candidate, = retrieval_trace.call_args.args[1]["candidates"]
+        self.assertTrue(candidate["exact_match"])
+        self.assertAlmostEqual(candidate["similarity"], similarity, places=5)
+        self.assertEqual(candidate["projection"], "selected")
+        keywords = (await self._query("SELECT keywords FROM memory_items WHERE id = %s",
+                                      (candidate["id"],)))[0][0]
+        self.assertNotIn("coffee", keywords)
+        for query in ("我平常喜歡coffee嗎？", "我平常喜歡COFFEE嗎？"):
+            with self.subTest(query=query):
+                rows = await self.repo.related_items(query, below)
+                self.assertEqual([row["canonical_text"] for row in rows], [canonical])
+                self.assertTrue(rows[0]["exact_match"])
+        for query in ("coffeetable", "無關主題"):
+            self.assertEqual(await self.repo.related_items(query, below), [])
 
     async def test_chinese_category_query_matches_ascii_subject_and_rejects_unrelated_facts(self):
         for turn, canonical, subject in (
@@ -1101,18 +1214,26 @@ async def main():
         raise RuntimeError('Expected isolated test job')
     print('claimed', flush=True)
     await asyncio.Event().wait()
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 asyncio.run(main())
 """
-        process = await asyncio.create_subprocess_exec(sys.executable, "-c", code,
-            str(self.scope.user_id), str(self.scope.character_id), self.scope.schema_name,
+        # Windows的psycopg需Selector loop；其subprocess transport不支援，使用同一真實子程序的同步邊界。
+        process = await asyncio.to_thread(subprocess.Popen, [sys.executable, "-c", code,
+            str(self.scope.user_id), str(self.scope.character_id), self.scope.schema_name],
             cwd=BACKEND_ROOT.parent, env={**os.environ, "MEMORY_TEST_DATABASE_URL": TEST_URL},
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
-            self.assertEqual(await asyncio.wait_for(process.stdout.readline(), 5), b"claimed\n")
+            self.assertEqual((await asyncio.wait_for(asyncio.to_thread(process.stdout.readline), 5)).strip(), b"claimed")
         finally:
-            if process.returncode is None:
+            if process.poll() is None:
                 process.terminate()
-            await asyncio.wait_for(process.wait(), 5)
+            try:
+                await asyncio.wait_for(asyncio.to_thread(process.wait), 5)
+            except TimeoutError:
+                process.kill()
+                await asyncio.to_thread(process.wait)
+            process.stdout.close()
         attempts, generation = (await self._query("SELECT attempts, generation FROM memory_jobs WHERE id = %s", (event,)))[0]
         old = {"id": event, "attempts": attempts, "generation": generation, "source_text": "我喜歡茶"}
         await self._query("UPDATE memory_jobs SET lease_until = now() - interval '1 second' WHERE id = %s", (event,))

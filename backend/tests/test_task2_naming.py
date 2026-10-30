@@ -16,7 +16,9 @@ class Task2NamingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("build_jev_questions", source)
+        self.assertIn("build_role_questions", source)
+        self.assertNotIn("build_jev_questions", source)
+        # 三角色共用同一個呼叫點，各角色只送出自己的題目。
         self.assertEqual(source.count("await call_jev("), 1)
         self.assertNotIn("EXPRESSION_DECIDER", source)
         self.assertNotIn("call_expression_agent", source)

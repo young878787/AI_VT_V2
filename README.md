@@ -75,12 +75,12 @@ cp .env.example .env
 # OPENROUTER_API_KEY=your_openrouter_key  # JEV_AI_API_KEY 留空時沿用
 # CHAT_AI_API_KEY=your_chat_key
 # CHAT_AI_BASE_URL=https://api.openai.com/v1
-# CHAT_AI_MODEL=gpt-4o-mini
+# CHAT_AI_MODEL=gpt-6-luna
 # MEMORY_AI_API_KEY=your_memory_key
 # MEMORY_AI_BASE_URL=https://api.openai.com/v1
-# MEMORY_AI_MODEL=gpt-4o-mini
-# BACKEND_PORT=9000
-# FRONTEND_PORT=5287
+# MEMORY_AI_MODEL=gpt-6-luna
+# BACKEND_PORT=15287
+# FRONTEND_PORT=18080
 # JEV 固定使用 SystemOne 請求格式；可用 JEV_AI_BASE_URL、JEV_AI_MODEL 覆寫預設。
 
 # 4. 建立／同步根目錄主環境（Linux/macOS）
@@ -108,42 +108,34 @@ bun run dev
 
 ## Headless Chat 測試（不開前端）
 
-長期記憶固定使用 PostgreSQL／pgvector `MemoryRuntime`。一般後端使用 `MEMORY_DATABASE_URL` 與固定 `MEMORY_DATABASE_SCHEMA`；`backend/tools/chat_test_cli.py` 會自動啟動同一份後端程式的隔離 instance，使用與正式資料庫不同的 `MEMORY_TEST_DATABASE_URL`，每次建立獨立 schema 並套用 Alembic migration。執行前需設定獨立的 `EMBEDDING_AI_API_KEY`、`EMBEDDING_AI_BASE_URL`、`EMBEDDING_AI_MODEL`、`EMBEDDING_AI_DIMENSION=1024`。本地 vLLM 可另外設定 `EMBEDDING_AI_SERVING_MODEL` 及 query/document prefixes。缺少測試 DB、測試 DB 指向正式 database 或 schema 不合法時，CLI 會在啟動後端前失敗；測試完成後清理該 schema。CLI 逐輪等待記憶 job 完成（固定 330 秒，獨立於 Chat／Action 的 `--turn-timeout`），擷取回覆、JEV 決策、route、audit 與記憶變更，不讀寫正式長期記憶。
+長期記憶使用 PostgreSQL／pgvector。唯一入口 `backend/tools/chat_test_cli.py` 會啟動同一份 `main:app` 的隔離 instance，使用與正式 DB 不同的 `MEMORY_TEST_DATABASE_URL` 及臨時 `test_<32 lowercase hex>` schema，套用目前 Alembic head，完成後清理。需要現有 `CHAT_AI_*`、`JEV_AI_*`、`MEMORY_AI_*`、`EMBEDDING_AI_*` 設定；不操作正式資料庫。不帶 `--suite` 只顯示使用方式。
 
 ```bash
-# 從 repository 根目錄執行：23 個固定 cases ＋ 5 個既有 Chat LLM 新生成案例
-.venv/bin/python backend/tools/chat_test_cli.py
+uv run backend/tools/chat_test_cli.py --suite chat
+uv run backend/tools/chat_test_cli.py --suite memory
+uv run backend/tools/chat_test_cli.py --suite tools
+uv run backend/tools/chat_test_cli.py --suite integration
 
-# 原樣重播 28-case 快照，不再次生成
-.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/log/chat_test_runs/latest/cases.json
+# 輸入重播，不重新生成續問
+uv run backend/tools/chat_test_cli.py --suite integration --scenario backend/log/ai_tests/integration/latest/cases.json
 
-# 保留既有 TXT 表情回歸；max-turns 僅用於 TXT
-.venv/bin/python backend/tools/chat_test_cli.py --scenario backend/tools/chat_test_scenarios.txt --max-turns 5
+# 定位題目，包含必要前序：mem_003、mem_005、mem_006
+uv run backend/tools/chat_test_cli.py --suite memory --case mem_006
 ```
 
-長期記憶由單一 Memory Agent 逐步搜尋、讀取、提出操作與結案，後端準備小批候選並原子提交；沒有獨立 intake agent。程式 migration head 為 `0007_chat_sessions`；正式 DB 最近確認仍為 `0006_single_memory_agent`，部署新程式前必須先依備份與授權流程升版。
+`chat` 7 題、`memory` 14 題（13 核心＋1 容量）、`tools` 7 題、`integration` 15 題（13 固定＋2 生成）。一題只有一次實際 user input；前置 history／summary／corpus 不經 setup 聊天，操作後召回保留真實提交結果。記憶題的 query embedding、接收、路由、agent 及交易沿用正式流程，初始 document 向量固定快取並驗證文字及 embedding contract。客觀前置條件失敗時，相依題記為 failed、request_sent=false 並不送出，不重灌預期答案；回答語意與新增／補強品質不控制後續執行。`--case` 保留全組分母，不宣稱整組通過。舊 28-case、TXT、`--max-turns`、`--model` 及重複評估 runner 已移除。
 
-CLI 固定 Rushia。案例的 setup 與 probe 都走 `/ws/chat`；每案 reset 隔離 owner，長期 probe 使用新 session／連線，背景工作結案後再前進。短期組跳過長期接收與召回，長期 probe 停用短期載入、累積與寫入，綜合組核對跨來源證據。案例數與對話輪數分開記錄，執行後以既有 Chat 模型的獨立審查 prompt 比對所有 probe；保存模型、理由與缺漏，仍需人工核對可能的誤判。
+每組固定覆寫 `backend/log/ai_tests/<suite>/latest/`，保留既有歷史產物。先讀 `run.json` 與單一 `report.md`；完整證據位於 `turns.jsonl`、`case_states.jsonl`，重播輸入與 oracle 位於 `cases.json`，人工檢視存於 `review.json`，必要錯誤診斷位於 `server.log`。報告包含完整對話、JEV 原始／resolved／fallback、工具 receipt、圖片來源及召回／投影／實際 prompt 證據，不在 JSON 內嵌圖片 base64。
 
-每次覆寫固定 `backend/log/chat_test_runs/latest/`（已 gitignore），不新增時間資料夾；既有歷史保留：
+專項工具使用合成 fixture；整合正常工具使用 live 唯讀來源，僅 `it_012` 注入明示 vision 拒收替身。必要 live 工具未取得資料、未按契約交付圖片或最終缺少必要客觀證據時為 failed。實機私人圖片不寫入持久報告；缺少可授權複核圖片時，人工視覺判定保持 pending，與工具／交付客觀結果分開。測試不證明前端動作、語音、嘴型或 OBS 已通過。
 
-- `cases.json` — 接受的完整案例，供精確重播。
-- `turns.jsonl` — 唯一逐輪詳細資料；每行一筆，含完整表情、原始／resolved JEV、記憶交易、召回與裁切後實際 Chat messages，以及 probe 的獨立 `semantic_review`。
-- `case_states.jsonl` — 每案一筆的結案 DB sources、evidence、relations、audit、jobs 與 memory items，不混入逐輪資料。
-- `memory_report.md`、`expression_report.md` — 從 JSONL 衍生的精簡閱讀視圖，不內嵌完整 JSON；需要細查時以 `case_id`＋`turn` 查詢 `turns.jsonl`。
-- `run.json`、`server.log` — 案例指紋、生成診斷、執行狀態與清理結果、隔離後端日誌。
-
-獨立六情境 memory-agent 評估使用 `backend/log/memory_agent_runs/latest/`，包含 `run.json`、`memory_agents.json` 與 `memory_agents_report.md`，不會切換 Chat 測試的 `latest`。
-
-摘要先讀兩份 Markdown；需要完整 evidence 時再查逐輪 JSON：
+執行完成、客觀硬條件、容量與人工判定分開，移除 blocked 狀態。必要候選缺漏、禁止候選注入、必要工具未執行或失敗及交易／隔離證據失敗才控制相依題；預期故障依案例契約驗證。測試不呼叫語意 Judge、不產生評分或理由，完整對話與新增／補強等交易證據留待後期人工評讀。容量未達影響 overall；整合全部 15 題人工 accepted 前保持 pending。已送出的寫入不重送。人工檢視填入 `review.json` 的 reason、turn_id／evidence 後，可離線重建報告：
 
 ```bash
-jq 'select(.case_id == "case_014" and .turn == 7)' backend/log/chat_test_runs/latest/turns.jsonl
+uv run python -c "import sys; from pathlib import Path; sys.path.insert(0,'backend'); from tools.ai_test_report import rebuild_report; rebuild_report(Path('backend/log/ai_tests/integration/latest'))"
 ```
 
-JEV 需設定 `JEV_AI_API_KEY` 或 `OPENROUTER_API_KEY`。生成沿用 `CHAT_AI_*`，記憶 agent 使用 `MEMORY_AI_*`。測試 schema 與短期／prompt 暫存在結束時清理；失敗保存部分結果。成功送出的輸入不得盲目重送，只有尚未送出時可安全重試（`--retries`，預設 2）。背景 terminal failed 仍保留診斷並繼續獨立觀察，run 不會因此記成成功。
-
-詳見 [記憶測試集設計與實作](docs/AI_VT_Memory_Testset_Design.md)。
+重建只讀保存的資料，不呼叫模型。人工判定綁定 cases／turns／case_states 指紋，重新執行即失效。規格及驗收證據見 [AI_VT 分組測試計畫與驗收規格](docs/AI_VT_分組測試計畫與驗收規格.md)；實作完成與真實模型能力達標分開記錄。
 
 ## 作品展示
 

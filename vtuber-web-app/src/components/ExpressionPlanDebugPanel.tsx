@@ -7,6 +7,8 @@ import {
   type StudioExpressionPlan,
 } from '../services/expressionDebugService';
 import { actionScheduler } from '../services/actionScheduler';
+import { switchModel } from '../services/modelService';
+import { AvailableModels } from '../live2d/LAppDefine';
 import { useAppStore } from '../store/appStore';
 import { isExpressionPlanPayload } from '../types/expressionPlan';
 import './ExpressionPlanDebugPanel.css';
@@ -30,6 +32,9 @@ interface Preview {
 
 export const ExpressionPlanDebugPanel = () => {
   const modelLoaded = useAppStore(state => state.modelLoaded);
+  const modelLoading = useAppStore(state => state.modelLoading);
+  const modelError = useAppStore(state => state.modelError);
+  const currentModelDirectory = useAppStore(state => state.currentModelDirectory);
   const currentModelName = useAppStore(state => state.currentModelName);
   const [intensity, setIntensity] = useState<DebugExpressionIntensity>('normal');
   const [seed, setSeed] = useState(7);
@@ -70,7 +75,7 @@ export const ExpressionPlanDebugPanel = () => {
     setLastError(null);
   };
 
-  const disabled = isCompiling || !modelLoaded;
+  const disabled = isCompiling || modelLoading || !modelLoaded;
   const params = preview?.plan.basePose.params;
   const variant = preview?.plan.debug?.expressionVariant ?? preview?.plan.motionPlan?.variant;
   const family = preview?.plan.debug?.expressionFamily ?? preview?.plan.basePose.preset;
@@ -83,13 +88,21 @@ export const ExpressionPlanDebugPanel = () => {
         <span>同一演出可重播；換個演法，再比較細微差別。</span>
       </div>
       <div className="expression-debug-panel__body">
+        <div className="expression-debug-panel__model-control" aria-busy={modelLoading}>
+          <label htmlFor="expression-studio-model">模型</label>
+          <select id="expression-studio-model" value={currentModelDirectory} disabled={disabled}
+            onChange={event => void switchModel(event.target.value)}>
+            {AvailableModels.map(model => <option key={model.directory} value={model.directory}>{model.displayName}</option>)}
+          </select>
+          <span role="status">{modelLoading ? '正在載入模型…' : `目前模型：${currentModelDirectory}`}</span>
+        </div>
         <div className="expression-debug-panel__controls">
           <span>表現強度</span>
           <div className="expression-debug-panel__segmented" role="group" aria-label="表現強度">
             {(['soft', 'normal', 'strong'] as const).map(value => (
               <button key={value} type="button" aria-pressed={intensity === value}
                 className={`expression-debug-panel__segment ${intensity === value ? 'expression-debug-panel__segment--active' : ''}`}
-                disabled={isCompiling} onClick={() => setIntensity(value)}>
+                disabled={disabled} onClick={() => setIntensity(value)}>
                 {value === 'soft' ? '輕柔' : value === 'normal' ? '自然' : '鮮明'}
               </button>
             ))}
@@ -166,7 +179,7 @@ export const ExpressionPlanDebugPanel = () => {
           </div>
         </details>
       </div>
-      {lastError && <div className="expression-debug-panel__error" role="alert">{lastError}</div>}
+      {(modelError || lastError) && <div className="expression-debug-panel__error" role="alert">{modelError || lastError}</div>}
     </div>
   );
 };

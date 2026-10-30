@@ -4,6 +4,10 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import './check-blink-runtime.mjs';
+import './check-face-idle-runtime.mjs';
+import './check-face-micro-runtime.mjs';
+import './check-face-composition.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -49,7 +53,11 @@ const { createNeutralTargetParams } = load('src/live2d/expression/expressionStat
 const defines = load('src/live2d/LAppDefine.ts');
 const fixedModel = defines.getDefaultModel();
 assert.equal(defines.getModelJsonPath(fixedModel), '/Resources/Rushia/RushiaHD.model3.json');
-assert.equal(defines.AvailableModels, undefined, 'the frontend must have no selectable model list');
+assert.deepEqual(Array.from(defines.AvailableModels, config => config.displayName), ['Rushia', 'Rushia_hd']);
+for (const config of defines.AvailableModels) {
+  assert.equal(config.name, 'Rushia', 'both resources must use the same Chat and expression compiler identity');
+  assert.equal(defines.getModelJsonPath(config), `/Resources/${config.directory}/RushiaHD.model3.json`);
+}
 
 // 縮放只改變取景大小；頭頂仍位於畫面頂部內側，且 Retina 不改構圖。
 const viewports = [[1280, 800], [768, 1024], [390, 400], [375, 700]];
@@ -126,7 +134,9 @@ const modelLoad = createLoader({
   './LAppPal': {}, './LAppTextureManager': {}, './LAppDelegate': {},
 }, { performance: { now: () => modelNowMs } });
 const { LAppModel } = modelLoad('src/live2d/LAppModel.ts');
-const { CubismEyeBlink } = load('src/live2d/framework/effect/cubismeyeblink.ts');
+const { BlinkRuntime } = load('src/live2d/runtime/BlinkRuntime.ts');
+const { FaceIdleRuntime } = load('src/live2d/runtime/FaceIdleRuntime.ts');
+const { FaceMicroRuntime } = load('src/live2d/runtime/FaceMicroRuntime.ts');
 const model = Object.create(LAppModel.prototype);
 const parameters = new Map([['left', 0.5], ['right', 0.3]]);
 model._model = {
@@ -137,19 +147,33 @@ model._idParamEyeLOpen = 'left';
 model._idParamEyeROpen = 'right';
 model._aiEyeBaseLOpen = 0.5;
 model._aiEyeBaseROpen = 0.3;
-model._eyeBlink = CubismEyeBlink.create();
-model._eyeBlink.setParameterIds(['left', 'right']);
-model._eyeBlink.pause();
+model._blinkRuntime = new BlinkRuntime(() => 0.5);
+model._faceIdleRuntime = new FaceIdleRuntime(() => 0);
+model._lastFaceIdleSample = {
+  eyeL: 1, eyeR: 1, browLForm: 0, browRForm: 0, browLAngle: 0, browRAngle: 0, winking: false, kind: 'still',
+};
+model._faceMicroRuntime = new FaceMicroRuntime(() => 0);
+model._faceListening = false;
+model._manualUntilMs = 0;
+model._activeExpressionEvents = [];
+model._expressionActionActive = false;
+model._eyeBlinkIds = ['left', 'right'];
+model._nativeParamOverrides = new Map();
+model._nativeMotionParameters = new Set();
+model._autoEffectsEnabled = true;
+model.pauseAutoBlink();
 for (let frame = 0; frame < 30; frame += 1) {
-  model.updateEyeBlink(1 / 60);
+  modelNowMs += 1000 / 60;
+  model.updateEyeBlink(1 / 60, modelNowMs);
   near(parameters.get('left'), 0.5, 'paused blink preserves half-closed left eye');
   near(parameters.get('right'), 0.3, 'paused blink preserves asymmetric right eye');
 }
-model._eyeBlink.resume();
-model._eyeBlink.forceBlink();
+model.resumeAutoBlink();
+model.forceBlink();
 let minimumLeft = 1;
 for (let frame = 0; frame < 45; frame += 1) {
-  model.updateEyeBlink(1 / 60);
+  modelNowMs += 1000 / 60;
+  model.updateEyeBlink(1 / 60, modelNowMs);
   minimumLeft = Math.min(minimumLeft, parameters.get('left'));
   near(parameters.get('left') / 0.5, parameters.get('right') / 0.3,
     'blink keeps the expression eye ratio');
@@ -157,6 +181,50 @@ for (let frame = 0; frame < 45; frame += 1) {
 assert.ok(minimumLeft < 0.05, 'resumed blink must visibly close the eyes');
 near(parameters.get('left'), 0.5, 'completed blink restores the left expression');
 near(parameters.get('right'), 0.3, 'completed blink restores the right expression');
+model.setBlinkInterval(2, 6);
+assert.deepEqual({ ...model.getBlinkState() }, { paused: false, intervalMin: 2, intervalMax: 6 });
+model._autoEffectsEnabled = false;
+modelNowMs += 1000 / 60;
+model.updateEyeBlink(1 / 60, modelNowMs);
+near(parameters.get('left'), 0.5, 'disabled autonomous effects release the eye to its expression base');
+model.forceBlink();
+let disabledForcedMinimum = 1;
+for (let frame = 0; frame < 45; frame += 1) {
+  modelNowMs += 1000 / 60;
+  model.updateEyeBlink(1 / 60, modelNowMs);
+  disabledForcedMinimum = Math.min(disabledForcedMinimum, parameters.get('left'));
+}
+assert.ok(disabledForcedMinimum < 0.05, 'explicit force blink still works with automatic effects disabled');
+near(parameters.get('left'), 0.5, 'forced blink restores the expression while automatic effects remain disabled');
+model._autoEffectsEnabled = true;
+model._nativeParamOverrides.set('ParamEyeLOpen', { value: 0.2, lastSetAt: modelNowMs });
+model.forceBlink();
+modelNowMs += 1000 / 60;
+model.updateEyeBlink(1 / 60, modelNowMs);
+near(parameters.get('right'), 0.3, 'manual eye ownership suppresses the autonomous blink event');
+model._nativeParamOverrides.clear();
+modelNowMs += 1000 / 60;
+model.updateEyeBlink(1 / 60, modelNowMs);
+near(parameters.get('right'), 0.3, 'manual eye release cannot replay a suppressed blink');
+modelNowMs += 10000;
+model.pauseAutoBlink(3);
+model.updateEyeBlink(1 / 60, modelNowMs);
+assert.equal(model.getBlinkState().paused, true, 'a new pause after background inactivity starts from the command time');
+modelNowMs += 2990;
+model.updateEyeBlink(1 / 60, modelNowMs);
+assert.equal(model.getBlinkState().paused, true, 'the new pause retains its full duration across frame gaps');
+modelNowMs += 10;
+model.updateEyeBlink(1 / 60, modelNowMs);
+assert.equal(model.getBlinkState().paused, false, 'timed pause completes at its actual deadline');
+modelNowMs += 10000;
+model.forceBlink();
+let resumedForceMinimum = 1;
+for (let frame = 0; frame < 30; frame += 1) {
+  modelNowMs += 1000 / 60;
+  model.updateEyeBlink(1 / 60, modelNowMs);
+  resumedForceMinimum = Math.min(resumedForceMinimum, parameters.get('left'));
+}
+assert.ok(resumedForceMinimum < 0.05, 'a fresh force command after background inactivity must execute');
 
 class FakeClock {
   now = 10000;
@@ -187,11 +255,15 @@ function schedulerHarness() {
   const clock = new FakeClock();
   const reports = [];
   const applied = [];
+  const ambientUpdates = [];
   const listeners = [];
   let state = {
     isSpeaking: false,
+    disconnectAmbient() {},
+    setAmbientPlan(plan) { ambientUpdates.push(plan); },
     setAiTyping() {},
     setCompressing() {},
+    resetChatContext() {},
     appendChatMessage() {},
     setBlinkControl() {},
     setExpressionPlan(plan) {
@@ -209,7 +281,9 @@ function schedulerHarness() {
   const schedulerLoad = createLoader({
     '../store/appStore': { useAppStore },
     '../live2d/LAppLive2DManager': {
-      LAppLive2DManager: { getInstance: () => ({ getActiveModel: () => ({ cancelExpressionAction() {} }) }) },
+      LAppLive2DManager: { getInstance: () => ({ getActiveModel: () => ({
+        cancelExpressionAction() {}, finishExpressionAction() {}, setManualControl() {},
+      }) }) },
     },
   }, {
     performance: { now: () => clock.now },
@@ -220,7 +294,7 @@ function schedulerHarness() {
   const { actionScheduler: scheduler } = schedulerLoad('src/services/actionScheduler.ts');
   scheduler.setReporter((status, action) => reports.push({ status, turnId: action.turnId, at: clock.now }));
   return {
-    scheduler, clock, applied, reports, useAppStore,
+    scheduler, clock, applied, reports, ambientUpdates, useAppStore,
     speak(value) {
       const previous = state;
       state = { ...state, isSpeaking: value };
@@ -318,6 +392,7 @@ for (const steps of [sequence, [
   }
   const wsLoad = createLoader({
     '../store/appStore': { useAppStore: h.useAppStore },
+    '../live2d/LAppLive2DManager': { LAppLive2DManager: { getInstance: () => ({ getActiveModel: () => null }) } },
     '../audio/TTSPlayer': { TTSPlayer: { getInstance: () => ({ stop: () => h.speak(false) }) } },
     './actionScheduler': { actionScheduler: h.scheduler },
   }, {
@@ -332,6 +407,15 @@ for (const steps of [sequence, [
     basePose: { ...makePlan().basePose, preset: 'shock_recoil', durationSec: 0.8 },
   }), 'chat', 'active-disconnect');
   h.scheduler.submit(makePlan(), 'chat', 'pending-disconnect');
+  const ambientUpdate = { type: 'ambient_plan', sequence: 1, state: 'idle', moveMs: 900,
+    target: { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyY: 0, bodyZ: 0, gazeX: 0, gazeY: 0 },
+    breath: { periodSec: 4, amplitude: 0.5, rootAmplitude: 0.02 } };
+  sockets[0].onmessage({ data: JSON.stringify({ ...ambientUpdate, turn_id: 'unrelated-old-turn' }) });
+  assert.equal(h.ambientUpdates.length, 1, 'autonomous updates are independent of Chat turn filtering');
+  sockets[0].onmessage({ data: JSON.stringify({ ...ambientUpdate, sequence: -1 }) });
+  assert.equal(h.ambientUpdates.length, 1, 'WebSocket rejects malformed autonomous updates');
+  assert.deepEqual(h.reports.map(event => event.status), ['started'],
+    'autonomous updates cannot submit, finish or cancel the active Chat action');
   h.clock.advance(1000);
   sockets[0].readyState = 3;
   sockets[0].onclose();
@@ -474,4 +558,1142 @@ function audioHarness(suspended = false) {
   assert.equal(h.frames.size, 0, 'the completed mouth close must not leave an animation frame queued');
 }
 
-console.log('Rushia runtime checks passed: fixed model, framing, mouth/eye composition, action timing and cancelled TTS.');
+// 模型切換採用真實 manager；只替換 WebGL／模型檔案邊界。
+{
+  const instances = [];
+  let textureGate = null;
+  let textureError = null;
+  class FakeModel {
+    released = 0;
+    width = 800;
+    height = 600;
+    scale = 1;
+    position = { x: 0, y: 0 };
+    constructor() { instances.push(this); }
+    async loadAssets(home, fileName, config) { this.home = home; this.config = config; }
+    setupRenderer(gl) { this.gl = gl; }
+    async setupTextures() {
+      if (textureGate) await textureGate.promise;
+      if (textureError) throw textureError;
+    }
+    getModelConfig() { return this.config; }
+    getCanvasWidth() { return this.width; }
+    getCanvasHeight() { return this.height; }
+    setCanvasSize(width, height) { this.width = width; this.height = height; }
+    getModelScale() { return this.scale; }
+    setModelScale(scale) { this.scale = scale; }
+    getModelPosition() { return this.position; }
+    setModelPosition(x, y) { this.position = { x, y }; }
+    inheritAmbientBaseline(previous) {
+      this.inheritedFrom = previous;
+      this.previousReleasedAtInheritance = previous.released;
+    }
+    release() { this.released++; }
+  }
+  const managerLoad = createLoader({
+    './LAppModel': { LAppModel: FakeModel },
+    './LAppPal': { LAppPal: { printLog() {}, printError() {} } },
+  });
+  const { LAppLive2DManager } = managerLoad('src/live2d/LAppLive2DManager.ts');
+  const manager = LAppLive2DManager.getInstance();
+  await assert.rejects(manager.loadDefaultModel(), /WebGL/);
+  manager.setGLContext({});
+  await assert.rejects(manager.loadModel('../other'), /不支援/);
+  const original = await manager.loadDefaultModel();
+  original.setCanvasSize(1200, 900);
+  original.setModelScale(1.15);
+  original.setModelPosition(0.12, -0.08);
+  original.connected = false;
+  assert.equal(await manager.loadDefaultModel(), original, 'selecting the active resource must not allocate another model');
+
+  textureGate = deferred();
+  const switchToHd = manager.loadModel('Rushia_hd');
+  await flushMicrotasks();
+  assert.equal(manager.getActiveModel(), original, 'the original stays visible while the new textures load');
+  assert.equal(original.released, 0);
+  await assert.rejects(manager.loadModel('Rushia'), /正在載入/);
+  textureGate.resolve();
+  const hd = await switchToHd;
+  textureGate = null;
+  assert.equal(manager.getActiveModel(), hd);
+  assert.equal(hd.home, '/Resources/Rushia_hd/');
+  assert.equal(hd.config.name, 'Rushia');
+  assert.equal(original.released, 1, 'the previous model is released after the new model is ready');
+  assert.equal(hd.width, 1200);
+  assert.equal(hd.height, 900);
+  assert.equal(hd.scale, 1.15);
+  assert.equal(hd.position.x, 0.12);
+  assert.equal(hd.position.y, -0.08);
+  assert.equal(hd.inheritedFrom, original, 'offline resource switching still inherits the existing ambient baseline');
+  assert.equal(hd.previousReleasedAtInheritance, 0, 'the baseline is inherited before releasing the previous resource');
+
+  textureError = new Error('missing texture');
+  await assert.rejects(manager.loadModel('Rushia'), /missing texture/);
+  assert.equal(manager.getActiveModel(), hd, 'failed switching keeps the working model');
+  assert.equal(hd.released, 0);
+  assert.equal(instances.at(-1).released, 1, 'a failed candidate releases its resources');
+  textureError = null;
+  const restored = await manager.loadModel('Rushia');
+  assert.equal(hd.released, 1);
+  assert.equal(manager.getActiveModel(), restored, 'switching back uses the same manager');
+
+  textureGate = deferred();
+  const cancelled = manager.loadModel('Rushia_hd');
+  await flushMicrotasks();
+  manager.release();
+  textureGate.resolve();
+  await assert.rejects(cancelled, /取消/);
+  assert.equal(manager.getActiveModel(), null, 'a late completion cannot revive a released stage');
+  assert.equal(instances.at(-1).released, 1);
+}
+
+// 切換服務使用真實 store 與 Scheduler，確認表情計畫與角色身份共用。
+{
+  const clock = new FakeClock();
+  const applied = [];
+  const settled = [];
+  const models = [];
+  let gate = null;
+  let failure = null;
+  const makeModel = () => ({
+    setModelScale(value) { this.scale = value; },
+    setEyeTrackingEnabled(value) { this.tracking = value; },
+    setAutoEffectsEnabled(value) { this.autoEffects = value; },
+    setSpeaking(value) { this.speaking = value; },
+    cancelExpressionAction() {},
+    finishExpressionAction() {},
+    setManualControl() {},
+    resumeAutoBlink() {},
+    applyBasePose(pose) { applied.push(pose); },
+    applyIdlePlan(plan) { settled.push(plan.settlePose); },
+    applyAmbientPlan(plan) { this.ambient = plan; this.ambientApplications = (this.ambientApplications ?? 0) + 1; },
+    enqueueSequence() {},
+  });
+  let active = makeModel();
+  const manager = {
+    getActiveModel: () => active,
+    async loadModel() {
+      if (gate) await gate.promise;
+      if (failure) throw failure;
+      active = makeModel();
+      models.push(active);
+      return active;
+    },
+  };
+  const create = initializer => {
+    let state;
+    const listeners = [];
+    const getState = () => state;
+    const setState = patch => {
+      const previous = state;
+      state = { ...state, ...(typeof patch === 'function' ? patch(state) : patch) };
+      listeners.forEach(listener => listener(state, previous));
+    };
+    state = initializer(setState, getState);
+    return { getState, setState, subscribe: listener => listeners.push(listener) };
+  };
+  const serviceLoad = createLoader({
+    zustand: { create },
+    '../live2d/LAppLive2DManager': { LAppLive2DManager: { getInstance: () => manager } },
+  }, {
+    structuredClone,
+    performance: { now: () => clock.now },
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+  });
+  const { useAppStore: store } = serviceLoad('src/store/appStore.ts');
+  const { switchModel } = serviceLoad('src/services/modelService.ts');
+  assert.equal(store.getState().eyeTrackingEnabled, false, 'autonomous gaze defaults to the calibrated forward target');
+  const plan = makePlan({
+    sequence: [mouthEvent],
+    idlePlan: { enterAfterMs: 700, settlePose: { preset: 'happy_soft', durationSec: 0.3,
+      params: { ...createNeutralTargetParams(), mouthForm: 0.4, blushLevel: 0.2 } } },
+  });
+  const ambient = { type: 'ambient_plan', sequence: 4, state: 'idle', moveMs: 900,
+    target: { headX: 0.2, headY: 0, headZ: 0, bodyX: 0, bodyY: 0, bodyZ: 0, gazeX: 0, gazeY: 0 },
+    breath: { periodSec: 4, amplitude: 0.5, rootAmplitude: 0.02 } };
+  store.setState({ modelLoaded: true, expressionPlan: plan, ambientPlan: ambient,
+    modelScale: 1.2, eyeTrackingEnabled: false, isSpeaking: true });
+  gate = deferred();
+  const switching = switchModel('Rushia_hd');
+  assert.equal(store.getState().modelLoading, true);
+  assert.equal(store.getState().modelLoaded, false);
+  await switchModel('Rushia_hd');
+  gate.resolve();
+  await switching;
+  gate = null;
+  assert.equal(models.length, 1, 'duplicate clicks during loading cannot allocate another model');
+  assert.equal(store.getState().currentModelDirectory, 'Rushia_hd');
+  assert.equal(store.getState().currentModelName, 'Rushia');
+  assert.equal(store.getState().modelLoaded, true);
+  assert.equal(store.getState().modelLoading, false);
+  assert.equal(active.scale, 1.2);
+  assert.equal(active.tracking, false);
+  assert.equal(active.speaking, true);
+  // VM 邊界的原型不同；以同一 realm 的 structured clone 比較完整資料。
+  assert.equal(applied.length, 0, 'switching never replays a completed or interrupted short action');
+  assert.deepEqual(structuredClone(settled.at(-1)), structuredClone(plan.idlePlan.settlePose),
+    'switching restores the current settled emotion');
+  assert.deepEqual(structuredClone(active.ambient), structuredClone(ambient),
+    'switching restores the latest Python autonomous target');
+  store.getState().setAmbientPlan(ambient);
+  store.getState().setAmbientPlan({ ...ambient, sequence: 3 });
+  assert.equal(active.ambientApplications, 1, 'store discards duplicate and stale autonomous sequences');
+  const latestAmbient = { ...ambient, sequence: 5 };
+  store.getState().setAmbientPlan(latestAmbient);
+  assert.equal(active.ambientApplications, 2, 'store forwards each new autonomous sequence once');
+  assert.equal(applied.length, 0, 'autonomous store updates never reapply the current Chat expression plan');
+  assert.deepEqual(structuredClone(store.getState().expressionPlan), structuredClone(plan),
+    'switching must not change shared parameter values');
+  await switchModel('Rushia_hd');
+  await switchModel('../other');
+  assert.equal(models.length, 1);
+
+  failure = new Error('missing texture');
+  await switchModel('Rushia');
+  assert.equal(store.getState().currentModelDirectory, 'Rushia_hd');
+  assert.equal(store.getState().modelLoaded, true);
+  assert.match(store.getState().modelError, /仍使用 Rushia_hd/);
+  assert.equal(applied.length, 0, 'failed switching cannot replay short actions on the original model');
+  assert.deepEqual(structuredClone(active.ambient), structuredClone(latestAmbient),
+    'failed switching keeps the working autonomous target');
+  failure = null;
+  await switchModel('Rushia');
+  assert.equal(store.getState().currentModelDirectory, 'Rushia');
+  assert.equal(store.getState().modelError, null);
+  assert.equal(store.getState().currentModelName, 'Rushia');
+}
+
+// 圖片缺檔須讓 setupTextures 拒絕，避免切換永久停在載入中。
+{
+  const images = [];
+  const textureLoad = createLoader({}, {
+    Image: class { constructor() { images.push(this); } },
+    console: { error() {} },
+  });
+  const { LAppTextureManager } = textureLoad('src/live2d/LAppTextureManager.ts');
+  const textureModel = Object.create(LAppModel.prototype);
+  textureModel._modelHomeDir = '/Resources/Rushia_hd/';
+  textureModel._modelSetting = { getTextureCount: () => 1, getTextureFileName: () => 'missing.png' };
+  textureModel._textureManager = new LAppTextureManager({});
+  const result = textureModel.setupTextures();
+  images[0].onerror();
+  await assert.rejects(result, /無法載入圖片/);
+}
+
+// 真實 LAppModel + Matrix／Mixer；只替換 Core／WebGL 邊界。
+{
+  const { CubismMatrix44 } = load('src/live2d/framework/math/cubismmatrix44.ts');
+  const { CubismModelMatrix } = load('src/live2d/framework/math/cubismmodelmatrix.ts');
+  const defaults = load('src/live2d/framework/cubismdefaultparameterid.ts');
+  const { ParameterMixer } = load('src/live2d/runtime/ParameterMixer.ts');
+  const { FIXATION_JITTER } = load('src/live2d/runtime/AmbientMotion.ts');
+  let now = 10000;
+  let draws = 0;
+  const integrationLoad = createLoader({
+    ...Object.fromEntries(sdkNames.map(name => [`@framework/${name}`, {}])),
+    '@framework/math/cubismmatrix44': { CubismMatrix44 },
+    '@framework/math/cubismmodelmatrix': { CubismModelMatrix },
+    '@framework/cubismdefaultparameterid': defaults,
+    '@framework/live2dcubismframework': { CubismFramework: { getIdManager: () => ({ getId: id => ({ getString: () => id }) }) } },
+    '@framework/model/cubismusermodel': { CubismUserModel: class {} },
+    './LAppTextureManager': { LAppTextureManager: class {} },
+    './LAppDelegate': { LAppDelegate: { getInstance: () => ({ getFrameBuffer: () => null }) } },
+    './LAppPal': { LAppPal: { getDeltaTime: () => 1 / 60, log() {}, printLog() {}, printError() {} } },
+  }, { performance: { now: () => now }, console: { log() {}, warn() {}, error() {} },
+    // 漂移 seed 取自 Math.random；固定後整個整合測試逐幀可重現。
+    Math: Object.assign(Object.create(Math), { random: () => [0.37, 0.81, 0.23, 0.64][draws++ % 4] }) });
+  const { LAppModel: RuntimeModel } = integrationLoad('src/live2d/LAppModel.ts');
+  const ids = [
+    'ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ',
+    'ParamEyeBallX', 'ParamEyeBallY', 'ParamBreath', 'ParamEyeLOpen', 'ParamEyeROpen',
+    'ParamCheek', 'ParamMouthOpenY', 'ParamMouthForm', 'ParamBrowLY', 'ParamBrowRY',
+    'ParamBrowLAngle', 'ParamBrowRAngle', 'ParamBrowLForm', 'ParamBrowRForm', 'ParamBrowLX', 'ParamBrowRX',
+  ];
+  const controlled = ids.slice(0, 8);
+  const values = new Map(ids.map(id => [id, id.endsWith('Open') ? 1 : 0]));
+  const parameterName = id => typeof id === 'string' ? id : id.getString();
+  let saved = new Map(values);
+  let writes = [];
+  let physicsSnapshot = null;
+  let renderedMatrix = null;
+  let meshTop = 0.1;
+  const core = {
+    getParameterCount: () => ids.length,
+    getParameterId: index => ({ getString: () => ids[index] }),
+    getParameterDefaultValue: index => ids[index].endsWith('Open') ? 1 : 0,
+    getParameterMinimumValue: index => ids[index].includes('Angle') ? -30 : -1,
+    getParameterMaximumValue: index => ids[index].includes('Angle') ? 30 : 1,
+    getParameterValueByIndex: index => values.get(ids[index]) ?? 0,
+    getParameterValueById: id => values.get(parameterName(id)) ?? 0,
+    setParameterValueByIndex(index, value) { values.set(ids[index], value); writes.push({ kind: 'mixer', id: ids[index], value }); },
+    setParameterValueById(id, value) { id = parameterName(id); values.set(id, value); writes.push({ kind: 'parameter', id, value }); },
+    addParameterValueById(id, value) {
+      id = parameterName(id);
+      const next = (values.get(id) ?? 0) + value;
+      values.set(id, next); writes.push({ kind: 'source', id, value: next });
+    },
+    loadParameters() { for (const [id, value] of saved) values.set(id, value); },
+    saveParameters() { saved = new Map(values); },
+    update() { writes.push({ kind: 'core' }); },
+    getDrawableCount: () => 1,
+    getDrawableVertexCount: () => 4,
+    getDrawableOpacity: () => 1,
+    getDrawableVertices: () => [-0.1, -0.1, 0.1, -0.1, 0.1, meshTop, -0.1, meshTop],
+  };
+  const runtime = new RuntimeModel();
+  runtime._model = core;
+  runtime._modelMatrix = new CubismModelMatrix(2, 2);
+  runtime._parameterMixer = new ParameterMixer(core);
+  runtime._dragManager = { update() {}, getX: () => 0.8, getY: () => 0.7 };
+  runtime._motionManager = { isFinished: () => true };
+  runtime._physics = { evaluate() {
+    physicsSnapshot = new Map(values);
+    writes.push({ kind: 'physics' });
+  } };
+  runtime.getRenderer = () => ({
+    setRenderState() {}, setMvpMatrix(matrix) { renderedMatrix = matrix; }, drawModel() {},
+  });
+  runtime.setCanvasSize(1280, 800);
+  assert.equal(runtime.getAmbientDiagnostics().pointer, false, 'LAppModel pointer tracking defaults off');
+  assert.equal(typeof runtime.setThinking, 'undefined', 'generation no longer starts a second autonomous animation policy');
+  const plan = { type: 'ambient_plan', sequence: 1, state: 'idle', moveMs: 900,
+    target: { headX: 0.6, headY: -0.25, headZ: 0.3, bodyX: 0.4, bodyY: -0.2, bodyZ: 0.3, gazeX: -0.6, gazeY: 0.2 },
+    breath: { periodSec: 4, amplitude: 0.6, rootAmplitude: 0.04 } };
+  runtime.applyAmbientPlan(plan);
+  const tick = (frames = 1) => {
+    for (let frame = 0; frame < frames; frame++) {
+      now += 1000 / 60;
+      writes = [];
+      runtime.update();
+      assert.ok([...values.values()].every(Number.isFinite), 'complete LAppModel frames keep all Core values finite');
+    }
+  };
+  tick(120);
+  for (const id of controlled) {
+    const final = writes.filter(write => write.id === id);
+    assert.equal(final.filter(write => write.kind === 'mixer').length, 1, `${id} has one final mixer write per frame`);
+    assert.equal(final.at(-1).kind, 'mixer', `${id} is finalized by ParameterMixer`);
+    near(physicsSnapshot.get(id), values.get(id), `${id} enters Physics with its final mixed value`);
+  }
+  assert.ok(writes.findIndex(write => write.kind === 'physics') > writes.findLastIndex(write => write.kind === 'mixer'),
+    'Physics evaluates after controlled channel composition');
+  assert.ok(values.get('ParamAngleX') > 10 && values.get('ParamEyeBallX') < -0.4,
+    'Python targets drive the actual Core head and gaze despite a displaced pointer');
+
+  const matrixBefore = Array.from(runtime.getModelMatrix().getArray());
+  for (let repeat = 0; repeat < 100; repeat++) runtime.updateModelMatrix();
+  assert.deepEqual(Array.from(runtime.getModelMatrix().getArray()), matrixBefore, 'Root is always composed from framing, never accumulated');
+  const projection = new CubismMatrix44();
+  runtime.draw(projection);
+  assert.deepEqual(Array.from(renderedMatrix.getArray()), matrixBefore, 'render uses the current Root model matrix');
+  const matrix = runtime.getModelMatrix();
+  const hitX = matrix.transformX(0);
+  const hitY = matrix.transformY(0);
+  assert.equal(runtime.hitTest(hitX, hitY, 'Body'), true, 'hit testing follows the rendered Root translation');
+  assert.equal(runtime.hitTest(matrix.transformX(0.4), hitY, 'Body'), false, 'hit testing still rejects points outside the rendered mesh');
+  const root = runtime.getAmbientDiagnostics().rootOffset;
+  assert.ok(root > 0 && root < 0.13, 'actual model Root includes the bounded breathing contribution');
+  runtime.setModelPosition(0.1, 0.05);
+  near(runtime.getModelPosition().x, 0.1, 'Root never changes the user X baseline');
+  near(runtime.getModelPosition().y, 0.05, 'Root never changes the user Y baseline');
+  tick();
+  near(runtime.getAmbientDiagnostics().rootOffset,
+    Math.max(0, Math.min(runtime.getAmbientDiagnostics().sample.rootY,
+      (1 - (resolveHalfBodyFraming(1280, 800).y + 0.05 + 0.1 * resolveHalfBodyFraming(1280, 800).scale)) / 2 - 0.02)) * 2,
+    'Root safety recomputes after user movement');
+  const framing = resolveHalfBodyFraming(1280, 800);
+  runtime.setModelPosition(0.1, 0.91 - framing.y - meshTop * framing.scale);
+  tick();
+  near(runtime.getAmbientDiagnostics().rootOffset, 0.05,
+    'current drawable bounds limit Root to the remaining viewport headroom', 1e-6);
+  assert.ok(runtime.getModelMatrix().transformY(meshTop) <= 0.960001,
+    'root translation retains the required top margin');
+  meshTop = 0.3;
+  tick();
+  near(runtime.getAmbientDiagnostics().rootOffset, 0,
+    'a changed animated mesh recomputes the safety limit instead of using a fixed head calibration');
+  meshTop = 0.1;
+  runtime.setModelPosition(0, 0);
+
+  runtime._eyeBlinkIds = ['ParamEyeLOpen', 'ParamEyeROpen'];
+  runtime.pauseAutoBlink();
+  runtime._nativeMotionParameters = new Set(['ParamAngleX', 'ParamEyeBallX', 'ParamBreath', 'ParamEyeLOpen', 'ParamMouthOpenY']);
+  runtime._motionManager = { isFinished: () => false, updateMotion() {
+    core.setParameterValueById('ParamAngleX', 27);
+    core.setParameterValueById('ParamEyeBallX', 0.95);
+    core.setParameterValueById('ParamBreath', 0.9);
+    core.setParameterValueById('ParamEyeLOpen', 0.2);
+    core.setParameterValueById('ParamMouthOpenY', 0.65);
+  } };
+  tick(60);
+  near(values.get('ParamAngleX'), 27, 'native head motion retains the valid Core range beyond autonomous limits', 1e-4);
+  near(values.get('ParamEyeBallX'), 0.95, 'native gaze retains the valid Core range beyond autonomous limits', 1e-7);
+  near(values.get('ParamBreath'), 0.9, 'native breathing ownership suppresses autonomous breath writes');
+  near(values.get('ParamEyeLOpen'), 0.2, 'native eye opening is not overwritten by the blink layer');
+  near(values.get('ParamMouthOpenY'), 0.65, 'native mouth remains in control without active speech');
+  runtime.setSpeaking(true);
+  runtime.setLipSyncValue(0.8);
+  tick();
+  near(values.get('ParamMouthOpenY'), 0.8, 'actual speech mouth playback has explicit priority');
+  runtime.setSpeaking(false);
+  runtime.setLipSyncValue(0);
+  tick();
+  near(values.get('ParamMouthOpenY'), 0.65, 'speech ending releases the mouth back to native motion');
+  runtime._motionManager = { isFinished: () => true };
+  tick(90);
+  // 自主輸出含持續微動（峰值速度數 °/s）；容差只涵蓋 ParameterMixer 約 0.1 秒追隨微動的延遲。
+  const autonomousAngleX = () => runtime._parameterMixer.normalized('ParamAngleX', runtime.getAmbientDiagnostics().sample.headX);
+  near(values.get('ParamAngleX'), autonomousAngleX(), 'finished native motion smoothly releases back to the latest Python target', 0.4);
+  // 自主視線目標約 -0.51；微掃視最多偏 0.12，仍遠離原生／事件的接管值。
+  assert.ok(values.get('ParamEyeBallX') < -0.3, 'finished native gaze releases back to the current autonomous gaze');
+
+  const emotion = { ...createNeutralTargetParams(), mouthForm: 0.45, blushLevel: 0.3, browLY: 0.2,
+    bodyAngleX: 0.25, bodyAngleY: -0.2, bodyAngleZ: 0.15,
+    eyeLOpen: 0.75, eyeROpen: 0.75, eyeBallX: 0.6, mouthOpenBias: 0.8 };
+  const idlePlan = { enterAfterMs: 1000, settlePose: { preset: 'happy_soft', durationSec: 0.3, params: emotion },
+    ambientEnterAfterMs: 1000, ambientSwitchIntervalMs: 500,
+    ambientPlan: { states: [{ kind: 'legacy', params: { mouthForm: -1 } }] } };
+  runtime.applyIdlePlan(idlePlan);
+  runtime.applyBasePose({ preset: 'reaction', durationSec: 3, params: { ...emotion, mouthForm: -0.5,
+    bodyAngleX: 0, bodyAngleY: 0, bodyAngleZ: 0, eyeBallX: 0, eyeBallY: 0 } });
+  runtime.enqueueMicroEvent(mouthEvent);
+  tick(30);
+  const faceOnly = runtime.getAmbientDiagnostics().sample;
+  assert.ok(faceOnly.headX > 0.5 && faceOnly.bodyX > 0.3 && faceOnly.rootY > 0.001,
+    'a face-only expression keeps autonomous head, body and Root activity running');
+  assert.ok(values.get('ParamAngleX') > 10 && values.get('ParamBodyAngleX') > 2,
+    'face-only expression does not claim unrelated Core head/body channels');
+  const timerBefore = runtime._aiBehaviorTimer;
+  const eventsBefore = runtime._activeExpressionEvents;
+  const breathBefore = runtime.getAmbientDiagnostics().sample.breath;
+  runtime.applyAmbientPlan({ ...plan, sequence: 2, target: { ...plan.target, headX: -0.5 } });
+  runtime.applyAmbientMotion(0, now);
+  assert.equal(runtime._aiBehaviorTimer, timerBefore, 'ambient updates cannot restart or cancel a Chat action');
+  assert.equal(runtime._activeExpressionEvents, eventsBefore, 'ambient updates preserve pending explicit events');
+  near(runtime.getAmbientDiagnostics().sample.breath, breathBefore, 'ambient updates preserve the visible breathing phase');
+  runtime.cancelExpressionAction();
+  assert.equal(runtime.getAmbientDiagnostics().action, false);
+  assert.equal(runtime._activeExpressionEvents.length, 0, 'cancel removes short action events');
+  tick(180);
+  near(values.get('ParamMouthForm'), emotion.mouthForm, 'cancel returns to the settled emotion', 1e-7);
+  near(values.get('ParamCheek'), emotion.blushLevel, 'cancel preserves settled blush', 1e-7);
+  near(values.get('ParamMouthOpenY'), 0, 'settle clears transient surprised mouth opening', 1e-7);
+  near(runtime._ambientBase.eyeBallX, 0, 'a past gaze offset cannot redefine the calibrated forward target');
+  const leaningBody = ['ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ'].map(id => values.get(id));
+  runtime.applyIdlePlan({ ...idlePlan, settlePose: { ...idlePlan.settlePose,
+    params: { ...emotion, bodyAngleX: 0, bodyAngleY: 0, bodyAngleZ: 0 } } });
+  tick(120);
+  const neutralBody = ['ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ'].map(id => values.get(id));
+  assert.ok(leaningBody[0] - neutralBody[0] > 0.5 && leaningBody[1] - neutralBody[1] < -0.3 &&
+    leaningBody[2] - neutralBody[2] > 0.2, 'settled body lean remains visible alongside the same autonomous target');
+  runtime.applyIdlePlan(idlePlan);
+  tick(120);
+  const adoptedBase = structuredClone(runtime._ambientBase);
+  runtime.applyBasePose({ preset: 'reaction', durationSec: 1, params: { ...emotion, mouthForm: -0.7 } });
+  runtime.finishExpressionAction();
+  tick(180);
+  near(values.get('ParamMouthForm'), emotion.mouthForm, 'finish preserves the same settled emotion', 1e-7);
+  assert.deepEqual(structuredClone(runtime._ambientBase), adoptedBase,
+    'retired frontend idle timers never replace the settled emotion');
+  runtime.setManualControl(300);
+  assert.ok(runtime._manualUntilMs > now, 'manual controls obtain a bounded runtime ownership window');
+  runtime.setAiBehavior(0, 0.8, 1, 1, 0.3, -0.4);
+  tick(10);
+  assert.ok(values.get('ParamMouthForm') < 0 && values.get('ParamCheek') > 0.5,
+    'the existing manual parameter panel can apply setAiBehavior during its ownership window');
+  tick(120);
+  near(values.get('ParamMouthForm'), emotion.mouthForm, 'manual ownership expiry returns to the settled emotion', 1e-5);
+
+  runtime.applyAmbientPlan({ ...plan, sequence: 3, target: { ...plan.target, headX: 0 } });
+  runtime.setNativeParamOverride('ParamAngleX', 22);
+  const expiryFrames = [];
+  for (let frame = 1; frame <= 302; frame++) {
+    tick();
+    if (frame >= 299) expiryFrames.push({ value: values.get('ParamAngleX'), physics: physicsSnapshot.get('ParamAngleX') });
+  }
+  near(expiryFrames[0].value, 22, 'the native override remains effective before its five-second expiry');
+  near(expiryFrames[0].physics, 22, 'Physics reads the active native override, not the earlier autonomous value');
+  for (let index = 1; index < expiryFrames.length; index++) {
+    assert.ok(expiryFrames[index].value > 16 && Math.abs(expiryFrames[index].value - expiryFrames[index - 1].value) < 3,
+      'override expiry preserves the current rendered position across frames 299–302');
+    near(expiryFrames[index].physics, expiryFrames[index].value, 'released override values remain consistent before Physics');
+  }
+  assert.equal(runtime.getNativeParamOverrides().has('ParamAngleX'), false, 'expired overrides are removed');
+  tick(120);
+  near(values.get('ParamAngleX'), autonomousAngleX(), 'expired native override smoothly returns to the autonomous target', 0.1);
+
+  runtime.setAiBehavior(0, 0, 1, 1, 2, 0, 0, 0, 0, 0, 0, 0, true, 0, 0, 0, 0, 0, 0, 0, 0.8, 0, 0, 0);
+  tick(60);
+  const explicitBreath = values.get('ParamBreath');
+  assert.ok(explicitBreath > 0.7, 'direct setAiBehavior can explicitly claim breathLevel above the default');
+  runtime.cancelExpressionAction();
+  tick();
+  assert.ok(Math.abs(values.get('ParamBreath') - explicitBreath) < 0.25 &&
+    values.get('ParamBreath') > runtime.getAmbientDiagnostics().sample.breath + 0.05,
+    'breath cancellation smoothly releases ownership instead of jumping to the autonomous curve');
+  tick(120);
+  near(values.get('ParamBreath'), runtime.getAmbientDiagnostics().sample.breath,
+    'released breathing follows the continuously running autonomous phase', 0.04);
+
+  saved.set('ParamEyeBallX', 0);
+  saved.set('ParamEyeBallY', 0);
+  runtime.enqueueScheduledMicroEvent({ kind: 'gaze', patch: { eyeBallX: 0.8 }, durationMs: 1500,
+    returnToBase: true }, now + 5000);
+  tick(60);
+  assert.ok(values.get('ParamEyeBallX') < -0.3 && runtime.getAmbientDiagnostics().sample.gazeX < -0.45,
+    'a future queued eye event cannot claim gaze before its scheduled start');
+  tick(270);
+  assert.ok(values.get('ParamEyeBallX') > 0.4, 'the scheduled eye event owns gaze once its active window begins');
+  runtime.cancelExpressionAction();
+  tick(60);
+  assert.ok(values.get('ParamEyeBallX') < -0.3, 'cancelling the eye event smoothly restores the autonomous gaze');
+
+  runtime.setModelPosition(0, 0.88 - framing.y - meshTop * framing.scale);
+  runtime.applyAmbientPlan({ ...plan, sequence: 4, breath: { ...plan.breath, rootAmplitude: 0 },
+    hop: { height: 0.1, durationMs: 1000 } });
+  const boundedHop = [];
+  for (let frame = 0; frame < 60; frame++) {
+    tick();
+    boundedHop.push(runtime.getAmbientDiagnostics().rootOffset);
+  }
+  assert.ok(Math.max(...boundedHop) > 0.03 && Math.max(...boundedHop) <= 0.080001,
+    'the full hop is scaled into the available viewport height');
+  assert.ok(boundedHop.filter(value => value >= 0.079999).length <= 3,
+    'viewport fitting must not turn a one-second hop into a long clipped ceiling plateau');
+  runtime.applyAmbientPlan({ ...plan, sequence: 5, breath: { ...plan.breath, rootAmplitude: 0.08 } });
+  tick(180);
+  const boundedBreath = [];
+  for (let frame = 0; frame < 240; frame++) {
+    tick();
+    boundedBreath.push(runtime.getAmbientDiagnostics().rootOffset);
+  }
+  assert.ok(Math.max(...boundedBreath) > 0.06 && Math.max(...boundedBreath) <= 0.080001,
+    'large root breathing keeps its full waveform within the visible height budget');
+  assert.ok(boundedBreath.filter(value => value >= 0.079999).length <= 3,
+    'large root breathing must not flatten against the viewport ceiling');
+
+  const beforeHopRoot = runtime.getAmbientDiagnostics().rootOffset;
+  runtime.applyAmbientPlan({ ...plan, sequence: 6, hop: { height: 0.1, durationMs: 1000 } });
+  runtime.applyAmbientMotion(0, now);
+  runtime.limitRootToViewport(0);
+  runtime.updateModelMatrix();
+  near(runtime.getAmbientDiagnostics().rootOffset, beforeHopRoot,
+    'a new hop envelope cannot instantly rescale ongoing root breathing');
+  tick(15);
+  assert.ok(runtime.getAmbientDiagnostics().rootOffset > 0.02, 'offline inheritance is exercised during a visible hop');
+  const beforeHopCancel = runtime.getAmbientDiagnostics().rootOffset;
+  runtime.applyAmbientPlan({ ...plan, sequence: 7, state: 'listening' });
+  runtime.applyAmbientMotion(0, now);
+  runtime.limitRootToViewport(0);
+  runtime.updateModelMatrix();
+  near(runtime.getAmbientDiagnostics().rootOffset, beforeHopCancel,
+    'listening cancellation preserves the root breathing and hop handoff height');
+  runtime.disconnectAmbient();
+  runtime.applyAmbientMotion(0, now);
+  runtime.limitRootToViewport(0);
+  near(runtime.getAmbientDiagnostics().rootOffset, beforeHopCancel,
+    'disconnecting a hop does not jump the root breathing envelope');
+  assert.equal(runtime.getAmbientDiagnostics().active, true, 'disconnect retains initialized basic breathing');
+  const replacement = new RuntimeModel();
+  assert.notEqual(replacement._ambientMotion.seed, runtime._ambientMotion.seed,
+    'each model load gets its own drift seed');
+  replacement.inheritAmbientBaseline(runtime);
+  assert.equal(replacement.getAmbientDiagnostics().active, true, 'offline replacement keeps the basic runtime initialized');
+  assert.deepEqual(structuredClone(replacement._ambientBase), structuredClone(runtime._ambientBase),
+    'offline replacement retains the settled emotion and body baseline');
+  assert.notEqual(replacement._ambientBase, runtime._ambientBase, 'resource instances do not share a mutable settled pose');
+  near(replacement._ambientMotion.update(0, now, true).rootY, 0, 'offline replacement never replays the previous hop');
+  let replacementSample;
+  for (let frame = 1; frame <= 60; frame++) replacementSample = replacement._ambientMotion.update(1 / 60, now + frame * 1000 / 60, true);
+  assert.ok(replacementSample.breath > 0 && replacementSample.rootY <= 0.006,
+    'offline replacement continues basic breathing without a new Python plan');
+
+  // 八方向都必須到達最後的眼球參數，不能只在 payload 裡有 gazeY。
+  runtime.cancelExpressionAction();
+  runtime.setEyeTrackingEnabled(false);
+  const settledBeforeGaze = structuredClone(runtime._ambientBase);
+  const gazeDirections = [
+    ['left', -0.6, 0], ['right', 0.6, 0],
+    ['up', 0, 1], ['down', 0, -1],
+    ['upper_left', -0.8, 1], ['upper_right', 0.8, 1],
+    ['lower_left', -0.8, -1], ['lower_right', 0.8, -1],
+  ];
+  for (const [index, [name, x, y]] of gazeDirections.entries()) {
+    runtime.applyAmbientPlan({ ...plan, sequence: 100 + index,
+      target: { ...plan.target, gazeX: x, gazeY: y } });
+    tick(60);
+    // 注視中的微掃視最多偏離目標 FIXATION_JITTER。
+    near(values.get('ParamEyeBallX'), x * 0.85, `${name} reaches final eye X`, FIXATION_JITTER);
+    near(values.get('ParamEyeBallY'), y, `${name} reaches the stronger final eye Y`, FIXATION_JITTER);
+    near(physicsSnapshot.get('ParamEyeBallY'), values.get('ParamEyeBallY'),
+      `${name} vertical gaze survives the complete frame`, 1e-6);
+  }
+  runtime.applyAmbientPlan({ ...plan, sequence: 108, state: 'listening',
+    target: { ...plan.target, gazeX: 0, gazeY: 0 } });
+  tick(60);
+  near(values.get('ParamEyeBallX'), 0, 'listening returns X to calibrated forward', FIXATION_JITTER);
+  near(values.get('ParamEyeBallY'), 0, 'listening returns Y to calibrated forward', FIXATION_JITTER);
+  assert.deepEqual(structuredClone(runtime._ambientBase), settledBeforeGaze,
+    'eight-direction glances preserve the settled emotion and body baseline');
+  runtime.setEyeTrackingEnabled(true);
+  tick(60);
+  near(values.get('ParamEyeBallX'), 0.8 * 0.55 * 0.85, 'pointer horizontal amplitude remains unchanged', 1e-6);
+  near(values.get('ParamEyeBallY'), 0.7 * 0.45 * 0.85, 'stronger autonomous Y preserves pointer amplitude', 1e-6);
+  runtime.setEyeTrackingEnabled(false);
+  tick(60);
+  near(values.get('ParamEyeBallY'), 0, 'pointer release returns to calibrated autonomous gaze', FIXATION_JITTER);
+  const smallerEyeRange = new ParameterMixer({ ...core,
+    getParameterMinimumValue: index => ids[index] === 'ParamEyeBallY' ? -0.6 : core.getParameterMinimumValue(index),
+    getParameterMaximumValue: index => ids[index] === 'ParamEyeBallY' ? 0.7 : core.getParameterMaximumValue(index),
+  });
+  near(smallerEyeRange.normalized('ParamEyeBallY', 1), 0.7, 'stronger Y still intersects the model upper bound');
+  near(smallerEyeRange.normalized('ParamEyeBallY', -1), -0.6, 'stronger Y still intersects the model lower bound');
+  near(smallerEyeRange.write('ParamEyeBallY', 2, 0, true), 0.7, 'oversized Y is clamped before Core');
+}
+
+// Python 自主計畫只由前端連續執行；驗證真實 guard、曲線與收尾，不複製 runtime。
+{
+  const { isAmbientPlan } = load('src/types/ambientPlan.ts');
+  const { AmbientMotion, clampRootY, FIXATION_JITTER } = load('src/live2d/runtime/AmbientMotion.ts');
+  const { ParameterMixer: RigMixer } = load('src/live2d/runtime/ParameterMixer.ts');
+  const ambientPlan = (overrides = {}) => ({
+    type: 'ambient_plan', sequence: 1, state: 'idle', moveMs: 900,
+    target: { headX: 0.8, headY: -0.4, headZ: 0.6, bodyX: 0.3, bodyY: -0.2, bodyZ: 0.5, gazeX: -0.6, gazeY: 0.2 },
+    breath: { periodSec: 4.8, amplitude: 0.7, rootAmplitude: 0.04 }, ...overrides,
+  });
+  assert.equal(isAmbientPlan(ambientPlan()), true);
+  for (const malformed of [
+    { sequence: 0 }, { sequence: -1 }, { sequence: 1.5 }, { sequence: Infinity },
+    { moveMs: 299 }, { moveMs: 3001 }, { state: 'speaking' },
+    { target: { ...ambientPlan().target, gazeX: NaN } },
+    { target: { ...ambientPlan().target, headY: 1.1 } },
+    { target: { headX: 0 } },
+    { breath: { periodSec: 2, amplitude: 0.5, rootAmplitude: 0.01 } },
+    { breath: { periodSec: 4, amplitude: Infinity, rootAmplitude: 0.01 } },
+    { breath: { periodSec: 4, amplitude: 0.5, rootAmplitude: 0.081 } },
+    { hop: { height: 0.121, durationMs: 800 } },
+    { hop: { height: 0.1, durationMs: 1601 } },
+  ]) assert.equal(isAmbientPlan(ambientPlan(malformed)), false, `invalid ambient payload ${JSON.stringify(malformed)}`);
+  const advanceAmbient = (runtime, rate, startMs, seconds, enabled = true, body = 1, gaze = 1) => {
+    let sample;
+    for (let frame = 1; frame <= Math.round(rate * seconds); frame++) {
+      sample = runtime.update(1 / rate, startMs + frame * 1000 / rate, enabled, body, gaze);
+      assert.ok(Object.values(sample).every(Number.isFinite), 'ambient samples stay finite');
+      assert.ok(sample.breath >= 0 && sample.breath <= 1 && sample.rootY >= 0 && sample.rootY <= 0.2);
+    }
+    return sample;
+  };
+  const samples = [30, 60, 120].map(rate => {
+    const runtime = new AmbientMotion();
+    runtime.apply(ambientPlan({ breath: { periodSec: 3.4, amplitude: 0.7, rootAmplitude: 0.04 } }), 0);
+    return advanceAmbient(runtime, rate, 0, 2);
+  });
+  for (const sample of samples.slice(1)) {
+    near(sample.headX, samples[0].headX, 'head trajectory is frame-rate independent', 1e-7);
+    near(sample.gazeX, samples[0].gazeX, 'gaze trajectory is frame-rate independent', 1e-7);
+    near(sample.breath, samples[0].breath, 'breath phase is frame-rate independent', 1e-6);
+    near(sample.rootY, samples[0].rootY, 'root does not accumulate across frame rates', 1e-6);
+  }
+  const rapidGaze = [30, 60, 120].map(rate => {
+    const runtime = new AmbientMotion();
+    runtime.apply(ambientPlan({ moveMs: 2400, target: { ...ambientPlan().target, headX: 0.85, gazeX: 0.85 } }), 0);
+    const sample = advanceAmbient(runtime, rate, 0, 0.2);
+    assert.ok(sample.gazeX > 0.8 && sample.headX < 0.1,
+      'gaze reaches its independent short movement before a slow head/body move');
+    return sample;
+  });
+  for (const sample of rapidGaze.slice(1)) near(sample.gazeX, rapidGaze[0].gazeX,
+    'independent rapid gaze stays continuous at 30/60/120 Hz', 1e-8);
+  const layeredMotion = [30, 60, 120].map(rate => {
+    // 同 seed、目標為零的對照組：相減後只剩目標造成的進度，漂移與微掃視互相抵消。
+    const runtime = new AmbientMotion();
+    const rest = new AmbientMotion();
+    const moving = ambientPlan({ moveMs: 1200,
+      target: { ...ambientPlan().target, headX: 0.8, bodyX: 0.8, gazeX: 0.8 } });
+    runtime.apply(moving, 0);
+    rest.apply(ambientPlan({ moveMs: 1200, target: { ...moving.target, headX: 0, bodyX: 0, gazeX: 0 } }), 0);
+    const sample = advanceAmbient(runtime, rate, 0, 0.5);
+    const base = advanceAmbient(rest, rate, 0, 0.5);
+    const progress = axis => sample[axis] - base[axis];
+    assert.ok(progress('gazeX') > progress('headX') + 0.2 && progress('headX') > progress('bodyX') + 0.05,
+      'eyes arrive before the head and the slower torso at each frame rate');
+    return sample;
+  });
+  for (const sample of layeredMotion.slice(1)) near(sample.bodyX, layeredMotion[0].bodyX,
+    'slower torso timing stays frame-rate independent', 1e-8);
+  const quiet = new AmbientMotion();
+  const unfocused = new AmbientMotion();
+  const quietTarget = { ...ambientPlan().target, headX: 0.4, bodyZ: -0.3 };
+  quiet.apply(ambientPlan({ target: quietTarget }), 0);
+  unfocused.apply(ambientPlan({ target: quietTarget }), 0);
+  const settled = advanceAmbient(quiet, 60, 0, 6);
+  advanceAmbient(unfocused, 60, 0, 6);
+  quiet.apply(ambientPlan({ sequence: 2, target: { ...quietTarget, gazeX: 0.025 } }), 6000);
+  const refocused = advanceAmbient(quiet, 60, 6000, 0.5);
+  const unchanged = advanceAmbient(unfocused, 60, 6000, 0.5);
+  // 微動照常進行；同一時間線上，重新對焦不得改變頭身軌跡。
+  near(refocused.headX, unchanged.headX, 'a quiet refocus does not restart a settled head', 1e-8);
+  near(refocused.bodyZ, unchanged.bodyZ, 'a quiet refocus preserves a settled torso', 1e-7);
+  assert.ok(Math.abs(refocused.headX - settled.headX) > 1e-4,
+    'settled head keeps a subtle continuous drift instead of freezing');
+  // 同 seed 的微掃視兩邊相同，差值就是重新對焦的距離。
+  near(refocused.gazeX - unchanged.gazeX, 0.025 - quietTarget.gazeX,
+    'quiet refocus moves only the shared small gaze target', 1e-9);
+  assert.ok(Math.abs(refocused.breath - settled.breath) > 0.01,
+    'quiet posture holds retain the running breathing phase');
+  const shortBody = new AmbientMotion();
+  shortBody.apply(ambientPlan({ moveMs: 300, target: { ...ambientPlan().target, gazeX: 0.85 } }), 0);
+  near(advanceAmbient(shortBody, 60, 0, 0.2).gazeX, rapidGaze[1].gazeX,
+    'body moveMs does not change gaze timing');
+  // 頭身移動途中只換眼神，不得重排或改變尚未完成的頭身曲線。
+  const moving = new AmbientMotion();
+  const unchangedMove = new AmbientMotion();
+  for (const runtime of [moving, unchangedMove]) {
+    runtime.apply(ambientPlan({ moveMs: 1500 }), 0);
+    advanceAmbient(runtime, 60, 0, 0.5);
+  }
+  moving.apply(ambientPlan({ sequence: 2, moveMs: 600,
+    target: { ...ambientPlan().target, gazeX: 0.3, gazeY: -0.2 } }), 500);
+  const glanced = advanceAmbient(moving, 60, 500, 0.5);
+  const unglanced = advanceAmbient(unchangedMove, 60, 500, 0.5);
+  for (const axis of ['headX', 'headY', 'headZ', 'bodyX', 'bodyY', 'bodyZ']) {
+    near(glanced[axis], unglanced[axis], `mid-motion gaze-only plan keeps the ${axis} trajectory`, 1e-9);
+  }
+  // 對照組沿用 ambientPlan() 的原視線目標，同 seed 的微掃視相同，差值就是新舊目標的距離。
+  const baseTarget = ambientPlan().target;
+  near(glanced.gazeX - unglanced.gazeX, 0.3 - baseTarget.gazeX, 'gaze-only plan still moves the eyes in X', 1e-9);
+  near(glanced.gazeY - unglanced.gazeY, -0.2 - baseTarget.gazeY, 'gaze-only plan still moves the eyes in Y', 1e-9);
+  // 眼睛立即移動；頭 80 ms、身體 200 ms 後才離開原曲線。
+  const staged = new AmbientMotion();
+  const resting = new AmbientMotion();
+  staged.apply(ambientPlan({ moveMs: 1000, target: { ...ambientPlan().target, headX: 0.8, bodyX: 0.8 } }), 0);
+  const stageAt = (seconds, startMs) => [advanceAmbient(staged, 1000, startMs, seconds),
+    advanceAmbient(resting, 1000, startMs, seconds)];
+  let [stagedSample, restingSample] = stageAt(0.07, 0);
+  assert.ok(stagedSample.gazeX < -0.1, 'eyes start moving immediately');
+  near(stagedSample.headX, restingSample.headX, 'head waits for its onset lag', 1e-12);
+  near(stagedSample.bodyX, restingSample.bodyX, 'torso waits for its onset lag', 1e-12);
+  [stagedSample, restingSample] = stageAt(0.08, 70);
+  assert.ok(stagedSample.headX > restingSample.headX + 1e-4, 'head starts after the eyes');
+  near(stagedSample.bodyX, restingSample.bodyX, 'torso starts after the head', 1e-12);
+  [stagedSample, restingSample] = stageAt(0.1, 150);
+  assert.ok(stagedSample.bodyX > restingSample.bodyX + 1e-5, 'torso starts last');
+  // 移動中換向：延遲期間沿用原曲線，位置與速度都不中斷。
+  const turning = new AmbientMotion();
+  const continuing = new AmbientMotion();
+  for (const runtime of [turning, continuing]) {
+    runtime.apply(ambientPlan({ moveMs: 1500 }), 0);
+    advanceAmbient(runtime, 1000, 0, 0.5);
+  }
+  turning.apply(ambientPlan({ sequence: 2, target: { ...ambientPlan().target, headX: -0.8, bodyX: -0.8 } }), 500);
+  const turnedEarly = advanceAmbient(turning, 1000, 500, 0.06);
+  const continuedEarly = advanceAmbient(continuing, 1000, 500, 0.06);
+  near(turnedEarly.headX, continuedEarly.headX, 'a mid-motion retarget keeps head velocity during its lag', 1e-12);
+  near(turnedEarly.bodyX, continuedEarly.bodyX, 'a mid-motion retarget keeps torso velocity during its lag', 1e-12);
+  // 預設計畫 headZ=0.6 會依 TILT_FACE 把臉往同向帶，終點是 -0.8 加上耦合量。
+  const { TILT_FACE } = load('src/live2d/runtime/AmbientMotion.ts');
+  assert.ok(advanceAmbient(turning, 60, 560, 2.5).headX < -0.8 + TILT_FACE.x * 0.6 + 0.1,
+    'the lagged retarget still reaches the new target');
+  const steady = new AmbientMotion();
+  const refreshed = new AmbientMotion();
+  steady.apply(ambientPlan(), 0);
+  refreshed.apply(ambientPlan(), 0);
+  advanceAmbient(steady, 60, 0, 1);
+  advanceAmbient(refreshed, 60, 0, 1);
+  assert.equal(refreshed.apply(ambientPlan(), 1000), false, 'duplicate plan cannot restart a trajectory');
+  assert.equal(refreshed.apply(ambientPlan({ sequence: 2 }), 1000), true);
+  const oldSample = advanceAmbient(steady, 60, 1000, 1);
+  const refreshedSample = advanceAmbient(refreshed, 60, 1000, 1);
+  near(refreshedSample.breath, oldSample.breath, 'new plans preserve the breathing phase');
+  near(refreshedSample.headX, oldSample.headX, 'new plans preserve current position and velocity');
+  assert.equal(refreshed.apply(ambientPlan({ sequence: 1 }), 2000), false, 'stale plans must be discarded');
+  assert.equal(refreshed.apply(ambientPlan({ sequence: 3 }), NaN), false, 'invalid timestamps must be rejected');
+  refreshed.apply(ambientPlan({ sequence: 3, target: { ...ambientPlan().target, headX: -0.8 } }), 2000);
+  near(refreshed.update(0, 2000, true).headX, refreshedSample.headX,
+    'opposite targets start from the current rendered position');
+  assert.ok(advanceAmbient(refreshed, 60, 2000, 2).headX < -0.8 + TILT_FACE.x * 0.6 + 0.1,
+    'an interrupted trajectory reaches the new target without resetting the runtime');
+  assert.ok(Object.values(refreshed.update(NaN, Infinity, true, Infinity, NaN)).every(Number.isFinite),
+    'invalid local timing or weights cannot poison future frames');
+
+  // 歪頭連動：headZ 的曲線值帶動同向 headX 與一律抬起的 headY（與同 seed、headZ=0 的對照組相減）。
+  {
+    const zero = { headX: 0, headY: 0, headZ: 0, bodyX: 0, bodyY: 0, bodyZ: 0, gazeX: 0, gazeY: 0 };
+    const tiltFace = (z) => {
+      const tilted = new AmbientMotion(5);
+      const control = new AmbientMotion(5);
+      tilted.apply(ambientPlan({ moveMs: 1500, target: { ...zero, headZ: z } }), 0);
+      control.apply(ambientPlan({ moveMs: 1500, target: zero }), 0);
+      const a = advanceAmbient(tilted, 60, 0, 4);
+      const b = advanceAmbient(control, 60, 0, 4);
+      return { x: a.headX - b.headX, y: a.headY - b.headY, z: a.headZ - b.headZ };
+    };
+    const right = tiltFace(0.6);
+    const left = tiltFace(-0.6);
+    assert.ok(right.z > 0.4 && left.z < -0.4, 'both tilts reach their roll target');
+    assert.ok(right.x > 0.15 && left.x < -0.15, `the face turns with the tilt: ${right.x}, ${left.x}`);
+    assert.ok(right.y > 0.1 && left.y > 0.1, `either tilt lifts the chin slightly: ${right.y}, ${left.y}`);
+    near(right.x, TILT_FACE.x * right.z, 'face turn follows the roll curve', 0.06);
+    near(right.y, TILT_FACE.y * Math.abs(right.z), 'chin lift follows the roll curve', 0.06);
+    assert.ok(Math.abs(tiltFace(0).x) < 0.02 && Math.abs(tiltFace(0).y) < 0.02, 'no tilt, no coupling');
+  }
+
+  // 確定性漂移：同 seed 逐幀相同、換 seed 就不同；停住時持續微動且幅度有界。
+  const traceOf = (seed, plan = ambientPlan(), frames = 600) => {
+    const runtime = new AmbientMotion(seed);
+    runtime.apply(plan, 0);
+    return Array.from({ length: frames }, (_, index) => runtime.update(1 / 60, (index + 1) * 1000 / 60, true));
+  };
+  assert.deepEqual(traceOf(1234), traceOf(1234), 'the same seed reproduces every frame');
+  assert.ok(traceOf(1234).some((sample, index) => Math.abs(sample.headX - traceOf(4321)[index].headX) > 0.01),
+    'a different seed produces a different drift');
+  {
+    const zero = ambientPlan({ target: Object.fromEntries(Object.keys(ambientPlan().target).map(axis => [axis, 0])) });
+    const hold = traceOf(7, zero, 60 * 120);
+    const degrees = { headX: 35, headY: 24, headZ: 23 };
+    let slow = 0;
+    for (let index = 1; index < hold.length; index++) {
+      const speed = Math.hypot(...Object.entries(degrees).map(([axis, limit]) =>
+        (hold[index][axis] - hold[index - 1][axis]) * limit * 60));
+      if (speed < 1) slow += 1;
+    }
+    assert.ok(slow / hold.length < 0.4, 'a held pose keeps moving instead of freezing (head under 1 deg/s < 40% of the time)');
+    assert.ok(hold.every(sample => Math.abs(sample.headX) < 0.25 && Math.abs(sample.headY) < 0.25 && Math.abs(sample.bodyX) < 0.3),
+      'held-pose drift stays within a small bounded amplitude');
+    assert.ok(Math.max(...hold.map(sample => sample.headX)) - Math.min(...hold.map(sample => sample.headX)) > 0.05,
+      'held-pose drift is large enough to read as motion');
+  }
+  // 掃視：90% 到位 <= 90 ms（不含 mixer），而且不是瞬移。
+  {
+    const still = Object.fromEntries(Object.keys(ambientPlan().target).map(axis => [axis, 0]));
+    const saccade = new AmbientMotion(9);
+    const control = new AmbientMotion(9);
+    saccade.apply(ambientPlan({ target: still }), 0);
+    control.apply(ambientPlan({ target: still }), 0);
+    let reached = null;
+    for (let ms = 1; ms <= 2200; ms++) {
+      if (ms === 2000) saccade.apply(ambientPlan({ sequence: 2, target: { ...still, gazeX: 0.6 } }), 2000);
+      const progress = (saccade.update(0.001, ms, true).gazeX - control.update(0.001, ms, true).gazeX) / 0.6;
+      if (ms > 2000 && reached === null && progress >= 0.9) reached = ms - 2000;
+    }
+    assert.ok(reached !== null && reached >= 25 && reached <= 90,
+      `a 0.6 saccade reaches 90% quickly but not instantly (${reached} ms)`);
+  }
+  // 注視中的微掃視：偏離目標有明確上限，而且確實看得到。
+  {
+    const fixation = traceOf(3, ambientPlan({ target: { ...ambientPlan().target, gazeX: 0.3, gazeY: 0 } }), 60 * 30);
+    const offsets = fixation.slice(60).map(sample => Math.hypot(sample.gazeX - 0.3, sample.gazeY));
+    assert.ok(Math.max(...offsets) <= FIXATION_JITTER + 1e-9, 'fixation jitter never exceeds its limit');
+    assert.ok(offsets.filter(offset => offset > 0.03).length > 200, 'fixation jitter is large enough to see');
+  }
+  // 頭部過衝：扣掉同 seed 的漂移後，步階目標有小幅過衝，並在合理時間內到位。
+  {
+    const still = Object.fromEntries(Object.keys(ambientPlan().target).map(axis => [axis, 0]));
+    const stepping = new AmbientMotion(5);
+    const control = new AmbientMotion(5);
+    stepping.apply(ambientPlan({ moveMs: 1000, target: { ...still, headX: 0.4 } }), 0);
+    control.apply(ambientPlan({ moveMs: 1000, target: still }), 0);
+    let peak = 0;
+    let arrived = null;
+    let progress = 0;
+    for (let frame = 1; frame <= 60 * 8; frame++) {
+      const ms = frame * 1000 / 60;
+      progress = stepping.update(1 / 60, ms, true).headX - control.update(1 / 60, ms, true).headX;
+      peak = Math.max(peak, progress);
+      if (arrived === null && progress >= 0.9 * 0.4) arrived = ms;
+    }
+    assert.ok(peak > 0.4 * 1.02 && peak < 0.4 * 1.15, `head overshoots a step slightly (${(peak / 0.4 - 1).toFixed(3)})`);
+    assert.ok(arrived <= 1100, `head follow does not delay arrival (${arrived} ms for a 1000 ms move)`);
+    near(progress, 0.4, 'head settles exactly on its target after the overshoot', 1e-4);
+  }
+  // 出發／歸位的兩段軌跡：過衝與微彈的大小與移動時間無關；歪頭另有峰速上限與持住沉回。
+  {
+    const still = Object.fromEntries(Object.keys(ambientPlan().target).map(axis => [axis, 0]));
+    // 與同 seed、目標為零的對照組相減，扣掉漂移；前 5 秒走出發，之後換成零目標走歸位。
+    const shape = (axis, amplitude, moveMs) => {
+      const moving = new AmbientMotion(5);
+      const control = new AmbientMotion(5);
+      moving.apply(ambientPlan({ moveMs, target: { ...still, [axis]: amplitude } }), 0);
+      control.apply(ambientPlan({ moveMs, target: still }), 0);
+      const up = [];
+      const down = [];
+      for (let frame = 1; frame <= 60 * 10; frame++) {
+        const ms = frame * 1000 / 60;
+        if (frame === 60 * 5) {
+          moving.apply(ambientPlan({ sequence: 2, moveMs, target: still }), ms);
+          control.apply(ambientPlan({ sequence: 2, moveMs, target: still }), ms);
+        }
+        (frame <= 60 * 5 ? up : down).push(moving.update(1 / 60, ms, true)[axis] - control.update(1 / 60, ms, true)[axis]);
+      }
+      return { up, down };
+    };
+    const firstAtOrAbove = (values, level) => values.findIndex(value => value >= level) / 60;
+    for (const moveMs of [800, 1600]) {
+      const { up, down } = shape('headX', 0.4, moveMs);
+      const overshoot = Math.max(...up) / 0.4 - 1;
+      const bounce = -Math.min(...down) / 0.4;
+      assert.ok(overshoot > 0.04 && overshoot < 0.07, `departure overshoots about 5% at ${moveMs} ms (${overshoot.toFixed(3)})`);
+      assert.ok(bounce > 0.02 && bounce < 0.04, `return only bounces about 3% at ${moveMs} ms (${bounce.toFixed(3)})`);
+      near(up.at(-1), 0.4, 'a departure settles exactly on its target without sag on yaw', 1e-6);
+      near(down.at(-1), 0, 'a return settles exactly on neutral', 1e-6);
+    }
+    // 歪頭：峰速不超過上限、歸位比出發更慢、持住時沉回一點；小幅歪頭幾乎不沉回。
+    const tilt = shape('headZ', 0.8, 900);
+    const tiltSpeed = Math.max(...tilt.up.slice(1).map((value, index) => Math.abs(value - tilt.up[index]) * 60 * 23));
+    assert.ok(tiltSpeed < 21, `an 18 degree tilt stays under the roll speed cap (${tiltSpeed.toFixed(1)} deg/s)`);
+    assert.ok(firstAtOrAbove(tilt.down.map(value => -value), -0.08) > firstAtOrAbove(tilt.up, 0.72),
+      'returning from a tilt takes longer than tilting');
+    const sag = 1 - tilt.up.at(-1) / 0.8;
+    assert.ok(sag > 0.08 && sag < 0.2, `a held tilt sags back a little (${sag.toFixed(3)})`);
+    const slightTilt = shape('headZ', 0.04, 900);
+    assert.ok(Math.abs(1 - slightTilt.up.at(-1) / 0.04) < 0.5, 'a slight tilt is not sagged');
+    // 回彈途中換目標：位置不跳。
+    const bouncing = new AmbientMotion(5);
+    bouncing.apply(ambientPlan({ moveMs: 1200, target: { ...still, headX: 0.4 } }), 0);
+    for (let frame = 1; frame <= 90; frame++) bouncing.update(1 / 60, frame * 1000 / 60, true);
+    const mid = bouncing.update(1 / 60, 1510, true);
+    bouncing.apply(ambientPlan({ sequence: 2, moveMs: 1200, target: { ...still, headX: -0.3 } }), 1510);
+    near(bouncing.update(0, 1510, true).headX, mid.headX, 'retargeting during the bounce keeps the position', 1e-4);
+  }
+  {
+    // 以 rig 實際範圍建立 mixer，驗證轉頭上限與眼球追隨速度。
+    const rigRanges = { ParamAngleX: 45, ParamAngleY: 30, ParamAngleZ: 30,
+      ParamBodyAngleX: 10, ParamBodyAngleY: 10, ParamBodyAngleZ: 10, ParamEyeBallX: 1, ParamEyeBallY: 1 };
+    const rigIds = Object.keys(rigRanges);
+    const rigValues = new Map(rigIds.map(id => [id, 0]));
+    const mixer = new RigMixer({
+      getParameterCount: () => rigIds.length, getParameterId: index => ({ getString: () => rigIds[index] }),
+      getParameterDefaultValue: () => 0, getParameterMinimumValue: index => -rigRanges[rigIds[index]],
+      getParameterMaximumValue: index => rigRanges[rigIds[index]],
+      getParameterValueByIndex: index => rigValues.get(rigIds[index]),
+      setParameterValueByIndex: (index, value) => rigValues.set(rigIds[index], value),
+    });
+    near(mixer.normalized('ParamAngleX', 1), 35, 'autonomous yaw uses 35 of the rig 45 degrees');
+    near(mixer.normalized('ParamAngleY', -1), -24, 'autonomous pitch uses 24 of the rig 30 degrees');
+    near(mixer.normalized('ParamAngleZ', 1), 23, 'autonomous roll range is unchanged');
+    near(mixer.normalized('ParamBodyAngleX', 1), 8, 'autonomous body range is unchanged');
+    let eye = 0;
+    for (let frame = 0; frame < 3; frame++) eye = mixer.write('ParamEyeBallX', 1, 1 / 60);
+    const eyeGoal = mixer.normalized('ParamEyeBallX', 1);
+    assert.ok(eye >= 0.9 * eyeGoal, `the eye mixer follows a saccade within 50 ms (${(eye / eyeGoal).toFixed(3)})`);
+  }
+
+  const hopping = new AmbientMotion();
+  const noRootBreath = { periodSec: 4.8, amplitude: 0.5, rootAmplitude: 0 };
+  hopping.apply(ambientPlan({ breath: noRootBreath, hop: { height: 0.1, durationMs: 1000 } }), 0);
+  const rising = advanceAmbient(hopping, 120, 0, 0.25);
+  assert.ok(rising.rootY > 0.02, 'hop must visibly rise');
+  hopping.apply(ambientPlan({ sequence: 2, state: 'listening', breath: noRootBreath }), 250);
+  const atHandoff = hopping.update(0, 250, true);
+  near(atHandoff.rootY, rising.rootY, 'listening cancellation must not teleport the root');
+  const landed = advanceAmbient(hopping, 120, 250, 1);
+  assert.ok(landed.rootY < 0.0001, 'listening must finish the current hop while root breathing settles');
+  hopping.apply(ambientPlan({ sequence: 3, state: 'listening', breath: noRootBreath, hop: { height: 0.1, durationMs: 1000 } }), 1250);
+  near(advanceAmbient(hopping, 60, 1250, 1).rootY, 0, 'listening never starts a new hop', 1e-6);
+
+  const disconnected = new AmbientMotion();
+  disconnected.apply(ambientPlan({ hop: { height: 0.1, durationMs: 1000 } }), 0);
+  const beforeDisconnect = advanceAmbient(disconnected, 120, 0, 0.25);
+  disconnected.disconnect(250);
+  near(disconnected.update(0, 250, true).rootY, beforeDisconnect.rootY, 'disconnect preserves root continuity');
+  const offline = advanceAmbient(disconnected, 120, 250, 2);
+  assert.ok(offline.rootY <= 0.0061, 'disconnected runtime retains only basic root breathing');
+  assert.ok(offline.breath > 0, 'basic breathing survives disconnect');
+  assert.equal(disconnected.apply(ambientPlan(), 2250), true, 'a new connection may restart sequence numbering');
+  const disabled = advanceAmbient(disconnected, 60, 2250, 2, false);
+  assert.ok(Math.abs(disabled.headX) < 1e-4 && disabled.rootY < 1e-4, 'disable smoothly settles all contributions');
+  const weighted = advanceAmbient(disconnected, 60, 4250, 1, true, 0, 0);
+  assert.ok(Math.abs(weighted.headX) < 1e-4 && Math.abs(weighted.gazeX) < 1e-4 && weighted.rootY < 1e-4,
+    'explicit action owners can suppress body and gaze without stopping the runtime');
+  assert.ok(advanceAmbient(disconnected, 60, 5250, 1).headX > 0.6, 'ownership release smoothly returns to the current plan');
+
+  const resumed = new AmbientMotion();
+  resumed.apply(ambientPlan({ hop: { height: 0.1, durationMs: 1000 } }), 0);
+  const beforePause = advanceAmbient(resumed, 60, 0, 0.25);
+  const afterPause = resumed.update(0, 10000, true);
+  near(afterPause.rootY, beforePause.rootY, 'background tab resume keeps the last rendered height');
+  assert.ok(advanceAmbient(resumed, 60, 10000, 1).rootY < 0.041,
+    'background tab resume settles the old hop without replaying it');
+
+  near(clampRootY(0.12, 0.08), 0.06, 'root respects calibrated headroom');
+  near(clampRootY(0.12, 0.01), 0, 'insufficient headroom prevents upward translation');
+  near(clampRootY(0.12, 0.08, 0.04), 0.04, 'root retains the requested top margin');
+  near(clampRootY(NaN, 0.08), 0, 'invalid root offsets are suppressed');
+  near(clampRootY(0.12, Infinity), 0, 'unknown headroom cannot move the root offscreen');
+}
+
+// 真實 canvas 同步服務；只替換分頁通訊、GPU 擷取與時鐘邊界。
+{
+  const clock = new FakeClock();
+  const channels = new Set();
+  const captures = [];
+  const received = [];
+  let captureCount = 0;
+  let receiverCount = 0;
+  class Bitmap {
+    closed = false;
+    constructor(label) { this.label = label; }
+    close() { this.closed = true; }
+  }
+  class Channel {
+    listeners = new Set();
+    closed = false;
+    constructor(name) { this.name = name; channels.add(this); }
+    addEventListener(type, listener) { if (type === 'message') this.listeners.add(listener); }
+    removeEventListener(type, listener) { if (type === 'message') this.listeners.delete(listener); }
+    postMessage(data) {
+      assert.equal(this.closed, false, 'a closed channel cannot send');
+      for (const channel of channels) {
+        if (channel === this || channel.name !== this.name || channel.closed) continue;
+        const clone = data.type === 'frame' ? { ...data, bitmap: new Bitmap(data.bitmap.label) } : { ...data };
+        void Promise.resolve().then(() => {
+          if (channel.closed) clone.bitmap?.close();
+          else for (const listener of [...channel.listeners]) listener({ data: clone });
+        });
+      }
+    }
+    close() { this.closed = true; channels.delete(this); }
+  }
+  const realm = () => {
+    const events = new Map();
+    const intervals = new Set();
+    const window = {
+      setInterval(callback, delay) {
+        const interval = { timer: null };
+        const tick = () => {
+          callback();
+          interval.timer = clock.setTimeout(tick, delay);
+        };
+        interval.timer = clock.setTimeout(tick, delay);
+        intervals.add(interval);
+        return interval;
+      },
+      clearInterval(interval) { clock.clearTimeout(interval.timer); intervals.delete(interval); },
+      addEventListener(type, listener) {
+        if (!events.has(type)) events.set(type, new Set());
+        events.get(type).add(listener);
+      },
+      removeEventListener(type, listener) { events.get(type)?.delete(listener); },
+      emit(type) { for (const listener of [...(events.get(type) ?? [])]) listener(); },
+      crash() { for (const interval of intervals) this.clearInterval(interval); },
+    };
+    const canvasLoad = createLoader({}, {
+      window, BroadcastChannel: Channel, ImageBitmap: Bitmap,
+      performance: { now: () => clock.now }, crypto: { randomUUID: () => `receiver_${receiverCount++}` },
+      createImageBitmap() {
+        captureCount++;
+        const capture = deferred();
+        captures.push(capture);
+        return capture.promise;
+      },
+    });
+    return { service: canvasLoad('src/services/canvasSyncService.ts').canvasSyncService, window };
+  };
+  const delegate = () => ({
+    callback: null,
+    setPostRenderCallback(callback) { this.callback = callback; },
+    frame() { this.callback?.({}); },
+  });
+  const complete = async label => {
+    assert.ok(captures.length, 'a GPU capture must be pending');
+    const bitmap = new Bitmap(label);
+    captures.shift().resolve(bitmap);
+    await flushMicrotasks();
+    assert.equal(bitmap.closed, true, 'the source releases every captured bitmap');
+  };
+  const receive = bitmap => { received.push(bitmap.label); bitmap.close(); };
+  const source = realm();
+  const main = delegate();
+  source.service.attachToRenderLoop(main);
+  await flushMicrotasks();
+  for (let frame = 0; frame < 120; frame++) main.frame();
+  assert.equal(captureCount, 0, 'no display receiver means zero GPU captures');
+
+  const display = realm();
+  let closeDisplay = display.service.startReceiving(receive);
+  await flushMicrotasks();
+  main.frame();
+  main.frame();
+  assert.equal(captureCount, 1, 'an active receiver enables capture with one pending readback');
+  await complete('first');
+  assert.deepEqual(received, ['first'], 'the existing frame/bitmap contract reaches the receiver');
+  closeDisplay();
+  await flushMicrotasks();
+  for (let frame = 0; frame < 120; frame++) main.frame();
+  assert.equal(captureCount, 1, 'receiver cleanup immediately stops capture');
+
+  closeDisplay = display.service.startReceiving(receive);
+  await flushMicrotasks();
+  main.frame();
+  closeDisplay();
+  await flushMicrotasks();
+  await complete('closed_while_pending');
+  assert.equal(received.length, 1, 'closing the receiver discards an in-flight capture');
+
+  closeDisplay = display.service.startReceiving(receive);
+  await flushMicrotasks();
+  main.frame();
+  const remounted = delegate();
+  source.service.attachToRenderLoop(remounted);
+  assert.equal(main.callback, null, 'remount removes the old render hook');
+  await flushMicrotasks();
+  remounted.frame();
+  const beforeOldCompletion = captureCount;
+  await complete('old_generation');
+  remounted.frame();
+  assert.equal(captureCount, beforeOldCompletion, 'stale capture completion cannot unlock the new readback');
+  assert.equal(received.length, 1, 'stale render generations never publish frames');
+  await complete('remounted');
+  assert.equal(received.at(-1), 'remounted');
+
+  source.service.stopBroadcasting();
+  source.service.channel.close();
+  const reload = realm();
+  const reloadedMain = delegate();
+  reload.service.attachToRenderLoop(reloadedMain);
+  await flushMicrotasks();
+  const beforeReload = captureCount;
+  reloadedMain.frame();
+  assert.equal(captureCount, beforeReload + 1, 'source_ready restores an existing receiver after main reload');
+  await complete('reloaded');
+
+  clock.advance(8000);
+  await flushMicrotasks();
+  const beforeHeartbeat = captureCount;
+  reloadedMain.frame();
+  assert.equal(captureCount, beforeHeartbeat + 1, 'heartbeat renews a receiver beyond its original lease');
+  await complete('heartbeat');
+  display.window.emit('pagehide');
+  await flushMicrotasks();
+  const beforeHide = captureCount;
+  reloadedMain.frame();
+  assert.equal(captureCount, beforeHide, 'pagehide immediately stops capture');
+  display.window.emit('pageshow');
+  await flushMicrotasks();
+  reloadedMain.frame();
+  assert.equal(captureCount, beforeHide + 1, 'pageshow restores a cached display receiver');
+  await complete('restored');
+
+  display.window.crash();
+  display.service.channel.close();
+  clock.advance(6001);
+  await flushMicrotasks();
+  const beforeExpired = captureCount;
+  for (let frame = 0; frame < 120; frame++) reloadedMain.frame();
+  assert.equal(captureCount, beforeExpired, 'a crashed receiver stops capture after its lease expires');
+  const secondDisplay = realm();
+  const closeSecond = secondDisplay.service.startReceiving(receive);
+  await flushMicrotasks();
+  reloadedMain.frame();
+  await complete('new_receiver');
+  closeSecond();
+  await flushMicrotasks();
+  reload.service.stopBroadcasting();
+  assert.equal(reloadedMain.callback, null, 'stopping the source removes its render hook');
+  assert.equal(captureCount, 8);
+  assert.equal(received.length, 6);
+  assert.equal(captures.length, 0, 'canvas sync leaves no GPU readback pending');
+}
+
+console.log('Rushia runtime checks passed: shared model switching, failure recovery, framing, expression composition, action timing, cancelled TTS, autonomous ambient execution and on-demand canvas mirroring.');
