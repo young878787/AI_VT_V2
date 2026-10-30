@@ -26,6 +26,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 load_dotenv(BACKEND_ROOT.parent / ".env", override=False)
 
+from domain.emotion_state import EMOTION_FIELDS, NEUTRAL_EMOTION_STATE, apply_mood_turn
 from domain.memory_scope import MemoryScope, conversation_id, message_id
 from domain.memory_routing import MemoryRouting
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay, build_user_message
@@ -122,6 +123,59 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ChatSessionStaleError):
             await self.chat_repo.append_user(session["session_id"], 0, user)
         self.assertEqual((await self.chat_repo.load(session["session_id"]))["messages"], [])
+
+    async def test_chat_session_mood_record_round_trip(self):
+        session = await self.chat_repo.get_or_create_active()
+        record, _, _ = apply_mood_turn(
+            None, dict(NEUTRAL_EMOTION_STATE),
+            {field: {"type": "score", "score": 4 if field == "pleased" else 2, "confidence": 0.9}
+             for field in EMOTION_FIELDS},
+            "mood-turn", 1761600000.5,
+        )
+        with self.assertRaises(ValueError):
+            await self.chat_repo.update_emotion(session["session_id"], 0, dict(NEUTRAL_EMOTION_STATE))
+        await self.chat_repo.update_emotion(session["session_id"], 0, record)
+        self.assertEqual((await self.chat_repo.load_context(session["session_id"]))["emotion_state"], record)
+        detail = await self.chat_repo.load_session_messages(session["session_id"])
+        self.assertEqual(detail["emotion_state"], record["mood"])
+        await self._query("UPDATE chat_sessions SET emotion_state = %s::jsonb WHERE id = %s",
+                          (json.dumps(NEUTRAL_EMOTION_STATE), session["session_id"]))
+        self.assertIsNone((await self.chat_repo.load_context(session["session_id"]))["emotion_state"])
+        self.assertIsNone((await self.chat_repo.load_session_messages(session["session_id"]))["emotion_state"])
+
+    async def test_0009_migration_clears_legacy_emotion_state_only(self):
+        schema = "test_" + uuid4().hex
+        try:
+            with self.engine.begin() as connection:
+                config = Config(str(BACKEND_ROOT / "alembic.ini"))
+                config.attributes.update(connection=connection, schema=schema)
+                command.upgrade(config, "0008_chat_context_convergence")
+                owner = {"user": self.scope.user_id, "character": self.scope.character_id}
+                connection.execute(text(f"""INSERT INTO "{schema}".chat_sessions
+                    (id,user_id,character_id,revision,summary,emotion_state)
+                    VALUES ('legacy',:user,:character,3,'舊摘要',CAST(:emotion AS jsonb))"""),
+                    {**owner, "emotion": json.dumps(NEUTRAL_EMOTION_STATE)})
+                connection.execute(text(f"""INSERT INTO "{schema}".chat_messages
+                    (session_id,user_id,character_id,generation,sequence,turn_id,role,content,turn_state)
+                    VALUES ('legacy',:user,:character,0,0,'t1','user','舊訊息','completed')"""), owner)
+                session_query = text(f"""SELECT id,generation,revision,summary,emotion_state,updated_at,
+                    summary_through_sequence,next_message_sequence FROM "{schema}".chat_sessions""")
+                message_query = text(f'SELECT * FROM "{schema}".chat_messages')
+                before = connection.execute(session_query).one()
+                messages = connection.execute(message_query).all()
+                self.assertIsNotNone(before.emotion_state)
+                command.upgrade(config, "head")
+                after = connection.execute(session_query).one()
+                self.assertIsNone(after.emotion_state)
+                self.assertEqual(after._replace(emotion_state=None), before._replace(emotion_state=None))
+                self.assertEqual(connection.execute(message_query).all(), messages)
+                self.assertEqual(connection.execute(text(
+                    f'SELECT version_num FROM "{schema}".alembic_version')).scalar_one(), "0009_mood_v1_emotion")
+                command.downgrade(config, "0008_chat_context_convergence")
+                self.assertIsNone(connection.execute(session_query).one().emotion_state)
+        finally:
+            with self.engine.begin() as connection:
+                connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
     async def test_deleting_chat_session_does_not_delete_long_term_memory(self):
         item = await self._create("chat-delete-boundary")

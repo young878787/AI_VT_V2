@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import nullcontext
 import json
 import pathlib
 import sys
@@ -15,19 +16,25 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from api.routes.chat_ws import websocket_endpoint
 from domain.agent_a_prompts import build_agent_a_prompt
+from domain.jev_questions import JEV_DECISION_CRITERIA_VERSION, JEV_ROLES, build_role_questions, question_hash
 from domain.emotion_state import (
     CHARACTER_EXPRESSION_PROFILE,
     EMOTION_FIELDS,
     NEUTRAL_EMOTION_STATE,
     PERSONALITY,
+    apply_mood_turn,
+    build_mood_lines,
+    idle_decayed_mood,
 )
 from domain.memory_source import MemoryEventConflict, MemoryEventReplay
 from backend.tests.chat_session_fakes import FakeChatSessionRepository, make_chat_session_service
 from services.chat_session_service import ChatSessionService
 
 
-def emotion_answers(score=0.6):
-    return {field: {"type": "noul", "noul": score} for field in EMOTION_FIELDS}
+def emotion_answers(**scores):
+    """情緒角色 score answers；未指定欄位為 2（不變）。"""
+    return {field: {"type": "score", "score": scores.get(field, 2), "confidence": 0.9}
+            for field in EMOTION_FIELDS}
 
 
 def action_answers():
@@ -42,8 +49,16 @@ def action_answers():
     }
 
 
-def jev_answers(score=0.6):
-    return {**emotion_answers(score), **action_answers()}
+def jev_answers(**scores):
+    return {**emotion_answers(**scores), **action_answers()}
+
+
+def mood_section(mood, changes=None):
+    return "\n".join(f"- {line}" for line in build_mood_lines(mood, changes))
+
+
+def jev_role(questions):
+    return next(role for role, role_questions in build_role_questions().items() if set(role_questions) == set(questions))
 
 
 class FakeWebSocket:
@@ -77,7 +92,8 @@ class FakeWebSocket:
 
 
 class EmotionWebSocketTests(unittest.TestCase):
-    def _run(self, frames, jev_responses, persistence=False, storage=None, chat_sessions=None, chat=None):
+    def _run(self, frames, jev_responses, persistence=False, storage=None, chat_sessions=None, chat=None,
+             jev_hook=None, timestamps=None):
         socket = FakeWebSocket(frames)
         runtime = SimpleNamespace(
             retrieve=AsyncMock(return_value=({}, "")),
@@ -89,13 +105,20 @@ class EmotionWebSocketTests(unittest.TestCase):
         socket.app = SimpleNamespace(state=SimpleNamespace(
             memory_runtime=runtime, chat_session_service=chat_sessions,
         ))
-        captured = {"jev_states": [], "chat_states": [], "prompts": [], "contexts": [], "runtime": runtime,
-                    "chat_sessions": chat_sessions}
-        responses = iter(jev_responses)
+        captured = {"jev_states": [], "jev_calls": [], "chat_states": [], "prompts": [], "contexts": [],
+                    "traces": [], "runtime": runtime, "chat_sessions": chat_sessions}
+        # 每輪一份合併答案；三角色各自依序取用並只回傳自己題目的欄位。
+        responses = {role: iter(jev_responses) for role in JEV_ROLES}
 
         async def fake_call_jev(state, questions):
-            captured["jev_states"].append(state)
-            return next(responses)
+            role = jev_role(questions)
+            captured["jev_calls"].append((role, state))
+            if role == "emotion":
+                captured["jev_states"].append(state)
+            answers = next(responses[role])
+            if jev_hook is not None:
+                await jev_hook(role, state)
+            return None if answers is None else {key: answers[key] for key in questions if key in answers}
 
         def fake_prompt(profile, notes, state, model_name, **kwargs):
             captured["chat_states"].append(state)
@@ -109,6 +132,10 @@ class EmotionWebSocketTests(unittest.TestCase):
             await send_chunk("露西亞的回覆")
             return "露西亞的回覆"
 
+        # 指定 timestamps 時，依序取代各輪的 message_timestamp，讓閒置回落可重算。
+        clock = patch("api.routes.chat_ws.fixture_timestamp", side_effect=list(timestamps)) \
+            if timestamps is not None else nullcontext()
+
         async def run():
             with patch("api.routes.chat_ws.call_jev", side_effect=fake_call_jev), \
                 patch("api.routes.chat_ws.stream_agent_a", side_effect=chat or fake_chat), \
@@ -116,11 +143,81 @@ class EmotionWebSocketTests(unittest.TestCase):
                 patch("api.routes.chat_ws.broadcast_to_displays"), \
                 patch("api.routes.chat_ws.log_turn"), \
                 patch("api.routes.chat_ws.reset_log"), \
-                patch("api.routes.chat_ws.synthesize_and_send_voice"):
+                patch("api.routes.chat_ws.trace", side_effect=lambda stage, data: captured["traces"].append(
+                    {"stage": stage, **data})), \
+                patch("api.routes.chat_ws.synthesize_and_send_voice"), clock:
                 await websocket_endpoint(socket)
 
         asyncio.run(run())
         return socket, captured
+
+    def _run_interrupt(self, hook, hook_role="memory"):
+        """第一句被第二句打斷；第一句 hook_role 角色的行為由 hook(ready) 控制，ready 可提前放行插話。"""
+        first_event, second_event = uuid4(), uuid4()
+        partial_sent = asyncio.Event()
+        completed = asyncio.Event()
+        payloads = []
+        emotion_states = []
+
+        class Socket:
+            index = 0
+
+            async def accept(self):
+                pass
+
+            async def receive_text(self):
+                self.index += 1
+                if self.index == 1:
+                    return json.dumps({"content": "第一句", "turn_id": "turn_1"})
+                if self.index == 2:
+                    await partial_sent.wait()
+                    return json.dumps({"content": "插話", "turn_id": "turn_2"})
+                await completed.wait()
+                raise WebSocketDisconnect()
+
+            async def send_json(self, payload):
+                payloads.append(payload)
+                if payload.get("type") == "stream_end" and payload.get("turn_id") == "turn_2":
+                    completed.set()
+
+        async def fake_jev(state, questions):
+            if jev_role(questions) == "emotion":
+                emotion_states.append(state)
+            if jev_role(questions) == hook_role and state["current_user_input"] == "第一句":
+                await hook(partial_sent)
+            return {key: value for key, value in jev_answers(pleased=4).items() if key in questions}
+
+        async def fake_chat(messages, send_chunk, **kwargs):
+            if messages[-1]["content"] == "第一句":
+                await send_chunk("半句")
+                partial_sent.set()
+                await asyncio.Event().wait()
+            await send_chunk("完整回覆")
+            return "完整回覆"
+
+        runtime = SimpleNamespace(
+            retrieve=AsyncMock(return_value=({}, "")),
+            accept=AsyncMock(side_effect=[first_event, second_event]),
+            route_background=Mock(),
+            reset=AsyncMock(),
+        )
+        socket = Socket()
+        chat_sessions = make_chat_session_service()
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=runtime, chat_session_service=chat_sessions,
+        ))
+
+        async def run():
+            with patch("api.routes.chat_ws.call_jev", side_effect=fake_jev), \
+                 patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
+                 patch("api.routes.chat_ws.broadcast_to_displays"), \
+                 patch("api.routes.chat_ws.log_turn"), \
+                 patch("api.routes.chat_ws.synthesize_and_send_voice"):
+                await websocket_endpoint(socket)
+
+        asyncio.run(run())
+        routes = [call for call in runtime.route_background.call_args_list if call.args[0] == first_event]
+        return payloads, routes, {"chat_sessions": chat_sessions, "emotion_states": emotion_states}
 
     def test_runtime_snapshots_are_rebuilt_and_do_not_become_memory_sources(self):
         from services.context_tools import ContextTools
@@ -143,8 +240,8 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertNotIn("second.exe", str(captured["jev_states"]))
         self.assertNotIn("first.exe", captured["prompts"][0])
 
-    def test_single_jev_call_precedes_chat_and_drives_both_axes(self):
-        answers = jev_answers(0.8)
+    def test_three_role_jev_calls_precede_chat_and_drive_both_axes(self):
+        answers = jev_answers(pleased=4, shy=3, masking_positive_feeling=3)
         answers["base_emotion"]["probabilities"] = {"shy": 0.75, "neutral": 0.2, "happy": 0.05}
         answers["interaction_attitude"]["probabilities"] = {"awkward": 0.8, "smile": 0.2}
         socket, captured = self._run(
@@ -160,11 +257,16 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertNotIn("blink_control", types)
         self.assertEqual(types.count("stream_end"), 1)
         self.assertNotIn("jpaf_update", types)
-        self.assertEqual(len(captured["jev_states"]), 1)
-        self.assertEqual(captured["jev_states"][0]["character_expression_profile"], CHARACTER_EXPRESSION_PROFILE)
-        self.assertEqual(captured["jev_states"][0]["interaction_personality"], PERSONALITY)
-        self.assertNotIn("memory", str(captured["jev_states"][0]))
-        self.assertIn("shy: 0.80", captured["prompts"][0])
+        states = dict(captured["jev_calls"])
+        self.assertEqual(sorted(role for role, _ in captured["jev_calls"]), sorted(JEV_ROLES))
+        self.assertEqual(states["emotion"]["character_expression_profile"], CHARACTER_EXPRESSION_PROFILE)
+        self.assertNotIn("interaction_personality", states["emotion"])
+        self.assertEqual(states["action"]["interaction_personality"], PERSONALITY)
+        self.assertNotIn("character_expression_profile", states["action"])
+        self.assertEqual(set(states["memory"]), {"current_user_input", "recent_dialogue"})
+        self.assertNotIn("memory", str(states["emotion"]))
+        self.assertIn("- 主要情緒：很開心\n- 輔助情緒：有點不好意思\n- 本輪影響：這句話讓你更開心",
+                      captured["prompts"][0])
         self.assertIn("只輸出使用者會聽見的純文字", captured["prompts"][0])
         plan = next(item for item in socket.payloads if item["type"] == "expression_plan")
         self.assertEqual(plan["debug"]["jevBaseEmotionChoice"], "shy")
@@ -178,6 +280,103 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(plan["debug"]["jevDecisionHistoryMessages"], 0)
         self.assertEqual(len(plan["debug"]["jevDecisionQuestionHash"]), 12)
         self.assertEqual(types[-1], "stream_end")
+
+    def test_each_role_trace_records_its_own_questions_and_input(self):
+        _, captured = self._run([{"content": "嗨"}], [jev_answers()])
+        traces = {item["role"]: item for item in captured["traces"] if item["stage"] == "jev"}
+        self.assertEqual(set(traces), JEV_ROLES)
+        for role, questions in build_role_questions().items():
+            self.assertEqual(traces[role]["question_keys"], list(questions))
+            self.assertEqual(traces[role]["question_hash"], question_hash(questions))
+            self.assertEqual(traces[role]["criteria_version"], JEV_DECISION_CRITERIA_VERSION)
+            self.assertIsNone(traces[role]["error"])
+            self.assertGreaterEqual(traces[role]["duration_sec"], 0)
+        for role, state in captured["jev_calls"]:
+            self.assertIs(traces[role]["state"], state)
+        for role, questions in build_role_questions().items():
+            self.assertEqual(traces[role]["answers"],
+                             {key: value for key, value in jev_answers().items() if key in questions})
+        self.assertEqual(set(traces["emotion"]["answers"]), set(EMOTION_FIELDS))
+        self.assertIn("policy", traces["memory"])
+        self.assertIn("policy_version", traces["memory"])
+        self.assertNotIn("policy", traces["emotion"])
+
+    def test_chat_streams_while_action_and_memory_roles_are_pending(self):
+        pending = set()
+        both_pending = asyncio.Event()
+        release = asyncio.Event()
+        observed = []
+
+        async def hook(role, state):
+            if role == "emotion":
+                # 情緒角色要等另外兩個呼叫都已開始才完成，證明三者同時在途。
+                await asyncio.wait_for(both_pending.wait(), 1)
+                return
+            pending.add(role)
+            if len(pending) == 2:
+                both_pending.set()
+            await release.wait()
+
+        async def chat(messages, send_chunk, **kwargs):
+            await asyncio.wait_for(both_pending.wait(), 1)
+            observed.append(release.is_set())
+            await send_chunk("先回覆")
+            release.set()
+            return "先回覆"
+
+        socket, captured = self._run([{"content": "嗨"}], [jev_answers()], chat=chat, jev_hook=hook)
+        self.assertEqual(observed, [False])
+        types = [payload["type"] for payload in socket.payloads]
+        self.assertLess(types.index("text_stream"), types.index("expression_plan"))
+        captured["runtime"].route_background.assert_called_once()
+
+    def test_role_failures_are_isolated(self):
+        for failed in sorted(JEV_ROLES):
+            with self.subTest(failed=failed):
+                async def hook(role, state):
+                    if role == failed:
+                        raise TimeoutError("jev timeout")
+
+                socket, captured = self._run([{"content": "嗨"}], [jev_answers(pleased=4)], jev_hook=hook)
+                update = next(item for item in socket.payloads if item["type"] == "emotion_update")
+                plan = next(item for item in socket.payloads if item["type"] == "expression_plan")
+                self.assertEqual(update["source"], "neutral_fallback" if failed == "emotion" else "jev")
+                self.assertEqual(plan["debug"]["jevDecisionSource"], "fallback" if failed == "action" else "jev")
+                route_answers = captured["runtime"].route_background.call_args.args[2]
+                self.assertEqual(route_answers is None, failed == "memory")
+                self.assertIn("stream_end", [item["type"] for item in socket.payloads])
+                errors = {item["role"]: item["error"] for item in captured["traces"] if item["stage"] == "jev"}
+                self.assertEqual(errors, {role: "jev_call_failed" if role == failed else None for role in JEV_ROLES})
+
+    def test_cancel_while_memory_role_is_pending_routes_once_without_answers(self):
+        payloads, routes, _ = self._run_interrupt(lambda ready: asyncio.Event().wait())
+        self.assertIn("turn_1", [item["turn_id"] for item in payloads if item["type"] == "turn_cancelled"])
+        self.assertEqual(len(routes), 1)
+        self.assertIsNone(routes[0].args[2])
+
+    def test_cancel_after_memory_role_routed_does_not_route_again(self):
+        async def answer_immediately(ready):
+            pass
+
+        payloads, routes, _ = self._run_interrupt(answer_immediately)
+        self.assertIn("turn_1", [item["turn_id"] for item in payloads if item["type"] == "turn_cancelled"])
+        self.assertEqual(len(routes), 1)
+        self.assertIsNotNone(routes[0].args[2])
+
+    def test_cancel_before_emotion_role_returns_does_not_apply_mood(self):
+        async def block(ready):
+            ready.set()
+            await asyncio.Event().wait()
+
+        payloads, _, captured = self._run_interrupt(block, hook_role="emotion")
+        self.assertIn("turn_1", [item["turn_id"] for item in payloads if item["type"] == "turn_cancelled"])
+        updates = [item for item in payloads if item["type"] == "emotion_update"]
+        self.assertEqual([item["turn_id"] for item in updates], ["turn_2"])
+        self.assertEqual(captured["emotion_states"][1]["current_mood"], NEUTRAL_EMOTION_STATE)
+        self.assertEqual(captured["emotion_states"][1]["mood_history"], [])
+        saved = captured["chat_sessions"].repository.emotion_state
+        self.assertEqual(saved["last_turn_id"], "turn_2")
+        self.assertEqual([entry["turn_id"] for entry in saved["history"]], ["turn_2"])
 
     def test_stream_end_reports_chat_performance_metrics(self):
         socket, _ = self._run([{"content": "測試效能"}], [jev_answers()])
@@ -212,17 +411,24 @@ class EmotionWebSocketTests(unittest.TestCase):
         )
 
     def test_reset_session_clears_current_websocket_closure_state(self):
-        _, captured = self._run(
+        socket, captured = self._run(
             [
                 {"content": "第一句", "session_id": "session_a", "turn_id": "turn_1"},
                 {"type": "reset_session", "session_id": "session_a"},
                 {"content": "第二句", "session_id": "session_a", "turn_id": "turn_2"},
             ],
-            [jev_answers(0.8), jev_answers(0.2)],
+            [jev_answers(pleased=4), jev_answers()],
         )
         self.assertEqual(len(captured["jev_states"]), 2)
         self.assertEqual(captured["jev_states"][1]["recent_dialogue"], [])
-        self.assertNotIn("previous_emotion_state", captured["jev_states"][1])
+        self.assertEqual(captured["jev_states"][1]["current_mood"], NEUTRAL_EMOTION_STATE)
+        self.assertEqual(captured["jev_states"][1]["mood_history"], [])
+        updates = [item for item in socket.payloads if item["type"] == "emotion_update"]
+        self.assertEqual(updates[1], {"type": "emotion_update", "state": NEUTRAL_EMOTION_STATE,
+                                      "source": "neutral_fallback"})
+        saved = captured["chat_sessions"].repository.emotion_state
+        self.assertEqual(saved["last_turn_id"], "turn_2")
+        self.assertEqual(saved["history"], [])
         captured["runtime"].reset.assert_not_awaited()
 
     def test_legacy_websocket_reset_keeps_owner_reset_semantics(self):
@@ -237,7 +443,7 @@ class EmotionWebSocketTests(unittest.TestCase):
                         {"content": "第一句", "session_id": "session_a", "turn_id": "turn_1"},
                         {"content": repeated, "session_id": "session_a", "turn_id": "turn_1"},
                     ],
-                    [jev_answers(0.8)],
+                    [jev_answers()],
                 )
                 self.assertEqual(len(captured["jev_states"]), 1)
                 error = next(payload for payload in socket.payloads if payload.get("code") == expected)
@@ -306,17 +512,24 @@ class EmotionWebSocketTests(unittest.TestCase):
         accepted = next(item for item in socket.payloads if item["type"] == "input_accepted")
         self.assertEqual(accepted["event_id"], event_id.hex)
 
-    def test_emotion_failure_uses_previous_state_without_partial_merge(self):
-        invalid = jev_answers(0.1)
-        invalid.pop("shy")
+    def test_emotion_failure_decays_previous_record_without_partial_merge(self):
+        invalid = jev_answers(shy=4)
+        invalid.pop("pleased")
         socket, captured = self._run(
-            [{"content": "第一句"}, {"content": "第二句"}],
-            [jev_answers(0.8), invalid],
+            [{"content": "第一句", "turn_id": "turn_1"}, {"content": "第二句", "turn_id": "turn_2"}],
+            [jev_answers(pleased=4), invalid], timestamps=[1000.0, 1000.0],
         )
         updates = [item for item in socket.payloads if item["type"] == "emotion_update"]
         self.assertEqual([item["source"] for item in updates], ["jev", "previous_fallback"])
-        self.assertEqual(updates[0]["state"], updates[1]["state"])
-        self.assertEqual(captured["jev_states"][1]["previous_emotion_state"], updates[0]["state"])
+        first, _, _ = apply_mood_turn(None, dict(NEUTRAL_EMOTION_STATE), emotion_answers(pleased=4),
+                                      "turn_1", 1000.0)
+        expected, _, _ = apply_mood_turn(first, first["mood"], None, "turn_2", 1000.0)
+        self.assertEqual(updates[1]["state"], expected["mood"])
+        self.assertEqual(updates[1]["state"]["shy"], 0.0)
+        saved = captured["chat_sessions"].repository.emotion_state
+        self.assertEqual(saved, expected)
+        self.assertEqual(saved["history"], first["history"])
+        self.assertEqual(saved["streak"]["pleased"], 0)
         self.assertEqual(len(captured["jev_states"][1]["recent_dialogue"]), 2)
         plans = [item for item in socket.payloads if item["type"] == "expression_plan"]
         self.assertEqual(plans[-1]["debug"]["jevDecisionSource"], "jev")
@@ -334,7 +547,7 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertIn("text_stream", [item["type"] for item in socket.payloads])
 
     def test_low_confidence_base_keeps_valid_attitude(self):
-        answers = jev_answers(0.2)
+        answers = jev_answers()
         answers["base_emotion"]["confidence"] = 0.4
         socket, _ = self._run([{"content": "嗨"}], [answers])
         plan = next(item for item in socket.payloads if item["type"] == "expression_plan")
@@ -346,7 +559,7 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(plan["debug"]["jevResolvedAttitude"], "awkward")
 
     def test_low_confidence_attitude_keeps_valid_base(self):
-        answers = jev_answers(0.8)
+        answers = jev_answers()
         answers["base_emotion"]["choice"] = "happy"
         answers["interaction_attitude"]["confidence"] = 0.4
         socket, _ = self._run([{"content": "今天聊得很開心"}], [answers])
@@ -360,20 +573,56 @@ class EmotionWebSocketTests(unittest.TestCase):
         chat_sessions = make_chat_session_service()
         first, _ = self._run(
             [{"content": "hi", "session_id": "client_a"}],
-            [jev_answers(0.8)], chat_sessions=chat_sessions,
+            [jev_answers(pleased=4)], chat_sessions=chat_sessions, timestamps=[1000.0],
         )
         first_state = next(item["state"] for item in first.payloads if item["type"] == "emotion_update")
         second, captured = self._run(
             [{"type": "sync", "session_id": "client_b"},
              {"content": "back", "session_id": "client_b"}],
-            [None], chat_sessions=chat_sessions,
+            [None], chat_sessions=chat_sessions, timestamps=[1000.0],
         )
         updates = [item for item in second.payloads if item["type"] == "emotion_update"]
         self.assertEqual(updates[0]["state"], first_state)
+        self.assertEqual(set(updates[0]["state"]), set(EMOTION_FIELDS))
+        self.assertEqual(updates[0]["source"], "previous_fallback")
         self.assertEqual(updates[1]["source"], "previous_fallback")
-        self.assertEqual(captured["jev_states"][0]["previous_emotion_state"], first_state)
+        self.assertEqual(captured["jev_states"][0]["current_mood"],
+                         {field: round(value, 2) for field, value in first_state.items()})
         ready = next(item for item in second.payloads if item["type"] == "session_ready")
         self.assertEqual(ready["session_id"], "server_session")
+
+    def test_single_turn_applies_pure_mood_update_saves_and_projects(self):
+        answers = jev_answers(pleased=4, shy=3, masking_positive_feeling=3)
+        socket, captured = self._run([{"content": "妳好棒", "turn_id": "turn_1"}], [answers],
+                                     timestamps=[1000.0])
+        expected, changes, source = apply_mood_turn(
+            None, dict(NEUTRAL_EMOTION_STATE), emotion_answers(pleased=4, shy=3, masking_positive_feeling=3),
+            "turn_1", 1000.0,
+        )
+        update = next(item for item in socket.payloads if item["type"] == "emotion_update")
+        self.assertEqual((update["state"], update["source"]), (expected["mood"], source))
+        self.assertEqual(captured["chat_sessions"].repository.emotion_state, expected)
+        self.assertEqual(captured["chat_states"], [expected["mood"]])
+        self.assertIn(mood_section(expected["mood"], changes), captured["prompts"][0])
+        self.assertIn("本輪影響：這句話讓你更開心", captured["prompts"][0])
+
+    def test_second_turn_receives_idle_decayed_mood_and_history(self):
+        timestamps = [1000.0, 1000.0 + 3600.0]
+        _, captured = self._run(
+            [{"content": "第一句", "turn_id": "turn_1"}, {"content": "第二句", "turn_id": "turn_2"}],
+            [jev_answers(pleased=4, genuinely_angry=1), jev_answers()], timestamps=timestamps,
+        )
+        first, changes, _ = apply_mood_turn(
+            None, dict(NEUTRAL_EMOTION_STATE), emotion_answers(pleased=4, genuinely_angry=1),
+            "turn_1", timestamps[0],
+        )
+        current = idle_decayed_mood(first, timestamps[1])
+        context = captured["jev_states"][1]
+        self.assertEqual(context["current_mood"], {field: round(value, 2) for field, value in current.items()})
+        self.assertLess(context["current_mood"]["pleased"], round(first["mood"]["pleased"], 2))
+        self.assertEqual(context["mood_history"], [{"turns_ago": 1, "changes": changes}])
+        second, _, _ = apply_mood_turn(first, current, emotion_answers(), "turn_2", timestamps[1])
+        self.assertEqual(captured["chat_sessions"].repository.emotion_state, second)
 
 
 if __name__ == "__main__":

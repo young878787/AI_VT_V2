@@ -88,10 +88,14 @@ CHAT_SESSION_MAX_MESSAGES: int = max(2, int(os.getenv("CHAT_SESSION_MAX_MESSAGES
 OPENROUTER_SYSTEMONE_URL: str = "https://openrouter.ai/api/v1/systemone"
 
 JEV_AI_API_KEY: str = (os.getenv("JEV_AI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or "").strip()
-JEV_AI_BASE_URL: str = (os.getenv("JEV_AI_BASE_URL") or OPENROUTER_SYSTEMONE_URL).strip()
+JEV_AI_BASE_URL: str = (os.getenv("JEV_AI_BASE_URL") or OPENROUTER_SYSTEMONE_URL).strip().rstrip("/")
+# 本機 Kev 等 TypeSafe 相容服務只填到 /v1 時補上 /systemone
+if JEV_AI_BASE_URL.endswith("/v1"):
+    JEV_AI_BASE_URL += "/systemone"
 JEV_AI_MODEL: str = (os.getenv("JEV_AI_MODEL") or "jev-latest").strip() or "jev-latest"
 JEV_TIMEOUT_SEC: float = float(os.getenv("JEV_TIMEOUT_SEC", "2.0"))
-if not JEV_AI_API_KEY.strip():
+# 缺 key 只警告不擋啟動；本機 Kev 未設 KEV_API_KEY 時為開放服務，不需警告
+if not JEV_AI_API_KEY.strip() and "openrouter.ai" in JEV_AI_BASE_URL:
     print("[WARN] JEV_AI_API_KEY（或 OPENROUTER_API_KEY）未設定，JEV Emotion / Action 呼叫將失敗")
 
 print(f"[AI Route] JEV Model: {JEV_AI_MODEL} | URL: {JEV_AI_BASE_URL}")

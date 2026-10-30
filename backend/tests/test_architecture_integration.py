@@ -234,13 +234,16 @@ class ArchitectureIntegrationTests(unittest.TestCase):
         cancelled = next(payload for payload in payloads if payload["type"] == "turn_cancelled")
         self.assertEqual(cancelled["status"], "interrupted")
         self.assertEqual(cancelled["partial_text"], "只送出的半句")
-        self.assertEqual(
-            contexts[1]["recent_dialogue"],
-            [
-                {"role": "user", "text": "第一句"},
-                {"role": "assistant", "text": "只送出的半句"},
-            ],
-        )
+        second_turn = [context for context in contexts if context["current_user_input"] == "插話"]
+        self.assertEqual(len(second_turn), 3)
+        for context in second_turn:
+            self.assertEqual(
+                context["recent_dialogue"],
+                [
+                    {"role": "user", "text": "第一句"},
+                    {"role": "assistant", "text": "只送出的半句"},
+                ],
+            )
         self.assertTrue(any(
             item.get("role") == "assistant"
             and item.get("content") == "只送出的半句"

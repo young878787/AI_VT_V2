@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from core.config import CHAT_CONTEXT_RECENT_MESSAGES
-from domain.emotion_state import validate_emotion_state
+from domain.emotion_state import validate_mood_record
 from infrastructure.chat_session_repository import (
     ChatSessionRepository,
     ChatSessionStaleError,
@@ -177,9 +177,12 @@ class InMemoryChatSessionRepository:
         self.summary_through_sequence = through_sequence
         return self._bump()
 
-    async def update_emotion(self, session_id: str, generation: int, state: dict) -> int:
+    async def update_emotion(self, session_id: str, generation: int, record: dict) -> int:
         self._check(session_id, generation)
-        self.emotion_state = validate_emotion_state(state)
+        validated = validate_mood_record(record)
+        if validated is None:
+            raise ValueError("無效的情緒紀錄")
+        self.emotion_state = validated
         return self._bump()
 
     async def reset(self, session_id: str, *, connection=None) -> dict[str, int]:
@@ -209,6 +212,7 @@ class InMemoryChatSessionRepository:
         snapshot["limit"] = limit
         snapshot["offset"] = offset
         snapshot["messages"] = deepcopy(self.messages[offset:offset + limit])
+        snapshot["emotion_state"] = snapshot["emotion_state"]["mood"] if snapshot["emotion_state"] else None
         return snapshot
 
     async def delete(self, session_id: str) -> dict[str, Any]:

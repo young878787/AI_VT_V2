@@ -20,21 +20,15 @@ from core.config import (
 async def call_jev(state: dict, questions: dict) -> dict | None:
     """送出 state + questions，回傳 answers dict；失敗回 None（交由呼叫端 fallback）。"""
     api_key = JEV_AI_API_KEY.strip()
-    if not api_key:
-        print("[Jev] JEV_AI_API_KEY 未設定，跳過 Jev 呼叫")
-        return None
+    headers = {"Content-Type": "application/json"}
+    # 未設 key 只會發生在非 OpenRouter 的本機服務（config 已擋），此時不送 Authorization
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     payload = {"model": JEV_AI_MODEL, "state": state, "questions": questions}
     try:
         async with httpx.AsyncClient(timeout=JEV_TIMEOUT_SEC) as client:
-            resp = await client.post(
-                JEV_AI_BASE_URL,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
+            resp = await client.post(JEV_AI_BASE_URL, headers=headers, json=payload)
             resp.raise_for_status()
             body = resp.json()
     except httpx.TimeoutException:

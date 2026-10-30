@@ -1,4 +1,4 @@
-"""四組 AI 驗收唯一入口；僅建立隔離測試 instance 與臨時 schema。"""
+"""分組 AI 驗收唯一入口；僅建立隔離測試 instance 與臨時 schema。"""
 
 import argparse
 import asyncio
@@ -27,7 +27,9 @@ from sqlalchemy.exc import ArgumentError
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
+from domain.jev_questions import JEV_ROLES  # noqa: E402
 RUNS_DIR = BACKEND_ROOT / "log" / "ai_tests"
+JEV_TRACE_WAIT_SEC = 15.0
 ENV_PATH = BACKEND_ROOT.parent / ".env"
 
 
@@ -189,15 +191,62 @@ async def wait_memory_job(store: MemoryRunStore, event_id: str | None, timeout: 
     return {"status": "timeout", "error": "記憶工作等待逾時"}
 
 
+def archive_run_dir(latest: Path, history: Path) -> Path:
+    """把舊 latest 原樣搬到 history/<開始時間>/；搬移失敗直接拋出，不覆寫舊結果。"""
+    try:
+        run = json.loads((latest / "run.json").read_text(encoding="utf-8-sig"))
+        moment = datetime.fromisoformat(run["execution"]["started_at"]).astimezone()
+    except (OSError, ValueError, TypeError, KeyError):
+        moment = datetime.fromtimestamp(latest.stat().st_mtime)
+    name = moment.strftime("%Y%m%d-%H%M%S")
+    history.mkdir(parents=True, exist_ok=True)
+    target, suffix = history / name, 2
+    while target.exists():
+        target, suffix = history / f"{name}-{suffix}", suffix + 1
+    latest.rename(target)
+    return target
+
+
 def create_run_dir(root: Path | None = None) -> Path:
-    """固定最新產物；只解除舊 latest 連結，不覆寫連結指向的歷史。"""
+    """固定最新產物；開新一輪前封存舊 latest，只解除舊 latest 連結，不搬移連結指向的歷史。"""
     root = root or RUNS_DIR
     root.mkdir(parents=True, exist_ok=True)
     latest = root / "latest"
     if latest.is_symlink():
         latest.unlink()
+    elif latest.is_dir() and any(latest.iterdir()):
+        archive_run_dir(latest, root / "history")
     latest.mkdir(exist_ok=True)
     return latest
+
+
+def write_jev_questions(run_dir: Path) -> dict:
+    """保存三角色 JEV 題目全文；逐輪 trace 只以 question_hash 引用。"""
+    from domain.jev_questions import JEV_DECISION_CRITERIA_VERSION, build_role_questions, question_hash
+    payload = {"schema_version": 1, "criteria_version": JEV_DECISION_CRITERIA_VERSION,
+               "questions": {question_hash(questions): {"role": role, "questions": questions}
+                             for role, questions in build_role_questions().items()}}
+    atomic_write_text(run_dir / "jev_questions.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return payload
+
+
+async def wait_jev_trace(run_dir: Path, turn_id: str, timeout: float = JEV_TRACE_WAIT_SEC) -> None:
+    """動作／記憶角色可能在 stream_end 後才寫 trace；送下一輪前等三角色紀錄齊全。"""
+    path = run_dir / "memory" / "trace.jsonl"
+    deadline = time.monotonic() + timeout
+    while True:
+        roles = set()
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if item.get("turn_id") == turn_id and item.get("stage") == "jev":
+                    roles.add(item.get("role"))
+        if JEV_ROLES <= roles or time.monotonic() >= deadline:
+            return
+        await asyncio.sleep(0.1)
 
 
 def model_metadata() -> dict:
@@ -512,6 +561,7 @@ def provenance(dataset):
     files = [*BACKEND_ROOT.glob("tools/ai_test*.py"), *BACKEND_ROOT.glob("tools/ai_test_cases/**/*.json"),
              BACKEND_ROOT / "tools/chat_test_cli.py", BACKEND_ROOT / "domain/agent_a_prompts.py",
              BACKEND_ROOT / "services/chat_service.py", BACKEND_ROOT / "domain/jev_questions.py",
+             BACKEND_ROOT / "domain/emotion_state.py",
              BACKEND_ROOT / "services/memory_llm.py", *BACKEND_ROOT.glob("tools/ai_test_cases/assets/*")]
     return {"git_commit": git("rev-parse", "HEAD").decode().strip(),
             "dirty": bool(git("status", "--porcelain", "--untracked-files=normal")),
@@ -582,6 +632,15 @@ def update_cost(metadata, records, loader, started):
                        "input_tokens": sum(u.get("prompt_tokens", 0) for u in usages) if complete_usage else None,
                        "output_tokens": sum(u.get("completion_tokens", 0) for u in usages) if complete_usage else None,
                        "models": sorted({request["model"] for request in requests if request.get("model")})}
+    jev_traces = [t for r in records for t in r.get("trace", []) if t.get("stage") == "jev"]
+    by_role = {}
+    for role in sorted(JEV_ROLES):
+        selected = [t for t in jev_traces if t.get("role") == role]
+        by_role[role] = {"calls": len(selected),
+                         "duration_sec": round(sum(t["duration_sec"] for t in selected), 4)
+                         if all(isinstance(t.get("duration_sec"), (int, float)) for t in selected) else None}
+    # 三角色並行；各角色耗時加總不等於壁鐘時間。
+    roles["jev"]["by_role"] = by_role
     retrievals = [t for r in records for t in r.get("trace", []) if t.get("stage") == "retrieval"]
     event_retrievals = sum(any(t.get("stage") == "retrieval" for t in r.get("trace", []))
                            for r in records if r.get("memory_event_id"))
@@ -602,7 +661,7 @@ def update_cost(metadata, records, loader, started):
 async def run(args):
     from domain.memory_settings import load_memory_settings
     from tools.ai_testset import load_suite, select_cases, generate_followup
-    from tools.ai_test_evidence import case_mode, check_turn, context_trace
+    from tools.ai_test_evidence import case_mode, check_turn, context_trace, emotion_curve
     from tools.ai_test_fixtures import FixtureLoader
     from tools.ai_test_report import initialize_report, write_reports
 
@@ -612,6 +671,7 @@ async def run(args):
     dataset["selection"] = [c["case_id"] for c in selected]
     load_dotenv(ENV_PATH, override=False)
     run_dir = create_run_dir(RUNS_DIR / args.suite)
+    write_jev_questions(run_dir)
     manifest_path = run_dir / "fixture.json"
     memory_dir = run_dir / "memory"
     memory_dir.mkdir(exist_ok=True)
@@ -641,6 +701,9 @@ async def run(args):
         persist_jsonl(run_dir / "case_states.jsonl", states)
         atomic_write_text(run_dir / "cases.json", json.dumps(dataset, ensure_ascii=False, indent=2))
         update_cost(metadata, records, loader, started)
+        if args.suite == "jev-emotion":
+            # 跨輪曲線只供觀察與人工判定，不進入逐輪硬條件。
+            metadata["emotion_curve"] = emotion_curve(dataset, records)
         return write_reports(run_dir, metadata, records, states, execution, error, metadata["cleanup"])
 
     persist()
@@ -709,7 +772,15 @@ async def run(args):
                 persist()
             before = await asyncio.to_thread(store.case_state)
             foreign_before = await asyncio.to_thread(loader.other_owner_state)
+            emotion_before = (await asyncio.to_thread(read_emotion_record, store, session)
+                              if args.suite == "jev-emotion" else None)
             record = await run_turn(ws, index, case["input"], "Rushia", session, store, args.turn_timeout, mode)
+            if record["request_sent"]:
+                await wait_jev_trace(run_dir, record["turn_id"])
+            if args.suite == "jev-emotion":
+                # 情緒重算以 DB 前後紀錄為準；emotion_update 只帶 mood，不含 streak／history。
+                record["emotion_record_before"] = emotion_before
+                record["emotion_record_after"] = await asyncio.to_thread(read_emotion_record, store, session)
             state = record.pop("_db_state", None) or {}
             record.update(case_id=case["case_id"], source=case["source"], phase=case["phase"], test_mode=mode.value,
                           fixture=fixture["metadata"], control=controls, summary_before=summary_before, summary_after=summary_after)
@@ -740,7 +811,9 @@ async def run(args):
                 break
             if any(c["status"] == "failed" for c in record["checks"]):
                 record["status"] = "failed"
-                failed_dependencies.add(case["case_id"])
+                # jev-emotion 為同一 session 的連續曲線，15 輪全跑，前輪失敗不阻擋後續輪次。
+                if args.suite != "jev-emotion":
+                    failed_dependencies.add(case["case_id"])
             else:
                 record["status"] = "completed"
             print(f"[{index}/{len(selected)}] {case['case_id']} 客觀檢查={record['status']}", flush=True)
@@ -839,6 +912,13 @@ def retained_summary(context):
                      if max(left, start) < min(right, start+len(summary)))
 
 
+def read_emotion_record(store, session):
+    with store.engine.connect() as connection:
+        return connection.execute(text(f'SELECT emotion_state FROM "{store.schema}".chat_sessions '
+            'WHERE id=:session AND user_id=:user_id AND character_id=:character_id'),
+            {**store.owner, "session": session}).scalar()
+
+
 def read_compressed_texts(store, session, before_cursor, after_cursor):
     with store.engine.connect() as connection:
         return list(connection.execute(text(f'SELECT content FROM "{store.schema}".chat_messages '
@@ -871,8 +951,8 @@ def collect_assets(record, run_dir):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="四組隔離AI測試；必須明確選suite，不執行舊28-case或TXT。")
-    parser.add_argument("--suite", choices=("chat", "memory", "tools", "integration"))
+    parser = argparse.ArgumentParser(description="分組隔離AI測試；必須明確選suite，不執行舊28-case或TXT。")
+    parser.add_argument("--suite", choices=("chat", "memory", "tools", "integration", "jev-emotion"))
     parser.add_argument("--scenario", help="重播該suite的完整cases.json，不重新生成續問")
     parser.add_argument("--case", help="定位單題並重播必要前序；保留全組分母")
     parser.add_argument("--startup-timeout", type=float, default=90)

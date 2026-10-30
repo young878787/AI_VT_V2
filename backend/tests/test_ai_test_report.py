@@ -69,6 +69,91 @@ class AiTestReportTests(unittest.TestCase):
             self.assertIn(expected, text)
         self.assertEqual(list(self.directory.glob("*.tmp")), [])
 
+    def test_jev_role_records_are_reported_and_question_hashes_must_resolve(self):
+        metadata = self.initialize()
+        traces = [{"stage": "jev", "role": role, "question_hash": "hash_" + role, "duration_sec": 0.4,
+                   "error": None, "state": {"current_user_input": "請說明目前進度", "recent_dialogue": []},
+                   "answers": {"marker": "answer_" + role}} for role in ("emotion", "action", "memory")]
+        rows = [record(trace=traces, emotion_source="jev", memory_route="process")]
+        self.save(rows)
+        questions = {"hash_" + role: {"role": role, "questions": {}} for role in ("emotion", "action", "memory")}
+        (self.directory / "jev_questions.json").write_text(json.dumps({"questions": questions}), encoding="utf-8")
+        run = self.write(metadata, rows)
+        self.assertEqual(run["acceptance"]["overall"], "passed")
+        self.assertEqual(run["artifacts"]["jev_questions.json"]["sha256"],
+                         file_sha256(self.directory / "jev_questions.json"))
+        text = self.report()
+        self.assertIn("JEV 判斷", text)
+        for role in ("emotion", "action", "memory"):
+            self.assertIn(f"| {role} | current_user_input, recent_dialogue | 0 | 0.4 | 無 | `hash_{role}` |", text)
+            self.assertIn("answer_" + role, text)
+        self.assertIn('"route": "process"', text)
+        questions.pop("hash_memory")
+        (self.directory / "jev_questions.json").write_text(json.dumps({"questions": questions}), encoding="utf-8")
+        run = self.write(metadata, rows)
+        self.assertEqual(run["acceptance"]["overall"], "failed")
+        self.assertIn("jev_question_missing", {item["reason_code"] for item in run["attention"]})
+
+    def test_emotion_curve_is_reported_and_reviewed_outside_overall(self):
+        metadata = self.initialize("jev-emotion", [{"case_id": "je_001", "source": "fixed"}])
+        self.assertEqual(json.loads((self.directory / "review.json").read_text(encoding="utf-8"))["curve"],
+                         {"status": "pending", "reason": None})
+        metadata["emotion_curve"] = {
+            "source": "replay_of_actual_scores", "recompute_consistent": True,
+            "turns": {"je_001": {"scores": {}, "first": "calm", "second": "none",
+                                 "mood": {"shy": 0, "pleased": 0, "genuinely_angry": 0, "sad_or_hurt": 0,
+                                          "masking_positive_feeling": 0.5, "wants_continue_interaction": 0.5}}},
+            "checks": [{"id": "C6", "title": "連續罵：生氣累積", "status": "failed",
+                        "conditions": [{"kind": "rise", "actual": [0.4, 0.4]}],
+                        "root_cause": {"kind": "single_turn", "case_ids": ["je_009"], "details": []}}]}
+        rows = [record("je_001")]
+        self.save(rows)
+        run = self.write(metadata, rows)
+        self.assertEqual((run["acceptance"]["overall"], run["acceptance"]["curve"]), ("passed", "pending"))
+        self.assertIn("curve_pending", [item["reason_code"] for item in run["attention"]])
+        text = self.report()
+        self.assertIn("情緒曲線（人工判定，不計入驗收）：pending", text)
+        self.assertIn("| [je_001](#case-je_001) | 0.00 | 0.00 | 0.00 | 0.00 | 0.50 | 0.50 | 平穩 | 無 |", text)
+        self.assertIn("| C6 | 連續罵：生氣累積 | failed | rise=[0.4, 0.4] | single_turn je_009 |", text)
+        path = self.directory / "review.json"
+        for curve, expected in (({"status": "needs_changes", "reason": "罵 2 沒累積"}, "failed"),
+                                ({"status": "accepted", "reason": "人工看過曲線"}, "passed"),
+                                ({"status": "accepted", "reason": None}, "pending")):
+            review = json.loads(path.read_text(encoding="utf-8"))
+            review["curve"] = curve
+            path.write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
+            run = self.write(metadata, rows)
+            with self.subTest(curve=curve):
+                self.assertEqual((run["acceptance"]["overall"], run["acceptance"]["curve"]), ("passed", expected))
+        self.assertIn("invalid_curve_review", [item["reason_code"] for item in run["attention"]])
+        self.assertEqual(rebuild_report(self.directory)["emotion_curve"], metadata["emotion_curve"])
+
+    def test_other_suites_have_no_curve_acceptance(self):
+        metadata = self.initialize()
+        rows = [record()]
+        self.save(rows)
+        run = self.write(metadata, rows)
+        self.assertNotIn("curve", run["acceptance"])
+        self.assertNotIn("emotion_curve", run)
+
+    def test_emotion_rows_show_scores_ranking_and_failure_layer(self):
+        metadata = self.initialize("jev-emotion", [{"case_id": "je_011", "source": "fixed"}])
+        evidence = {"jev": {"scores": {"shy": 2, "pleased": 0, "genuinely_angry": 4, "sad_or_hurt": 3,
+                                       "masking_positive_feeling": 2, "wants_continue_interaction": 1}},
+                    "judgment": {"first": "pleased", "second": "none", "axes": {"masking_positive_feeling": "middle",
+                                                                                "wants_continue_interaction": "middle"}},
+                    "failure_layers": ["jev_judgment"]}
+        row = record("je_011", emotion_evidence=evidence)
+        row["checks"].append({"stage": "emotion", "status": "failed", "reason_code": "emotion_first",
+                              "evidence": {"field": "emotion_evidence"}})
+        self.save([row])
+        run = self.write(metadata, [row])
+        self.assertEqual(run["acceptance"]["overall"], "failed")
+        text = self.report()
+        self.assertIn("## 情緒逐輪", text)
+        self.assertIn("| [je_011](#case-je_011) | 請說明目前進度 | 2／0／4／3／2／1 | pleased | none | middle／middle | "
+                      "emotion_first | jev_judgment |", text)
+
     def test_capacity_failure_fails_overall_but_separates_core(self):
         metadata = self.initialize("memory", [{"case_id": "mem_013"}, {"case_id": "mem_014"}])
         rows = [record("mem_013"), record("mem_014", status="failed")]

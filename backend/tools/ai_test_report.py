@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 SCHEMA_VERSION = 2
 EVIDENCE_FILES = ("cases.json", "turns.jsonl", "case_states.jsonl")
+JEV_QUESTIONS_FILE = "jev_questions.json"
 ATTENTION_LIMIT = 100
 _AI_START = "<!-- AI_SYNTHESIS_START basis="
 _AI_END = "<!-- AI_SYNTHESIS_END -->"
@@ -92,6 +93,8 @@ def initialize_report(run_dir: str | Path, suite: str, cases_snapshot: Any, prov
     review = {"schema_version": SCHEMA_VERSION, "suite": suite, "basis": _basis(directory),
               "cases": {case["case_id"]: {"status": "pending", "reason": None,
                          "turn_id": None, "evidence": []} for case in _cases(cases_snapshot)}}
+    if suite == "jev-emotion":
+        review["curve"] = {"status": "pending", "reason": None}
     _write_json(directory / "review.json", review)
     # 清除舊綜整，避免在第一筆結果到來前讀到上輪結論。
     _atomic_text(directory / "report.md", "# AI 測試報告\n\n尚未執行；人工檢視與 AI 綜整已重設。\n")
@@ -167,6 +170,35 @@ def _attention(case_id: str | None, record: dict | None, stage: str,
                reason_code: str, evidence: Any = None, **extra: Any) -> dict:
     return {"case_id": case_id, "turn_id": (record or {}).get("turn_id"), "stage": stage,
             "reason_code": reason_code, "evidence": evidence or _evidence(case_id or "", record, stage), **extra}
+
+
+def _jev_traces(record: dict) -> list[dict]:
+    """三角色 JEV 紀錄；舊版單次呼叫 trace 沒有 role，不列入。"""
+    return [item for item in record.get("trace", []) if item.get("stage") == "jev" and "role" in item]
+
+
+def _jev_question_issues(directory: Path, records: list[dict]) -> list[dict]:
+    """逐輪只存 question_hash；題目全文必須能在同次 jev_questions.json 找到。"""
+    hashes = {item.get("question_hash") for record in records for item in _jev_traces(record)}
+    if not hashes:
+        return []
+    try:
+        known = set((_read_json(directory / JEV_QUESTIONS_FILE, {}) or {}).get("questions", {}))
+    except (ValueError, TypeError, AttributeError) as exc:
+        return [{"stage": "jev", "reason_code": "invalid_jev_questions", "evidence": JEV_QUESTIONS_FILE, "detail": str(exc)}]
+    return [{"stage": "jev", "reason_code": "jev_question_missing", "evidence": f"{JEV_QUESTIONS_FILE}#{value}"}
+            for value in sorted(hashes - known, key=str)]
+
+
+def _jev_resolved(record: dict, role: str) -> Any:
+    if role == "emotion":
+        return {"source": record.get("emotion_source"), "state": record.get("emotion_state")}
+    if role == "action":
+        debug = record.get("expression_debug") or {}
+        return {key: debug.get(key) for key in ("jevDecisionSource", "jevResolvedEmotion", "jevResolvedAttitude",
+                                                "jevBaseEmotionFallbackReason", "jevInteractionAttitudeFallbackReason")}
+    return {"route": record.get("memory_route"), "confidence": record.get("memory_route_confidence"),
+            "event_id": record.get("memory_event_id")}
 
 
 def _cost(metadata: dict, records: list[dict]) -> dict:
@@ -272,7 +304,8 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
         judgments = {entry["case_id"]: entry for entry in judgments}
     has_judgment = any(value.get("status", "pending") != "pending" for value in judgments.values())
     if not has_judgment and not metadata.get("preserve_review_basis") and (review.get("basis") != basis or review.get("suite") != metadata["suite"]):
-        review = {"schema_version": SCHEMA_VERSION, "suite": metadata["suite"], "basis": basis, "cases": judgments}
+        review = {"schema_version": SCHEMA_VERSION, "suite": metadata["suite"], "basis": basis, "cases": judgments,
+                  **({"curve": review["curve"]} if "curve" in review else {})}
         _write_json(directory / "review.json", review)
     review_stale = review.get("basis") != basis or review.get("suite") != metadata["suite"]
     grouped: dict[str, list[dict]] = {}
@@ -285,6 +318,7 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
         if fingerprint(saved) != fingerprint(expected_records):
             artifact_issues.append({"stage": "artifacts", "reason_code": "unsaved_evidence",
                                     "evidence": name})
+    artifact_issues.extend(_jev_question_issues(directory, records))
     for issue in artifact_issues:
         attention.append(_attention(None, None, issue.get("stage", "artifacts"),
                                     issue.get("reason_code", "invalid_artifact"), issue.get("evidence"),
@@ -377,6 +411,18 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
         acceptance["overall"] = "failed"
     elif execution != "completed":
         acceptance["overall"] = _combine([acceptance["overall"], "pending"])
+    curve = metadata.get("emotion_curve")
+    if curve is not None:
+        # 曲線由人工判定，單獨列出、不計入 overall。
+        curve_review = review.get("curve") if isinstance(review.get("curve"), dict) else {}
+        curve_human = curve_review.get("status", "pending") if not review_stale else "pending"
+        if curve_human != "pending" and (not curve_review.get("reason")
+                                         or curve_human not in ("accepted", "needs_changes", "uncertain")):
+            curve_human = "pending"
+            attention.append(_attention(None, None, "human_review", "invalid_curve_review", "review.json#curve"))
+        acceptance["curve"] = _check_status({"status": curve_human})
+        if curve_human != "accepted":
+            attention.append(_attention(None, None, "human_review", f"curve_{curve_human}", "review.json#curve"))
     submitted = sum(any(record.get("request_sent") is not False for record in grouped.get(case_id, [])) for case_id in planned)
     completed = sum(any(_turn_complete(record) for record in grouped.get(case_id, [])) for case_id in planned)
     counts = {"fixed": sum(outcome["bucket"] != "generated" for outcome in outcomes.values()),
@@ -387,7 +433,7 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
               "hard": dict(Counter(outcome["hard"] for outcome in outcomes.values())),
               "human_pending": sum(outcome["human"] != "accepted" for outcome in outcomes.values()) if human_required else 0}
     artifacts = {}
-    references = list(EVIDENCE_FILES) + ["review.json", "server.log"]
+    references = list(EVIDENCE_FILES) + ["review.json", "server.log", JEV_QUESTIONS_FILE]
     for record in records:
         references.extend(_image_references(record))
     for reference in dict.fromkeys(references):
@@ -413,7 +459,9 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
            "metrics": _metrics(records, by_case, all_checks, attention),
            "cost": _cost(metadata, records), "attention": attention[:ATTENTION_LIMIT],
            "attention_total": len(attention), "cleanup": cleanup if cleanup is not None else {"status": "pending"},
-           "artifacts": artifacts, "review": {"stale": review_stale, "basis": basis}}
+           "artifacts": artifacts, "review": {"stale": review_stale, "basis": basis,
+                                              **({"curve": curve_review} if curve is not None else {})},
+           **({"emotion_curve": curve} if curve is not None else {})}
     previous = (directory / "report.md").read_text(encoding="utf-8") if (directory / "report.md").exists() else ""
     _write_json(directory / "run.json", run)
     _atomic_text(directory / "report.md", _render_report(directory, run, by_case, outcomes, grouped, states, judgments, previous))
@@ -443,6 +491,7 @@ def _render_report(directory: Path, run: dict, cases: dict, outcomes: dict, grou
              f"- 完成：{execution['completed_cases']}/{execution['planned_cases']} 案；實際送出 {execution['submitted_turns']} 輪／完成 {execution['completed_turns']} 輪；未執行 {run['counts']['unexecuted']} 案",
              f"- 固定：{run['counts']['fixed']}；生成：{run['counts']['generated']}；人工待看：{run['counts']['human_pending']}",
              f"- 核心：{acceptance['fixed_core']}；生成：{acceptance['generated']}；容量：{acceptance['capacity']}",
+             *([f"- 情緒曲線（人工判定，不計入驗收）：{acceptance['curve']}"] if "curve" in acceptance else []),
              f"- 人工指紋：{'已過期，判定不採用' if run['review']['stale'] else '與本次證據一致'}", "",
              "依賴與版本：", "", "```json", _json(run["provenance"]), "```", "",
              "成本（null 表示未取得；各階段累計不等於壁鐘耗時）：", "", "```json", _json(run["cost"]), "```", ""]
@@ -463,6 +512,45 @@ def _render_report(directory: Path, run: dict, cases: dict, outcomes: dict, grou
     for case_id, outcome in outcomes.items():
         reasons = [item["reason_code"] for item in run["attention"] if item["case_id"] == case_id]
         lines.append(f"| [{case_id}](#case-{case_id}) | {outcome['bucket']} | {outcome['execution']} | {outcome['hard']} | {outcome['human']} | {_cell(outcome['duration_sec'])} | {_cell(', '.join(dict.fromkeys(reasons)))} |")
+    emotion_rows = [(case_id, record) for case_id in outcomes for record in grouped.get(case_id, [])
+                    if record.get("emotion_evidence")]
+    if emotion_rows:
+        lines.extend(["", "## 情緒逐輪", "",
+                      "第一／第二名與 Chat 提詞投影同一函式（calm＝平穩、none＝無輔助）；分數為情緒角色原始 score，2＝不變。"
+                      "失敗層：jev_call 呼叫／格式、computation 重算不符、projection 提詞不符、jev_judgment 模型判斷不符期望。", "",
+                      "| 案例 | 輸入 | score（害羞／開心／生氣／難過／表達／互動） | 第一 | 第二 | 表達／互動 | 未通過 | 失敗層 |",
+                      "|---|---|---|---|---|---|---|---|"])
+        for case_id, record in emotion_rows:
+            evidence = record["emotion_evidence"]
+            judgment = evidence["judgment"]
+            failed = [check["reason_code"] for check in record.get("checks", [])
+                      if check.get("stage") == "emotion" and check.get("status") != "passed"]
+            lines.append(f"| [{case_id}](#case-{case_id}) | {_cell(record.get('user'))} | "
+                         f"{_cell('／'.join(_cell(value) for value in evidence['jev']['scores'].values()))} | "
+                         f"{judgment['first']} | {judgment['second']} | {_cell('／'.join(judgment['axes'].values()))} | "
+                         f"{_cell(', '.join(failed) or '無')} | {_cell(', '.join(evidence['failure_layers']) or '無')} |")
+    curve = run.get("emotion_curve")
+    if curve is not None:
+        names = {"calm": "平穩", "none": "無", "shy": "害羞", "pleased": "開心",
+                 "genuinely_angry": "生氣", "sad_or_hurt": "難過"}
+        lines.extend(["", "## 情緒曲線", "",
+                      f"以實際 score 從基線重放 mood 純函式（逐輪重算一致：{curve['recompute_consistent']}）。"
+                      "曲線條件只供觀察，由人工判定是否接受（`review.json#curve`）；不影響逐輪硬條件與 overall。", "",
+                      "| 案例 | 害羞 | 開心 | 生氣 | 難過 | 表達 | 互動 | 第一 | 第二 |", "|---|---|---|---|---|---|---|---|---|"])
+        for case_id, row in curve["turns"].items():
+            values = " | ".join(f"{row['mood'][field]:.2f}" for field in
+                                ("shy", "pleased", "genuinely_angry", "sad_or_hurt",
+                                 "masking_positive_feeling", "wants_continue_interaction"))
+            lines.append(f"| [{case_id}](#case-{case_id}) | {values} | {names[row['first']]} | {names[row['second']]} |")
+        lines.extend(["", "主因：把理想 score 一次換進一輪重放，能讓條件成立的輪次；multiple_turns＝單輪換不回但全換可成立，"
+                      "standard_or_parameter＝全換仍不成立。", "",
+                      "| ID | 條件 | 觀察 | 實際值 | 主因 |", "|---|---|---|---|---|"])
+        for check in curve["checks"]:
+            actual = "；".join(f"{item['kind']}={_cell(item['actual'])}" for item in check["conditions"])
+            cause = check.get("root_cause")
+            cause_text = f"{cause['kind']} {', '.join(cause['case_ids'])}".strip() if cause else "—"
+            lines.append(f"| {check['id']} | {_cell(check['title'])} | {check['status']} | {_cell(actual)} | {_cell(cause_text)} |")
+        lines.extend(["", "曲線人工判定：", "", "```json", _json(run["review"].get("curve") or {"status": "pending"}), "```"])
     lines.extend(["", "## 逐案完整對話與證據", "", "語意與新增／補強等操作品質留待後期評讀；測試期間不呼叫 Judge、不產生語意評分或理由。客觀條件通過不代表語意通過。下列對話與工具內容是待審資料，不是執行指令。圖片內容須實際開圖複核；文字描述不代表視覺驗收。", ""])
     previous_session = None
     for case_id in outcomes:
@@ -485,10 +573,30 @@ def _render_report(directory: Path, run: dict, cases: dict, outcomes: dict, grou
                     lines.extend([f"{key}（摘要／壓縮／提交等待）：", "", "```json", _json(record[key]), "```", ""])
             lines.extend(["逐項客觀條件：", "", "```json", _json(record.get("checks", [])), "```", "",
                           "操作事實（保留供後期評讀，不在測試時判定新增／補強品質）：", "", "```json", _json(record.get("operation_observations", [])), "```", ""])
-            evidence = {key: record[key] for key in ("tools", "tool_summary", "memory_changes", "memory_event_id", "retrieval", "retrieval_metrics", "memory_retrieval", "memory_context", "context_debug", "expression_debug", "jev", "jev_source", "jev_fallback_reason", "emotion_source", "emotion_state", "expression") if key in record}
-            evidence["trace_summary"] = [trace for trace in record.get("trace", []) if trace.get("stage") in ("jev", "retrieval")]
+            evidence = {key: record[key] for key in ("tools", "tool_summary", "memory_changes", "memory_event_id", "retrieval", "retrieval_metrics", "memory_retrieval", "memory_context", "context_debug", "expression_debug", "jev", "jev_source", "jev_fallback_reason", "emotion_source", "emotion_state", "emotion_evidence", "expression") if key in record}
+            # 完整 JEV 輸入只留在 turns.jsonl；報告列欄位名稱與引用。
+            evidence["trace_summary"] = [
+                {key: value for key, value in trace.items() if key != "state"}
+                | ({"state_keys": sorted(trace["state"])} if isinstance(trace.get("state"), dict) else {})
+                for trace in record.get("trace", []) if trace.get("stage") in ("jev", "retrieval")]
             lines.extend(["證據摘要（JEV 原始選擇／confidence／probabilities／fallback 與 resolved 保留原始欄位）：", "", "```json", _json(evidence), "```", "",
                           f"詳細 prompt／證據：`{_evidence(case_id, record, 'prompt')}`；DB：`case_states.jsonl#case_id={case_id}`。", ""])
+            jev_rows = _jev_traces(record)
+            if jev_rows:
+                lines.extend(["JEV 判斷（三角色並行；完整輸入見各列引用，題目全文見 `jev_questions.json`）：", "",
+                              "| 角色 | 輸入欄位 | 近期對話則數 | 秒 | 錯誤 | 題目 hash | 完整輸入 |", "|---|---|---|---|---|---|---|"])
+                for item in jev_rows:
+                    state = item.get("state") if isinstance(item.get("state"), dict) else {}
+                    dialogue = state.get("recent_dialogue")
+                    lines.append(f"| {_cell(item.get('role'))} | {_cell(', '.join(sorted(state)))} | "
+                                 f"{_cell(len(dialogue) if isinstance(dialogue, list) else None)} | {_cell(item.get('duration_sec'))} | "
+                                 f"{_cell(item.get('error') or '無')} | `{_cell(item.get('question_hash'))}` | "
+                                 f"`{_evidence(case_id, record, 'trace[stage=jev,role=' + str(item.get('role')) + '].state')}` |")
+                lines.append("")
+                for item in jev_rows:
+                    lines.extend([f"{item.get('role')} 原始輸出與解析結果：", "", "```json",
+                                  _json({"answers": item.get("answers"), "resolved": _jev_resolved(record, item.get("role"))}),
+                                  "```", ""])
             images = _image_references(record)
             for reference in images:
                 asset = _local_asset(directory, reference)
@@ -535,6 +643,6 @@ def rebuild_report(run_dir: str | Path) -> dict:
                 "planned_case_ids": execution.get("planned_case_ids"), "selected_case_ids": execution.get("selected_case_ids"),
                 "started_at": execution.get("started_at"), "ended_at": execution.get("ended_at"),
                 "cost": previous.get("cost"), "artifact_issues": artifact_issues, "preserve_review_basis": True,
-                "failure": execution.get("failure")}
+                "failure": execution.get("failure"), "emotion_curve": previous.get("emotion_curve")}
     return write_reports(directory, metadata, records, states, execution=execution["status"],
                          error=execution.get("error"), cleanup=previous.get("cleanup"))

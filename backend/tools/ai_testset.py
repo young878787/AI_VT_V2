@@ -1,4 +1,4 @@
-"""四組固定案例、依賴選取及有界使用者續問；不接受舊測試格式。"""
+"""分組固定案例、依賴選取及有界使用者續問；不接受舊測試格式。"""
 
 import asyncio
 import copy
@@ -10,11 +10,15 @@ import re
 import time
 from zoneinfo import ZoneInfo
 
+from domain.emotion_state import EMOTION_FIELDS, PRIMARY_EMOTION_FIELDS
+
 
 CASE_DIR = Path(__file__).with_name("ai_test_cases")
-SUITE_COUNTS = {"chat": 7, "memory": 14, "tools": 7, "integration": 15}
+SUITE_COUNTS = {"chat": 7, "memory": 14, "tools": 7, "integration": 15, "jev-emotion": 15}
+SUITE_PREFIXES = {"chat": "ch", "memory": "mem", "tools": "to", "integration": "it", "jev-emotion": "je"}
 MAX_INPUT = 1000
 CASE_FIELDS = {"case_id", "input", "phase", "session", "depends_on", "context", "oracle", "source", "legacy_case_ids"}
+AXIS_DIRECTIONS = {"up", "down", "not_up", "not_down"}
 
 
 def fingerprint(value) -> str:
@@ -39,7 +43,7 @@ def _validate(data: dict, suite: str) -> None:
                 or memory["owner"] not in {"self", "other"}):
             raise ValueError("初始記憶缺欄位、重複 ID 或 owner 無效")
         memory_ids.add(memory["id"])
-    prefix = {"chat": "ch", "memory": "mem", "tools": "to", "integration": "it"}[suite]
+    prefix = SUITE_PREFIXES[suite]
     identifiers = [f"{prefix}_{index:03}" for index in range(1, SUITE_COUNTS[suite] + 1)]
     seen = set()
     for case, expected in zip(cases, identifiers):
@@ -89,13 +93,89 @@ def _validate(data: dict, suite: str) -> None:
             raise ValueError("legacy_case_ids 必須是對照陣列")
         if suite == "memory" and case["phase"] == "recall" and (context.get("history") or context.get("summary")):
             raise ValueError("記憶召回必須使用空短期上下文")
+        if (suite == "jev-emotion") != ("emotion" in oracle):
+            raise ValueError("只有 jev-emotion 案例必須帶 oracle.emotion")
+        if suite == "jev-emotion":
+            _validate_emotion_oracle(oracle["emotion"])
         seen.add(expected)
+    if (suite == "jev-emotion") != ("curve_checks" in data):
+        raise ValueError("只有 jev-emotion 必須帶 curve_checks")
+    if suite == "jev-emotion":
+        _validate_curve_checks(data["curve_checks"], seen)
+
+
+def _score(value) -> bool:
+    return type(value) in (int, float) and 0 <= value <= 4
+
+
+def _validate_emotion_oracle(emotion) -> None:
+    """第一／第二名允許集合（calm=平穩、none=無輔助）、兩軸方向與供曲線重算的理想 score。"""
+    if not isinstance(emotion, dict) or set(emotion) != {"first", "second", "axes", "ideal_scores"}:
+        raise ValueError("oracle.emotion 只能包含 first、second、axes、ideal_scores")
+    for key, allowed in (("first", {"calm", *PRIMARY_EMOTION_FIELDS}), ("second", {"none", *PRIMARY_EMOTION_FIELDS})):
+        values = emotion[key]
+        if (not isinstance(values, list) or not values or len(set(values)) != len(values)
+                or not set(values) <= allowed):
+            raise ValueError(f"oracle.emotion.{key} 必須為不重複且合法的允許集合")
+    axes = emotion["axes"]
+    if (not isinstance(axes, dict) or not set(axes) <= set(EMOTION_FIELDS) - set(PRIMARY_EMOTION_FIELDS)
+            or not set(axes.values()) <= AXIS_DIRECTIONS):
+        raise ValueError("oracle.emotion.axes 只接受兩軸與 up／down／not_up／not_down")
+    scores = emotion["ideal_scores"]
+    if not isinstance(scores, dict) or set(scores) != set(EMOTION_FIELDS) or not all(_score(v) for v in scores.values()):
+        raise ValueError("oracle.emotion.ideal_scores 必須含六欄且為 0–4 的數值")
+
+
+def _curve_condition_valid(item, seen: set) -> bool:
+    if not isinstance(item, dict):
+        return False
+    kind = item.get("kind")
+    ids = item.get("cases")
+    if kind in {"rise", "fall"}:
+        return (set(item) == {"kind", "field", "cases"} and item["field"] in EMOTION_FIELDS
+                and isinstance(ids, list) and len(ids) >= 2 and len(set(ids)) == len(ids)
+                and all(isinstance(i, str) and i in seen for i in ids))
+    if kind == "jev_change_at_most":
+        fields = item.get("fields")
+        return (set(item) == {"kind", "fields", "cases", "value"}
+                and isinstance(fields, list) and fields and set(fields) <= set(EMOTION_FIELDS)
+                and isinstance(ids, list) and ids and all(isinstance(i, str) and i in seen for i in ids)
+                and type(item["value"]) in (int, float) and item["value"] >= 0)
+    if kind not in {"first", "at_least", "at_most", "below", "drop_at_least", "score_at_most"}:
+        return False
+    keys = {"kind", "field", "case"} | (set() if kind == "first" else {"value"})
+    if set(item) != keys or item["field"] not in EMOTION_FIELDS:
+        return False
+    if kind == "first" and item["field"] not in PRIMARY_EMOTION_FIELDS:
+        return False
+    if kind != "first" and not (_score(item["value"]) if kind == "score_at_most" else
+                                type(item["value"]) in (int, float) and 0 <= item["value"] <= 1):
+        return False
+    return isinstance(item["case"], str) and item["case"] in seen
+
+
+def _validate_curve_checks(checks, seen: set) -> None:
+    """跨輪曲線條件：只引用本 suite 的案例與合法欄位；只供觀察與人工判定。"""
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("curve_checks 必須為非空陣列")
+    identifiers = set()
+    for check in checks:
+        if (not isinstance(check, dict) or set(check) != {"id", "title", "conditions"}
+                or not isinstance(check["id"], str) or not check["id"]
+                or not isinstance(check["title"], str) or not check["title"]
+                or not isinstance(check["conditions"], list) or not check["conditions"]):
+            raise ValueError("curve_checks 每項必須含 id、title、conditions")
+        if check["id"] in identifiers:
+            raise ValueError(f"curve_checks 的 ID {check['id']} 重複")
+        identifiers.add(check["id"])
+        if not all(_curve_condition_valid(item, seen) for item in check["conditions"]):
+            raise ValueError(f"curve_checks {check['id']} 含未知或格式錯誤的條件")
 
 
 def load_suite(suite: str, scenario=None) -> dict:
     """載入完整 suite；重播先完整讀檔且核對固定輸入、oracle 與控制點。"""
     if suite not in SUITE_COUNTS:
-        raise ValueError("suite 必須為 chat、memory、tools 或 integration")
+        raise ValueError("suite 必須為 chat、memory、tools、integration 或 jev-emotion")
     if scenario is not None and not isinstance(scenario, (dict, str, Path)):
         raise ValueError("不接受舊 28-case 陣列；重播必須為新 suite 快照 object")
     data = None
@@ -111,7 +191,7 @@ def load_suite(suite: str, scenario=None) -> dict:
             raise ValueError("重播必須包含有效且含時區的 reference_time") from exc
     else:
         reference = datetime.now(ZoneInfo("Asia/Taipei"))
-    fixed = json.loads((CASE_DIR / f"{suite}.json").read_text(encoding="utf-8"))
+    fixed = json.loads((CASE_DIR / f"{suite.replace('-', '_')}.json").read_text(encoding="utf-8"))
     fixed.update(suite=suite)
     if suite == "integration":
         # 初始 corpus 本文只有 memory.json 一份來源；依 memory_ids 決定真正植入範圍。
@@ -155,6 +235,8 @@ def load_suite(suite: str, scenario=None) -> dict:
             raise ValueError("快照不得改寫固定輸入")
         if case["source"] == "generated" and case["input"].strip():
             _validate_followup(case, case["input"])
+    if data.get("curve_checks") != fixed.get("curve_checks"):
+        raise ValueError("快照曲線條件與固定契約不同")
     data["input_source"] = "replayed_inputs"
     return data
 

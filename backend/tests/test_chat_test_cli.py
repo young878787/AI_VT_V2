@@ -23,6 +23,13 @@ class CliTests(unittest.TestCase):
         run.assert_not_called()
         self.assertIn("--suite", out.getvalue())
 
+    def test_jev_emotion_suite_is_selectable(self):
+        with patch.object(cli.asyncio, "run", return_value=(None, "passed")) as run:
+            self.assertEqual(cli.main(["--suite", "jev-emotion", "--case", "je_011"]), 0)
+        run.call_args.args[0].close()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["--suite", "jev_emotion"])
+
     def test_removed_legacy_flags_rejected(self):
         for flags in (["--max-turns", "1"], ["--model", "Rushia"], ["--retries", "3"]):
             with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -79,6 +86,93 @@ class CliTests(unittest.TestCase):
         self.assertEqual(metadata["cost"]["roles"]["chat"]["calls"], 3)
 
 
+    def test_cost_splits_jev_calls_by_role(self):
+        records = [{"trace": [{"stage": "jev", "role": "emotion", "duration_sec": 0.5},
+                              {"stage": "jev", "role": "action", "duration_sec": 0.75},
+                              {"stage": "jev", "role": "memory"}]}]
+        metadata = {}
+        cli.update_cost(metadata, records, None, cli.time.monotonic())
+        by_role = metadata["cost"]["roles"]["jev"]["by_role"]
+        self.assertEqual({role: value["calls"] for role, value in by_role.items()},
+                         {"action": 1, "emotion": 1, "memory": 1})
+        self.assertEqual(by_role["action"]["duration_sec"], 0.75)
+        self.assertIsNone(by_role["memory"]["duration_sec"])
+
+    def test_jev_questions_file_contains_every_role_hash(self):
+        from domain.jev_questions import build_role_questions, question_hash
+        with tempfile.TemporaryDirectory() as directory:
+            payload = cli.write_jev_questions(Path(directory))
+            saved = json.loads((Path(directory) / "jev_questions.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved, payload)
+        expected = {question_hash(questions): {"role": role, "questions": questions}
+                    for role, questions in build_role_questions().items()}
+        self.assertEqual(saved["questions"], expected)
+
+
+class ArchiveRunDirTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.latest = self.root / "latest"
+
+    def fill_latest(self, started_at=None):
+        self.latest.mkdir()
+        (self.latest / "report.md").write_text("舊報告", encoding="utf-8")
+        if started_at is not None:
+            (self.latest / "run.json").write_text(json.dumps({"execution": {"started_at": started_at}}),
+                                                  encoding="utf-8")
+
+    def test_previous_latest_moves_to_history_named_by_run_start(self):
+        self.fill_latest("2026-10-23T08:09:10+08:00")
+        expected = cli.datetime.fromisoformat("2026-10-23T08:09:10+08:00").astimezone().strftime("%Y%m%d-%H%M%S")
+        latest = cli.create_run_dir(self.root)
+        self.assertEqual(latest, self.latest)
+        self.assertEqual(list(latest.iterdir()), [])
+        self.assertEqual((self.root / "history" / expected / "report.md").read_text(encoding="utf-8"), "舊報告")
+
+    def test_unreadable_run_json_falls_back_to_directory_mtime(self):
+        self.fill_latest()
+        (self.latest / "run.json").write_text("{", encoding="utf-8")
+        expected = cli.datetime.fromtimestamp(self.latest.stat().st_mtime).strftime("%Y%m%d-%H%M%S")
+        cli.create_run_dir(self.root)
+        self.assertTrue((self.root / "history" / expected / "report.md").is_file())
+
+    def test_name_collision_gets_numbered_suffix(self):
+        names = []
+        for _ in range(3):
+            self.fill_latest("2026-10-23T08:09:10+08:00")
+            names.append(cli.archive_run_dir(self.latest, self.root / "history").name)
+            self.assertFalse(self.latest.exists())
+        self.assertEqual(names, [names[0], names[0] + "-2", names[0] + "-3"])
+
+    def test_missing_or_empty_latest_is_not_archived(self):
+        cli.create_run_dir(self.root)
+        cli.create_run_dir(self.root)
+        self.assertTrue(self.latest.is_dir())
+        self.assertFalse((self.root / "history").exists())
+
+    def test_rename_failure_keeps_previous_latest(self):
+        self.fill_latest("2026-10-23T08:09:10+08:00")
+        with patch.object(Path, "rename", side_effect=PermissionError("in use")):
+            with self.assertRaises(PermissionError):
+                cli.create_run_dir(self.root)
+        self.assertEqual((self.latest / "report.md").read_text(encoding="utf-8"), "舊報告")
+
+    def test_symlinked_latest_is_unlinked_without_moving_target(self):
+        target = self.root / "elsewhere"
+        target.mkdir()
+        (target / "report.md").write_text("連結目標", encoding="utf-8")
+        try:
+            self.latest.symlink_to(target, target_is_directory=True)
+        except OSError:
+            self.skipTest("此環境無建立 symlink 權限")
+        latest = cli.create_run_dir(self.root)
+        self.assertFalse(latest.is_symlink())
+        self.assertEqual((target / "report.md").read_text(encoding="utf-8"), "連結目標")
+        self.assertFalse((self.root / "history").exists())
+
+
 class RunTests(unittest.IsolatedAsyncioTestCase):
     async def test_memory_dependency_replays_only_required_inputs_and_preserves_denominator(self):
         await self._memory_run()
@@ -128,7 +222,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
                 "test_database_url": lambda: "postgresql://test/test_db", "MemoryRunStore": Mock(return_value=store),
                 "start_backend": Mock(return_value=(Mock(), Mock())), "stop_backend": Mock(),
                 "connect_backend": AsyncMock(return_value=socket), "control_step": AsyncMock(return_value={}),
-                "run_turn": turn, "provenance": lambda _: {}, "RUNS_DIR": root,
+                "run_turn": turn, "wait_jev_trace": AsyncMock(), "provenance": lambda _: {}, "RUNS_DIR": root,
             }
             for name, value in replacements.items():
                 stack.enter_context(patch.object(cli, name, value))
@@ -167,6 +261,57 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["execution"]["planned_cases"], 14)
         self.assertNotEqual(status, "passed")
         store.close.assert_called_once()
+
+    async def test_jev_emotion_runs_all_turns_after_failure_and_archives_history(self):
+        from tools.ai_testset import load_suite
+        dataset = load_suite("jev-emotion")
+        sent = []
+        store = SimpleNamespace(open=Mock(), close=Mock(), case_state=Mock(return_value={}), created=True)
+        loader = SimpleNamespace(embedding_cost={}, memory_ids={}, other_owner_state=Mock(return_value={}))
+
+        async def prepare(case, _):
+            return {"session_id": case["session"], "metadata": {}}
+
+        async def turn(ws, index, message, model, session, storage, timeout, mode):
+            sent.append(message)
+            return {"turn_id": uuid4().hex, "user": message, "reply": "合成回答", "stream_complete": True,
+                    "request_sent": True, "errors": [], "_db_state": {}}
+
+        def check(suite, case, record, *args):
+            failed = case["case_id"] == "je_008"
+            record["checks"] = [{"stage": "emotion", "status": "failed" if failed else "passed", "reason_code": "emotion_first",
+                                  "evidence": {"file": "turns.jsonl", "case_id": case["case_id"]}}]
+
+        loader.prepare = prepare
+        settings = SimpleNamespace(embedding_model="test", embedding_serving_model="test", embedding_dimension=1024,
+                                   embedding_query_prefix="", embedding_document_prefix="", embedding_contract="test")
+        socket = SimpleNamespace(close=AsyncMock())
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
+            root = Path(directory)
+            replacements = {
+                "test_database_url": lambda: "postgresql://test/test_db", "MemoryRunStore": Mock(return_value=store),
+                "start_backend": Mock(return_value=(Mock(), Mock())), "stop_backend": Mock(),
+                "connect_backend": AsyncMock(return_value=socket), "control_step": AsyncMock(return_value={}),
+                "run_turn": turn, "wait_jev_trace": AsyncMock(), "provenance": lambda _: {}, "RUNS_DIR": root,
+                "read_emotion_record": Mock(return_value=None),
+            }
+            for name, value in replacements.items():
+                stack.enter_context(patch.object(cli, name, value))
+            stack.enter_context(patch("tools.ai_test_fixtures.FixtureLoader", return_value=loader))
+            stack.enter_context(patch("domain.memory_settings.load_memory_settings", return_value=settings))
+            stack.enter_context(patch("tools.ai_test_evidence.check_turn", side_effect=check))
+            args = argparse.Namespace(suite="jev-emotion", case=None, scenario=None, turn_timeout=1, startup_timeout=1)
+            for _ in range(2):
+                run_dir, status = await cli.run(args)
+            records = [json.loads(line) for line in (run_dir / "turns.jsonl").read_text(encoding="utf-8").splitlines()]
+            history = list((root / "jev-emotion" / "history").iterdir())
+            self.assertEqual(len(history), 1)
+            self.assertTrue((history[0] / "run.json").is_file())
+        self.assertEqual(sent, [c["input"] for c in dataset["cases"]] * 2)
+        self.assertEqual(status, "failed")
+        self.assertTrue(all(record["request_sent"] for record in records))
+        self.assertEqual([r["case_id"] for r in records if r["status"] == "failed"], ["je_008"])
+        self.assertEqual(run_dir, root / "jev-emotion" / "latest")
 
     async def test_turn_does_not_retry_sent_user_input_on_connection_failure(self):
         socket = SimpleNamespace(send=AsyncMock(), recv=AsyncMock(side_effect=OSError("closed")))
@@ -242,7 +387,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
                 "test_database_url": lambda: "postgresql://test/test_db", "MemoryRunStore": Mock(return_value=store),
                 "start_backend": Mock(return_value=(Mock(), Mock())), "stop_backend": Mock(),
                 "connect_backend": AsyncMock(return_value=socket), "control_step": controls,
-                "run_turn": turn, "provenance": lambda _: {}, "RUNS_DIR": root,
+                "run_turn": turn, "wait_jev_trace": AsyncMock(), "provenance": lambda _: {}, "RUNS_DIR": root,
                 "read_session_state": Mock(side_effect=[{"summary": "舊摘要", "summary_through_sequence": -1},
                                                        {"summary": "新摘要", "summary_through_sequence": 5}]),
                 "read_compressed_texts": Mock(return_value=["已壓縮的原始user與assistant對話"]),

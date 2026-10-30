@@ -72,9 +72,11 @@ class ContextEvidenceTests(unittest.IsolatedAsyncioTestCase):
                       "jevInteractionAttitudeFallbackReason": "none", "jevResolvedEmotion": "neutral",
                       "jevResolvedAttitude": "smile"},
                   "errors": [], "memory_event_id": None, "db_unchanged": True,
-                  "trace": [context, {"stage": "jev", "error": None, "answers": {
+                  "trace": [context, {"stage": "jev", "role": "emotion", "error": None, "answers": {}},
+                            {"stage": "jev", "role": "action", "error": None, "answers": {
                       "base_emotion": {"choice": "neutral", "confidence": 1.0},
-                      "interaction_attitude": {"choice": "smile", "confidence": 1.0}}}, {"stage": "test_mode"}]}
+                      "interaction_attitude": {"choice": "smile", "confidence": 1.0}}},
+                            {"stage": "jev", "role": "memory", "error": None, "answers": {}}, {"stage": "test_mode"}]}
 
         def trace(stage, payload):
             record["trace"].append(dict(stage=stage, **copy.deepcopy(payload)))

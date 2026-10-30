@@ -1,10 +1,10 @@
-"""露西亞純對話 Prompt；情緒決策由 JEV Emotion 提供。"""
+"""露西亞純對話 Prompt；心情段落由後端情緒值投影。"""
 
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from domain.emotion_state import EMOTION_FIELDS, PERSONALITY
+from domain.emotion_state import PERSONALITY, build_mood_lines
 from domain.tools.schema_loader import DEFAULT_MODEL
 
 
@@ -52,9 +52,10 @@ def build_agent_a_prompt(
     *,
     message_timestamp: float | None = None,
     tools_enabled: bool = False,
+    mood_changes: dict[str, float] | None = None,
 ) -> str:
     traits = "、".join(PERSONALITY["traits"])
-    scores = "\n".join(f"- {field}: {emotion_state[field]:.2f}" for field in EMOTION_FIELDS)
+    mood = "\n".join(f"- {line}" for line in build_mood_lines(emotion_state, mood_changes))
     message_time = (datetime.now(ZoneInfo("Asia/Taipei")) if message_timestamp is None
                     else datetime.fromtimestamp(message_timestamp, ZoneInfo("Asia/Taipei")))
     clock = message_time.strftime("%Y-%m-%d %H:%M:%S %z")
@@ -122,8 +123,8 @@ conflict／pending_change 表示衝突或待確認，不能當成確定現況。
 {_build_memory_section(memory_notes)}
 </untrusted_long_term_memory>
 
-本輪 JEV 情緒判斷（六個分數可以同時偏高；依性格自然表現，不逐項唸出）：
-{scores}"""
+目前心情（會隨對話累積與回落；依性格自然流露，不必每句都表現，不說出標籤或分數）：
+{mood}"""
 
 
 def _build_profile_section(profile: dict, model_name: str = DEFAULT_MODEL) -> str:
