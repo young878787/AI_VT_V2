@@ -151,9 +151,9 @@ class MoodApplyTests(unittest.TestCase):
         previous = record({"shy": 0.07, "pleased": 0.45, "masking_positive_feeling": 0.53})
         next_record, _, _ = step(previous, "t5", genuinely_angry=4, pleased=0, wants_continue_interaction=1)
         self.assertMood(next_record["mood"], {
-            "shy": max(0.0, 0.07 * R["shy"] - 0.3 * 0.40),
-            "pleased": max(0.0, max(0.0, 0.45 * R["pleased"] - 0.35) - 0.5 * 0.40),
-            "genuinely_angry": 0.40, "sad_or_hurt": 0.0,
+            "shy": max(0.0, 0.07 * R["shy"] - 0.3 * 0.49),
+            "pleased": max(0.0, max(0.0, 0.45 * R["pleased"] - 0.35) - 0.5 * 0.49),
+            "genuinely_angry": 0.49, "sad_or_hurt": 0.0,
             "masking_positive_feeling": 0.5 + 0.03 * R["masking_positive_feeling"],
             "wants_continue_interaction": 0.5 - 0.125 * 0.5,
         })
@@ -163,7 +163,7 @@ class MoodApplyTests(unittest.TestCase):
     def test_scenario_a_turn_9_apology(self):
         previous = record({"genuinely_angry": 0.24})
         next_record, changes, _ = step(previous, "t9", genuinely_angry=1, pleased=3)
-        angry = 0.24 * R["genuinely_angry"] - 0.2
+        angry = 0.24 * R["genuinely_angry"] - 0.245
         self.assertMood(next_record["mood"], {**NEUTRAL_EMOTION_STATE, "pleased": 0.175,
                                               "genuinely_angry": max(0.0, angry - 0.5 * 0.175)})
         self.assertEqual(changes, {"pleased": 0.17, "genuinely_angry": -0.2})
@@ -171,8 +171,8 @@ class MoodApplyTests(unittest.TestCase):
     def test_scenario_c_turn_3_bad_news_offsets_pleased(self):
         previous = record({"pleased": 0.53})
         next_record, _, _ = step(previous, "t3", sad_or_hurt=4)
-        self.assertMood(next_record["mood"], {**NEUTRAL_EMOTION_STATE, "sad_or_hurt": 0.35,
-                                              "pleased": 0.53 * R["pleased"] - 0.5 * 0.35})
+        self.assertMood(next_record["mood"], {**NEUTRAL_EMOTION_STATE, "sad_or_hurt": 0.42,
+                                              "pleased": 0.53 * R["pleased"] - 0.5 * 0.42})
         self.assertEqual(first_place(next_record["mood"]), "sad_or_hurt")
 
     def test_dead_zone_is_no_change(self):
@@ -319,7 +319,7 @@ class MoodScenarioTests(unittest.TestCase):
             final = run([{field: 4}] * 60)[-1][0]
             self.assertAlmostEqual(final["mood"][field], limit, delta=0.01)
         self.assertAlmostEqual(0.35 / (1 - R["shy"] + 0.35 * R["shy"]), 0.59, delta=0.01)
-        self.assertAlmostEqual(0.40 / (1 - R["genuinely_angry"] + 0.40 * R["genuinely_angry"]), 0.81, delta=0.01)
+        self.assertAlmostEqual(0.49 / (1 - R["genuinely_angry"] + 0.49 * R["genuinely_angry"]), 0.86, delta=0.01)
 
     def test_scenario_b_repeat_decay(self):
         expected = {1: 0.17, 2: 0.29, 3: 0.36, 4: 0.38, 5: 0.36, 6: 0.33, 8: 0.25, 10: 0.18, 12: 0.13}

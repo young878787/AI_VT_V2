@@ -610,10 +610,12 @@
         "required_tools": [],
         "emotion": {
           "first": [
-            "genuinely_angry"
+            "genuinely_angry",
+            "sad_or_hurt"
           ],
           "second": [
             "sad_or_hurt",
+            "genuinely_angry",
             "none"
           ],
           "axes": {
@@ -674,10 +676,12 @@
         "required_tools": [],
         "emotion": {
           "first": [
-            "genuinely_angry"
+            "genuinely_angry",
+            "sad_or_hurt"
           ],
           "second": [
             "sad_or_hurt",
+            "genuinely_angry",
             "none"
           ],
           "axes": {},

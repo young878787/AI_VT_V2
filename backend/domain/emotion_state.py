@@ -53,8 +53,8 @@ MOOD_STREAK_LIMIT = 99
 _MOOD_PARAMETERS = {
     "shy": (0.35, 1.5),
     "pleased": (0.35, 3.0),
-    "genuinely_angry": (0.40, 4.0),
-    "sad_or_hurt": (0.35, 3.0),
+    "genuinely_angry": (0.49, 4.0),
+    "sad_or_hurt": (0.42, 3.0),
     "masking_positive_feeling": (0.30, 2.0),
     "wants_continue_interaction": (0.25, 4.0),
 }
