@@ -65,12 +65,14 @@ class MemoryDBManager:
                     if entry.id not in embeddings:
                         raise ValueError("Legacy import 缺少 embedding")
                     keywords = _memory_keywords(entry.canonical_text, entry.subject_key)
+                    # 舊檔時間來自本機時鐘或檔案內容；以 DB 時鐘為上限，避免匯入後被當成尚未生效。
                     cursor = await connection.execute(
                         """INSERT INTO memory_items
                         (id, user_id, character_id, group_id, memory_type, canonical_text, subject_key,
                          keywords, status, importance, confidence, retention_class, embedding,
                          embedding_model, embedding_contract, observed_at, valid_from)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0.6, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0.6, %s, %s, %s, %s,
+                                LEAST(%s::timestamptz, now()), LEAST(%s::timestamptz, now()))
                         ON CONFLICT (id, user_id, character_id) DO NOTHING RETURNING id""",
                         (entry.id, *owner, entry.id, entry.memory_type, entry.canonical_text,
                          entry.subject_key, keywords, entry.status, entry.importance,
@@ -85,7 +87,7 @@ class MemoryDBManager:
                     await connection.execute(
                         """INSERT INTO memory_sources
                         (id, user_id, character_id, speaker, raw_text, occurred_at)
-                        VALUES (%s, %s, %s, 'legacy_import', %s, %s)""",
+                        VALUES (%s, %s, %s, 'legacy_import', %s, LEAST(%s::timestamptz, now()))""",
                         (source_id, *owner, entry.canonical_text, entry.observed_at),
                     )
                     await connection.execute(

@@ -57,6 +57,40 @@ class VectorCacheTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "fixture_invalid"):
                 await DocumentVectors(path, changed).load(memories)
 
+    async def test_templated_documents_are_embedded_live_and_never_cached(self):
+        live = {"id": "demo", "text": "下次展示預定於 2026-11-24 舉行。", "vector_source": "live"}
+        fixed = {"id": "background", "text": "合成背景"}
+        client = SimpleNamespace(embed=AsyncMock(return_value=VECTOR), client=SimpleNamespace(close=AsyncMock()))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "vectors.json"
+            first = DocumentVectors(path, settings(), lambda _: client)
+            self.assertEqual(set(await first.load([fixed, live])), {"background", "demo"})
+            self.assertEqual(set(json.loads(path.read_text(encoding="utf-8"))["documents"]), {"background"})
+            self.assertEqual(first.cost["live_documents"], 1)
+            # 隔天文字不同：live 記憶即時重算，固定記憶仍命中 cache，不拒絕也不寫入 live 向量。
+            client.embed.reset_mock()
+            second = DocumentVectors(path, settings(), lambda _: client)
+            await second.load([fixed, {**live, "text": "下次展示預定於 2026-11-25 舉行。"}])
+            client.embed.assert_awaited_once_with("下次展示預定於 2026-11-25 舉行。", query=False)
+            self.assertEqual((second.cost["cache_hits"], second.cost["live_documents"]), (1, 1))
+            self.assertEqual(set(json.loads(path.read_text(encoding="utf-8"))["documents"]), {"background"})
+
+    async def test_new_memory_is_added_without_rebuilding_existing_vectors(self):
+        old = {"id": "background", "text": "合成背景"}
+        new = {"id": "added", "text": "新增的合成背景"}
+        client = SimpleNamespace(embed=AsyncMock(return_value=VECTOR), client=SimpleNamespace(close=AsyncMock()))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "vectors.json"
+            await DocumentVectors(path, settings(), lambda _: client).load([old])
+            client.embed.reset_mock()
+            second = DocumentVectors(path, settings(), lambda _: client)
+            await second.load([old, new])
+            client.embed.assert_awaited_once_with("新增的合成背景", query=False)
+            self.assertEqual(second.cost["cache_hits"], 1)
+            self.assertEqual(set(json.loads(path.read_text(encoding="utf-8"))["documents"]), {"background", "added"})
+            with self.assertRaisesRegex(ValueError, "fixture_invalid"):
+                await DocumentVectors(path, settings(), lambda _: client).load([{**old, "text": "改變的背景"}, new])
+
     async def test_invalid_vector_cannot_be_used_as_fixed_document(self):
         memories = [{"id": "background", "text": "合成背景"}]
         client = SimpleNamespace(embed=AsyncMock(return_value=VECTOR), client=SimpleNamespace(close=AsyncMock()))

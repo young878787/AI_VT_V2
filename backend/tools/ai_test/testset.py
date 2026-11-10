@@ -14,8 +14,12 @@ from domain.emotion_state import EMOTION_FIELDS, PRIMARY_EMOTION_FIELDS
 
 
 CASE_DIR = Path(__file__).with_name("cases")
-SUITE_COUNTS = {"chat": 7, "memory": 14, "tools": 7, "integration": 15, "jev-emotion": 15}
-SUITE_PREFIXES = {"chat": "ch", "memory": "mem", "tools": "to", "integration": "it", "jev-emotion": "je"}
+SUITE_COUNTS = {"chat": 7, "memory": 24, "tools": 7, "integration": 15, "jev-emotion": 15, "memory-calibration": 8}
+SUITE_PREFIXES = {"chat": "ch", "memory": "mem", "tools": "to", "integration": "it", "jev-emotion": "je",
+                  "memory-calibration": "mc"}
+# 共用 memory.json 初始 corpus 的 suite；memory-calibration 只供決定參數，不計入 memory 驗收。
+SHARED_CORPUS_SUITES = {"integration", "memory-calibration"}
+CARD_DOMAINS = {"self", "preference", "daily", "relation", "project", "event", "bond", "other"}
 MAX_INPUT = 1000
 CASE_FIELDS = {"case_id", "input", "phase", "session", "depends_on", "context", "oracle", "source", "legacy_case_ids"}
 AXIS_DIRECTIONS = {"up", "down", "not_up", "not_down"}
@@ -42,7 +46,21 @@ def _validate(data: dict, suite: str) -> None:
                 or not isinstance(memory["text"], str) or not memory["text"].strip()
                 or memory["owner"] not in {"self", "other"}):
             raise ValueError("初始記憶缺欄位、重複 ID 或 owner 無效")
+        card = memory.get("card")
+        if card is not None and (not isinstance(card, dict) or set(card) != {"domain", "title"}
+                                 or card["domain"] not in CARD_DOMAINS or not isinstance(card["title"], str)
+                                 or not 2 <= len(card["title"]) <= 16):
+            raise ValueError("初始記憶 card 必須為白名單主題與 2–16 字副主題")
+        if "mood" in memory and memory["mood"] not in {"calm", *PRIMARY_EMOTION_FIELDS}:
+            raise ValueError("初始記憶 mood 必須為 mood_v1 主要情緒或 calm")
+        if "source_key" in memory and (not isinstance(memory["source_key"], str) or not memory["source_key"]
+                                       or not isinstance(memory.get("source_text"), str)):
+            raise ValueError("共用證據 source_key 必須搭配 source_text")
         memory_ids.add(memory["id"])
+    shared = {}
+    for memory in memories:
+        if "source_key" in memory and shared.setdefault(memory["source_key"], memory["source_text"]) != memory["source_text"]:
+            raise ValueError("同一 source_key 的 source_text 必須相同")
     prefix = SUITE_PREFIXES[suite]
     identifiers = [f"{prefix}_{index:03}" for index in range(1, SUITE_COUNTS[suite] + 1)]
     seen = set()
@@ -91,7 +109,7 @@ def _validate(data: dict, suite: str) -> None:
         if (not isinstance(case["legacy_case_ids"], list)
                 or any(not isinstance(item, str) for item in case["legacy_case_ids"])):
             raise ValueError("legacy_case_ids 必須是對照陣列")
-        if suite == "memory" and case["phase"] == "recall" and (context.get("history") or context.get("summary")):
+        if suite in {"memory", "memory-calibration"} and case["phase"] == "recall" and (context.get("history") or context.get("summary")):
             raise ValueError("記憶召回必須使用空短期上下文")
         if (suite == "jev-emotion") != ("emotion" in oracle):
             raise ValueError("只有 jev-emotion 案例必須帶 oracle.emotion")
@@ -175,7 +193,7 @@ def _validate_curve_checks(checks, seen: set) -> None:
 def load_suite(suite: str, scenario=None) -> dict:
     """載入完整 suite；重播先完整讀檔且核對固定輸入、oracle 與控制點。"""
     if suite not in SUITE_COUNTS:
-        raise ValueError("suite 必須為 chat、memory、tools、integration 或 jev-emotion")
+        raise ValueError("suite 必須為 chat、memory、tools、integration、jev-emotion 或 memory-calibration")
     if scenario is not None and not isinstance(scenario, (dict, str, Path)):
         raise ValueError("不接受舊 28-case 陣列；重播必須為新 suite 快照 object")
     data = None
@@ -193,7 +211,7 @@ def load_suite(suite: str, scenario=None) -> dict:
         reference = datetime.now(ZoneInfo("Asia/Taipei"))
     fixed = json.loads((CASE_DIR / f"{suite.replace('-', '_')}.json").read_text(encoding="utf-8"))
     fixed.update(suite=suite)
-    if suite == "integration":
+    if suite in SHARED_CORPUS_SUITES:
         # 初始 corpus 本文只有 memory.json 一份來源；依 memory_ids 決定真正植入範圍。
         fixed["memories"] = json.loads((CASE_DIR / "memory.json").read_text(encoding="utf-8"))["memories"]
     fixed.setdefault("memories", [])
@@ -212,6 +230,10 @@ def load_suite(suite: str, scenario=None) -> dict:
                 value = value.replace(template, date)
         return value
 
+    for memory in fixed["memories"]:
+        # 代換後文字每天不同，不能使用固定 document cache；由 fixture loader 每次即時 embed。
+        if any(template in memory["text"] for template in dates):
+            memory["vector_source"] = "live"
     fixed = resolve(fixed)
     if suite == "tools":
         clock = reference + timedelta(seconds=17)

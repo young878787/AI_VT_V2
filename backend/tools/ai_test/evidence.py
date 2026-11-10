@@ -24,7 +24,7 @@ JEV_EVIDENCE_VERSION = "raw_choice_confidence_gate_v2"
 def case_mode(suite, case):
     if suite in {"chat", "tools", "jev-emotion"}:
         return ChatTestMode.SHORT_ONLY
-    if suite == "memory":
+    if suite in {"memory", "memory-calibration"}:
         return ChatTestMode.MEMORY_SEED if case["phase"] == "operation" else ChatTestMode.MEMORY_PROBE
     return ChatTestMode.MIXED_READ if case.get("source") == "generated" else ChatTestMode.MIXED_UPDATE
 
@@ -571,7 +571,9 @@ def check_turn(suite, case, record, previous, before, state, fixture_ids):
         check("injection", "profile_source_mapping", profile_ids <= complete_injections,
               {"profile_ids": sorted(profile_ids), "unmapped_or_incomplete": sorted(profile_ids - complete_injections)})
         if oracle.get("capacity"):
-            check("capacity", "six_independent_facts", len(required) == 6 and required <= complete_injections,
+            # 六項架構決定（mem_014）沿用原檢查名稱；其他容量題要求全部必要記憶完整注入。
+            check("capacity", "six_independent_facts" if len(required) == 6 else "all_capacity_facts_injected",
+                  bool(required) and required <= complete_injections,
                   {"retrieval_limit": CHAT_RETRIEVAL_LIMIT, "required": len(required), "complete_injected": len(required & complete_injections)})
         all_required = required | {target for ids in source_ids.values() for target in ids}
         record["retrieval_metrics"] = {

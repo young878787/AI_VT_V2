@@ -258,7 +258,7 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(records[0]["checks"][0]["reason_code"], "runner_failure")
             self.assertEqual(records[1]["checks"][0]["reason_code"], "run_terminated")
         self.assertEqual(snapshot["selection"], [c["case_id"] for c in dataset["cases"]] if full_suite else ["mem_003", "mem_005", "mem_006"])
-        self.assertEqual(result["execution"]["planned_cases"], 14)
+        self.assertEqual(result["execution"]["planned_cases"], 24)
         self.assertNotEqual(status, "passed")
         store.close.assert_called_once()
 

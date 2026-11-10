@@ -167,7 +167,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 command.upgrade(config, "head")
                 after = connection.execute(session_query).one()
                 self.assertIsNone(after.emotion_state)
-                self.assertEqual(after._replace(emotion_state=None), before._replace(emotion_state=None))
+                self.assertEqual({**after._asdict(), "emotion_state": None}, {**before._asdict(), "emotion_state": None})
                 self.assertEqual(connection.execute(message_query).all(), messages)
                 self.assertEqual(connection.execute(text(
                     f'SELECT version_num FROM "{schema}".alembic_version')).scalar_one(), "0009_mood_v1_emotion")

@@ -21,7 +21,7 @@ FOLLOWUP_15 = "好，那回到 AI VT 專案，動作現在和以前分別由誰�
 
 class DatasetTests(unittest.TestCase):
     def test_four_suites_have_exact_single_input_counts(self):
-        for suite, count in (("chat", 7), ("memory", 14), ("tools", 7), ("integration", 15)):
+        for suite, count in (("chat", 7), ("memory", 24), ("tools", 7), ("integration", 15), ("memory-calibration", 8)):
             with self.subTest(suite=suite):
                 data = load_suite(suite)
                 self.assertEqual(len(data["cases"]), count)
@@ -148,6 +148,9 @@ class DatasetTests(unittest.TestCase):
         expected = (reference + timedelta(days=14)).date().isoformat()
         self.assertIn(expected, memory["cases"][11]["oracle"]["required_facts"][1])
         self.assertNotIn("{next_demo_date}", json.dumps(memory, ensure_ascii=False))
+        # 只有含日期模板的初始記憶改為即時 embed；其餘使用固定 document cache。
+        self.assertEqual({item["id"] for item in memory["memories"] if item.get("vector_source") == "live"},
+                         {"corpus_expo_past", "corpus_expo_future"})
         expected_memory = copy.deepcopy(memory)
         expected_memory["input_source"] = "replayed_inputs"
         self.assertEqual(load_suite("memory", memory), expected_memory)
@@ -176,10 +179,19 @@ class DatasetTests(unittest.TestCase):
 
     def test_capacity_and_temporal_distractors_remain_explicit(self):
         data = load_suite("memory")
-        capacity = data["cases"][-1]["oracle"]
+        capacity = data["cases"][13]["oracle"]
+        self.assertEqual(data["cases"][13]["case_id"], "mem_014")
         self.assertTrue(capacity["capacity"])
         self.assertEqual(len(capacity["required_memory_ids"]), 6)
         self.assertEqual(len(capacity["required_facts"]), 6)
+        large = data["cases"][15]["oracle"]
+        self.assertEqual(data["cases"][15]["case_id"], "mem_016")
+        self.assertTrue(large["capacity"])
+        self.assertEqual(len(large["required_memory_ids"]), 12)
+        self.assertTrue(all("card" in memory for memory in data["memories"]))
+        shared = [memory for memory in data["memories"] if "source_key" in memory]
+        self.assertEqual(sorted(memory["source_key"] for memory in shared),
+                         ["src_cen_cap", "src_cen_cap", "src_sis_trip", "src_sis_trip"])
         self.assertNotIn("superseded", data["cases"][5]["oracle"]["forbidden_memory_ids"])
         self.assertEqual(set(data["cases"][11]["oracle"]["forbidden_memory_ids"]),
                          {"corpus_expo_expired", "corpus_other_owner", "corpus_wrong_contract"})

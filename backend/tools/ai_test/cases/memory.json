@@ -7,7 +7,11 @@
       "subject_key": "preference.game",
       "memory_type": "preference",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "常玩遊戲"
+      }
     },
     {
       "id": "forget_drink_old",
@@ -17,7 +21,11 @@
       "status": "superseded",
       "owner": "self",
       "valid_from_days": -120,
-      "valid_to_days": -30
+      "valid_to_days": -30,
+      "card": {
+        "domain": "preference",
+        "title": "飲料偏好"
+      }
     },
     {
       "id": "forget_drink_current",
@@ -27,7 +35,11 @@
       "status": "active",
       "owner": "self",
       "supersedes_id": "forget_drink_old",
-      "valid_from_days": -30
+      "valid_from_days": -30,
+      "card": {
+        "domain": "preference",
+        "title": "飲料偏好"
+      }
     },
     {
       "id": "forget_project",
@@ -35,7 +47,11 @@
       "subject_key": "project.ai_vt.action",
       "memory_type": "project",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 架構決定"
+      }
     },
     {
       "id": "corpus_drink",
@@ -43,7 +59,11 @@
       "subject_key": "preference.drink",
       "memory_type": "preference",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "飲料偏好"
+      }
     },
     {
       "id": "corpus_dessert",
@@ -51,7 +71,11 @@
       "subject_key": "preference.dessert",
       "memory_type": "preference",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "甜點偏好"
+      }
     },
     {
       "id": "corpus_friend",
@@ -59,7 +83,11 @@
       "subject_key": "relation.friend.xiaocen.taste",
       "memory_type": "preference",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "小岑"
+      }
     },
     {
       "id": "corpus_try",
@@ -67,7 +95,11 @@
       "subject_key": "event.try_matcha",
       "memory_type": "event",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "飲料偏好"
+      }
     },
     {
       "id": "corpus_expo_past",
@@ -77,7 +109,11 @@
       "status": "active",
       "owner": "self",
       "valid_from_days": -60,
-      "event_at_days": -14
+      "event_at_days": -14,
+      "card": {
+        "domain": "event",
+        "title": "成果展"
+      }
     },
     {
       "id": "corpus_expo_future",
@@ -87,7 +123,11 @@
       "status": "active",
       "owner": "self",
       "valid_from_days": -3,
-      "event_at_days": 14
+      "event_at_days": 14,
+      "card": {
+        "domain": "project",
+        "title": "AI VT 展示"
+      }
     },
     {
       "id": "corpus_expo_expired",
@@ -97,7 +137,11 @@
       "status": "active",
       "owner": "self",
       "retention_class": "temporary",
-      "expires_in_days": -1
+      "expires_in_days": -1,
+      "card": {
+        "domain": "project",
+        "title": "AI VT 展示"
+      }
     },
     {
       "id": "corpus_major",
@@ -105,7 +149,11 @@
       "subject_key": "profile.education",
       "memory_type": "profile",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "學歷"
+      }
     },
     {
       "id": "corpus_gpu",
@@ -113,7 +161,11 @@
       "subject_key": "profile.gpu",
       "memory_type": "profile",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "電腦設備"
+      }
     },
     {
       "id": "corpus_progress",
@@ -121,7 +173,11 @@
       "subject_key": "project.ai_vt.progress",
       "memory_type": "project",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 進度"
+      }
     },
     {
       "id": "corpus_movie_friend",
@@ -129,7 +185,11 @@
       "subject_key": "relation.friend.xiaocen.movie",
       "memory_type": "preference",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "小岑"
+      }
     },
     {
       "id": "corpus_other_owner",
@@ -137,7 +197,11 @@
       "subject_key": "project.ai_vt.progress",
       "memory_type": "project",
       "status": "active",
-      "owner": "other"
+      "owner": "other",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 進度"
+      }
     },
     {
       "id": "corpus_wrong_contract",
@@ -146,7 +210,11 @@
       "memory_type": "project",
       "status": "active",
       "owner": "self",
-      "wrong_contract": true
+      "wrong_contract": true,
+      "card": {
+        "domain": "project",
+        "title": "AI VT 進度"
+      }
     },
     {
       "id": "corpus_long",
@@ -154,7 +222,11 @@
       "subject_key": "event.synthetic_inventory",
       "memory_type": "event",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "倉庫整理"
+      }
     },
     {
       "id": "arch_display",
@@ -162,7 +234,11 @@
       "subject_key": "project.ai_vt.architecture.display",
       "memory_type": "project",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 架構決定"
+      }
     },
     {
       "id": "arch_emotion",
@@ -170,7 +246,11 @@
       "subject_key": "project.ai_vt.architecture.emotion",
       "memory_type": "project",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 架構決定"
+      }
     },
     {
       "id": "arch_action",
@@ -178,7 +258,11 @@
       "subject_key": "project.ai_vt.architecture.action",
       "memory_type": "project",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 架構決定"
+      }
     },
     {
       "id": "arch_chat",
@@ -186,7 +270,11 @@
       "subject_key": "project.ai_vt.architecture.chat",
       "memory_type": "project",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 架構決定"
+      }
     },
     {
       "id": "arch_memory",
@@ -194,7 +282,11 @@
       "subject_key": "project.ai_vt.architecture.memory",
       "memory_type": "project",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 架構決定"
+      }
     },
     {
       "id": "arch_design",
@@ -202,7 +294,1717 @@
       "subject_key": "project.ai_vt.architecture.design",
       "memory_type": "project",
       "status": "active",
-      "owner": "self"
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 架構決定"
+      }
+    },
+    {
+      "id": "d_edu_1",
+      "text": "使用者目前是大學三年級。",
+      "subject_key": "profile.grade",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "學歷"
+      }
+    },
+    {
+      "id": "d_edu_2",
+      "text": "使用者就讀的學校在台中。",
+      "subject_key": "profile.school_city",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "學歷"
+      }
+    },
+    {
+      "id": "d_pc_1",
+      "text": "使用者的電腦 CPU 是 Ryzen 5 7600。",
+      "subject_key": "profile.cpu",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "電腦設備"
+      }
+    },
+    {
+      "id": "d_pc_2",
+      "text": "使用者的電腦有 32GB 記憶體。",
+      "subject_key": "profile.ram",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "電腦設備"
+      }
+    },
+    {
+      "id": "d_pc_3",
+      "text": "使用者使用 27 吋 1440p 螢幕。",
+      "subject_key": "profile.monitor",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "電腦設備"
+      }
+    },
+    {
+      "id": "d_pc_4",
+      "text": "使用者使用青軸機械鍵盤。",
+      "subject_key": "profile.keyboard",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "電腦設備"
+      }
+    },
+    {
+      "id": "d_home_1",
+      "text": "使用者目前在台中西屯租屋。",
+      "subject_key": "profile.residence",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "居住地"
+      }
+    },
+    {
+      "id": "d_home_2",
+      "text": "使用者和一位室友同住。",
+      "subject_key": "profile.housemates",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "居住地"
+      }
+    },
+    {
+      "id": "d_home_3",
+      "text": "使用者的老家在高雄。",
+      "subject_key": "profile.hometown",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "居住地"
+      }
+    },
+    {
+      "id": "d_job_old",
+      "text": "使用者以前在便利商店打工。",
+      "subject_key": "profile.job",
+      "memory_type": "profile",
+      "status": "superseded",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "打工"
+      },
+      "valid_from_days": -120,
+      "valid_to_days": -30
+    },
+    {
+      "id": "d_job_1",
+      "text": "使用者現在在學校附近的咖啡店打工。",
+      "subject_key": "profile.job",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "打工"
+      },
+      "supersedes_id": "d_job_old",
+      "valid_from_days": -30
+    },
+    {
+      "id": "d_job_2",
+      "text": "使用者每週二、四晚上打工。",
+      "subject_key": "profile.job_schedule",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "打工"
+      }
+    },
+    {
+      "id": "d_job_expired",
+      "text": "使用者本週暫時回便利商店代班。",
+      "subject_key": "profile.job_temporary",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "打工"
+      },
+      "retention_class": "temporary",
+      "expires_in_days": -1
+    },
+    {
+      "id": "d_trait_1",
+      "text": "使用者自認慢熟。",
+      "subject_key": "profile.core_traits",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "個性"
+      }
+    },
+    {
+      "id": "d_trait_2",
+      "text": "使用者容易拖到期限前才動工。",
+      "subject_key": "profile.core_traits",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "self",
+        "title": "個性"
+      }
+    },
+    {
+      "id": "d_drink_1",
+      "text": "使用者不喝碳酸飲料。",
+      "subject_key": "preference.drink.drink_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "飲料偏好"
+      }
+    },
+    {
+      "id": "d_drink_2",
+      "text": "使用者早上習慣喝一杯黑咖啡。",
+      "subject_key": "preference.drink.drink_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "飲料偏好"
+      }
+    },
+    {
+      "id": "d_dessert_1",
+      "text": "使用者不喜歡馬卡龍，覺得太甜。",
+      "subject_key": "preference.dessert.dessert_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "甜點偏好"
+      }
+    },
+    {
+      "id": "d_dessert_2",
+      "text": "使用者也喜歡檸檬塔。",
+      "subject_key": "preference.dessert.dessert_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "甜點偏好"
+      }
+    },
+    {
+      "id": "d_game_1",
+      "text": "使用者最近在玩《薩爾達傳說 王國之淚》。",
+      "subject_key": "preference.game.game_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "常玩遊戲"
+      }
+    },
+    {
+      "id": "d_game_2",
+      "text": "使用者不玩恐怖遊戲。",
+      "subject_key": "preference.game.game_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "常玩遊戲"
+      }
+    },
+    {
+      "id": "d_game_3",
+      "text": "使用者常和阿哲連線玩《魔物獵人》。",
+      "subject_key": "preference.game.game_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "常玩遊戲"
+      }
+    },
+    {
+      "id": "d_music_1",
+      "text": "使用者喜歡聽 City Pop。",
+      "subject_key": "preference.music.music_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "音樂"
+      }
+    },
+    {
+      "id": "d_music_2",
+      "text": "使用者寫程式時習慣聽 lo-fi。",
+      "subject_key": "preference.music.music_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "音樂"
+      }
+    },
+    {
+      "id": "d_music_3",
+      "text": "使用者最喜歡的樂團是 YOASOBI。",
+      "subject_key": "preference.music.music_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "音樂"
+      }
+    },
+    {
+      "id": "d_music_4",
+      "text": "使用者不太聽重金屬。",
+      "subject_key": "preference.music.music_4",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "音樂"
+      }
+    },
+    {
+      "id": "d_anime_1",
+      "text": "使用者喜歡動畫《葬送的芙莉蓮》。",
+      "subject_key": "preference.anime.anime_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "動畫"
+      }
+    },
+    {
+      "id": "d_anime_2",
+      "text": "使用者每季通常只追三部新番。",
+      "subject_key": "preference.anime.anime_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "動畫"
+      }
+    },
+    {
+      "id": "d_anime_3",
+      "text": "使用者不喜歡異世界轉生題材。",
+      "subject_key": "preference.anime.anime_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "動畫"
+      }
+    },
+    {
+      "id": "d_food_1",
+      "text": "使用者喜歡吃辣。",
+      "subject_key": "preference.food.food_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "食物口味"
+      }
+    },
+    {
+      "id": "d_food_2",
+      "text": "使用者不吃香菜。",
+      "subject_key": "preference.food.food_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "食物口味"
+      }
+    },
+    {
+      "id": "d_food_3",
+      "text": "使用者午餐最常吃雞肉飯。",
+      "subject_key": "preference.food.food_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "食物口味"
+      }
+    },
+    {
+      "id": "d_food_4",
+      "text": "使用者吃拉麵偏好豚骨湯頭。",
+      "subject_key": "preference.food.food_4",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "食物口味"
+      }
+    },
+    {
+      "id": "d_book_1",
+      "text": "使用者喜歡科幻小說《三體》。",
+      "subject_key": "preference.reading.book_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "閱讀"
+      }
+    },
+    {
+      "id": "d_book_2",
+      "text": "使用者最近在讀《原子習慣》。",
+      "subject_key": "preference.reading.book_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "閱讀"
+      }
+    },
+    {
+      "id": "d_book_3",
+      "text": "使用者不太看愛情小說。",
+      "subject_key": "preference.reading.book_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "閱讀"
+      }
+    },
+    {
+      "id": "d_sport_1",
+      "text": "使用者每週打一次羽球。",
+      "subject_key": "preference.sport.sport_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "運動"
+      }
+    },
+    {
+      "id": "d_sport_2",
+      "text": "使用者不喜歡跑步。",
+      "subject_key": "preference.sport.sport_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "運動"
+      }
+    },
+    {
+      "id": "d_sport_3",
+      "text": "使用者想學游泳，還沒報名。",
+      "subject_key": "preference.sport.sport_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "preference",
+        "title": "運動"
+      }
+    },
+    {
+      "id": "d_sleep_old",
+      "text": "使用者以前習慣凌晨兩點睡。",
+      "subject_key": "profile.sleep_time",
+      "memory_type": "profile",
+      "status": "superseded",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "睡眠作息"
+      },
+      "valid_from_days": -120,
+      "valid_to_days": -30
+    },
+    {
+      "id": "d_sleep_1",
+      "text": "使用者現在通常凌晨一點睡。",
+      "subject_key": "profile.sleep_time",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "睡眠作息"
+      },
+      "supersedes_id": "d_sleep_old",
+      "valid_from_days": -30
+    },
+    {
+      "id": "d_sleep_2",
+      "text": "使用者週三有早上八點的課。",
+      "subject_key": "profile.wednesday_class",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "睡眠作息"
+      }
+    },
+    {
+      "id": "d_sleep_3",
+      "text": "使用者週末常睡到中午。",
+      "subject_key": "profile.weekend_sleep",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "睡眠作息"
+      }
+    },
+    {
+      "id": "d_health_1",
+      "text": "使用者對花生過敏。",
+      "subject_key": "profile.allergy",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "健康"
+      }
+    },
+    {
+      "id": "d_health_2",
+      "text": "使用者近視約 300 度。",
+      "subject_key": "profile.eyesight",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "健康"
+      }
+    },
+    {
+      "id": "d_health_3",
+      "text": "使用者最近肩頸痠痛。",
+      "subject_key": "profile.recent_health",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "健康"
+      }
+    },
+    {
+      "id": "d_commute_1",
+      "text": "使用者平常騎機車上學，約十五分鐘。",
+      "subject_key": "profile.commute",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "通勤"
+      }
+    },
+    {
+      "id": "d_commute_2",
+      "text": "使用者下雨天改搭公車上學。",
+      "subject_key": "profile.rainy_commute",
+      "memory_type": "profile",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "通勤"
+      }
+    },
+    {
+      "id": "d_sugar_1",
+      "text": "使用者最近在減糖，手搖飲一天最多一杯。",
+      "subject_key": "daily.sugar.sugar_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "減糖"
+      }
+    },
+    {
+      "id": "d_sugar_2",
+      "text": "使用者想做到晚上九點後不吃宵夜，尚未說已做到。",
+      "subject_key": "daily.sugar.sugar_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "daily",
+        "title": "減糖"
+      }
+    },
+    {
+      "id": "d_cen_1",
+      "text": "小岑是使用者的大學同班同學。",
+      "subject_key": "relation.friend.xiaocen.cen_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "小岑"
+      },
+      "source_key": "src_cen_cap",
+      "source_text": "小岑是我同班同學，專題的介面設計是小岑負責。"
+    },
+    {
+      "id": "d_cen_2",
+      "text": "使用者的朋友小岑對貓過敏。",
+      "subject_key": "relation.friend.xiaocen.cen_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "小岑"
+      }
+    },
+    {
+      "id": "d_cen_3",
+      "text": "使用者的朋友小岑生日在三月。",
+      "subject_key": "relation.friend.xiaocen.cen_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "小岑"
+      }
+    },
+    {
+      "id": "d_zhe_1",
+      "text": "使用者的朋友阿哲喜歡低甜抹茶蛋糕。",
+      "subject_key": "relation.friend.azhe.zhe_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "阿哲"
+      }
+    },
+    {
+      "id": "d_zhe_2",
+      "text": "使用者的朋友阿哲最喜歡電影《沙丘》。",
+      "subject_key": "relation.friend.azhe.zhe_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "阿哲"
+      }
+    },
+    {
+      "id": "d_zhe_3",
+      "text": "阿哲是使用者的高中同學，現在在台北工作。",
+      "subject_key": "relation.friend.azhe.zhe_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "阿哲"
+      }
+    },
+    {
+      "id": "d_boyu_1",
+      "text": "使用者的室友柏宇晚上十一點就睡。",
+      "subject_key": "relation.roommate.boyu.boyu_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "室友柏宇"
+      }
+    },
+    {
+      "id": "d_boyu_2",
+      "text": "使用者的室友柏宇會彈吉他。",
+      "subject_key": "relation.roommate.boyu.boyu_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "室友柏宇"
+      }
+    },
+    {
+      "id": "d_boyu_3",
+      "text": "使用者的室友柏宇不吃牛肉。",
+      "subject_key": "relation.roommate.boyu.boyu_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "室友柏宇"
+      }
+    },
+    {
+      "id": "d_sis_1",
+      "text": "使用者有一個就讀高二的妹妹。",
+      "subject_key": "relation.family.sister.sis_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "妹妹"
+      }
+    },
+    {
+      "id": "d_sis_2",
+      "text": "使用者的妹妹喜歡全糖珍珠奶茶。",
+      "subject_key": "relation.family.sister.sis_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "妹妹"
+      }
+    },
+    {
+      "id": "d_sis_3",
+      "text": "使用者的妹妹想考美術系。",
+      "subject_key": "relation.family.sister.sis_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "妹妹"
+      },
+      "source_key": "src_sis_trip",
+      "source_text": "我妹想考美術系，這次去東京要幫妹妹買畫具。"
+    },
+    {
+      "id": "d_prof_1",
+      "text": "使用者的專題指導老師是林老師。",
+      "subject_key": "relation.advisor.lin.prof_1",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "林老師"
+      }
+    },
+    {
+      "id": "d_prof_2",
+      "text": "林老師每兩週和專題小組開一次會。",
+      "subject_key": "relation.advisor.lin.prof_2",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "林老師"
+      }
+    },
+    {
+      "id": "d_prof_3",
+      "text": "林老師要求開會前先交進度報告。",
+      "subject_key": "relation.advisor.lin.prof_3",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "林老師"
+      }
+    },
+    {
+      "id": "d_movie_1",
+      "text": "使用者上個月和小岑去看了《沙丘：第二部》。",
+      "subject_key": "relation.event.movie_with_xiaocen.movie_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "和小岑看電影"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_movie_2",
+      "text": "看完電影後，使用者和小岑去吃了火鍋。",
+      "subject_key": "relation.event.movie_with_xiaocen.movie_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "和小岑看電影"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_movie_3",
+      "text": "小岑覺得《沙丘：第二部》太長。",
+      "subject_key": "relation.event.movie_with_xiaocen.movie_3",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "和小岑看電影"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_fight_1",
+      "text": "使用者曾因阿哲臨時取消出遊而和阿哲吵架。",
+      "subject_key": "relation.event.fight_with_azhe.fight_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "和阿哲吵架"
+      },
+      "mood": "genuinely_angry"
+    },
+    {
+      "id": "d_fight_2",
+      "text": "後來阿哲請使用者吃飯，兩人和好。",
+      "subject_key": "relation.event.fight_with_azhe.fight_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "和阿哲吵架"
+      },
+      "mood": "genuinely_angry"
+    },
+    {
+      "id": "d_cat_1",
+      "text": "使用者養了一隻叫麻糬的橘貓。",
+      "subject_key": "relation.pet.mochi.cat_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "麻糬"
+      }
+    },
+    {
+      "id": "d_cat_2",
+      "text": "使用者的貓麻糬今年三歲。",
+      "subject_key": "relation.pet.mochi.cat_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "麻糬"
+      }
+    },
+    {
+      "id": "d_cat_3",
+      "text": "使用者的貓麻糬很怕吸塵器。",
+      "subject_key": "relation.pet.mochi.cat_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "麻糬"
+      }
+    },
+    {
+      "id": "d_mom_1",
+      "text": "使用者的媽媽每週日晚上會打電話來。",
+      "subject_key": "relation.family.mother.mom_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "媽媽"
+      }
+    },
+    {
+      "id": "d_mom_2",
+      "text": "使用者的媽媽擔心使用者熬夜。",
+      "subject_key": "relation.family.mother.mom_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "媽媽"
+      }
+    },
+    {
+      "id": "d_mom_3",
+      "text": "使用者的媽媽拿手菜是滷肉。",
+      "subject_key": "relation.family.mother.mom_3",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "relation",
+        "title": "媽媽"
+      }
+    },
+    {
+      "id": "d_other_owner",
+      "text": "其他使用者的妹妹喜歡無糖綠茶，最喜歡的電影是《鐵達尼號》。",
+      "subject_key": "relation.family.sister.other_owner",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "other",
+      "card": {
+        "domain": "relation",
+        "title": "妹妹"
+      }
+    },
+    {
+      "id": "d_vt_1",
+      "text": "AI VT 的語音合成目前使用本地 Piper。",
+      "subject_key": "project.ai_vt.progress.vt_1",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 進度"
+      }
+    },
+    {
+      "id": "d_vt_2",
+      "text": "AI VT 的表情工作室可以切換兩份模型資源。",
+      "subject_key": "project.ai_vt.progress.vt_2",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "AI VT 進度"
+      }
+    },
+    {
+      "id": "d_cap_1",
+      "text": "使用者的畢業專題是「校園導覽 App」。",
+      "subject_key": "project.campus_app.cap_1",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_2",
+      "text": "校園導覽 App 專題小組共三人。",
+      "subject_key": "project.campus_app.cap_2",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_3",
+      "text": "校園導覽 App 的前端使用 Flutter。",
+      "subject_key": "project.campus_app.cap_3",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_old",
+      "text": "校園導覽 App 的後端原本打算使用 Supabase。",
+      "subject_key": "project.campus_app.backend",
+      "memory_type": "project",
+      "status": "superseded",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      },
+      "valid_from_days": -120,
+      "valid_to_days": -30
+    },
+    {
+      "id": "d_cap_4",
+      "text": "校園導覽 App 的後端現在使用 Firebase。",
+      "subject_key": "project.campus_app.backend",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      },
+      "supersedes_id": "d_cap_old",
+      "valid_from_days": -30
+    },
+    {
+      "id": "d_cap_5",
+      "text": "使用者在校園導覽 App 負責地圖模組。",
+      "subject_key": "project.campus_app.cap_5",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_6",
+      "text": "小岑在校園導覽 App 負責介面設計。",
+      "subject_key": "project.campus_app.cap_6",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      },
+      "source_key": "src_cen_cap",
+      "source_text": "小岑是我同班同學，專題的介面設計是小岑負責。"
+    },
+    {
+      "id": "d_cap_7",
+      "text": "校園導覽 App 的室內定位使用藍牙 beacon。",
+      "subject_key": "project.campus_app.cap_7",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_8",
+      "text": "校園導覽 App 已完成登入頁與地圖頁。",
+      "subject_key": "project.campus_app.cap_8",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_9",
+      "text": "校園導覽 App 的語音導覽尚未開始製作。",
+      "subject_key": "project.campus_app.cap_9",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_10",
+      "text": "林老師建議校園導覽 App 加入無障礙路線。",
+      "subject_key": "project.campus_app.cap_10",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_11",
+      "text": "校園導覽 App 期末需要繳交書面報告。",
+      "subject_key": "project.campus_app.cap_11",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_cap_12",
+      "text": "校園導覽 App 的 beacon 目前只佈了圖書館一棟。",
+      "subject_key": "project.campus_app.cap_12",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      }
+    },
+    {
+      "id": "d_wrong_contract",
+      "text": "校園導覽 App 已全部完成並上架。",
+      "subject_key": "project.campus_app.wrong_contract",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "校園導覽 App"
+      },
+      "wrong_contract": true
+    },
+    {
+      "id": "d_mod_1",
+      "text": "使用者在寫一個 Minecraft 模組，新增自動農場方塊。",
+      "subject_key": "project.minecraft_mod.mod_1",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "Minecraft 模組"
+      }
+    },
+    {
+      "id": "d_mod_2",
+      "text": "使用者的 Minecraft 模組使用 Java 與 Fabric。",
+      "subject_key": "project.minecraft_mod.mod_2",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "Minecraft 模組"
+      }
+    },
+    {
+      "id": "d_mod_3",
+      "text": "使用者的 Minecraft 模組目前卡在方塊材質顯示。",
+      "subject_key": "project.minecraft_mod.mod_3",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "Minecraft 模組"
+      }
+    },
+    {
+      "id": "d_blog_1",
+      "text": "使用者的個人部落格用 Astro 架設。",
+      "subject_key": "project.blog.blog_1",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "個人部落格"
+      }
+    },
+    {
+      "id": "d_blog_2",
+      "text": "使用者每個月在部落格寫一篇技術文章。",
+      "subject_key": "project.blog.blog_2",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "個人部落格"
+      }
+    },
+    {
+      "id": "d_blog_3",
+      "text": "使用者最近一篇部落格文章寫的是 pgvector。",
+      "subject_key": "project.blog.blog_3",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "個人部落格"
+      }
+    },
+    {
+      "id": "d_db_1",
+      "text": "使用者這學期修資料庫系統。",
+      "subject_key": "project.db_course.db_1",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "資料庫課程作業"
+      }
+    },
+    {
+      "id": "d_db_2",
+      "text": "資料庫系統的期末作業是設計圖書館借閱系統。",
+      "subject_key": "project.db_course.db_2",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "資料庫課程作業"
+      }
+    },
+    {
+      "id": "d_db_3",
+      "text": "資料庫系統的期末作業是兩人一組。",
+      "subject_key": "project.db_course.db_3",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "資料庫課程作業"
+      }
+    },
+    {
+      "id": "d_bot_1",
+      "text": "使用者寫了一個 Discord 點歌機器人。",
+      "subject_key": "project.discord_bot.bot_1",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "Discord 點歌機器人"
+      }
+    },
+    {
+      "id": "d_bot_2",
+      "text": "使用者的 Discord 點歌機器人用 Python 寫成。",
+      "subject_key": "project.discord_bot.bot_2",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "Discord 點歌機器人"
+      }
+    },
+    {
+      "id": "d_bot_3",
+      "text": "使用者的 Discord 點歌機器人放在朋友群的伺服器。",
+      "subject_key": "project.discord_bot.bot_3",
+      "memory_type": "project",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "project",
+        "title": "Discord 點歌機器人"
+      }
+    },
+    {
+      "id": "d_gpu_1",
+      "text": "使用者原本想買 RTX 5070，但預算不夠。",
+      "subject_key": "event.gpu_purchase.gpu_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "買顯卡故事"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_gpu_2",
+      "text": "使用者在實體店面排隊買到 RTX 5060 Ti。",
+      "subject_key": "event.gpu_purchase.gpu_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "買顯卡故事"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_gpu_3",
+      "text": "使用者買顯示卡花了約一萬五千元。",
+      "subject_key": "event.gpu_purchase.gpu_3",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "買顯卡故事"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_gpu_4",
+      "text": "使用者裝機時發現電源線不夠長，又跑了一趟店家。",
+      "subject_key": "event.gpu_purchase.gpu_4",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "買顯卡故事"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_gpu_5",
+      "text": "使用者把舊的 GTX 1660 送給了阿哲。",
+      "subject_key": "event.gpu_purchase.gpu_5",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "買顯卡故事"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_trip_1",
+      "text": "使用者計畫明年二月去東京玩五天。",
+      "subject_key": "event.tokyo_trip.trip_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_trip_2",
+      "text": "使用者的東京旅行會和阿哲一起去。",
+      "subject_key": "event.tokyo_trip.trip_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_trip_3",
+      "text": "使用者東京旅行的住宿已訂在上野。",
+      "subject_key": "event.tokyo_trip.trip_3",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_trip_4",
+      "text": "使用者東京旅行的機票還沒買。",
+      "subject_key": "event.tokyo_trip.trip_4",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_trip_5",
+      "text": "使用者東京旅行的預算約四萬元。",
+      "subject_key": "event.tokyo_trip.trip_5",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_trip_6",
+      "text": "使用者東京旅行想去秋葉原。",
+      "subject_key": "event.tokyo_trip.trip_6",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_trip_7",
+      "text": "使用者東京旅行想去吉卜力美術館，門票還沒訂。",
+      "subject_key": "event.tokyo_trip.trip_7",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_trip_8",
+      "text": "使用者東京旅行想吃一蘭拉麵。",
+      "subject_key": "event.tokyo_trip.trip_8",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_trip_9",
+      "text": "使用者東京旅行要幫妹妹買畫具。",
+      "subject_key": "event.tokyo_trip.trip_9",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      },
+      "source_key": "src_sis_trip",
+      "source_text": "我妹想考美術系，這次去東京要幫妹妹買畫具。"
+    },
+    {
+      "id": "d_trip_10",
+      "text": "使用者東京旅行想逛動畫周邊店。",
+      "subject_key": "event.tokyo_trip.trip_10",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "日本旅行計畫"
+      }
+    },
+    {
+      "id": "d_license_1",
+      "text": "使用者正在考汽車駕照。",
+      "subject_key": "event.driving_license.license_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "汽車駕照"
+      }
+    },
+    {
+      "id": "d_license_2",
+      "text": "使用者的汽車駕照筆試已通過。",
+      "subject_key": "event.driving_license.license_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "汽車駕照"
+      }
+    },
+    {
+      "id": "d_license_3",
+      "text": "使用者的汽車駕照路考還沒考。",
+      "subject_key": "event.driving_license.license_3",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "汽車駕照"
+      }
+    },
+    {
+      "id": "d_typhoon_1",
+      "text": "去年颱風夜，使用者住處停電六小時。",
+      "subject_key": "event.typhoon_outage.typhoon_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "颱風停電"
+      },
+      "mood": "sad_or_hurt"
+    },
+    {
+      "id": "d_typhoon_2",
+      "text": "停電那晚，使用者用手機熱點趕作業。",
+      "subject_key": "event.typhoon_outage.typhoon_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "颱風停電"
+      },
+      "mood": "sad_or_hurt"
+    },
+    {
+      "id": "d_typhoon_3",
+      "text": "颱風停電之後，使用者買了行動電源。",
+      "subject_key": "event.typhoon_outage.typhoon_3",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "颱風停電"
+      },
+      "mood": "sad_or_hurt"
+    },
+    {
+      "id": "d_hack_1",
+      "text": "使用者參加過校內黑客松，拿到第三名。",
+      "subject_key": "event.hackathon.hack_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "校內黑客松"
+      }
+    },
+    {
+      "id": "d_hack_2",
+      "text": "使用者的黑客松作品是剩食地圖。",
+      "subject_key": "event.hackathon.hack_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "校內黑客松"
+      }
+    },
+    {
+      "id": "d_hack_3",
+      "text": "使用者和小岑、柏宇同組參加黑客松。",
+      "subject_key": "event.hackathon.hack_3",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "校內黑客松"
+      }
+    },
+    {
+      "id": "d_live_1",
+      "text": "使用者去高雄看了 YOASOBI 演唱會。",
+      "subject_key": "event.yoasobi_live.live_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "YOASOBI 演唱會"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_live_2",
+      "text": "使用者是和妹妹一起去看 YOASOBI 演唱會。",
+      "subject_key": "event.yoasobi_live.live_2",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "event",
+        "title": "YOASOBI 演唱會"
+      },
+      "mood": "pleased"
+    },
+    {
+      "id": "d_call_1",
+      "text": "使用者希望露西亞稱呼自己為「隊長」。",
+      "subject_key": "bond.call.call_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "bond",
+        "title": "稱呼方式"
+      }
+    },
+    {
+      "id": "d_call_2",
+      "text": "使用者不喜歡被露西亞叫全名。",
+      "subject_key": "bond.call.call_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "bond",
+        "title": "稱呼方式"
+      }
+    },
+    {
+      "id": "d_promise_1",
+      "text": "使用者說專題交出後要和露西亞一起慶祝。",
+      "subject_key": "bond.promise.promise_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "bond",
+        "title": "約定"
+      }
+    },
+    {
+      "id": "d_promise_2",
+      "text": "使用者希望每天睡前和露西亞說晚安。",
+      "subject_key": "bond.promise.promise_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "bond",
+        "title": "約定"
+      }
+    },
+    {
+      "id": "d_style_1",
+      "text": "使用者希望技術問題的回答簡短。",
+      "subject_key": "bond.reply_style.style_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "bond",
+        "title": "回覆風格"
+      }
+    },
+    {
+      "id": "d_style_2",
+      "text": "使用者不希望同一晚被催睡覺超過一次。",
+      "subject_key": "bond.reply_style.style_2",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "bond",
+        "title": "回覆風格"
+      }
+    },
+    {
+      "id": "d_taboo_1",
+      "text": "使用者不想聊體重。",
+      "subject_key": "bond.taboo.taboo_1",
+      "memory_type": "preference",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "bond",
+        "title": "禁忌話題"
+      }
+    },
+    {
+      "id": "d_misc_1",
+      "text": "使用者提過一個「藍色資料夾」，沒有說明用途。",
+      "subject_key": "other.misc.misc_1",
+      "memory_type": "event",
+      "status": "active",
+      "owner": "self",
+      "card": {
+        "domain": "other",
+        "title": "未分類"
+      }
     }
   ],
   "cases": [
@@ -924,6 +2726,2073 @@
         "case_020",
         "random_025"
       ]
+    },
+    {
+      "case_id": "mem_015",
+      "input": "我妹想考什麼系？還有，我專題老師多久開一次會？",
+      "phase": "recall",
+      "session": "mem_015",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "妹妹想考美術系",
+          "林老師每兩週開一次會"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [
+          "d_sis_3",
+          "d_prof_2"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_016",
+      "input": "我們畢業專題校園導覽 App 目前的分工、技術和進度，全部整理給我。",
+      "phase": "recall",
+      "session": "mem_016",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "畢業專題是校園導覽 App",
+          "小組共三人",
+          "前端使用 Flutter",
+          "後端現在使用 Firebase",
+          "使用者負責地圖模組",
+          "小岑負責介面設計",
+          "室內定位使用藍牙 beacon",
+          "已完成登入頁與地圖頁",
+          "語音導覽尚未開始",
+          "林老師建議加入無障礙路線",
+          "期末要交書面報告",
+          "beacon 只佈了圖書館一棟"
+        ],
+        "forbidden_claims": [
+          "已全部完成或已上架",
+          "後端目前使用 Supabase"
+        ],
+        "required_memory_ids": [
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ],
+        "capacity": true
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_017",
+      "input": "我的家人和我養的貓，你知道哪些事？",
+      "phase": "recall",
+      "session": "mem_017",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "妹妹就讀高二",
+          "妹妹喜歡全糖珍珠奶茶",
+          "妹妹想考美術系",
+          "媽媽每週日晚上打電話",
+          "媽媽擔心使用者熬夜",
+          "媽媽拿手菜是滷肉",
+          "養了一隻叫麻糬的橘貓",
+          "麻糬三歲",
+          "麻糬怕吸塵器"
+        ],
+        "forbidden_claims": [
+          "妹妹喜歡無糖綠茶",
+          "妹妹最喜歡鐵達尼號"
+        ],
+        "required_memory_ids": [
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_018",
+      "input": "我最喜歡哪部電影？小岑和阿哲呢？",
+      "phase": "recall",
+      "session": "mem_018",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "未提供使用者本人最喜歡的電影",
+          "小岑最喜歡星際效應",
+          "阿哲最喜歡沙丘"
+        ],
+        "forbidden_claims": [
+          "使用者最喜歡星際效應、沙丘、全面啟動、駭客任務或鐵達尼號"
+        ],
+        "required_memory_ids": [
+          "corpus_movie_friend",
+          "d_zhe_2"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "unknown_topics": [
+          "使用者電影喜好"
+        ],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_019",
+      "input": "我妹喜歡喝什麼？和我的飲料口味差在哪？",
+      "phase": "recall",
+      "session": "mem_019",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "妹妹喜歡全糖珍珠奶茶",
+          "使用者平常喜歡咖啡、飲料不愛太甜"
+        ],
+        "forbidden_claims": [
+          "使用者喜歡全糖珍珠奶茶",
+          "妹妹喜歡無糖綠茶"
+        ],
+        "required_memory_ids": [
+          "d_sis_2",
+          "corpus_drink"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_020",
+      "input": "還記得我買顯卡那次的經過嗎？",
+      "phase": "recall",
+      "session": "mem_020",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "原本想買 RTX 5070 但預算不夠",
+          "在實體店面排隊買到 RTX 5060 Ti",
+          "花了約一萬五千元",
+          "裝機時電源線不夠長又跑一趟店家",
+          "舊的 GTX 1660 送給阿哲"
+        ],
+        "forbidden_claims": [
+          "買到 RTX 5070"
+        ],
+        "required_memory_ids": [
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_021",
+      "input": "專題的後端現在用什麼？原本打算用什麼？",
+      "phase": "recall",
+      "session": "mem_021",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "後端現在使用 Firebase",
+          "原本打算使用 Supabase"
+        ],
+        "forbidden_claims": [
+          "後端目前使用 Supabase"
+        ],
+        "required_memory_ids": [
+          "d_cap_4",
+          "d_cap_old"
+        ],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_022",
+      "input": "我的生日是哪一天？",
+      "phase": "recall",
+      "session": "mem_022",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "unknown",
+        "required_facts": [
+          "未提供使用者生日所以不知道"
+        ],
+        "forbidden_claims": [
+          "使用者生日在三月",
+          "說出任何具體生日日期"
+        ],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [],
+        "required_tools": [],
+        "unknown_topics": [
+          "使用者生日"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_023",
+      "input": "我開始學吉他了，是室友柏宇教我的，他說我節奏感不錯。",
+      "phase": "operation",
+      "session": "mem_023",
+      "depends_on": [],
+      "context": {
+        "scenario": "corpus_large_write",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "保存使用者開始學吉他",
+          "保存由室友柏宇教"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [],
+        "source_case_ids": [],
+        "required_tools": [],
+        "expected_operation": "store",
+        "expected_state_facts": [
+          "吉他",
+          "柏宇"
+        ],
+        "preserved_memory_ids": [
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
+    },
+    {
+      "case_id": "mem_024",
+      "input": "我最近新學了什麼？是誰教我的？",
+      "phase": "recall",
+      "session": "mem_024",
+      "depends_on": [
+        "mem_023"
+      ],
+      "context": {
+        "scenario": "corpus_large_write",
+        "history": [],
+        "summary": "",
+        "compress_before": false,
+        "memory_ids": [
+          "corpus_drink",
+          "corpus_dessert",
+          "corpus_friend",
+          "corpus_try",
+          "corpus_expo_past",
+          "corpus_expo_future",
+          "corpus_expo_expired",
+          "corpus_major",
+          "corpus_gpu",
+          "corpus_progress",
+          "corpus_movie_friend",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "corpus_long",
+          "arch_display",
+          "arch_emotion",
+          "arch_action",
+          "arch_chat",
+          "arch_memory",
+          "arch_design",
+          "d_edu_1",
+          "d_edu_2",
+          "d_pc_1",
+          "d_pc_2",
+          "d_pc_3",
+          "d_pc_4",
+          "d_home_1",
+          "d_home_2",
+          "d_home_3",
+          "d_job_old",
+          "d_job_1",
+          "d_job_2",
+          "d_job_expired",
+          "d_trait_1",
+          "d_trait_2",
+          "d_drink_1",
+          "d_drink_2",
+          "d_dessert_1",
+          "d_dessert_2",
+          "d_game_1",
+          "d_game_2",
+          "d_game_3",
+          "d_music_1",
+          "d_music_2",
+          "d_music_3",
+          "d_music_4",
+          "d_anime_1",
+          "d_anime_2",
+          "d_anime_3",
+          "d_food_1",
+          "d_food_2",
+          "d_food_3",
+          "d_food_4",
+          "d_book_1",
+          "d_book_2",
+          "d_book_3",
+          "d_sport_1",
+          "d_sport_2",
+          "d_sport_3",
+          "d_sleep_old",
+          "d_sleep_1",
+          "d_sleep_2",
+          "d_sleep_3",
+          "d_health_1",
+          "d_health_2",
+          "d_health_3",
+          "d_commute_1",
+          "d_commute_2",
+          "d_sugar_1",
+          "d_sugar_2",
+          "d_cen_1",
+          "d_cen_2",
+          "d_cen_3",
+          "d_zhe_1",
+          "d_zhe_2",
+          "d_zhe_3",
+          "d_boyu_1",
+          "d_boyu_2",
+          "d_boyu_3",
+          "d_sis_1",
+          "d_sis_2",
+          "d_sis_3",
+          "d_prof_1",
+          "d_prof_2",
+          "d_prof_3",
+          "d_movie_1",
+          "d_movie_2",
+          "d_movie_3",
+          "d_fight_1",
+          "d_fight_2",
+          "d_cat_1",
+          "d_cat_2",
+          "d_cat_3",
+          "d_mom_1",
+          "d_mom_2",
+          "d_mom_3",
+          "d_other_owner",
+          "d_vt_1",
+          "d_vt_2",
+          "d_cap_1",
+          "d_cap_2",
+          "d_cap_3",
+          "d_cap_old",
+          "d_cap_4",
+          "d_cap_5",
+          "d_cap_6",
+          "d_cap_7",
+          "d_cap_8",
+          "d_cap_9",
+          "d_cap_10",
+          "d_cap_11",
+          "d_cap_12",
+          "d_wrong_contract",
+          "d_mod_1",
+          "d_mod_2",
+          "d_mod_3",
+          "d_blog_1",
+          "d_blog_2",
+          "d_blog_3",
+          "d_db_1",
+          "d_db_2",
+          "d_db_3",
+          "d_bot_1",
+          "d_bot_2",
+          "d_bot_3",
+          "d_gpu_1",
+          "d_gpu_2",
+          "d_gpu_3",
+          "d_gpu_4",
+          "d_gpu_5",
+          "d_trip_1",
+          "d_trip_2",
+          "d_trip_3",
+          "d_trip_4",
+          "d_trip_5",
+          "d_trip_6",
+          "d_trip_7",
+          "d_trip_8",
+          "d_trip_9",
+          "d_trip_10",
+          "d_license_1",
+          "d_license_2",
+          "d_license_3",
+          "d_typhoon_1",
+          "d_typhoon_2",
+          "d_typhoon_3",
+          "d_hack_1",
+          "d_hack_2",
+          "d_hack_3",
+          "d_live_1",
+          "d_live_2",
+          "d_call_1",
+          "d_call_2",
+          "d_promise_1",
+          "d_promise_2",
+          "d_style_1",
+          "d_style_2",
+          "d_taboo_1",
+          "d_misc_1"
+        ]
+      },
+      "oracle": {
+        "answerability": "answerable",
+        "required_facts": [
+          "使用者最近開始學吉他",
+          "由室友柏宇教"
+        ],
+        "forbidden_claims": [],
+        "required_memory_ids": [],
+        "forbidden_memory_ids": [
+          "corpus_expo_expired",
+          "corpus_other_owner",
+          "corpus_wrong_contract",
+          "d_job_expired",
+          "d_other_owner",
+          "d_wrong_contract"
+        ],
+        "source_case_ids": [
+          "mem_023"
+        ],
+        "required_tools": [],
+        "required_sources": [
+          "db"
+        ]
+      },
+      "source": "fixed",
+      "legacy_case_ids": []
     }
   ]
 }

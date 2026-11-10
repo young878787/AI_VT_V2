@@ -682,8 +682,8 @@ async def run(args):
     metadata = {"suite": args.suite, "cases": dataset["cases"], "started_at": timestamp(),
                 "planned_case_ids": [c["case_id"] for c in dataset["cases"]],
                 "selected_case_ids": dataset["selection"], "provenance": provenance(dataset),
-                "dependencies": {"chat": "live", "jev": "live", "memory_agent": "live" if args.suite in {"memory", "integration"} else "disabled",
-                                 "query_embedding": "live" if args.suite in {"memory", "integration"} else "disabled",
+                "dependencies": {"chat": "live", "jev": "live", "memory_agent": "live" if args.suite in {"memory", "integration", "memory-calibration"} else "disabled",
+                                 "query_embedding": "live" if args.suite in {"memory", "integration", "memory-calibration"} else "disabled",
                                  "document_embedding": "fixed_cache_initial_corpus;live_operation_results",
                                  "tools": "live;it_012_vision_fault" if args.suite == "integration" else "fixture"},
                 "generator": {"calls": 0}, "cleanup": {}}
@@ -952,7 +952,7 @@ def collect_assets(record, run_dir):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="分組隔離AI測試；必須明確選suite，不執行舊28-case或TXT。")
-    parser.add_argument("--suite", choices=("chat", "memory", "tools", "integration", "jev-emotion"))
+    parser.add_argument("--suite", choices=("chat", "memory", "tools", "integration", "jev-emotion", "memory-calibration"))
     parser.add_argument("--scenario", help="重播該suite的完整cases.json，不重新生成續問")
     parser.add_argument("--case", help="定位單題並重播必要前序；保留全組分母")
     parser.add_argument("--startup-timeout", type=float, default=90)

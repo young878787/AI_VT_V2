@@ -92,4 +92,3 @@ backend/memory/emotion_states/
 # Local model sources / archives (not for VCS)
 # ============================================================
 vtuber_model/
-uv.lock

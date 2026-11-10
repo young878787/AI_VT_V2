@@ -36,16 +36,21 @@ def vector_contract(settings) -> dict:
 
 
 class DocumentVectors:
-    """僅 cache 初始 corpus document；文字或契約漂移一律停止載入。"""
+    """cache 初始 corpus document；同 ID 文字或契約漂移一律停止載入。
+
+    含日期模板的記憶（vector_source=live）每天代換後文字不同，每次即時 embed 且不寫入 cache；
+    新增的記憶只補算缺少的那幾筆，既有向量不重算。
+    """
 
     def __init__(self, path: Path, settings, client_factory=None):
         self.path, self.settings = Path(path), settings
         self.client_factory = client_factory
-        self.cost = {"calls": 0, "cache_hits": 0, "duration_sec": 0.0,
+        self.cost = {"calls": 0, "cache_hits": 0, "live_documents": 0, "duration_sec": 0.0,
                      "input_tokens": None, "service_version": "unverified"}
 
     async def load(self, memories: list[dict]) -> dict[str, list[float]]:
-        corpus_hash = fingerprint(sorted(({"id": item["id"], "text": item["text"]} for item in memories),
+        cached = [item for item in memories if item.get("vector_source") != "live"]
+        corpus_hash = fingerprint(sorted(({"id": item["id"], "text": item["text"]} for item in cached),
                                          key=lambda item: item["id"]))
         contract = vector_contract(self.settings)
         data = (json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists()
@@ -53,12 +58,15 @@ class DocumentVectors:
         documents = data.get("documents")
         if data.get("version") != 1 or not isinstance(documents, dict):
             raise ValueError("fixture_invalid: vector cache schema")
-        if documents and (data.get("contract") != contract or data.get("corpus_sha256") != corpus_hash):
-            raise ValueError("fixture_invalid: vector corpus or contract changed")
+        if documents and data.get("contract") != contract:
+            raise ValueError("fixture_invalid: vector contract changed")
         result, missing = {}, []
         for memory in memories:
             key, value = memory["id"], documents.get(memory["id"])
             digest = hashlib.sha256(memory["text"].encode()).hexdigest()
+            if memory.get("vector_source") == "live":
+                missing.append((memory, None))
+                continue
             if value is None:
                 missing.append((memory, digest))
                 continue
@@ -83,16 +91,21 @@ class DocumentVectors:
                     vector = await client.embed(memory["text"], query=False)
                     vector = normalize_embedding(vector, self.settings.embedding_dimension)
                     result[memory["id"]] = vector
-                    documents[memory["id"]] = {"text_sha256": digest, "vector": vector}
+                    if digest is None:
+                        self.cost["live_documents"] += 1
+                    else:
+                        documents[memory["id"]] = {"text_sha256": digest, "vector": vector}
             finally:
                 self.cost["duration_sec"] += round(time.monotonic() - started, 4)
                 await client.client.close()
-            data.update(contract=contract, corpus_sha256=corpus_hash, documents=documents,
-                        serving_model=self.settings.embedding_serving_model, service_version="unverified")
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            temporary.replace(self.path)
+            if any(digest is not None for _, digest in missing):
+                # corpus_sha256 只記錄本次 cache 涵蓋的 corpus，不作為拒絕條件；漂移由逐筆 text_sha256 把關。
+                data.update(contract=contract, corpus_sha256=corpus_hash, documents=documents,
+                            serving_model=self.settings.embedding_serving_model, service_version="unverified")
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.path.with_suffix(".tmp")
+                temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                temporary.replace(self.path)
         return result
 
 
@@ -162,7 +175,7 @@ class FixtureLoader:
                         "clock_source": "live" if suite == "integration" else "fixture",
                         "source_and_transaction_clock": "live",
                         "reference_day_matches_runtime": reference.date() == datetime.now(reference.tzinfo).date(),
-                        "document_vectors": "fixed_document_cache", "query_vectors": "live",
+                        "document_vectors": "fixed_document_cache;live_templated_documents", "query_vectors": "live",
                         "embedding_cost": dict(self.embedding_cost),
                         "visual_evidence_unavailable": suite == "integration"}}
         if self.manifest_path:
@@ -209,13 +222,17 @@ class FixtureLoader:
                     VALUES (:id,:user_id,:character_id,:group_id,:memory_type,:canonical,:subject,:keywords,:status,
                      .5,1,:retention,CAST(:embedding AS vector),:model,:contract,:occurred,:valid_from,:valid_to,
                      :expires,:occurred,:occurred)"""), params)
-                source_id = uuid5(identifier, "fixture_user_source")
+                # source_key 表示多筆要點共用同一句原話；同情境內只建立一列 source。
+                shared = memory.get("source_key")
+                source_id = (uuid5(owner["user_id"], f"fixture:{scenario}:source:{shared}") if shared
+                             else uuid5(identifier, "fixture_user_source"))
                 source = {**owner, "source_id": source_id, "conversation": conversation_id(f"fixture:{scenario}"),
-                          "message_id": message_id(f"fixture:{scenario}", memory["id"]),
+                          "message_id": message_id(f"fixture:{scenario}", shared or memory["id"]),
                           "canonical": memory.get("source_text", memory["text"]), "occurred": occurred}
                 connection.execute(text("""INSERT INTO memory_sources
                     (id,user_id,character_id,conversation_id,message_id,speaker,raw_text,occurred_at)
-                    VALUES (:source_id,:user_id,:character_id,:conversation,:message_id,'user',:canonical,:occurred)"""), source)
+                    VALUES (:source_id,:user_id,:character_id,:conversation,:message_id,'user',:canonical,:occurred)
+                    ON CONFLICT DO NOTHING"""), source)
                 connection.execute(text("""INSERT INTO memory_evidence
                     (user_id,character_id,memory_id,source_id,kind)
                     VALUES (:user_id,:character_id,:memory_id,:source_id,'origin')"""),

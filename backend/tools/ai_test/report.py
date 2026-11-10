@@ -104,7 +104,8 @@ def initialize_report(run_dir: str | Path, suite: str, cases_snapshot: Any, prov
 
 
 def _bucket(case: dict) -> str:
-    if case.get("case_id") == "mem_014" or case.get("capacity") or case.get("phase") == "capacity":
+    if (case.get("case_id") == "mem_014" or case.get("capacity") or (case.get("oracle") or {}).get("capacity")
+            or case.get("phase") == "capacity"):
         return "capacity"
     source = case.get("source", case.get("source_type", "fixed"))
     return "generated" if source == "generated" or case.get("generated") else "fixed_core"
@@ -354,7 +355,7 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
             attention.append(_attention(case_id, None, "execution", "unexecuted_case", f"cases.json#case_id={case_id}"))
         elif not checks:
             attention.append(_attention(case_id, turns[-1], "hard_checks", "missing_evidence"))
-        if submitted and metadata["suite"] in ("memory", "integration") and case_id not in state_ids:
+        if submitted and metadata["suite"] in ("memory", "integration", "memory-calibration") and case_id not in state_ids:
             hard = _combine([hard, "failed" if execution in ("completed", "failed") else "pending"])
             attention.append(_attention(case_id, turns[-1], "state", "missing_case_state",
                                         f"case_states.jsonl#case_id={case_id}"))
