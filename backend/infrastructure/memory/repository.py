@@ -8,6 +8,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from domain.memory.cards import CARD_MOODS, aggregate_mood, member_fingerprint, normalize_key
 from domain.memory.routing import MemoryRouting, instruction_policy
 from domain.memory.scope import MemoryScope, conversation_id, message_id
 from domain.memory.source import MemoryEventConflict, MemoryEventReplay, read_memory_source
@@ -15,9 +16,71 @@ from core.prompt_logger import test_log_dir, trace, trace_event, trace_turn
 
 
 MIN_RETRIEVAL_SIMILARITY = 0.75
-# Chat 候選取得與背景整理分開校準；不要求候選池直接達成回答精確率。
+# Chat 召回：粗篩取候選卡（不漏），JEV 判斷是否注入（不多）；JEV 失敗時以 fallback 門檻判斷。
 CHAT_RETRIEVAL_MIN_SIMILARITY = 0.50
-CHAT_RETRIEVAL_LIMIT = 5
+CHAT_CARD_CANDIDATE_LIMIT = 12
+CHAT_CARD_INJECT_LIMIT = 5
+CHAT_CARD_MIN_SCORE = 0.25
+CHAT_UNCARDED_LIMIT = 6
+AGENT_CARD_LIMIT = 8
+CURRENT_SQL = "status IN ('active', 'conflict') AND (expires_at IS NULL OR expires_at > now())"
+
+
+def _owner_sql(alias: str) -> str:
+    return f"{alias}.user_id = %(user)s AND {alias}.character_id = %(character)s"
+
+
+async def sync_cards(connection, owner: tuple, card_ids, *, clear_summary: bool = False) -> dict:
+    """在呼叫端交易內同步卡片：有效要點數、心情、概要新鮮度；沒有任何要點的卡片直接刪除。
+
+    clear_summary 用於遺忘：清空概要與卡片向量，避免已遺忘內容經由卡片殘留。
+    """
+    ids = sorted({UUID(str(value)) for value in card_ids if value is not None}, key=str)
+    if not ids:
+        return {"deleted": [], "updated": []}
+    await connection.execute(
+        "SELECT id FROM memory_cards WHERE user_id = %s AND character_id = %s AND id = ANY(%s) ORDER BY id FOR UPDATE",
+        (*owner, ids),
+    )
+    async with await connection.execute(
+        f"""SELECT card_id, id, canonical_text, status, valid_from, valid_to, {CURRENT_SQL} AS is_current
+        FROM memory_items WHERE user_id = %s AND character_id = %s AND card_id = ANY(%s)""",
+        (*owner, ids),
+    ) as cursor:
+        members = [dict(zip([column.name for column in cursor.description], row)) for row in await cursor.fetchall()]
+    async with await connection.execute(
+        """SELECT DISTINCT item.card_id, source.id, source.mood, source.occurred_at
+        FROM memory_items AS item JOIN memory_evidence AS evidence
+        ON (evidence.memory_id, evidence.user_id, evidence.character_id) = (item.id, item.user_id, item.character_id)
+        JOIN memory_sources AS source
+        ON (source.id, source.user_id, source.character_id) = (evidence.source_id, evidence.user_id, evidence.character_id)
+        WHERE item.user_id = %s AND item.character_id = %s AND item.card_id = ANY(%s)
+        AND source.mood IS NOT NULL""",
+        (*owner, ids),
+    ) as cursor:
+        moods = await cursor.fetchall()
+    deleted, updated = [], []
+    for card_id in ids:
+        rows = [row for row in members if row["card_id"] == card_id]
+        if not rows:
+            await connection.execute(
+                "DELETE FROM memory_cards WHERE id = %s AND user_id = %s AND character_id = %s", (card_id, *owner),
+            )
+            deleted.append(card_id)
+            continue
+        mood = aggregate_mood([(row[2], row[3]) for row in moods if row[0] == card_id])
+        await connection.execute(
+            """UPDATE memory_cards SET active_count = %s, mood = %s,
+            summary = CASE WHEN %s THEN NULL ELSE summary END,
+            embedding = CASE WHEN %s THEN NULL ELSE embedding END,
+            embedding_contract = CASE WHEN %s THEN NULL ELSE embedding_contract END,
+            summary_stale = %s OR summary_fingerprint IS DISTINCT FROM %s, updated_at = now()
+            WHERE id = %s AND user_id = %s AND character_id = %s""",
+            (sum(row["is_current"] for row in rows), mood if mood in CARD_MOODS else None,
+             clear_summary, clear_summary, clear_summary, clear_summary, member_fingerprint(rows), card_id, *owner),
+        )
+        updated.append(card_id)
+    return {"deleted": deleted, "updated": updated}
 _GENERIC_QUERY_WORDS = {"喜歡", "記得", "以前", "之前", "曾經", "過去", "使用者", "什麼", "知道", "我的", "你的", "使用", "用者", "現在", "平常", "最近", "幫我", "記住", "記憶", "這件", "件事", "更正", "只有", "相關", "的人"}
 _QUERY_CATEGORY_ALIASES = {"健康": "health", "甜點": "dessert", "甜食": "sweet",
                            "咖啡": "coffee", "飲料": "drink", "飲品": "飲料", "蛋糕": "甜點", "遊戲": "game"}
@@ -331,9 +394,11 @@ class MemoryRepository:
                 cursor = await connection.execute(
                     """UPDATE memory_items SET status = 'expired', valid_to = now(), updated_at = now()
                     WHERE user_id = %s AND character_id = %s AND status = 'active'
-                    AND retention_class = 'temporary' AND expires_at <= now()""", owner,
+                    AND retention_class = 'temporary' AND expires_at <= now() RETURNING card_id""", owner,
                 )
-                return cursor.rowcount
+                cards = [row[0] for row in await cursor.fetchall()]
+                await sync_cards(connection, owner, cards)
+                return len(cards)
 
     async def reset(self, *, connection=None) -> None:
         """generation 鎖與刪除同 transaction，阻止已在 LLM 呼叫的舊 worker 回寫。"""
@@ -355,6 +420,7 @@ class MemoryRepository:
                 WHERE user_id = %s AND character_id = %s""", owner,
             )
             await active_connection.execute("DELETE FROM memory_items WHERE user_id = %s AND character_id = %s", owner)
+            await active_connection.execute("DELETE FROM memory_cards WHERE user_id = %s AND character_id = %s", owner)
             await active_connection.execute("DELETE FROM memory_sources WHERE user_id = %s AND character_id = %s", owner)
             await active_connection.execute("DELETE FROM memory_audit WHERE user_id = %s AND character_id = %s", owner)
             await active_connection.execute("DELETE FROM memory_forget_barriers WHERE user_id = %s AND character_id = %s", owner)
@@ -366,18 +432,11 @@ class MemoryRepository:
                 await execute(own_connection)
 
     async def related_items(self, text: str, embedding: list[float] | None, limit: int = 20,
-                            mode: str = "current", subject_keys: tuple[str, ...] = (),
-                            *, min_similarity: float | None = None) -> list[dict]:
-        """同 owner 的有界相關記憶；目前事實與歷史分開篩選。"""
-        if mode not in {"current", "history", "future", "management", "chat"}:
+                            mode: str = "current", subject_keys: tuple[str, ...] = ()) -> list[dict]:
+        """同 owner 的有界相關記憶；目前事實與歷史分開篩選。Chat 召回改用 locate_cards()。"""
+        if mode not in {"current", "history", "future", "management"}:
             raise ValueError("Memory query mode 無效")
-        if min_similarity is not None and mode != "chat":
-            raise ValueError("只有 Chat 候選搜尋可指定召回門檻")
         threshold = MIN_RETRIEVAL_SIMILARITY
-        if mode == "chat":
-            threshold = CHAT_RETRIEVAL_MIN_SIMILARITY if min_similarity is None else min_similarity
-        if not -1 <= threshold <= 1:
-            raise ValueError("Memory similarity 門檻無效")
         owner = (self.scope.user_id, self.scope.character_id)
         tokens = re.findall(r"[a-z0-9_.-]{2,}|[\u3400-\u9fff]{2,}", text.lower())
         words = []
@@ -421,14 +480,13 @@ class MemoryRepository:
             "future": sql.SQL("status IN ('active', 'conflict') AND valid_from > now() AND (expires_at IS NULL OR expires_at > now())"),
             "history": sql.SQL("status IN ('active', 'conflict', 'superseded', 'expired', 'archived')"),
             "management": sql.SQL("status IN ('active', 'conflict', 'superseded', 'expired', 'archived')"),
-            # 不從原文時間詞推定記憶範圍；保留版本供 Chat 判讀，排除已到期的保留資料。
-            "chat": sql.SQL("status IN ('active', 'conflict', 'superseded', 'expired', 'archived') "
-                            "AND (expires_at IS NULL OR expires_at > now())"),
         }[mode]
         query_template = sql.SQL(
             """SELECT id, group_id, memory_type, canonical_text, subject_key, keywords,
             status, importance, confidence, retention_class, valid_from, valid_to, expires_at, observed_at, updated_at,
             exact_match, 1 - distance AS similarity, embedding IS NOT NULL AS embedding_present, embedding_contract,
+            card_id, (SELECT card.title FROM memory_cards card WHERE card.id = ranked.card_id
+                AND card.user_id = ranked.user_id AND card.character_id = ranked.character_id) AS card_title,
             EXISTS (SELECT 1 FROM memory_items c WHERE c.user_id = ranked.user_id
                 AND c.character_id = ranked.character_id AND c.group_id = ranked.group_id
                 AND c.status = 'conflict') AS has_conflict,
@@ -441,11 +499,6 @@ class MemoryRepository:
             ) AS ranked WHERE {}
             ORDER BY exact_match DESC, distance ASC NULLS LAST, importance DESC LIMIT %s"""
         )
-        if mode == "chat":
-            # 詞面是候選資格，不先於向量相關性；避免共用詞擠掉低分但靠前的事實。
-            query_template = sql.SQL(query_template.as_string().replace(
-                "ORDER BY exact_match DESC, distance ASC NULLS LAST, importance DESC",
-                "ORDER BY distance ASC NULLS LAST, exact_match DESC, importance DESC, id"))
         query = query_template.format(exact_sql, ranking, status_sql,
             sql.SQL("exact_match OR ({} AND distance <= %s)").format(vector_sql))
         args = (*exact_args, *ranking_args, *owner, *vector_args,
@@ -488,6 +541,251 @@ class MemoryRepository:
                         "min_similarity": threshold, "excluded_limit": min(max(limit, 1), 20),
                         "excluded_candidates": excluded})
                 return selected
+
+    def _contract_sql(self, alias: str) -> tuple[sql.Composable, dict]:
+        if self.embedding_contract is None:
+            return sql.SQL(""), {}
+        # alias 只來自本模組固定的 SQL 別名，不接受外部輸入。
+        return sql.SQL(f" AND {alias}.embedding_contract = %(contract)s"), {"contract": self.embedding_contract}
+
+    async def locate_cards(self, text: str, embedding: list[float] | None, *,
+                           limit: int = CHAT_CARD_CANDIDATE_LIMIT, min_score: float = CHAT_CARD_MIN_SCORE,
+                           previous_card_ids: tuple = ()) -> list[dict]:
+        """Chat 粗篩：一次 SQL 往返取四路聯集（證據、要點、卡片向量、名稱命中）加連結與上一輪卡片。
+
+        每張卡取各路最高分；所有路徑都過濾 owner、embedding contract 與保留期限。回傳要點列，
+        每列帶所屬卡片欄位；未歸卡要點只經要點向量定位，card_id 為 NULL。
+        """
+        if not -1 <= min_score <= 1:
+            raise ValueError("候選卡門檻無效")
+        item_contract, params = self._contract_sql("i")
+        source_contract, _ = self._contract_sql("s")
+        card_contract, _ = self._contract_sql("c")
+        query = sql.SQL("""WITH q AS (SELECT %(vector)s::vector AS v),
+        eligible AS (
+            SELECT i.id, i.card_id, i.embedding FROM memory_items i
+            WHERE """ + _owner_sql("i") + """
+            AND i.status IN ('active', 'conflict', 'superseded', 'expired', 'archived')
+            AND (i.expires_at IS NULL OR i.expires_at > now()) AND i.embedding IS NOT NULL{item_contract}
+        ),
+        hits AS (
+            SELECT i.card_id, i.id AS item_id, 'source'::text AS route, max(1 - (s.embedding <=> q.v)) AS score
+            FROM q, memory_sources s
+            JOIN memory_evidence e ON e.source_id = s.id AND e.user_id = s.user_id AND e.character_id = s.character_id
+            JOIN eligible i ON i.id = e.memory_id
+            WHERE q.v IS NOT NULL AND """ + _owner_sql("s") + """
+            AND s.raw_text IS NOT NULL AND s.embedding IS NOT NULL{source_contract}
+            GROUP BY i.card_id, i.id
+            UNION ALL
+            SELECT i.card_id, i.id, 'item', 1 - (i.embedding <=> q.v) FROM q, eligible i WHERE q.v IS NOT NULL
+            UNION ALL
+            SELECT c.id, NULL::uuid, 'card', 1 - (c.embedding <=> q.v) FROM q, memory_cards c
+            WHERE q.v IS NOT NULL AND """ + _owner_sql("c") + """ AND c.embedding IS NOT NULL{card_contract}
+            UNION ALL
+            SELECT c.id, NULL::uuid, 'name', 1.0::float FROM memory_cards c
+            WHERE """ + _owner_sql("c") + """ AND strpos(%(name_text)s, c.title_key) > 0
+        ),
+        scored AS (
+            SELECT h.card_id, max(h.score) AS score, array_agg(DISTINCT h.route) AS routes FROM hits h
+            WHERE h.card_id IS NOT NULL AND EXISTS (SELECT 1 FROM eligible i WHERE i.card_id = h.card_id)
+            GROUP BY h.card_id
+        ),
+        primary_cards AS (
+            SELECT card_id, score, routes FROM scored
+            WHERE score >= %(min_score)s OR 'name' = ANY(routes)
+            ORDER BY score DESC, card_id LIMIT %(limit)s
+        ),
+        extra AS (
+            SELECT i2.card_id, 'link'::text AS route FROM primary_cards p
+            JOIN eligible i1 ON i1.card_id = p.card_id
+            JOIN memory_evidence e1 ON e1.memory_id = i1.id AND """ + _owner_sql("e1") + """
+            JOIN memory_evidence e2 ON e2.source_id = e1.source_id AND e2.user_id = e1.user_id
+                AND e2.character_id = e1.character_id
+            JOIN eligible i2 ON i2.id = e2.memory_id
+            WHERE i2.card_id IS NOT NULL AND i2.card_id <> p.card_id
+            UNION
+            SELECT i.card_id, 'session' FROM eligible i WHERE i.card_id = ANY(%(previous)s::uuid[])
+        ),
+        chosen AS (
+            SELECT card_id, score, routes, 0 AS tier FROM primary_cards
+            UNION ALL
+            SELECT x.card_id, s.score, array_agg(DISTINCT x.route) || COALESCE(s.routes, '{{}}'::text[]), 1
+            FROM extra x LEFT JOIN scored s ON s.card_id = x.card_id
+            WHERE x.card_id NOT IN (SELECT card_id FROM primary_cards)
+            GROUP BY x.card_id, s.score, s.routes
+        ),
+        final_cards AS (
+            SELECT * FROM (SELECT *, row_number() OVER (ORDER BY tier, score DESC NULLS LAST, card_id) AS card_rank
+                           FROM chosen) ranked WHERE card_rank <= %(limit)s
+        ),
+        item_scores AS (
+            SELECT item_id, max(score) AS similarity FROM hits WHERE item_id IS NOT NULL GROUP BY item_id
+        ),
+        uncarded AS (
+            SELECT i.id, s.similarity FROM eligible i JOIN item_scores s ON s.item_id = i.id
+            WHERE i.card_id IS NULL AND s.similarity >= %(min_score)s
+            ORDER BY s.similarity DESC, i.id LIMIT %(uncarded_limit)s
+        ),
+        members AS (
+            SELECT m.id, m.card_id, fc.score AS card_score, fc.routes AS card_routes, fc.card_rank,
+                row_number() OVER (PARTITION BY m.card_id, m.status IN ('active', 'conflict')
+                                   ORDER BY m.observed_at DESC, m.id) AS version_rank,
+                m.status IN ('active', 'conflict') AS is_current
+            FROM final_cards fc JOIN memory_items m ON m.card_id = fc.card_id AND """ + _owner_sql("m") + """
+            WHERE m.id IN (SELECT id FROM eligible)
+            UNION ALL
+            SELECT u.id, NULL::uuid, u.similarity, ARRAY['item']::text[], NULL::bigint, 1::bigint,
+                m.status IN ('active', 'conflict')
+            FROM uncarded u JOIN memory_items m ON m.id = u.id AND """ + _owner_sql("m") + """
+        )
+        SELECT m.id, m.group_id, m.memory_type, m.canonical_text, m.subject_key, m.status, m.importance,
+            m.valid_from, m.valid_to, m.expires_at, m.observed_at, m.updated_at, m.card_id,
+            score.similarity, card.domain AS card_domain, card.title AS card_title, card.summary AS card_summary,
+            card.summary_stale AS card_summary_stale, card.mood AS card_mood, card.active_count AS card_active_count,
+            member.card_score, member.card_routes, member.card_rank,
+            EXISTS (SELECT 1 FROM memory_items c WHERE c.user_id = m.user_id AND c.character_id = m.character_id
+                AND c.group_id = m.group_id AND c.status = 'conflict') AS has_conflict,
+            EXISTS (SELECT 1 FROM memory_jobs j WHERE j.user_id = m.user_id AND j.character_id = m.character_id
+                AND m.id = ANY(j.pending_target_ids) AND j.status IN ('pending', 'running', 'retry')) AS pending_change
+        FROM members member
+        JOIN memory_items m ON m.id = member.id AND """ + _owner_sql("m") + """
+        LEFT JOIN item_scores score ON score.item_id = m.id
+        LEFT JOIN memory_cards card ON card.id = m.card_id AND card.user_id = m.user_id AND card.character_id = m.character_id
+        WHERE member.is_current OR member.version_rank <= 3
+        ORDER BY member.card_rank NULLS LAST, member.is_current DESC, score.similarity DESC NULLS LAST,
+            m.observed_at DESC, m.id""").format(
+            item_contract=item_contract, source_contract=source_contract, card_contract=card_contract)
+        params.update({
+            "vector": Vector(embedding) if embedding is not None else None,
+            "user": self.scope.user_id, "character": self.scope.character_id,
+            "name_text": normalize_key(text), "min_score": min_score,
+            "limit": min(max(limit, 1), 20), "uncarded_limit": CHAT_UNCARDED_LIMIT,
+            "previous": [UUID(str(value)) for value in previous_card_ids],
+        })
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                async with await connection.execute(query, params) as cursor:
+                    return [dict(zip([col.name for col in cursor.description], row)) for row in await cursor.fetchall()]
+
+    async def agent_cards(self, embedding: list[float] | None, limit: int = AGENT_CARD_LIMIT) -> list[dict]:
+        """Memory agent 的候選卡：與候選要點同一個向量，取前幾張有有效要點的卡。"""
+        if embedding is None:
+            return []
+        item_contract, params = self._contract_sql("i")
+        card_contract, _ = self._contract_sql("c")
+        query = sql.SQL("""WITH q AS (SELECT %(vector)s::vector AS v),
+        current_items AS (
+            SELECT i.id, i.card_id, i.canonical_text, i.embedding, i.observed_at, i.embedding_contract
+            FROM memory_items i WHERE """ + _owner_sql("i") + """ AND i.card_id IS NOT NULL
+            AND i.status IN ('active', 'conflict') AND (i.expires_at IS NULL OR i.expires_at > now())
+        ),
+        scores AS (
+            SELECT i.card_id, 1 - (i.embedding <=> q.v) AS score FROM q, current_items i
+            WHERE i.embedding IS NOT NULL{item_contract}
+            UNION ALL
+            SELECT c.id, 1 - (c.embedding <=> q.v) FROM q, memory_cards c
+            WHERE """ + _owner_sql("c") + """ AND c.embedding IS NOT NULL{card_contract}
+        ),
+        top AS (
+            SELECT card_id, max(score) AS score FROM scores
+            WHERE card_id IN (SELECT card_id FROM current_items) GROUP BY card_id
+            ORDER BY max(score) DESC, card_id LIMIT %(limit)s
+        )
+        SELECT c.id, c.domain, c.title, c.title_key, c.active_count, top.score,
+            (SELECT array_agg(i.canonical_text ORDER BY i.observed_at DESC, i.id) FROM current_items i
+             WHERE i.card_id = c.id) AS texts
+        FROM top JOIN memory_cards c ON c.id = top.card_id AND """ + _owner_sql("c") + """
+        ORDER BY top.score DESC, c.id""").format(item_contract=item_contract, card_contract=card_contract)
+        params.update({"vector": Vector(embedding), "user": self.scope.user_id,
+                       "character": self.scope.character_id, "limit": min(max(limit, 1), 12)})
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                async with await connection.execute(query, params) as cursor:
+                    rows = [dict(zip([col.name for col in cursor.description], row)) for row in await cursor.fetchall()]
+        for row in rows:
+            texts = row.pop("texts") or []
+            row["points"] = texts[:2]
+            row["member_keys"] = {normalize_key(value) for value in texts}
+        trace("memory_card_candidates", {"cards": [{"id": str(row["id"]), "domain": row["domain"],
+            "title": row["title"], "score": row["score"]} for row in rows]})
+        return rows
+
+    async def record_turn_mood(self, event_id: UUID, mood: str) -> bool:
+        """聊天端算出本輪 mood_v1 主要情緒後記到工作列；commit 時再複製到證據。"""
+        if mood not in CARD_MOODS:
+            raise ValueError("當輪心情無效")
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                cursor = await connection.execute(
+                    """UPDATE memory_jobs AS job SET turn_mood = %s FROM memory_scope_state AS state
+                    WHERE job.id = %s AND job.user_id = %s AND job.character_id = %s
+                    AND state.user_id = job.user_id AND state.character_id = job.character_id
+                    AND state.generation = job.generation""",
+                    (mood, event_id, self.scope.user_id, self.scope.character_id),
+                )
+                return cursor.rowcount == 1
+
+    async def card_refresh_state(self, card_id: UUID) -> dict | None:
+        """概要重建的輸入：卡片欄位、有效要點與目前成員指紋、owner generation。"""
+        owner = (self.scope.user_id, self.scope.character_id)
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                return await self._card_state(connection, owner, card_id)
+
+    async def _card_state(self, connection, owner, card_id, *, lock: bool = False) -> dict | None:
+        generation = await (await connection.execute(
+            "SELECT generation FROM memory_scope_state WHERE user_id = %s AND character_id = %s"
+            + (" FOR SHARE" if lock else ""), owner,
+        )).fetchone()
+        async with await connection.execute(
+            """SELECT id, domain, title, summary, summary_fingerprint, summary_stale,
+            embedding IS NOT NULL AND embedding_contract IS NOT DISTINCT FROM %s AS embedding_current
+            FROM memory_cards WHERE id = %s AND user_id = %s AND character_id = %s""" + (" FOR UPDATE" if lock else ""),
+            (self.embedding_contract, card_id, *owner),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row is None or generation is None:
+                return None
+            card = dict(zip([col.name for col in cursor.description], row))
+        async with await connection.execute(
+            f"""SELECT id, canonical_text, status, valid_from, valid_to, {CURRENT_SQL} AS is_current
+            FROM memory_items WHERE user_id = %s AND character_id = %s AND card_id = %s
+            ORDER BY observed_at, id""",
+            (*owner, card_id),
+        ) as cursor:
+            members = [dict(zip([col.name for col in cursor.description], row)) for row in await cursor.fetchall()]
+        card.update(generation=generation[0], fingerprint=member_fingerprint(members),
+                    points=[row["canonical_text"] for row in members if row["is_current"]])
+        return card
+
+    async def save_card_refresh(self, card_id: UUID, generation: int, fingerprint: str,
+                                summary: str | None, embedding: list[float] | None) -> bool:
+        """成員指紋與 generation 未變時才寫入；reset 或期間有新變更就放棄，交由下一次重建。"""
+        owner = (self.scope.user_id, self.scope.character_id)
+        async with self.pool.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(sql.SQL("SET LOCAL search_path TO {}, public").format(sql.Identifier(self.scope.schema_name)))
+                state = await self._card_state(connection, owner, card_id, lock=True)
+                if state is None or state["generation"] != generation or state["fingerprint"] != fingerprint:
+                    return False
+                await connection.execute(
+                    """UPDATE memory_cards SET
+                    summary = CASE WHEN %s THEN %s ELSE summary END,
+                    summary_fingerprint = CASE WHEN %s THEN %s ELSE summary_fingerprint END,
+                    summary_stale = CASE WHEN %s THEN false ELSE summary_stale END,
+                    embedding = COALESCE(%s, embedding),
+                    embedding_contract = CASE WHEN %s THEN %s ELSE embedding_contract END,
+                    updated_at = now()
+                    WHERE id = %s AND user_id = %s AND character_id = %s""",
+                    (summary is not None, summary, summary is not None, fingerprint, summary is not None,
+                     Vector(embedding) if embedding is not None else None,
+                     embedding is not None, self.embedding_contract, card_id, *owner),
+                )
+                return True
 
     async def context_jobs(self, job: dict) -> list[dict]:
         owner = (self.scope.user_id, self.scope.character_id)

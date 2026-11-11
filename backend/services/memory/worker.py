@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 from openai import APITimeoutError
 
+from domain.memory.cards import card_document
 from services.memory.events import publish_memory_event
 from core.prompt_logger import trace, trace_event
 from services.memory.agent_client import CUMULATIVE_DIAGNOSTIC_FIELDS
@@ -111,7 +112,11 @@ class MemoryWorker:
                         vector = None
                     return await self.repository.agent_candidates(text, vector, limit, exclude)
                 diagnostic["phase"] = "retrieval"
+                organize_started = time.monotonic()
                 related = await candidates(query_text, 6)
+                # 候選卡與候選要點共用同一個已快取的查詢向量；向量失敗時候選卡為空並降級。
+                card_vector = None if degraded else await embed(query_text, "memory_match_query")
+                job["candidate_cards"] = await self.repository.agent_cards(card_vector)
                 job["retrieval_degraded"] = degraded
                 async def search(text, exclude):
                     return await candidates(text, 4, exclude)
@@ -127,6 +132,7 @@ class MemoryWorker:
                             "evidence": await self.repository.memory_evidence(memories)}
                 diagnostic["phase"] = "agent"
                 result = await self.llm.decide(job, sources, related, search, read, diagnostic)
+                diagnostic["timing"] = {"organize_ms": round((time.monotonic() - organize_started) * 1000)}
                 if result["outcome"] != "complete":
                     await finish("buffered" if result["outcome"] == "needs_context" else "ignored",
                         missing_context=result["reason"] if result["outcome"] == "needs_context" else None)
@@ -142,14 +148,29 @@ class MemoryWorker:
                 for index, decision in enumerate(decisions):
                     if decision["action"] in {"CREATE", "SUPERSEDE", "CONTRADICT"}:
                         embeddings[index] = await embed(decision["canonical_text"], "memory_document")
+                # 只向量化使用者原話（證據）；露西亞的回覆從不進來源向量。
+                source_embeddings = {}
+                if not any(decision["action"] == "FORGET" for decision in decisions):
+                    texts = {UUID(str(source["id"])): source["raw_text"] for source in sources
+                             if source["speaker"] == "user"}
+                    for source_id in sorted(used & texts.keys(), key=str):
+                        source_embeddings[source_id] = await embed(texts[source_id], "memory_document")
                 diagnostic["phase"] = "commit"
                 elapsed()
                 committed = await self.manager.apply(job, decisions, set(targets), embeddings,
-                    context_ids, diagnostic, target_snapshots=targets)
+                    context_ids, diagnostic, target_snapshots=targets, source_embeddings=source_embeddings)
                 if committed:
                     publish_memory_event("memory_committed", str(job["id"]), str(job["message_id"]), status="done")
                 else:
                     raise CommitRejectedError("Memory commit rejected")
+            if diagnostic.get("cards"):
+                # 已提交後的整理不得讓工作改判重試；逾時或錯誤只留下 stale 卡片。
+                diagnostic["phase"] = "card_refresh"
+                try:
+                    async with asyncio.timeout(ATTEMPT_TIMEOUT_SEC):
+                        await self.refresh_cards(job, diagnostic)
+                except Exception as error:
+                    diagnostic["card_refresh_error"] = type(error).__name__
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -167,6 +188,47 @@ class MemoryWorker:
                                  **diagnostic}, job["id"])
             trace_event.reset(token)
         return True
+
+    async def refresh_cards(self, job, diagnostic):
+        """commit 後重建變動卡片的概要與卡片向量；失敗只留下 stale，不影響已提交的記憶。"""
+        cards = diagnostic.get("cards") or {}
+        timing = diagnostic.setdefault("timing", {})
+        generate_ms, edit_ms, refreshed = 0, 0, []
+        for card_id in sorted(set(cards.get("updated", []))):
+            started = time.monotonic()
+            try:
+                state = await self.repository.card_refresh_state(UUID(card_id))
+                if state is None or not state["points"]:
+                    continue
+                summary, summary_diagnostic = None, {key: 0 for key in CUMULATIVE_DIAGNOSTIC_FIELDS}
+                fresh = not state["summary_stale"] and state["summary_fingerprint"] == state["fingerprint"]
+                if not fresh:
+                    summary = await self.llm.summarize_card(state, summary_diagnostic)
+                    diagnostic["calls"] += summary_diagnostic["calls"]
+                    diagnostic["latency_ms"] += summary_diagnostic["latency_ms"]
+                    generate_ms += round((time.monotonic() - started) * 1000)
+                edit_started = time.monotonic()
+                vector = None
+                if summary is not None or not state["embedding_current"]:
+                    vector = await self.embedding.embed(
+                        card_document(state["domain"], state["title"], summary or (state["summary"] if fresh else None),
+                                      state["points"]),
+                        purpose="memory_document", event_id=job["id"], stage="memory", job_attempt=job["attempts"])
+                    diagnostic["embedding_calls"] += 1
+                saved = await self.repository.save_card_refresh(
+                    UUID(card_id), state["generation"], state["fingerprint"], summary, vector)
+                edit_ms += round((time.monotonic() - edit_started) * 1000)
+                refreshed.append({"id": card_id, "summary": summary is not None, "saved": saved})
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                refreshed.append({"id": card_id, "error": type(error).__name__})
+        timing.update(generate_ms=generate_ms, edit_ms=edit_ms)
+        diagnostic["card_refresh"] = refreshed
+        trace("memory_card", {"cards": cards, "refresh": refreshed, "timing": timing}, job["id"])
+        print(f"[Memory] cards: created={len(cards.get('created', []))} updated={len(cards.get('updated', []))} "
+              f"deleted={len(cards.get('deleted', []))} organize_ms={timing.get('organize_ms')} "
+              f"generate_ms={generate_ms} edit_ms={edit_ms}")
 
     async def run(self):
         maintenance_at = 0

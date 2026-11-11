@@ -87,7 +87,8 @@ class MemoryWorkerStabilityTests(unittest.IsolatedAsyncioTestCase):
         self.repo = SimpleNamespace(
             claim=AsyncMock(return_value=self.job), queue_health=AsyncMock(return_value={"active_jobs": 1}),
             context_jobs=AsyncMock(return_value=[]), job_sources=AsyncMock(return_value=[]),
-            agent_candidates=AsyncMock(return_value=[]), mark_pending_targets=AsyncMock(),
+            agent_candidates=AsyncMock(return_value=[]), agent_cards=AsyncMock(return_value=[]),
+            mark_pending_targets=AsyncMock(),
             finish=AsyncMock(return_value=True))
         self.embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0] + [0.0] * 1023))
         self.result = {"outcome": "complete", "decisions": [{"action": "CREATE", "canonical_text": "使用者喜歡茶",

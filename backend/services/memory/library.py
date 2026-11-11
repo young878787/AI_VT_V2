@@ -11,7 +11,7 @@ from psycopg import sql
 
 from core.utils import normalize_session_id
 from infrastructure.session.repository import ChatSessionRepository
-from infrastructure.memory.repository import MemoryRepository
+from infrastructure.memory.repository import MemoryRepository, sync_cards
 
 
 CURRENT_MEMORY_STATUSES = {"active", "conflict"}
@@ -302,8 +302,8 @@ class MemoryLibraryService:
 
                 if erased_source_ids:
                     await connection.execute(
-                        """UPDATE memory_sources SET raw_text = NULL
-                        WHERE user_id = %s AND character_id = %s AND id = ANY(%s)""",
+                        """UPDATE memory_sources SET raw_text = NULL, embedding = NULL, embedding_contract = NULL,
+                        mood = NULL WHERE user_id = %s AND character_id = %s AND id = ANY(%s)""",
                         (*owner, erased_source_ids),
                     )
                 if target_ids or message_ids:
@@ -327,9 +327,12 @@ class MemoryLibraryService:
 
                 deleted_cursor = await connection.execute(
                     """DELETE FROM memory_items
-                    WHERE user_id = %s AND character_id = %s AND id = ANY(%s)""",
+                    WHERE user_id = %s AND character_id = %s AND id = ANY(%s) RETURNING card_id""",
                     (*owner, target_ids),
                 )
+                # 遺忘的內容可能已寫進卡片概要；清掉概要與卡片向量，空卡直接刪除。
+                await sync_cards(connection, owner, [row[0] for row in await deleted_cursor.fetchall()],
+                                 clear_summary=True)
                 if erased_source_ids:
                     await connection.execute(
                         """DELETE FROM memory_sources AS source
@@ -369,7 +372,7 @@ class MemoryLibraryService:
                     WHERE user_id = %s AND character_id = %s""", owner,
                 )
                 counts: dict[str, int] = {}
-                for table in ("memory_jobs", "memory_items", "memory_sources", "memory_audit", "memory_forget_barriers"):
+                for table in ("memory_jobs", "memory_items", "memory_cards", "memory_sources", "memory_audit", "memory_forget_barriers"):
                     cursor = await connection.execute(
                         sql.SQL("DELETE FROM {} WHERE user_id = %s AND character_id = %s").format(sql.Identifier(table)),
                         owner,

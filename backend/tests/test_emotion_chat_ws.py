@@ -5,7 +5,7 @@ import pathlib
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 from uuid import uuid4
 
 from fastapi import WebSocketDisconnect
@@ -29,6 +29,7 @@ from domain.emotion_state import (
 from domain.memory.source import MemoryEventConflict, MemoryEventReplay
 from backend.tests.chat_session_fakes import FakeChatSessionRepository, make_chat_session_service
 from services.chat.session_service import ChatSessionService
+from services.memory.retriever import RecallJudge
 
 
 def emotion_answers(**scores):
@@ -503,7 +504,9 @@ class EmotionWebSocketTests(unittest.TestCase):
                 await websocket_endpoint(socket)
 
         asyncio.run(run())
-        runtime.retrieve.assert_awaited_once_with("請記住我喜歡茶", event_id=event_id, recent_dialogue=[], summary="")
+        runtime.retrieve.assert_awaited_once_with("請記住我喜歡茶", event_id=event_id, recent_dialogue=[], summary="",
+                                                  judge=ANY)
+        self.assertIsInstance(runtime.retrieve.await_args.kwargs["judge"], RecallJudge)
         accept_args = runtime.accept.await_args.args
         self.assertEqual(accept_args[:4], ("server_session", "test-turn", "請記住我喜歡茶", []))
         self.assertEqual(accept_args[4]["content"], "請記住我喜歡茶")
@@ -623,6 +626,167 @@ class EmotionWebSocketTests(unittest.TestCase):
         self.assertEqual(context["mood_history"], [{"turns_ago": 1, "changes": changes}])
         second, _, _ = apply_mood_turn(first, current, emotion_answers(), "turn_2", timestamps[1])
         self.assertEqual(captured["chat_sessions"].repository.emotion_state, second)
+
+
+class RecallJudgeWebSocketTests(unittest.TestCase):
+    """A-05：召回判斷與三角色並行；Chat 等情緒與召回；失敗與取消互不影響。"""
+
+    def _runtime(self, retrieve):
+        return SimpleNamespace(retrieve=retrieve, accept=AsyncMock(side_effect=lambda *args: uuid4()),
+                               route_background=Mock(), reset=AsyncMock(), record_turn_mood=AsyncMock())
+
+    def _run(self, frames, retrieve, fake_jev):
+        socket = FakeWebSocket(frames)
+        runtime = self._runtime(retrieve)
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=runtime, chat_session_service=make_chat_session_service()))
+        captured = {"prompts": [], "traces": [], "runtime": runtime}
+
+        def fake_prompt(profile, notes, state, model_name, **kwargs):
+            prompt = build_agent_a_prompt(profile, notes, state, model_name, **kwargs)
+            captured["prompts"].append(prompt)
+            return prompt
+
+        async def fake_chat(messages, send_chunk, **kwargs):
+            await send_chunk("露西亞的回覆")
+            return "露西亞的回覆"
+
+        async def run():
+            with patch("api.routes.chat_ws.call_jev", side_effect=fake_jev), \
+                 patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
+                 patch("api.routes.chat_ws.build_agent_a_prompt", side_effect=fake_prompt), \
+                 patch("api.routes.chat_ws.broadcast_to_displays"), \
+                 patch("api.routes.chat_ws.log_turn"), \
+                 patch("api.routes.chat_ws.trace", side_effect=lambda stage, data: captured["traces"].append(
+                     {"stage": stage, **data})), \
+                 patch("api.routes.chat_ws.synthesize_and_send_voice"):
+                await asyncio.wait_for(websocket_endpoint(socket), 5)
+
+        asyncio.run(run())
+        return socket, captured
+
+    def test_recall_runs_with_three_roles_and_chat_waits_for_it(self):
+        card_id = uuid4()
+        emotion_started, recall_started = asyncio.Event(), asyncio.Event()
+        previous = []
+
+        async def fake_jev(state, questions):
+            if "card_1" in questions:
+                recall_started.set()
+                await asyncio.wait_for(emotion_started.wait(), 2)  # 情緒角色同時在進行
+                return {"card_1": {"choice": "key", "confidence": .9}}
+            role = jev_role(questions)
+            if role == "emotion":
+                emotion_started.set()
+                await asyncio.wait_for(recall_started.wait(), 2)  # 召回也同時在進行
+            return {key: value for key, value in jev_answers(pleased=3).items() if key in questions}
+
+        async def retrieve(text, *, event_id, recent_dialogue, summary, judge):
+            previous.append(judge.previous_card_ids)
+            answers = await judge.ask({"current_user_input": text}, {"card_1": {"type": "choice"}})
+            judge.selected_card_ids = [card_id] if answers["card_1"]["choice"] == "key" else []
+            return {}, "【喜好與興趣／茶飲】\n- 使用者喜歡烏龍茶（status=active）"
+
+        socket, captured = self._run([{"content": "我喜歡喝什麼？"}, {"content": "那甜點呢？"}],
+                                     AsyncMock(side_effect=retrieve), fake_jev)
+        self.assertEqual(previous, [(), (card_id,)])
+        for prompt in captured["prompts"]:
+            self.assertIn("- 使用者喜歡烏龍茶（status=active）", prompt)
+        jev_traces = [item for item in captured["traces"] if item["stage"] == "jev"]
+        roles = build_role_questions()
+        self.assertEqual(sorted(item["role"] for item in jev_traces), sorted(list(JEV_ROLES) * 2))
+        for item in jev_traces:
+            self.assertEqual(item["question_hash"], question_hash(roles[item["role"]]))
+        runtime = captured["runtime"]
+        self.assertEqual(runtime.record_turn_mood.await_count, 2)
+        mood = runtime.record_turn_mood.await_args.args[1]
+        self.assertEqual(set(mood), set(EMOTION_FIELDS))
+        self.assertEqual([payload["type"] for payload in socket.payloads].count("stream_end"), 2)
+
+    def test_recall_failure_does_not_change_three_roles(self):
+        async def fake_jev(state, questions):
+            if "card_1" in questions:
+                raise RuntimeError("recall timeout")
+            return {key: value for key, value in jev_answers(pleased=3).items() if key in questions}
+
+        async def retrieve(text, *, event_id, recent_dialogue, summary, judge):
+            try:
+                await judge.ask({}, {"card_1": {"type": "choice"}})
+            except RuntimeError:
+                pass
+            return {}, ""
+
+        socket, captured = self._run([{"content": "嗨"}], AsyncMock(side_effect=retrieve), fake_jev)
+        emotion = next(payload for payload in socket.payloads if payload["type"] == "emotion_update"
+                       and payload.get("turn_id"))
+        self.assertEqual(emotion["source"], "jev")
+        plan = next(payload for payload in socket.payloads if payload["type"] == "expression_plan")
+        self.assertEqual(plan["debug"]["jevDecisionSource"], "jev")
+        captured["runtime"].route_background.assert_called_once()
+        self.assertIsNotNone(captured["runtime"].route_background.call_args.args[2])
+        self.assertIn("stream_end", [payload["type"] for payload in socket.payloads])
+
+    def test_new_input_cancels_pending_recall_without_stale_events(self):
+        entered, cancelled, completed = asyncio.Event(), [], asyncio.Event()
+        payloads = []
+
+        class Socket:
+            index = 0
+
+            async def accept(self):
+                pass
+
+            async def receive_text(self):
+                self.index += 1
+                if self.index == 1:
+                    return json.dumps({"content": "第一句", "turn_id": "turn_1"})
+                if self.index == 2:
+                    await entered.wait()
+                    return json.dumps({"content": "插話", "turn_id": "turn_2"})
+                await completed.wait()
+                raise WebSocketDisconnect()
+
+            async def send_json(self, payload):
+                payloads.append(payload)
+                if payload.get("type") == "stream_end" and payload.get("turn_id") == "turn_2":
+                    completed.set()
+
+        async def retrieve(text, *, event_id, recent_dialogue, summary, judge):
+            if text == "第一句":
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.append(text)
+                    raise
+            return {}, ""
+
+        async def fake_jev(state, questions):
+            return {key: value for key, value in jev_answers().items() if key in questions}
+
+        async def fake_chat(messages, send_chunk, **kwargs):
+            await send_chunk("完整回覆")
+            return "完整回覆"
+
+        socket = Socket()
+        socket.app = SimpleNamespace(state=SimpleNamespace(
+            memory_runtime=self._runtime(AsyncMock(side_effect=retrieve)),
+            chat_session_service=make_chat_session_service()))
+
+        async def run():
+            with patch("api.routes.chat_ws.call_jev", side_effect=fake_jev), \
+                 patch("api.routes.chat_ws.stream_agent_a", side_effect=fake_chat), \
+                 patch("api.routes.chat_ws.broadcast_to_displays"), \
+                 patch("api.routes.chat_ws.log_turn"), \
+                 patch("api.routes.chat_ws.synthesize_and_send_voice"):
+                await asyncio.wait_for(websocket_endpoint(socket), 5)
+
+        asyncio.run(run())
+        self.assertEqual(cancelled, ["第一句"])
+        stale = [payload["type"] for payload in payloads if payload.get("turn_id") == "turn_1"
+                 and payload["type"] in {"text_stream", "stream_end"}]
+        self.assertEqual(stale, [])
+        self.assertIn("stream_end", [payload["type"] for payload in payloads if payload.get("turn_id") == "turn_2"])
 
 
 if __name__ == "__main__":

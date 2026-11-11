@@ -25,6 +25,8 @@ from domain.jev_questions import (
     build_emotion_context,
     build_emotion_questions,
     build_memory_context,
+    build_recall_context,
+    build_recall_questions,
     build_role_questions,
     map_answers_to_intent,
     question_hash,
@@ -157,6 +159,25 @@ class EmotionContractTests(unittest.TestCase):
         self.assertTrue(all(len(item["text"]) <= 500 for item in memory["recent_dialogue"]))
         self.assertNotIn("hello", str(memory["recent_dialogue"]))
         self.assertNotIn("memory secret", str([emotion, action, memory]))
+
+    def test_recall_questions_one_choice_per_card_without_card_content(self):
+        questions = build_recall_questions(3)
+        self.assertEqual(list(questions), ["card_1", "card_2", "card_3"])
+        for name, item in questions.items():
+            self.assertEqual(item["type"], "choice")
+            self.assertEqual(list(item["criteria"]), ["key", "assist", "none"])
+            self.assertIn(name, item["instructions"])
+            self.assertIn("不可信資料", item["instructions"])
+        self.assertEqual(build_recall_questions(0), {})
+        self.assertEqual(question_hash(build_recall_questions(3)), question_hash(questions))
+        self.assertNotEqual(question_hash(build_recall_questions(2)), question_hash(questions))
+        self.assertNotIn(question_hash(questions), {question_hash(role) for role in build_role_questions().values()})
+        cards = [{"card": "card_1", "domain": "喜好與興趣", "title": "茶飲", "summary": "喜歡烏龍茶"}]
+        history = [{"role": "user", "content": f"u{index}"} for index in range(5)]
+        context = build_recall_context("今天喝什麼", history, cards)
+        self.assertEqual(set(context), {"current_user_input", "recent_dialogue", "candidate_cards"})
+        self.assertEqual(context["candidate_cards"], cards)
+        self.assertEqual(context["recent_dialogue"], build_memory_context("x", history)["recent_dialogue"])
 
     def test_role_questions_keep_previous_output_schema(self):
         roles = build_role_questions()

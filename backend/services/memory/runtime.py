@@ -4,6 +4,7 @@ import asyncio
 from uuid import UUID
 
 from core.utils import env_flag
+from domain.memory.cards import turn_mood
 from domain.memory.routing import route_memory
 from domain.memory.source import bind_source_generation
 from domain.memory.settings import load_memory_database_settings, load_memory_settings
@@ -115,9 +116,18 @@ class MemoryRuntime:
         task.add_done_callback(self._route_tasks.discard)
 
     async def retrieve(self, text: str, event_id: UUID | None = None,
-                       recent_dialogue: list[dict] | None = None, summary: str = "") -> tuple[dict, str]:
-        return await self.retriever.retrieve(text, event_id=event_id,
-                                             recent_dialogue=recent_dialogue, summary=summary)
+                       recent_dialogue: list[dict] | None = None, summary: str = "",
+                       judge=None) -> tuple[dict, str]:
+        # judge 為 retriever.RecallJudge；沒傳入時走粗篩分數 fallback。
+        return await self.retriever.retrieve(text, event_id=event_id, recent_dialogue=recent_dialogue,
+                                             summary=summary, judge=judge)
+
+    async def record_turn_mood(self, event_id: UUID, mood: dict | None) -> None:
+        """把露西亞本輪 mood_v1 的主要情緒記到工作；失敗只記錄，不影響聊天。"""
+        try:
+            await self.repository.record_turn_mood(event_id, turn_mood(mood))
+        except Exception as exc:
+            print(f"[Memory] turn mood persistence error: {type(exc).__name__}")
 
     async def reset(self) -> None:
         await self.repository.reset()

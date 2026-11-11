@@ -61,6 +61,7 @@ from services.chat.session_service import ChatSessionInUseError
 from services.context.tools import ContextTools
 from services.context.ai_test_context import fixture_timestamp
 from services.memory.events import recent_memory_events, subscribe_memory_events
+from services.memory.retriever import RecallJudge
 from services.expression.avatar_runtime import AvatarRuntime
 
 
@@ -267,8 +268,11 @@ async def websocket_endpoint(websocket: WebSocket):
     active_turn_committed = False
     active_event_id = None
     active_memory_routed = False
+    # 本 session 上一輪注入的卡片；下一輪粗篩一併列為候選，切換或重置 session 時清空。
+    recall_card_ids: tuple = ()
     short_term_enabled = True
     tts_tasks: set[asyncio.Task] = set()
+    mood_tasks: set[asyncio.Task] = set()
     send_lock = asyncio.Lock()
     memory_event_queue: asyncio.Queue[dict] = asyncio.Queue()
     memory_event_turn_ids: dict[str, str] = {}
@@ -514,9 +518,10 @@ async def websocket_endpoint(websocket: WebSocket):
     async def run_turn(turn_id: str, text: str, model_name: str, snapshot: dict, legacy: bool,
                        event_id=None, request_started: float | None = None) -> None:
         nonlocal messages, emotion_state, expression_state, version, active_turn_partial
-        nonlocal active_turn_committed, active_memory_routed, session_failed
+        nonlocal active_turn_committed, active_memory_routed, session_failed, recall_card_ids
         action_task: asyncio.Task | None = None
         memory_task: asyncio.Task | None = None
+        recall_task: asyncio.Task | None = None
         cancelled = False
         confirmed_context_kinds: set[str] = set()
 
@@ -578,9 +583,18 @@ async def websocket_endpoint(websocket: WebSocket):
                     memory_runtime.route_background(event_id, text, answers, history, turn_id=turn_id)
                     active_memory_routed = True
 
-            # 三角色並行；Chat 只等待情緒角色。
+            async def run_recall() -> tuple[dict, str, RecallJudge]:
+                # 召回判斷是另一次 JEV 呼叫；不記成 "jev" trace，題目與結果寫在 retrieval trace。
+                judge = RecallJudge(ask=call_jev, previous_card_ids=recall_card_ids)
+                profile, memory = await memory_runtime.retrieve(
+                    text, event_id=event_id, recent_dialogue=history, summary=snapshot["summary"], judge=judge)
+                return profile, memory, judge
+
+            # 三角色與召回並行；Chat 等待情緒角色與召回。
             action_task = asyncio.create_task(run_action())
             memory_task = asyncio.create_task(run_memory_route())
+            if snapshot["memory_read"]:
+                recall_task = asyncio.create_task(run_recall())
             answers = await ask_jev("emotion", emotion_context)
             emotion_answers = (
                 {field: answers.get(field) for field in EMOTION_FIELDS}
@@ -589,6 +603,11 @@ async def websocket_endpoint(websocket: WebSocket):
             next_record, mood_changes, source = apply_mood_turn(
                 mood_record, current_mood, emotion_answers, turn_id, snapshot["message_timestamp"],
             )
+            # 單元測試的 runtime 替身沒有此方法；正式 MemoryRuntime 一律提供。
+            if event_id is not None and hasattr(memory_runtime, "record_turn_mood"):
+                mood_task = asyncio.create_task(memory_runtime.record_turn_mood(event_id, next_record["mood"]))
+                mood_tasks.add(mood_task)
+                mood_task.add_done_callback(mood_tasks.discard)
             if active_turn_id != turn_id:
                 return
             emotion_state = next_record
@@ -597,6 +616,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 await persist_emotion(next_record)
             await send({"type": "emotion_update", "state": next_record["mood"], "source": source,
                         "turn_id": turn_id, "version": version})
+            if recall_task is not None:
+                snapshot["profile"], snapshot["memory"], judge = await recall_task
+                recall_task = None
+                if active_turn_id != turn_id:
+                    return
+                recall_card_ids = tuple(judge.selected_card_ids)
 
             prompt = build_agent_a_prompt(snapshot["profile"], snapshot["memory"], next_record["mood"],
                                           model_name=model_name,
@@ -668,6 +693,9 @@ async def websocket_endpoint(websocket: WebSocket):
             generation_ms = round((time.monotonic() - generation_started) * 1000, 1)
             output_tokens = estimate_token_count([{"role": "assistant", "content": reply}])
             tokens_per_second = round(output_tokens / max(generation_ms / 1000, 0.001), 1)
+            trace("reply", {"first_text_ms": first_token_latency_ms,
+                            "stream_end_ms": (round((time.monotonic() - request_started) * 1000, 1)
+                                              if request_started is not None else None)})
             await send({
                 "type": "stream_end",
                 "turn_id": turn_id,
@@ -704,9 +732,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         session_failed = True
                 await send({"type": "error", "content": f"API 錯誤: {exc}", "turn_id": turn_id})
         finally:
-            if action_task is not None and not action_task.done():
-                action_task.cancel()
-                await asyncio.gather(action_task, return_exceptions=True)
+            for task in (action_task, recall_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
             if memory_task is not None and not memory_task.done():
                 # 取消時交由 cancel_active() 補路由；其餘提前結束仍等待記憶路由，避免工作停在 pending。
                 if cancelled:
@@ -785,19 +814,16 @@ async def websocket_endpoint(websocket: WebSocket):
             "event_id": event_id.hex if event_id is not None else None,
             "durable": short_term_enabled,
         })
-        profile, relevant_memory = ({}, "")
-        summary = turn_summary
-        if read_enabled:
-            profile, relevant_memory = await memory_runtime.retrieve(text, event_id=event_id,
-                recent_dialogue=turn_messages, summary=summary)
+        # 召回改在 run_turn 內與 JEV 三角色並行；profile／memory 在召回完成後填入。
         snapshot = {
             "messages": turn_messages,
             "emotion": turn_emotion,
             "expression": turn_expression,
             "action": turn_action,
-            "profile": profile,
-            "memory": relevant_memory,
-            "summary": summary,
+            "profile": {},
+            "memory": "",
+            "memory_read": read_enabled,
+            "summary": turn_summary,
             "user_message": user_message,
             "message_timestamp": message_timestamp,
             "runtime_context": runtime_context,
@@ -861,6 +887,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 emotion_state = test_snapshot["emotion_state"] if next_short_term else None
                 expression_state = None
                 current_action = None
+                recall_card_ids = ()
                 avatar_runtime.reset()
                 short_term_enabled = next_short_term
                 version = 0
@@ -903,6 +930,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 else:
                     reset_state = await chat_sessions.repository.reset(session_id)
                 messages, emotion_state, expression_state = [], None, None
+                recall_card_ids = ()
                 avatar_runtime.reset()
                 session_generation = reset_state["generation"]
                 session_summary = ""

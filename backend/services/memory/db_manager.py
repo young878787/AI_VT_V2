@@ -7,9 +7,11 @@ from pgvector import Vector
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from domain.memory.cards import normalize_key
 from domain.memory.decisions import validate_decisions, validate_sources, validate_batch, validate_current_source
 from domain.memory.scope import MemoryScope
 from domain.memory.routing import instruction_policy, forget_scope
+from infrastructure.memory.repository import sync_cards
 from services.memory.legacy_import import LegacyEntry
 
 
@@ -105,8 +107,9 @@ class MemoryDBManager:
     async def apply(
         self, job: dict, decisions: list[dict], allowed_targets: set[UUID],
         embeddings: dict[int, list[float]], context_ids: tuple[UUID, ...] = (), diagnostic: dict | None = None,
-        target_snapshots: dict | None = None,
+        target_snapshots: dict | None = None, source_embeddings: dict[UUID, list[float]] | None = None,
     ) -> bool:
+        """套用決策並同步卡片；``diagnostic["cards"]`` 回填本次新建、更新與刪除的卡片 ID。"""
         forget = instruction_policy(job["source_text"]) == "forget"
         validate_decisions({"decisions": decisions}, allowed_targets, explicit_forget=forget)
         validate_batch(decisions)
@@ -123,7 +126,8 @@ class MemoryDBManager:
                 )).fetchone()
                 current = await (await connection.execute(
                     """SELECT status, attempts, generation, source_ids,
-                    lease_until > now() AND expires_at > now() AND route_finalized, instruction, conversation_id FROM memory_jobs
+                    lease_until > now() AND expires_at > now() AND route_finalized, instruction, conversation_id,
+                    turn_mood FROM memory_jobs
                     WHERE id = %s AND user_id = %s AND character_id = %s FOR UPDATE""",
                     (job["id"], *owner),
                 )).fetchone()
@@ -169,6 +173,23 @@ class MemoryDBManager:
                 )).fetchall()
                 if {row[0] for row in sources} != source_ids:
                     raise ValueError("候選來源已失效")
+                if current[7] is not None:
+                    # 心情是露西亞當輪狀態，只記在當輪使用者來源；不覆寫已記錄的值。
+                    await connection.execute(
+                        """UPDATE memory_sources SET mood = %s WHERE id = %s AND user_id = %s
+                        AND character_id = %s AND mood IS NULL""", (current[7], job["id"], *owner),
+                    )
+                if not any(item["action"] == "FORGET" for item in decisions):
+                    for embedded_source, vector in (source_embeddings or {}).items():
+                        if embedded_source not in source_ids:
+                            raise ValueError("來源 embedding 不屬於本次引用")
+                        await connection.execute(
+                            """UPDATE memory_sources SET embedding = %s, embedding_contract = %s
+                            WHERE id = %s AND user_id = %s AND character_id = %s AND speaker = 'user'
+                            AND raw_text IS NOT NULL AND embedding IS NULL""",
+                            (Vector(vector), self.embedding_contract, embedded_source, *owner),
+                        )
+                touched_cards, forgotten_cards, merged_cards, created_cards = set(), set(), set(), []
                 checked_targets = set()
                 for index, decision in enumerate(decisions):
                     action = decision["action"]
@@ -191,7 +212,7 @@ class MemoryDBManager:
                     rows = []
                     if targets:
                         async with await connection.execute(
-                            """SELECT id, group_id, status, observed_at, updated_at, canonical_text FROM memory_items
+                            """SELECT id, group_id, status, observed_at, updated_at, canonical_text, card_id FROM memory_items
                             WHERE user_id = %s AND character_id = %s AND id = ANY(%s) FOR UPDATE""",
                             (*owner, targets),
                         ) as cursor:
@@ -208,6 +229,7 @@ class MemoryDBManager:
                             raise ValueError("target 已在檢索後變更，需重新處理")
                     checked_targets.update(row[0] for row in rows)
                     target_map = {row[0]: row for row in rows}
+                    touched_cards.update(row[6] for row in rows if row[6] is not None)
                     if action == "CREATE" and decision.get("subject_key"):
                         newer = await (await connection.execute(
                             """SELECT 1 FROM memory_items WHERE user_id = %s AND character_id = %s
@@ -229,7 +251,17 @@ class MemoryDBManager:
                         )).fetchone()
                         if duplicate:
                             action, targets = "REINFORCE", [duplicate[0]]
+                            touched_cards.update(row[0] for row in await (await connection.execute(
+                                "SELECT card_id FROM memory_items WHERE id = %s AND user_id = %s AND character_id = %s"
+                                " AND card_id IS NOT NULL", (duplicate[0], *owner))).fetchall())
                     new_id = uuid5(job["id"], f"decision:{index}")
+                    card_id = None
+                    if action == "CREATE":
+                        card_id = await self._resolve_card(connection, owner, job, index, decision, created_cards)
+                    elif action in {"SUPERSEDE", "CONTRADICT"} and targets:
+                        card_id = target_map[targets[0]][6]
+                    if card_id is not None:
+                        touched_cards.add(card_id)
                     audit_target = (new_id if action in {"CREATE", "SUPERSEDE", "CONTRADICT"}
                                     else targets[0] if targets and action != "FORGET" else None)
                     deleted_count = None
@@ -247,15 +279,15 @@ class MemoryDBManager:
                             """INSERT INTO memory_items
                             (id, user_id, character_id, group_id, memory_type, canonical_text, subject_key,
                              keywords, status, importance, confidence, retention_class, embedding, embedding_model,
-                             embedding_contract, observed_at, valid_from, valid_to, expires_at)
+                             embedding_contract, observed_at, valid_from, valid_to, expires_at, card_id)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                    %s, %s, COALESCE(%s, %s), %s, %s)""",
+                                    %s, %s, COALESCE(%s, %s), %s, %s, %s)""",
                             (new_id, *owner, group_id, decision.get("memory_type", "event"), canonical,
                              decision.get("subject_key"), keywords, status, decision.get("importance", 0.5),
                              decision.get("confidence", 0.5), decision.get("retention_class", "normal"),
                              Vector(embeddings[index]), self.embedding_model, self.embedding_contract, job["created_at"],
                              decision.get("valid_from"), job["created_at"],
-                             decision.get("valid_to"), decision.get("expires_at")),
+                             decision.get("valid_to"), decision.get("expires_at"), card_id),
                         )
                         await connection.execute(
                             """INSERT INTO memory_evidence (user_id, character_id, memory_id, source_id, kind)
@@ -315,6 +347,10 @@ class MemoryDBManager:
                                 """INSERT INTO memory_relations (user_id, character_id, from_id, to_id, kind)
                                 VALUES (%s, %s, %s, %s, 'merged_into')""", (*owner, loser, winner),
                             )
+                    elif action == "MERGE_CARDS":
+                        audit_target, merged_card = await self._merge_cards(connection, owner, decision["card_ids"])
+                        touched_cards.add(audit_target)
+                        merged_cards.add(merged_card)
                     elif action == "ARCHIVE":
                         await connection.execute(
                             """UPDATE memory_items SET status = 'archived', valid_to = now(), updated_at = now()
@@ -374,7 +410,8 @@ class MemoryDBManager:
                         )).fetchall()
                         message_ids = list(set(message_ids) | {row[0] for row in affected})
                         await connection.execute(
-                            "UPDATE memory_sources SET raw_text = NULL WHERE user_id = %s AND character_id = %s AND id = ANY(%s)",
+                            """UPDATE memory_sources SET raw_text = NULL, embedding = NULL, embedding_contract = NULL,
+                            mood = NULL WHERE user_id = %s AND character_id = %s AND id = ANY(%s)""",
                             (*owner, erased_sources),
                         )
                         await connection.execute(
@@ -389,6 +426,10 @@ class MemoryDBManager:
                             lease_until = NULL, status = 'cancelled' WHERE user_id = %s AND character_id = %s
                             AND message_id = ANY(%s)""", (*owner, message_ids),
                         )
+                        forgotten_cards.update(row[0] for row in await (await connection.execute(
+                            """SELECT DISTINCT card_id FROM memory_items WHERE user_id = %s AND character_id = %s
+                            AND id = ANY(%s) AND card_id IS NOT NULL""", (*owner, targets),
+                        )).fetchall())
                         deleted_count = (await connection.execute(
                             "DELETE FROM memory_items WHERE user_id = %s AND character_id = %s AND id = ANY(%s)",
                             (*owner, targets),
@@ -425,6 +466,15 @@ class MemoryDBManager:
                          "user_request" if action == "FORGET" else decision["reason"][:100],
                          self.model, None if action == "FORGET" else Jsonb(decision), deleted_count),
                     )
+                synced = await sync_cards(connection, owner, touched_cards - forgotten_cards)
+                cleared = await sync_cards(connection, owner, forgotten_cards, clear_summary=True)
+                deleted_cards = {*synced["deleted"], *cleared["deleted"], *merged_cards}
+                if diagnostic is not None:
+                    diagnostic["cards"] = {
+                        "created": [str(value) for value in created_cards if value not in deleted_cards],
+                        "updated": sorted(str(value) for value in {*synced["updated"], *cleared["updated"]}),
+                        "deleted": sorted(str(value) for value in deleted_cards),
+                    }
                 terminal = "ignored" if not decisions or all(item["action"] == "IGNORE" for item in decisions) else "done"
                 if context_ids:
                     await connection.execute(
@@ -441,3 +491,58 @@ class MemoryDBManager:
                         "result": terminal, "committed": True}), job["id"], *owner),
                 )
                 return True
+
+    async def _resolve_card(self, connection, owner: tuple, job: dict, index: int,
+                            decision: dict, created: list) -> UUID | None:
+        """CREATE 的卡片：候選卡須屬同 owner；新卡依主題與正規化名稱去重，名稱相同即沿用。"""
+        if decision.get("card_id"):
+            row = await (await connection.execute(
+                "SELECT id FROM memory_cards WHERE id = %s AND user_id = %s AND character_id = %s FOR UPDATE",
+                (UUID(decision["card_id"]), *owner),
+            )).fetchone()
+            if row is None:
+                raise ValueError("指定的卡片不存在或不屬於此 owner")
+            return row[0]
+        if not decision.get("subtopic"):
+            return None
+        key = normalize_key(decision["subtopic"])
+        card_id = uuid5(job["id"], f"card:{index}")
+        inserted = await (await connection.execute(
+            """INSERT INTO memory_cards (id, user_id, character_id, domain, title, title_key)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, character_id, domain, title_key) DO NOTHING RETURNING id""",
+            (card_id, *owner, decision["domain"], decision["subtopic"], key),
+        )).fetchone()
+        if inserted:
+            created.append(inserted[0])
+            return inserted[0]
+        row = await (await connection.execute(
+            """SELECT id FROM memory_cards WHERE user_id = %s AND character_id = %s AND domain = %s
+            AND title_key = %s FOR UPDATE""", (*owner, decision["domain"], key),
+        )).fetchone()
+        return row[0]
+
+    async def _merge_cards(self, connection, owner: tuple, card_ids: list[str]) -> tuple[UUID, UUID]:
+        """MERGE_CARDS：要點全部移到保留卡並刪除被併卡；只允許同主題。回傳（保留卡, 被併卡）。"""
+        kept, merged = (UUID(value) for value in card_ids)
+        async with await connection.execute(
+            """SELECT id, domain FROM memory_cards WHERE user_id = %s AND character_id = %s
+            AND id = ANY(%s) ORDER BY id FOR UPDATE""", (*owner, [kept, merged]),
+        ) as cursor:
+            rows = dict(await cursor.fetchall())
+        if set(rows) != {kept, merged}:
+            raise ValueError("合併卡片不存在或不屬於此 owner")
+        if rows[kept] != rows[merged]:
+            raise ValueError("只能合併同主題的卡片")
+        await connection.execute(
+            """UPDATE memory_items SET card_id = %s WHERE user_id = %s AND character_id = %s AND card_id = %s""",
+            (kept, *owner, merged),
+        )
+        await connection.execute(
+            "DELETE FROM memory_cards WHERE id = %s AND user_id = %s AND character_id = %s", (merged, *owner),
+        )
+        await connection.execute(
+            "UPDATE memory_cards SET summary_stale = true WHERE id = %s AND user_id = %s AND character_id = %s",
+            (kept, *owner),
+        )
+        return kept, merged

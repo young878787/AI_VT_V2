@@ -24,6 +24,8 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
         self.fact = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "source_ids": [str(self.source["id"])],
                      "memory_type": "preference", "importance": .7, "confidence": .9, "reason": "user statement",
                      "search_terms": ["茶", "飲品偏好"]}
+        # agent 工具只接受短代號：當輪來源固定為 S1，候選要點依序為 M1…，CREATE 必須歸卡。
+        self.agent_fact = {**self.fact, "source_ids": ["S1"], "domain": "preference", "subtopic": "飲品偏好"}
         self.job = {"id": self.source["id"], "source_text": "我喜歡茶", "instruction": "observe"}
         self.diag = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "input_token_estimate": 0, "latency_ms": 0}
 
@@ -142,7 +144,7 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
                                {self.source["id"]}, "我喜歡茶")
 
     async def test_minimal_two_round_job_keeps_tool_id_and_no_repeated_decisions(self):
-        proposal = tool_response("propose_operation", {"operation": self.fact})
+        proposal = tool_response("propose_operation", {"operation": self.agent_fact})
         result = await self.run_agent([proposal, tool_response("finish", {"outcome": "complete", "reason": "done"})])
         self.assertEqual(len(result["decisions"]), 1)
         messages = self.agent.call.call_args_list[1].args[0]
@@ -152,7 +154,7 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unresolved_overall_project_canonical_is_rejected_then_corrected(self):
         self.job["source_text"] = self.source["raw_text"] = "圖書館系統整體設計追求低功耗"
-        invalid = {**self.fact, "memory_type": "project", "canonical_text": "整體設計追求低功耗 (設計目標)"}
+        invalid = {**self.agent_fact, "memory_type": "project", "canonical_text": "整體設計追求低功耗 (設計目標)"}
         corrected = {**invalid, "canonical_text": "圖書館系統整體設計追求低功耗 (設計目標)"}
         result = await self.run_agent([tool_response("propose_operation", {"operation": invalid}),
             tool_response("propose_operation", {"operation": corrected}),
@@ -164,7 +166,7 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_project_label_without_proper_name_can_be_stored(self):
         self.job["source_text"] = self.source["raw_text"] = "請記住這個專案前端使用 Vue 3"
-        fact = {**self.fact, "memory_type": "project", "canonical_text": "使用者專案前端使用 Vue 3"}
+        fact = {**self.agent_fact, "memory_type": "project", "canonical_text": "使用者專案前端使用 Vue 3"}
         result = await self.run_agent([tool_response("propose_operation", {"operation": fact}),
             tool_response("finish", {"outcome": "complete", "reason": "done"})])
         self.assertEqual(result["decisions"][0]["canonical_text"], fact["canonical_text"])
@@ -172,8 +174,8 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_then_reinforce_supplied_target(self):
         target = {"id": uuid4(), "canonical_text": "使用者喜歡茶", "status": "active"}
-        operation = {"action": "REINFORCE", "source_ids": [str(self.source["id"])],
-                     "target_memory_ids": [str(target["id"])], "reason": "same fact"}
+        operation = {"action": "REINFORCE", "source_ids": ["S1"],
+                     "target_memory_ids": ["M1"], "reason": "same fact"}
         search = AsyncMock(return_value=[target])
         result = await self.run_agent([tool_response("search_memories", {"query": "茶偏好"}),
             tool_response("propose_operation", {"operation": operation}),
@@ -183,21 +185,21 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.diag["search_calls"], 1)
 
     async def test_invalid_proposal_repaired_in_same_workflow(self):
-        await self.run_agent([tool_response("propose_operation", {"operation": {**self.fact, "subject_key": "非法主題"}}),
-            tool_response("propose_operation", {"operation": self.fact}),
+        await self.run_agent([tool_response("propose_operation", {"operation": {**self.agent_fact, "subject_key": "非法主題"}}),
+            tool_response("propose_operation", {"operation": self.agent_fact}),
             tool_response("finish", {"outcome": "complete", "reason": "done"})])
         self.assertEqual(self.diag["corrections"], 1)
 
     async def test_duplicate_and_replacement_do_not_add_records(self):
-        result = await self.run_agent([tool_response("propose_operation", {"operation": self.fact}),
-            tool_response("propose_operation", {"operation": self.fact}),
-            tool_response("propose_operation", {"operation": {**self.fact, "canonical_text": "使用者喜歡無糖茶"}, "replace_index": 0}),
+        result = await self.run_agent([tool_response("propose_operation", {"operation": self.agent_fact}),
+            tool_response("propose_operation", {"operation": self.agent_fact}),
+            tool_response("propose_operation", {"operation": {**self.agent_fact, "canonical_text": "使用者喜歡無糖茶"}, "replace_index": 0}),
             tool_response("finish", {"outcome": "complete", "reason": "done"})])
         self.assertEqual([d["canonical_text"] for d in result["decisions"]], ["使用者喜歡無糖茶"])
         self.assertEqual((self.diag["replacements"], self.diag["duplicate_proposals"]), (1, 1))
 
     async def test_needs_context_discards_pending_proposals(self):
-        result = await self.run_agent([tool_response("propose_operation", {"operation": self.fact}),
+        result = await self.run_agent([tool_response("propose_operation", {"operation": self.agent_fact}),
             tool_response("finish", {"outcome": "needs_context", "reason": "缺少主體"})])
         self.assertEqual(result["decisions"], [])
 
@@ -206,16 +208,16 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
         multi = tool_response("search_memories", {"query": "茶"})
         multi["tool_calls"] += tool_response("search_memories", {"query": "咖啡"})["tool_calls"]
         with self.assertRaises(ValueError):
-            await self.run_agent([multi, tool_response("read_context", {"source_ids": [str(uuid4())]})], search=search)
+            await self.run_agent([multi, tool_response("read_context", {"source_ids": ["S9"]})], search=search)
         search.assert_not_awaited()
 
     async def test_truncated_target_requires_read_before_mutation(self):
         target = {"id": uuid4(), "canonical_text": "茶" * 601, "status": "active"}
-        operation = {"action": "REINFORCE", "target_memory_ids": [str(target["id"])],
-                     "source_ids": [str(self.source["id"])], "reason": "support"}
+        operation = {"action": "REINFORCE", "target_memory_ids": ["M1"],
+                     "source_ids": ["S1"], "reason": "support"}
         read = AsyncMock(return_value={"memories": [target], "sources": [], "evidence": []})
         result = await self.run_agent([tool_response("propose_operation", {"operation": operation}),
-            tool_response("read_context", {"memory_ids": [str(target["id"])]}),
+            tool_response("read_context", {"memory_ids": ["M1"]}),
             tool_response("propose_operation", {"operation": operation}),
             tool_response("finish", {"outcome": "complete", "reason": "done"})], related=[target], read=read)
         self.assertEqual(len(result["decisions"]), 1)
@@ -224,7 +226,7 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_older_context_cannot_be_reextracted_for_unrelated_current_input(self):
         old = {"id": uuid4(), "speaker": "user", "raw_text": "我喜歡茶"}
         self.agent = object.__new__(MemoryLLM)
-        operation = {**self.fact, "source_ids": [str(old["id"])]}
+        operation = {**self.agent_fact, "source_ids": ["S2"]}
         self.agent.call = AsyncMock(side_effect=[tool_response("propose_operation", {"operation": operation}),
             tool_response("finish", {"outcome": "ignore", "reason": "沒有新事實"})])
         result = await self.agent.decide(self.job, [self.source, old], [], AsyncMock(), AsyncMock(), self.diag)
@@ -236,7 +238,7 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.run_agent([tool_response("finish", {"outcome": "complete", "reason": "done"})] * 3)
         with self.assertRaises(ValueError):
-            await self.run_agent([tool_response("propose_operation", {"operation": self.fact})] * 20)
+            await self.run_agent([tool_response("propose_operation", {"operation": self.agent_fact})] * 20)
 
     async def test_failed_workflow_keeps_cumulative_counts(self):
         self.diag.update(logical_steps=5, search_calls=1, corrections=2)
@@ -251,14 +253,14 @@ class MemoryAgentTests(unittest.IsolatedAsyncioTestCase):
             await self.run_agent([{"tool_calls": []}] * 3)
         self.assertEqual((self.diag["logical_steps"], self.diag["corrections"]), (3, 3))
         with self.assertRaisesRegex(ValueError, "沒有在預算內完成"):
-            await self.run_agent([tool_response("propose_operation", {"operation": self.fact})] * 20)
+            await self.run_agent([tool_response("propose_operation", {"operation": self.agent_fact})] * 20)
         self.assertEqual(self.diag["duplicate_proposals"], 19)
         self.assertEqual(self.diag["proposal_count"], 1)
 
     async def test_read_failure_keeps_read_and_step_count(self):
         read = AsyncMock(side_effect=RuntimeError("offline"))
         with self.assertRaisesRegex(RuntimeError, "offline"):
-            await self.run_agent([tool_response("read_context", {"source_ids": [str(self.source["id"])]})], read=read)
+            await self.run_agent([tool_response("read_context", {"source_ids": ["S1"]})], read=read)
         self.assertEqual((self.diag["read_calls"], self.diag["logical_steps"]), (1, 1))
 
     def test_batch_conflicts_and_mixed_forget_rejected(self):

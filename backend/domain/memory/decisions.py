@@ -4,17 +4,56 @@ import re
 from datetime import datetime
 from uuid import UUID
 
+from domain.memory.cards import DOMAINS, validate_title
 from domain.memory.routing import MEMORY_TYPES, _number
 
 
-ACTIONS = frozenset({"CREATE", "REINFORCE", "SUPERSEDE", "MERGE", "CONTRADICT", "ARCHIVE", "FORGET", "IGNORE"})
+ACTIONS = frozenset({"CREATE", "REINFORCE", "SUPERSEDE", "MERGE", "CONTRADICT", "ARCHIVE", "FORGET", "IGNORE",
+                     "MERGE_CARDS"})
 RETENTION_CLASSES = frozenset({"temporary", "normal", "important", "core"})
+CARD_FIELDS = frozenset({"card_id", "domain", "subtopic"})
 
 DECISION_FIELDS = frozenset({
     "action", "source_ids", "canonical_text", "memory_type", "subject_key",
     "target_memory_ids", "importance", "confidence", "retention_class", "valid_from", "valid_to",
-    "expires_at", "reason", "forget_scope", "search_terms",
+    "expires_at", "reason", "forget_scope", "search_terms", *CARD_FIELDS, "card_ids",
 })
+_CODE = re.compile(r"[SMC][1-9][0-9]{0,2}")
+
+
+def _uuid_text(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("卡片 ID 格式錯誤")
+    try:
+        return str(UUID(value))
+    except ValueError:
+        raise ValueError("卡片 ID 格式錯誤") from None
+
+
+def _validate_card_fields(decision: dict, action: str) -> None:
+    """卡片欄位只屬於 CREATE（擇一）與 MERGE_CARDS；DB 層允許 CREATE 不帶卡片（未歸卡）。"""
+    fields = CARD_FIELDS & set(decision)
+    if action != "CREATE" and fields:
+        raise ValueError("只有 CREATE 可指定卡片")
+    if action != "MERGE_CARDS" and "card_ids" in decision:
+        raise ValueError("只有 MERGE_CARDS 可指定 cards")
+    if action == "CREATE" and fields:
+        if "card_id" in fields and fields & {"domain", "subtopic"}:
+            raise ValueError("CREATE 只能選候選卡或提供新卡主題與名稱其中一種")
+        if "card_id" in fields:
+            _uuid_text(decision["card_id"])
+        elif fields != {"domain", "subtopic"}:
+            raise ValueError("新卡需要同時提供 domain 與 subtopic")
+        else:
+            if decision["domain"] not in DOMAINS:
+                raise ValueError("主題不在白名單")
+            validate_title(decision["subtopic"])
+    if action == "MERGE_CARDS":
+        cards = decision.get("card_ids")
+        if not isinstance(cards, list) or len(cards) != 2:
+            raise ValueError("MERGE_CARDS 需要兩張卡")
+        if len({_uuid_text(value) for value in cards}) != 2:
+            raise ValueError("MERGE_CARDS 的兩張卡不可相同")
 
 
 def validate_decisions(payload: object, allowed_target_ids: set[UUID], explicit_forget: bool = False) -> list[dict]:
@@ -49,8 +88,9 @@ def validate_decisions(payload: object, allowed_target_ids: set[UUID], explicit_
             raise ValueError("MERGE 至少需要兩個 target")
         if action in {"ARCHIVE", "FORGET"} and not targets:
             raise ValueError("decision 缺少 target")
-        if action == "CREATE" and targets:
-            raise ValueError("CREATE 不可指定 target")
+        if action in {"CREATE", "MERGE_CARDS"} and targets:
+            raise ValueError(f"{action} 不可指定 target")
+        _validate_card_fields(decision, action)
         if "forget_scope" in decision and decision["forget_scope"] not in {"fact", "version"}:
             raise ValueError("遺忘範圍無效")
         if action == "FORGET" and decision.get("forget_scope") == "version" and len(targets) != 1:
@@ -137,7 +177,16 @@ def validate_batch(decisions: list[dict]) -> None:
         raise ValueError("FORGET 不可與其他記憶 mutation 混用")
     targets = {}
     facts = set()
+    merged_cards, used_cards = set(), set()
     for decision in decisions:
+        if decision["action"] == "MERGE_CARDS":
+            if set(decision["card_ids"]) & (merged_cards | used_cards):
+                raise ValueError("同一張卡不可在同一批同時合併與使用")
+            merged_cards.update(decision["card_ids"])
+        elif decision.get("card_id"):
+            if decision["card_id"] in merged_cards:
+                raise ValueError("同一張卡不可在同一批同時合併與使用")
+            used_cards.add(decision["card_id"])
         for target in decision["target_memory_ids"]:
             previous = targets.get(target)
             if previous and (previous != "REINFORCE" or decision["action"] != "REINFORCE"):
@@ -151,7 +200,8 @@ def validate_batch(decisions: list[dict]) -> None:
 
 
 def normalize_proposal(payload: object, allowed_targets: set[UUID], authorized_sources: set[UUID], text: str,
-                       current_source_id: UUID | None = None) -> dict:
+                       current_source_id: UUID | None = None, allowed_cards: set[UUID] | None = None) -> dict:
+    """agent 提案層；傳入 allowed_cards 時 CREATE 必須歸卡，且卡片只能是本次候選。"""
     from domain.memory.routing import instruction_policy, forget_scope
     if not isinstance(payload, dict) or "candidate_index" in payload or payload.get("action") == "IGNORE":
         raise ValueError("請提出一個有效操作；無需操作請用 finish")
@@ -173,12 +223,59 @@ def normalize_proposal(payload: object, allowed_targets: set[UUID], authorized_s
     elif "forget_scope" in decision:
         raise ValueError("非遺忘操作不可指定 forget_scope")
     validate_decisions({"decisions": [decision]}, allowed_targets, policy == "forget")
+    if allowed_cards is not None:
+        if decision["action"] == "CREATE" and not CARD_FIELDS & set(decision):
+            raise ValueError("CREATE 必須指定 card（候選卡代號）或 domain 加 subtopic")
+        chosen = ([decision["card_id"]] if decision.get("card_id") else []) + list(decision.get("card_ids", []))
+        if any(UUID(value) not in allowed_cards for value in chosen):
+            raise ValueError("卡片代號不在本次候選卡內")
     used = validate_sources([decision], authorized_sources)
     if current_source_id is not None:
         validate_current_source(used, current_source_id, text)
     decision["source_ids"] = [str(UUID(value)) for value in decision["source_ids"]]
     decision["target_memory_ids"] = [str(UUID(value)) for value in decision["target_memory_ids"]]
+    if decision.get("card_id"):
+        decision["card_id"] = _uuid_text(decision["card_id"])
+    if "card_ids" in decision:
+        decision["card_ids"] = [_uuid_text(value) for value in decision["card_ids"]]
+    if "subtopic" in decision:
+        decision["subtopic"] = validate_title(decision["subtopic"])
     return decision
+
+
+def translate_codes(operation: object, codes: dict[str, UUID]) -> dict:
+    """agent 只填短代號（S／M／C）；換回 UUID，UUID 或不在本工作的代號一律拒絕。"""
+    if not isinstance(operation, dict):
+        raise ValueError("operation 必須是 object")
+    result = dict(operation)
+
+    def resolve(value, prefix, field):
+        if not isinstance(value, str) or not _CODE.fullmatch(value) or value[0] != prefix:
+            raise ValueError(f"{field} 只接受本工作的 {prefix} 代號（例如 {prefix}1），不接受 UUID")
+        if value not in codes:
+            raise ValueError(f"{field} 的代號 {value} 不存在或未授權")
+        return str(codes[value])
+
+    for field, prefix in (("source_ids", "S"), ("target_memory_ids", "M")):
+        if field in result:
+            if not isinstance(result[field], list):
+                raise ValueError(f"{field} 必須是陣列")
+            result[field] = [resolve(value, prefix, field) for value in result[field]]
+    if "card" in result:
+        result["card_id"] = resolve(result.pop("card"), "C", "card")
+    if "cards" in result:
+        if not isinstance(result["cards"], list):
+            raise ValueError("cards 必須是陣列")
+        result["card_ids"] = [resolve(value, "C", "cards") for value in result.pop("cards")]
+    return result
+
+
+def translate_read_codes(args: dict, codes: dict[str, UUID]) -> tuple[set[UUID], set[UUID]]:
+    """read_context 的 memory_ids／source_ids 也只接受代號。"""
+    resolved = translate_codes({"target_memory_ids": args.get("memory_ids", []),
+                                "source_ids": args.get("source_ids", [])}, codes)
+    return ({UUID(value) for value in resolved["target_memory_ids"]},
+            {UUID(value) for value in resolved["source_ids"]})
 
 
 def agent_tools(forget: bool) -> list[dict]:
@@ -187,10 +284,18 @@ def agent_tools(forget: bool) -> list[dict]:
             "parameters": {"type": "object", "additionalProperties": False,
                            "properties": properties, "required": required}}}
     text = {"type": "string", "minLength": 1, "maxLength": 1000}
-    ids = {"type": "array", "maxItems": 8, "items": {"type": "string", "format": "uuid"}}
+
+    def codes(prefix, maximum):
+        return {"type": "array", "maxItems": maximum,
+                "items": {"type": "string", "pattern": f"^{prefix}[1-9][0-9]{{0,2}}$"}}
+    ids = codes("M", 8)
     operation = {
         "action": {"type": "string", "enum": sorted(ACTIONS - {"IGNORE", *(set() if forget else {"FORGET"})})},
-        "source_ids": {**ids, "minItems": 1, "maxItems": 16}, "target_memory_ids": ids, "reason": text,
+        "source_ids": {**codes("S", 16), "minItems": 1}, "target_memory_ids": ids, "reason": text,
+        "card": {"type": "string", "pattern": "^C[1-9][0-9]{0,2}$"},
+        "domain": {"type": "string", "enum": sorted(DOMAINS)},
+        "subtopic": {"type": "string", "minLength": 2, "maxLength": 16},
+        "cards": {**codes("C", 2), "minItems": 2},
         "canonical_text": {"type": "string", "minLength": 1, "maxLength": 2000},
         "memory_type": {"type": "string", "enum": sorted(MEMORY_TYPES - {"none"})},
         "subject_key": {"type": "string", "maxLength": 160, "pattern": "^[a-z0-9][a-z0-9_.-]*$"},
@@ -204,8 +309,8 @@ def agent_tools(forget: bool) -> list[dict]:
     return [
         tool("search_memories", "Find a small batch of related memories using a focused query.", {"query": text}, ["query"]),
         tool("read_context", "Read authorized sources or supplied memories and their evidence/versions.",
-             {"memory_ids": {**ids, "maxItems": 3}, "source_ids": {**ids, "maxItems": 3}}, []),
-        tool("propose_operation", "Propose ONE operation; no DB write. CREATE/SUPERSEDE/CONTRADICT need canonical_text, memory_type, importance, confidence and search_terms. Other actions need targets only. Cite user sources. Replace an accepted proposal using its index if needed.",
+             {"memory_ids": codes("M", 3), "source_ids": codes("S", 3)}, []),
+        tool("propose_operation", "Propose ONE operation; no DB write. Use short codes only (S1, M1, C1). CREATE/SUPERSEDE/CONTRADICT need canonical_text, memory_type, importance, confidence and search_terms; CREATE also needs card (candidate card code) or domain plus subtopic. MERGE_CARDS needs cards [kept, merged] of the same domain. Other actions need targets only. Cite user sources. Replace an accepted proposal using its index if needed.",
              {"operation": {"type": "object", "additionalProperties": False, "properties": operation,
                             "required": ["action", "source_ids", "reason"]},
               "replace_index": {"type": "integer", "minimum": 0, "maximum": 11}}, ["operation"]),

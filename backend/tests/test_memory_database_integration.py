@@ -37,7 +37,7 @@ from infrastructure.memory.store import load_session_messages, save_session_mess
 from services.memory.db_manager import MemoryDBManager
 from services.memory.legacy_import import read_legacy_entries
 from services.memory.library import MemoryLibraryService
-from services.memory.retriever import MemoryRetriever
+from services.memory.retriever import MemoryRetriever, RecallJudge
 from services.memory.worker import MemoryWorker
 from tools.chat_test_cli import MemoryRunStore, wait_memory_job
 
@@ -164,7 +164,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 before = connection.execute(session_query).one()
                 messages = connection.execute(message_query).all()
                 self.assertIsNotNone(before.emotion_state)
-                command.upgrade(config, "head")
+                command.upgrade(config, "0009_mood_v1_emotion")
                 after = connection.execute(session_query).one()
                 self.assertIsNone(after.emotion_state)
                 self.assertEqual({**after._asdict(), "emotion_state": None}, {**before._asdict(), "emotion_state": None})
@@ -513,21 +513,20 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await self._query("UPDATE memory_items SET status=%s, valid_from=now() + %s * interval '1 day', "
                               "valid_to=CASE WHEN %s::integer IS NULL THEN NULL ELSE now() + %s * interval '1 day' END "
                               "WHERE id=%s", (status, start_days, end_days, end_days, item["id"]))
-            rows = await self.repo.related_items("無關主題", medium, mode="chat", limit=3)
+            rows = await self.repo.locate_cards("無關主題", medium, limit=3)
             self.assertEqual([r["id"] for r in rows], [item["id"]])
             self.assertEqual(rows[0]["status"], status)
         await self._query("UPDATE memory_items SET expires_at=now()-interval '1 day' WHERE id=%s", (item["id"],))
-        self.assertEqual(await self.repo.related_items("無關主題", medium, mode="chat"), [])
+        self.assertEqual(await self.repo.locate_cards("無關主題", medium), [])
 
     async def test_chat_vector_ranking_precedes_low_similarity_lexical_match(self):
         first = await self._create()
         job = await self._job("other-topic", "請記住我平常喜歡天文觀測")
         await self._apply(job, [{"action":"CREATE", "canonical_text":"使用者平常喜歡天文觀測",
             "memory_type":"preference", "target_memory_ids":[], "reason":"explicit"}], set(), {0:[0.0, 1.0]+[0.0]*1022})
-        rows = await self.repo.related_items("天文", VECTOR, mode="chat", limit=3)
-        self.assertEqual(rows[0]["id"], first["id"])
-        self.assertFalse(rows[0]["exact_match"])
-        self.assertTrue(rows[1]["exact_match"])
+        rows = await self.repo.locate_cards("天文", VECTOR, limit=3)
+        # 詞面命中不再是 Chat 召回資格；向量分數低於粗篩下限的要點不列為候選。
+        self.assertEqual([row["id"] for row in rows], [first["id"]])
         legacy = await self.repo.related_items("天文", VECTOR, mode="management", limit=3)
         self.assertTrue(legacy[0]["exact_match"] or legacy[0]["similarity"] >= .75)
 
@@ -542,14 +541,17 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         similarity = 0.48741912766809126
         below = [similarity, math.sqrt(1 - similarity ** 2)] + [0.0] * 1022
         embedding = SimpleNamespace(embed=AsyncMock(return_value=below))
+        question = "依照我的喜好和今晚的安排，現在喝什麼好？"
+        dialogue = [dict(role="user", content="我今晚要早睡，今天暫時避開咖啡因。")]
+        # 粗篩分數低於 fallback 門檻：只有 JEV 判斷為 key／assist 時才注入。
+        _, fallback = await MemoryRetriever(self.repo, embedding).retrieve(question, recent_dialogue=dialogue)
+        self.assertEqual(fallback, "")
+        judge = RecallJudge(ask=AsyncMock(return_value={"card_1": {"choice": "key", "confidence": .9}}))
         with patch("services.memory.retriever.trace") as retrieval_trace:
             _, relevant = await MemoryRetriever(self.repo, embedding).retrieve(
-                "依照我的喜好和今晚的安排，現在喝什麼好？",
-                recent_dialogue=[dict(role="user", content="我今晚要早睡，今天暫時避開咖啡因。")],
-            )
+                question, recent_dialogue=dialogue, judge=judge)
         self.assertIn(canonical, relevant)
         candidate, = retrieval_trace.call_args.args[1]["candidates"]
-        self.assertTrue(candidate["exact_match"])
         self.assertAlmostEqual(candidate["similarity"], similarity, places=5)
         self.assertEqual(candidate["projection"], "selected")
         keywords = (await self._query("SELECT keywords FROM memory_items WHERE id = %s",
@@ -695,7 +697,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*(worker.process_one() for worker in workers))
         self.assertFalse(await workers[0].process_one())
         llm.decide.assert_awaited_once()
-        self.assertEqual(embedding.embed.await_count, 2)
+        # 候選查詢、要點 document、當輪原話 document（證據向量）各一次。
+        self.assertEqual(embedding.embed.await_count, 3)
         profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve("你記得我喜歡什麼茶嗎")
         self.assertEqual(profile, {})
         self.assertIn("使用者喜歡茶", relevant)
@@ -975,8 +978,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         event = await self.repo.accept("session", "timeout-after-proposal")
         await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
         operation = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
-                     "source_ids": [str(event)], "importance": .7, "confidence": .9, "reason": "user statement",
-                     "search_terms": ["茶", "飲品偏好"]}
+                     "source_ids": ["S1"], "importance": .7, "confidence": .9, "reason": "user statement",
+                     "search_terms": ["茶", "飲品偏好"], "domain": "preference", "subtopic": "飲品偏好"}
         agent = object.__new__(MemoryLLM)
         calls = 0
         async def call(*args):
@@ -1012,8 +1015,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         event = await self.repo.accept("session", "cancel-agent")
         await self.repo.route(event, MemoryRouting(None), "我喜歡茶", [])
         operation = {"action": "CREATE", "canonical_text": "使用者喜歡茶", "memory_type": "preference",
-                     "source_ids": [str(event)], "importance": .7, "confidence": .9, "reason": "user statement",
-                     "search_terms": ["茶", "飲品偏好"]}
+                     "source_ids": ["S1"], "importance": .7, "confidence": .9, "reason": "user statement",
+                     "search_terms": ["茶", "飲品偏好"], "domain": "preference", "subtopic": "飲品偏好"}
         agent = object.__new__(MemoryLLM)
         entered = asyncio.Event()
         async def blocked(*args):
@@ -1059,8 +1062,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.route(event, MemoryRouting(None), "我的飲食計畫以高蛋白質為主", [])
         operation = {"action": "CREATE", "canonical_text": "健康管理：飲食計畫以高蛋白質為主",
                      "memory_type": "project", "subject_key": "health.diet_plan", "importance": .7,
-                     "confidence": .9, "source_ids": [str(event)], "reason": "user statement",
-                     "search_terms": ["健康管理", "飲食計畫", "高蛋白質"]}
+                     "confidence": .9, "source_ids": ["S1"], "reason": "user statement",
+                     "search_terms": ["健康管理", "飲食計畫", "高蛋白質"], "domain": "project", "subtopic": "健康管理"}
         agent = object.__new__(MemoryLLM)
         agent.call = AsyncMock(side_effect=[tool_response("propose_operation", {"operation": {**operation, "subject_key": "健康管理.飲食"}}),
                                            tool_response("propose_operation", {"operation": operation}),
@@ -1297,18 +1300,20 @@ asyncio.run(main())
     async def test_worker_query_reused_during_focused_search(self):
         from services.memory.llm import MemoryLLM
         from backend.tests.test_memory_agents import tool_response
-        item = await self._create()
+        await self._create()
         event = await self.repo.accept("session", "cache")
         source = "我仍然喜歡茶"
         await self.repo.route(event, MemoryRouting(None), source, [])
-        operation = {"action": "REINFORCE", "target_memory_ids": [str(item["id"])], "source_ids": [str(event)], "reason": "support"}
+        operation = {"action": "REINFORCE", "target_memory_ids": ["M1"], "source_ids": ["S1"], "reason": "support"}
         agent = object.__new__(MemoryLLM)
         agent.call = AsyncMock(side_effect=[tool_response("search_memories", {"query": source}),
             tool_response("search_memories", {"query": source}), tool_response("propose_operation", {"operation": operation}),
             tool_response("finish", {"outcome": "complete", "reason": "done"})])
         embedding = SimpleNamespace(embed=AsyncMock(return_value=VECTOR))
         await MemoryWorker(self.repo, embedding, agent, self.manager).process_one()
-        embedding.embed.assert_awaited_once()
+        # 查詢向量在補查間重用；另一次是當輪原話的 document embedding（證據向量）。
+        purposes = [call.kwargs["purpose"] for call in embedding.embed.await_args_list]
+        self.assertEqual(purposes, ["memory_match_query", "memory_document"])
         self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (event,)))[0][0], "done")
 
     async def test_implicit_overall_design_uses_authorized_context_to_find_project(self):
@@ -1416,6 +1421,293 @@ asyncio.run(main())
         finally:
             with self.engine.begin() as connection:
                 connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+    # ── A-03：聊天卡的寫入、同步、遺忘、隔離與四路粗篩 ──────────────────────────
+
+    async def _card_apply(self, turn, decisions, *, targets=(), text=None, mood=None,
+                          source_vector=None, vectors=None, repo=None, manager=None, expect=True):
+        repo, manager = repo or self.repo, manager or self.manager
+        event_id = await repo.accept("session", turn)
+        source_text = text or "請記住" + "、".join(d.get("canonical_text", "") for d in decisions)
+        await repo.route(event_id, MemoryRouting(None, confidence=0.9), source_text, [])
+        job = await repo.claim()
+        if mood:
+            self.assertTrue(await repo.record_turn_mood(job["id"], mood))
+        applied = []
+        for decision in decisions:
+            item = {"target_memory_ids": [], "reason": "explicit", **decision,
+                    "source_ids": decision.get("source_ids", [str(job["id"])])}
+            if item["action"] in {"CREATE", "SUPERSEDE", "CONTRADICT"}:
+                item.setdefault("memory_type", "preference")
+                item.setdefault("importance", .7)
+                item.setdefault("confidence", .8)
+                item.setdefault("retention_class", "normal")
+            if item["action"] == "FORGET":
+                from domain.memory.routing import forget_scope
+                item["forget_scope"] = forget_scope(source_text)
+            applied.append(item)
+        diagnostic = {}
+        snapshots = {row["id"]: row for row in await repo.read_memories(set(targets))}
+        embeddings = vectors if vectors is not None else {
+            index: VECTOR for index, item in enumerate(applied) if item["action"] in {"CREATE", "SUPERSEDE", "CONTRADICT"}}
+        result = await manager.apply(
+            job, applied, set(targets), embeddings, (), diagnostic, target_snapshots=snapshots,
+            source_embeddings={job["id"]: source_vector} if source_vector else None)
+        self.assertEqual(result, expect)
+        return job, diagnostic
+
+    async def _cards(self, user_id=None):
+        return await self._query(
+            """SELECT id, domain, title, active_count, summary, summary_stale, mood, embedding IS NULL
+            FROM memory_cards WHERE user_id = %s ORDER BY created_at, id""", (user_id or self.scope.user_id,))
+
+    async def _card_of(self, canonical):
+        return (await self._query("SELECT card_id FROM memory_items WHERE canonical_text = %s", (canonical,)))[0][0]
+
+    async def _fresh_summary(self, card_id, summary="概要", vector=VECTOR):
+        state = await self.repo.card_refresh_state(card_id)
+        self.assertTrue(await self.repo.save_card_refresh(card_id, state["generation"], state["fingerprint"], summary, vector))
+
+    async def test_card_create_reuses_normalized_title_and_separates_domains(self):
+        _, first = await self._card_apply("c1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                                  "domain": "preference", "subtopic": "茶 飲"}])
+        (card_id, domain, title, count, *_), = await self._cards()
+        self.assertEqual((domain, title, count), ("preference", "茶 飲", 1))
+        self.assertEqual(first["cards"], {"created": [str(card_id)], "updated": [str(card_id)], "deleted": []})
+        self.assertEqual(await self._card_of("使用者喜歡烏龍茶"), card_id)
+        _, second = await self._card_apply("c2", [{"action": "CREATE", "canonical_text": "使用者也喜歡綠茶",
+                                                   "domain": "preference", "subtopic": "茶飲"}])
+        self.assertEqual(second["cards"]["created"], [])
+        self.assertEqual(await self._card_of("使用者也喜歡綠茶"), card_id)
+        await self._card_apply("c3", [{"action": "CREATE", "canonical_text": "使用者的朋友小岑開了茶飲店",
+                                       "domain": "relation", "subtopic": "茶飲"}])
+        cards = await self._cards()
+        self.assertEqual([(row[1], row[3]) for row in cards], [("preference", 2), ("relation", 1)])
+        # 指定既有卡片 ID 直接沿用；不存在的卡片整批拒絕。
+        await self._card_apply("c4", [{"action": "CREATE", "canonical_text": "使用者偏好無糖茶", "card_id": str(card_id)}])
+        self.assertEqual((await self._cards())[0][3], 3)
+        with self.assertRaises(ValueError):
+            await self._card_apply("c5", [{"action": "CREATE", "canonical_text": "使用者喜歡奶茶", "card_id": str(uuid4())}])
+
+    async def test_card_supersede_and_contradict_stay_in_target_card(self):
+        await self._card_apply("s1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                       "domain": "preference", "subtopic": "茶飲"}])
+        await self._card_apply("s2", [{"action": "CREATE", "canonical_text": "使用者每天喝兩杯茶",
+                                       "domain": "preference", "subtopic": "茶飲"}])
+        card_id = await self._card_of("使用者喜歡烏龍茶")
+        first = (await self._query("SELECT id FROM memory_items WHERE canonical_text = '使用者喜歡烏龍茶'"))[0][0]
+        second = (await self._query("SELECT id FROM memory_items WHERE canonical_text = '使用者每天喝兩杯茶'"))[0][0]
+        await self._card_apply("s3", [{"action": "SUPERSEDE", "canonical_text": "使用者改喜歡紅茶",
+                                       "target_memory_ids": [str(first)]}], targets={first}, text="我現在改喜歡紅茶了")
+        await self._card_apply("s4", [{"action": "CONTRADICT", "canonical_text": "使用者每天只喝一杯茶",
+                                       "target_memory_ids": [str(second)]}], targets={second}, text="我其實每天只喝一杯茶")
+        rows = await self._query("SELECT DISTINCT card_id FROM memory_items")
+        self.assertEqual(rows, [(card_id,)])
+        current = (await self._query(
+            "SELECT count(*) FROM memory_items WHERE card_id = %s AND status IN ('active', 'conflict')", (card_id,)))[0][0]
+        self.assertEqual((await self._cards())[0][3], current)
+        with self.assertRaises(ValueError):
+            await self._card_apply("s5", [{"action": "SUPERSEDE", "canonical_text": "使用者改喝綠茶", "domain": "daily",
+                                           "subtopic": "作息", "target_memory_ids": [str(first)]}], targets={first})
+
+    async def test_card_multi_domain_transaction_is_atomic(self):
+        await self._card_apply("m1", [
+            {"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶", "domain": "preference", "subtopic": "茶飲"},
+            {"action": "CREATE", "canonical_text": "使用者每天十二點睡覺", "domain": "daily", "subtopic": "作息"},
+            {"action": "CREATE", "canonical_text": "使用者正在做 AI_VT 專案", "domain": "project", "subtopic": "AI_VT"},
+        ])
+        self.assertEqual(sorted(row[1] for row in await self._cards()), ["daily", "preference", "project"])
+        with self.assertRaises(ValueError):
+            await self._card_apply("m2", [
+                {"action": "CREATE", "canonical_text": "使用者養了一隻貓", "domain": "self", "subtopic": "寵物"},
+                {"action": "CREATE", "canonical_text": "使用者下週要搬家", "domain": "event", "subtopic": "搬家"},
+                {"action": "CREATE", "canonical_text": "使用者喜歡奶茶", "card_id": str(uuid4())},
+            ])
+        self.assertEqual(len(await self._cards()), 3)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 3)
+
+    async def test_card_forget_last_item_deletes_card_and_scrubs_source(self):
+        job, _ = await self._card_apply("f1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                                "domain": "preference", "subtopic": "茶飲"}],
+                                        mood="pleased", source_vector=VECTOR)
+        await self._card_apply("f2", [{"action": "CREATE", "canonical_text": "使用者每天喝兩杯茶",
+                                       "domain": "preference", "subtopic": "茶飲"}], mood="pleased")
+        card_id = await self._card_of("使用者喜歡烏龍茶")
+        await self._fresh_summary(card_id)
+        self.assertEqual(await self._query("SELECT embedding IS NOT NULL, mood FROM memory_sources WHERE id = %s",
+                                           (job["id"],)), [(True, "pleased")])
+        first = (await self._query("SELECT id FROM memory_items WHERE canonical_text = '使用者喜歡烏龍茶'"))[0][0]
+        _, forgotten = await self._card_apply("f3", [{"action": "FORGET", "target_memory_ids": [str(first)],
+                                                      "reason": "request"}], targets={first}, text="請忘記我喜歡烏龍茶")
+        self.assertEqual(forgotten["cards"]["deleted"], [])
+        (_, _, _, count, summary, stale, _, no_vector), = await self._cards()
+        self.assertEqual((count, summary, stale, no_vector), (1, None, True, True))
+        # 被遺忘來源：原文、向量與心情都不留下（沒有其他證據時整列刪除）。
+        rows = await self._query("SELECT raw_text, embedding, mood FROM memory_sources WHERE id = %s", (job["id"],))
+        self.assertTrue(all(value is None for row in rows for value in row))
+        second = (await self._query("SELECT id FROM memory_items WHERE canonical_text = '使用者每天喝兩杯茶'"))[0][0]
+        _, last = await self._card_apply("f4", [{"action": "FORGET", "target_memory_ids": [str(second)],
+                                                 "reason": "request"}], targets={second}, text="請忘記我每天喝兩杯茶")
+        self.assertEqual(last["cards"]["deleted"], [str(card_id)])
+        self.assertEqual(await self._cards(), [])
+
+    async def test_card_library_delete_reset_and_purge_remove_cards(self):
+        await self._card_apply("l1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                       "domain": "preference", "subtopic": "茶飲"}])
+        group = (await self._query("SELECT group_id FROM memory_items"))[0][0]
+        library = MemoryLibraryService(self.repo)
+        self.assertIsNotNone(await library.delete_memory_group(group))
+        self.assertEqual(await self._cards(), [])
+        await self._card_apply("l2", [{"action": "CREATE", "canonical_text": "使用者每天十二點睡覺",
+                                       "domain": "daily", "subtopic": "作息"}])
+        await self.repo.reset()
+        self.assertEqual(await self._cards(), [])
+        await self._card_apply("l3", [{"action": "CREATE", "canonical_text": "使用者正在做 AI_VT 專案",
+                                       "domain": "project", "subtopic": "AI_VT"}])
+        result = await library.purge_owner_data()
+        self.assertEqual(result["purged"]["memory_cards"], 1)
+        self.assertEqual(await self._cards(), [])
+
+    async def test_card_temporary_expiry_updates_count_and_marks_summary_stale(self):
+        await self._card_apply("e1", [{"action": "CREATE", "canonical_text": "使用者今天在喝烏龍茶",
+                                       "domain": "preference", "subtopic": "茶飲"}])
+        await self._card_apply("e2", [{"action": "CREATE", "canonical_text": "使用者喜歡紅茶",
+                                       "domain": "preference", "subtopic": "茶飲"}])
+        card_id = await self._card_of("使用者喜歡紅茶")
+        await self._fresh_summary(card_id)
+        await self._query("UPDATE memory_items SET retention_class = 'temporary', expires_at = now() - interval '1 second' "
+                          "WHERE canonical_text = '使用者今天在喝烏龍茶'")
+        self.assertEqual(await self.repo.expire_temporary(), 1)
+        (_, _, _, count, summary, stale, _, _), = await self._cards()
+        self.assertEqual((count, summary, stale), (1, "概要", True))
+
+    async def test_card_stale_generation_or_attempt_leaves_cards_unchanged(self):
+        await self._card_apply("g1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                       "domain": "preference", "subtopic": "茶飲"}])
+        before = await self._cards()
+        event_id = await self.repo.accept("session", "g2")
+        await self.repo.route(event_id, MemoryRouting(None, confidence=0.9), "請記住我喜歡紅茶", [])
+        job = await self.repo.claim()
+        decision = {"action": "CREATE", "canonical_text": "使用者喜歡紅茶", "memory_type": "preference",
+                    "target_memory_ids": [], "source_ids": [str(job["id"])], "reason": "explicit", "importance": .7,
+                    "confidence": .8, "retention_class": "normal", "domain": "preference", "subtopic": "茶飲"}
+        self.assertFalse(await self.manager.apply({**job, "attempts": job["attempts"] + 1}, [decision], set(), {0: VECTOR}))
+        await self._query("UPDATE memory_scope_state SET generation = generation + 1 WHERE user_id = %s",
+                          (self.scope.user_id,))
+        self.assertFalse(await self.manager.apply(job, [decision], set(), {0: VECTOR}))
+        self.assertEqual(await self._cards(), before)
+        self.assertEqual((await self._query("SELECT count(*) FROM memory_items"))[0][0], 1)
+
+    async def test_card_owner_isolation(self):
+        await self._card_apply("o1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                       "domain": "preference", "subtopic": "茶飲"}])
+        before = await self._cards()
+        other_scope = MemoryScope(uuid4(), self.scope.character_id, self.scope.schema_name)
+        other_repo = MemoryRepository(self.pool, other_scope, EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+        other_manager = MemoryDBManager(self.pool, other_scope, "test-model", EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+        await self._card_apply("o-other", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                            "domain": "preference", "subtopic": "茶飲"}], repo=other_repo, manager=other_manager)
+        own_card = before[0][0]
+        with self.assertRaises(ValueError):
+            await self._card_apply("o2", [{"action": "CREATE", "canonical_text": "使用者喜歡綠茶", "card_id": str(own_card)}],
+                                   repo=other_repo, manager=other_manager)
+        self.assertEqual(await self._cards(), before)
+        other_cards = await self._cards(other_scope.user_id)
+        self.assertEqual(len(other_cards), 1)
+        self.assertNotEqual(other_cards[0][0], own_card)
+        self.assertEqual({row["card_id"] for row in await other_repo.locate_cards("茶飲", VECTOR)}, {other_cards[0][0]})
+
+    async def test_card_reinforce_keeps_summary_fresh_without_regeneration(self):
+        _, created = await self._card_apply("r1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                                    "domain": "preference", "subtopic": "茶飲"}])
+        card_id = await self._card_of("使用者喜歡烏龍茶")
+        item = (await self._query("SELECT id FROM memory_items"))[0][0]
+        llm = SimpleNamespace(summarize_card=AsyncMock(return_value="使用者喜歡烏龍茶"))
+        embedding = SimpleNamespace(embed=AsyncMock(return_value=VECTOR))
+        worker = MemoryWorker(self.repo, embedding, llm, self.manager)
+        job = {"id": uuid4(), "attempts": 1}
+        counters = {"calls": 0, "latency_ms": 0, "embedding_calls": 0}
+        await worker.refresh_cards(job, {**counters, "cards": created["cards"]})
+        llm.summarize_card.assert_awaited_once()
+        self.assertEqual((await self._cards())[0][4:6], ("使用者喜歡烏龍茶", False))
+        _, reinforced = await self._card_apply("r2", [{"action": "REINFORCE", "target_memory_ids": [str(item)]}],
+                                               targets={item}, text="我真的很喜歡烏龍茶")
+        self.assertEqual(reinforced["cards"]["updated"], [str(card_id)])
+        self.assertFalse((await self._cards())[0][5])
+        llm.summarize_card.reset_mock()
+        embedding.embed.reset_mock()
+        await worker.refresh_cards(job, {**counters, "cards": reinforced["cards"]})
+        llm.summarize_card.assert_not_awaited()
+        embedding.embed.assert_not_awaited()
+
+    async def test_card_turn_mood_flows_to_evidence_and_card(self):
+        job, _ = await self._card_apply("d1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                                "domain": "preference", "subtopic": "茶飲"}], mood="pleased")
+        self.assertEqual(await self._query("SELECT mood FROM memory_sources WHERE id = %s", (job["id"],)), [("pleased",)])
+        self.assertEqual((await self._cards())[0][6], "pleased")
+        for turn, fact in (("d2", "使用者覺得紅茶太苦"), ("d3", "使用者覺得綠茶太淡")):
+            await self._card_apply(turn, [{"action": "CREATE", "canonical_text": fact,
+                                           "domain": "preference", "subtopic": "茶飲"}], mood="sad_or_hurt")
+        self.assertEqual((await self._cards())[0][6], "sad_or_hurt")
+        with self.assertRaises(ValueError):
+            await self.repo.record_turn_mood(job["id"], "excited")
+
+    async def test_card_locate_routes_respect_owner_contract_and_expiry(self):
+        await self._card_apply("n1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                       "domain": "preference", "subtopic": "茶飲"}], source_vector=VECTOR)
+        card_id = await self._card_of("使用者喜歡烏龍茶")
+        await self._fresh_summary(card_id)
+        rows = await self.repo.locate_cards("最近的茶飲", VECTOR)
+        self.assertEqual({row["card_id"] for row in rows}, {card_id})
+        self.assertEqual(set(rows[0]["card_routes"]), {"source", "item", "card", "name"})
+        other = MemoryRepository(self.pool, MemoryScope(uuid4(), self.scope.character_id, self.scope.schema_name),
+                                 EMBEDDING_MODEL, EMBEDDING_CONTRACT)
+        self.assertEqual(await other.locate_cards("最近的茶飲", VECTOR), [])
+        wrong_contract = MemoryRepository(self.pool, self.scope, EMBEDDING_MODEL, "other-contract")
+        self.assertEqual(await wrong_contract.locate_cards("最近的茶飲", VECTOR), [])
+        await self._query("UPDATE memory_items SET expires_at = now() - interval '1 second'")
+        self.assertEqual(await self.repo.locate_cards("最近的茶飲", VECTOR), [])
+
+    async def test_card_shared_evidence_and_previous_cards_extend_candidates(self):
+        orthogonal = [0.0, 1.0] + [0.0] * 1022
+        await self._card_apply("x1", [
+            {"action": "CREATE", "canonical_text": "使用者和小岑一起去喝烏龍茶", "domain": "preference", "subtopic": "茶飲"},
+            {"action": "CREATE", "canonical_text": "使用者的朋友小岑住在台中", "domain": "relation", "subtopic": "小岑"},
+        ], vectors={0: VECTOR, 1: orthogonal})
+        await self._card_apply("x2", [{"action": "CREATE", "canonical_text": "使用者每天十二點睡覺",
+                                       "domain": "daily", "subtopic": "作息"}], vectors={0: orthogonal})
+        tea, friend, sleep = [await self._card_of(text) for text in
+                              ("使用者和小岑一起去喝烏龍茶", "使用者的朋友小岑住在台中", "使用者每天十二點睡覺")]
+        rows = await self.repo.locate_cards("無關主題", VECTOR, previous_card_ids=(sleep,))
+        routes = {row["card_id"]: set(row["card_routes"]) for row in rows}
+        self.assertEqual(list(dict.fromkeys(row["card_id"] for row in rows))[0], tea)
+        self.assertIn("link", routes[friend])
+        self.assertIn("session", routes[sleep])
+        self.assertEqual(set(routes), {tea, friend, sleep})
+
+    async def test_merge_cards_requires_same_domain(self):
+        await self._card_apply("g1", [{"action": "CREATE", "canonical_text": "使用者喜歡烏龍茶",
+                                       "domain": "preference", "subtopic": "茶飲"}])
+        await self._card_apply("g2", [{"action": "CREATE", "canonical_text": "使用者喜歡紅茶",
+                                       "domain": "preference", "subtopic": "紅茶"}])
+        await self._card_apply("g3", [{"action": "CREATE", "canonical_text": "使用者每天十二點睡覺",
+                                       "domain": "daily", "subtopic": "作息"}])
+        tea, black, sleep = [await self._card_of(text) for text in
+                             ("使用者喜歡烏龍茶", "使用者喜歡紅茶", "使用者每天十二點睡覺")]
+        with self.assertRaises(ValueError):
+            await self._card_apply("g4", [{"action": "MERGE_CARDS", "card_ids": [str(tea), str(sleep)]}],
+                                   text="把茶飲和作息整理在一起")
+        self.assertEqual(len(await self._cards()), 3)
+        _, merged = await self._card_apply("g5", [{"action": "MERGE_CARDS", "card_ids": [str(tea), str(black)]}],
+                                           text="把茶飲和紅茶整理在一起")
+        self.assertIn(str(black), merged["cards"]["deleted"])
+        cards = {row[0]: row for row in await self._cards()}
+        self.assertEqual(set(cards), {tea, sleep})
+        self.assertEqual((cards[tea][3], cards[tea][5]), (2, True))
+        self.assertEqual(await self._card_of("使用者喜歡紅茶"), tea)
+        audit = await self._query("SELECT target_id FROM memory_audit WHERE action = 'MERGE_CARDS'")
+        self.assertEqual(audit, [(tea,)])
 
 
 if __name__ == "__main__":
