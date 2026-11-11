@@ -588,11 +588,9 @@ async def control_step(ws, action: str, session_id: str, timeout: float, test_mo
 def provenance(dataset):
     from tools.ai_test.testset import fingerprint
     from infrastructure.memory.repository import (
-        CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE, CHAT_RETRIEVAL_MIN_SIMILARITY,
-        CHAT_UNCARDED_LIMIT,
+        CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE, CHAT_UNCARDED_LIMIT,
     )
-    from domain.jev_questions import CONFIDENCE_THRESHOLD
-    from services.memory.retriever import MEMORY_CHAR_BUDGET
+    from services.memory.retriever import MEMORY_CHAR_BUDGET, RECALL_JEV_ATTEMPTS, RECALL_MIN_CONFIDENCE
     root = BACKEND_ROOT.parent
 
     def git(*args):
@@ -613,8 +611,8 @@ def provenance(dataset):
             "reference_time": dataset.get("reference_time"),
             "retrieval": {"candidate_card_limit": CHAT_CARD_CANDIDATE_LIMIT, "inject_card_limit": CHAT_CARD_INJECT_LIMIT,
                           "min_card_score": CHAT_CARD_MIN_SCORE, "uncarded_limit": CHAT_UNCARDED_LIMIT,
-                          "fallback_min_similarity": CHAT_RETRIEVAL_MIN_SIMILARITY,
-                          "jev_confidence_threshold": CONFIDENCE_THRESHOLD, "projection_char_budget": MEMORY_CHAR_BUDGET},
+                          "recall_min_confidence": RECALL_MIN_CONFIDENCE, "recall_jev_attempts": RECALL_JEV_ATTEMPTS,
+                          "projection_char_budget": MEMORY_CHAR_BUDGET},
             "compression": {"keep_recent_messages": 2, "trigger_messages": 16}}
 
 

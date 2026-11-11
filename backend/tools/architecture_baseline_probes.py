@@ -121,7 +121,7 @@ async def compression_race_probe():
 
 async def projection_probe(future=False):
     from domain.memory.decisions import normalize_proposal
-    from services.memory.retriever import MEMORY_CHAR_BUDGET, MemoryRetriever
+    from services.memory.retriever import MEMORY_CHAR_BUDGET, MemoryRetriever, RecallJudge
     source_id, memory_id = uuid4(), uuid4()
     # 單筆事實比記憶字元預算長一字：投影不得切斷事實。
     text = "請詳細回答" if future else "測" * (MEMORY_CHAR_BUDGET + 1)
@@ -136,8 +136,11 @@ async def projection_probe(future=False):
            "valid_from": "2099-01-01T00:00:00+00:00", "valid_to": "2099-02-01T00:00:00+00:00"}
     repository = SimpleNamespace(locate_cards=AsyncMock(return_value=[row]))
     embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0] + [0.0] * 1023))
+    # 探針只看投影行為，召回判斷固定為必要。
+    judge = RecallJudge(ask=AsyncMock(return_value={"card_1": {"choice": "necessary", "confidence": .9}}))
     with patch("services.memory.retriever.trace") as trace:
-        profile, memory = await MemoryRetriever(repository, embedding).retrieve("未來的回覆風格" if future else "測試配置")
+        profile, memory = await MemoryRetriever(repository, embedding).retrieve(
+            "未來的回覆風格" if future else "測試配置", judge=judge)
     if future:
         observed = {"profile": profile, "memory_empty": not memory,
                     "validity_retained": "2099" in json.dumps(profile) + memory}

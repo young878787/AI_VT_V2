@@ -57,8 +57,8 @@ def run_checks(case, record, before, state=None, previous=None, aliases=None, su
         suite, case, record, previous or [], before, state if state is not None else before, aliases or {})}
 
 
-def candidate(retrieval, target, canonical, card="card", selection="key", injection="selected"):
-    """候選要點帶所屬卡片；卡片列記錄粗篩分數、選擇來源（JEV 或 fallback）與注入結果。"""
+def candidate(retrieval, target, canonical, card="card", selection="necessary", injection="selected"):
+    """候選要點帶所屬卡片；卡片列記錄粗篩分數、JEV 判斷與注入結果。"""
     retrieval["candidates"].append({"id": target, "card_id": card, "similarity": 0.8, "canonical_text": canonical})
     if all(entry["card_id"] != card for entry in retrieval["candidate_cards"]):
         retrieval["candidate_cards"].append({"card_id": card, "score": 0.8, "routes": ["item"],
@@ -70,13 +70,31 @@ def inject(record, context, state, target="target", canonical="完整事實", pr
     text = projection if projection is not None else "- " + canonical + "（status=active）"
     retrieval = next(trace for trace in record["trace"] if trace["stage"] == "retrieval")
     candidate(retrieval, target, canonical, card)
-    retrieval["projections"].append({"id": target, "text": text, "destination": "memory", "card_id": card})
+    retrieval["projections"].append({"id": target, "text": text, "destination": "memory", "card_id": card,
+                                     "section": "necessary"})
     context["messages"][0]["content"] += "\n" + text
     context["injected_memory_ids"].append(target)
     context["memory_fragments"].append({"id": target, "text": text, "destination": "memory", "complete": True})
 
 
 class AiTestEvidenceTests(unittest.TestCase):
+    def test_retrieval_metrics_count_necessary_section_and_recall_failure(self):
+        case, record, state, context = fixture(oracle={"required_memory_ids": ["gold"]})
+        inject(record, context, state)
+        run_checks(case, record, state, aliases={"gold": "target"})
+        metrics = record["retrieval_metrics"]
+        self.assertEqual((metrics["required_selected"], metrics["required_in_necessary"], metrics["recall_failed"]),
+                         (1, 1, False))
+        case, record, state, context = fixture(oracle={"required_memory_ids": ["gold"]})
+        inject(record, context, state)
+        retrieval = next(trace for trace in record["trace"] if trace["stage"] == "retrieval")
+        retrieval["projections"][0]["section"] = "supplementary"
+        retrieval["recall_jev"] = {"error": "jev_call_failed"}
+        run_checks(case, record, state, aliases={"gold": "target"})
+        metrics = record["retrieval_metrics"]
+        self.assertEqual((metrics["required_selected"], metrics["required_in_necessary"], metrics["recall_failed"]),
+                         (1, 0, True))
+
     def test_unknown_answer_does_not_require_zero_candidates(self):
         case, record, state, context = fixture(oracle={"answerability": "unknown"})
         inject(record, context, state)

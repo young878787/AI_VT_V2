@@ -358,7 +358,8 @@ class AiTestReportTests(unittest.TestCase):
                        retrieval_metrics={"required_count": 2, "required_recalled": 1, "required_projected": 1,
                           "required_injected": 0, "candidate_ids": ["a", "b", "c"], "candidate_precision": 1 / 3,
                           "non_target_candidates": 2, "name_route_coverage": 1, "vector_coverage": 0,
-                          "required_selected": 1, "non_required_injected_cards": 1, "fallback": False})]
+                          "required_selected": 1, "required_in_necessary": 1, "non_required_injected_cards": 1,
+                          "recall_failed": False})]
         self.save(rows)
         metrics = self.write(metadata, rows)["metrics"]
         self.assertEqual(metrics["retrieval"]["rate"], 0.5)
@@ -370,6 +371,8 @@ class AiTestReportTests(unittest.TestCase):
         self.assertEqual(metrics["name_route_coverage"]["rate"], 0.5)
         self.assertEqual(metrics["vector_coverage"]["rate"], 0)
         self.assertEqual(metrics["card_selection"]["rate"], 0.5)
+        self.assertEqual(metrics["necessary_section"]["rate"], 0.5)
+        self.assertEqual(metrics["recall_failed_turns"], 0)
         self.assertEqual(metrics["non_required_injected_cards"], 1)
         self.assertNotIn("unknown_honesty", metrics)
         self.assertNotIn("semantic_facts", metrics)

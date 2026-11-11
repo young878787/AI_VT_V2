@@ -9,19 +9,27 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from uuid import UUID
 
-from domain.jev_questions import CONFIDENCE_THRESHOLD, build_recall_context, build_recall_questions, question_hash
+from domain.jev_questions import build_recall_context, build_recall_questions, question_hash
 from domain.memory.cards import DOMAINS, MOOD_LABELS, card_header
 from infrastructure.memory.embedding_client import MemoryEmbeddingClient
 from infrastructure.memory.repository import MemoryRepository
-from infrastructure.memory.repository import (CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE,
-                                              CHAT_RETRIEVAL_MIN_SIMILARITY)
+from infrastructure.memory.repository import CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE
 from core.prompt_logger import trace
 
 
 _PROFILE_LIST_FIELDS = {"core_traits", "dislikes", "recent_interests", "custom_notes"}
 MEMORY_CHAR_BUDGET = 1500
-RECALL_CHOICES = ("key", "assist", "none")
+RECALL_CHOICES = ("necessary", "supplementary", "none")
+# JEV 回傳的信心值 ≤ 此值視為判斷不準，該卡不注入；只用於召回，三角色仍用 CONFIDENCE_THRESHOLD。
+RECALL_MIN_CONFIDENCE = 0.15
+# 召回 JEV 失敗重試 1 次；兩次都失敗就停止整輪，不以分數代替語意判斷。
+RECALL_JEV_ATTEMPTS = 2
+SECTION_HEADERS = {"necessary": "必要記憶：", "supplementary": "補充記憶："}
 UNCARDED_KEY = "uncarded"
+
+
+class RecallJudgeError(RuntimeError):
+    """召回 JEV 重試後仍失敗；聊天端據此停止整輪、不產生回覆。"""
 
 
 @dataclass
@@ -143,14 +151,14 @@ def _card_view(card: dict, label: str) -> dict:
 
 
 def _judge_answer(answer: object) -> tuple[str, str | None]:
-    """回傳 (選擇, 不採用原因)；只有 key／assist 且信心達門檻才注入。"""
+    """回傳 (選擇, 不採用原因)；necessary／supplementary 且信心值高於下限才注入。"""
     if not isinstance(answer, dict) or answer.get("choice") not in RECALL_CHOICES:
         return "none", "invalid_choice"
     confidence = answer.get("confidence")
     if (not isinstance(confidence, (int, float)) or isinstance(confidence, bool)
             or not math.isfinite(confidence)):
         return "none", "invalid_confidence"
-    if answer["choice"] != "none" and confidence < CONFIDENCE_THRESHOLD:
+    if answer["choice"] != "none" and confidence <= RECALL_MIN_CONFIDENCE:
         return "none", "low_confidence"
     return answer["choice"], None
 
@@ -198,9 +206,12 @@ class MemoryRetriever:
         self.embedding = embedding
 
     async def retrieve(self, user_text: str, event_id: UUID | None = None,
-                       recent_dialogue: list[dict] | None = None, summary: str = "",
-                       judge: RecallJudge | None = None) -> tuple[dict, str]:
-        """粗篩候選卡 → JEV 判斷 key／assist／none → 依卡片分組投影；失敗一律回傳空投影。"""
+                       recent_dialogue: list[dict] | None = None, summary: str = "", *,
+                       judge: RecallJudge) -> tuple[dict, str]:
+        """粗篩候選卡 → JEV 判斷必要／補充／無 → 分「必要記憶」「補充記憶」投影。
+
+        embedding 或 DB 定位失敗回傳空投影；召回 JEV 重試後仍失敗則拋出 RecallJudgeError。
+        """
         started = time.monotonic()
         mode = "chat"
         query = build_retrieval_query(user_text, recent_dialogue, summary)
@@ -208,11 +219,10 @@ class MemoryRetriever:
         timing: dict = {"embedding_ms": None, "locate_ms": None, "jev_ms": None, "project_ms": None}
         trace_base = {"query": query.lexical_text, "semantic_query": query.semantic_text, "user_query": user_text,
                       "mode": mode, "limit": CHAT_CARD_CANDIDATE_LIMIT, "inject_limit": CHAT_CARD_INJECT_LIMIT,
-                      "min_score": CHAT_CARD_MIN_SCORE, "fallback_min_similarity": CHAT_RETRIEVAL_MIN_SIMILARITY,
-                      "confidence_threshold": CONFIDENCE_THRESHOLD, "memory_char_budget": MEMORY_CHAR_BUDGET,
+                      "min_score": CHAT_CARD_MIN_SCORE, "min_confidence": RECALL_MIN_CONFIDENCE,
+                      "jev_attempts": RECALL_JEV_ATTEMPTS, "memory_char_budget": MEMORY_CHAR_BUDGET,
                       "profile_char_limit": 300}
-        if judge is not None:
-            judge.selected_card_ids = []
+        judge.selected_card_ids = []
 
         def ms(since: float) -> float:
             return round((time.monotonic() - since) * 1000, 1)
@@ -223,7 +233,7 @@ class MemoryRetriever:
                 print(f"[Memory] retrieval fallback: {type(error).__name__}")
                 errors.append({"stage": stage, "error": type(error).__name__})
             timing.update(total_ms=ms(started), candidate_card_count=0, injected_card_count=0)
-            trace("retrieval", {**trace_base, "embedding_available": embedding_available, "fallback": False,
+            trace("retrieval", {**trace_base, "embedding_available": embedding_available,
                 "candidates": [], "candidate_cards": [], "recall_jev": None, "projections": [],
                 "timing": timing, "errors": errors, "duration_sec": round(time.monotonic() - started, 4)}, event_id)
             return {}, ""
@@ -243,7 +253,7 @@ class MemoryRetriever:
         try:
             rows = await self.repository.locate_cards(
                 query.lexical_text, query_embedding, limit=CHAT_CARD_CANDIDATE_LIMIT, min_score=CHAT_CARD_MIN_SCORE,
-                previous_card_ids=tuple(judge.previous_card_ids) if judge is not None else ())
+                previous_card_ids=tuple(judge.previous_card_ids))
         except Exception as exc:
             timing["locate_ms"] = ms(step)
             return finish_empty("repository", exc, embedding_available=True)
@@ -254,40 +264,70 @@ class MemoryRetriever:
             return finish_empty(embedding_available=True)
 
         labels = {card["key"]: f"card_{index + 1}" for index, card in enumerate(cards)}
-        recall_jev = None
-        choices: dict[str, tuple[str, str | None]] = {}
-        if judge is not None:
-            questions = build_recall_questions(len(cards))
-            context = build_recall_context(user_text, recent_dialogue or [],
-                                           [_card_view(card, labels[card["key"]]) for card in cards])
-            step = time.monotonic()
+        questions = build_recall_questions(len(cards))
+        context = build_recall_context(user_text, recent_dialogue or [],
+                                       [_card_view(card, labels[card["key"]]) for card in cards])
+        step = time.monotonic()
+        answers, attempt_errors = None, []
+        for _ in range(RECALL_JEV_ATTEMPTS):
             try:
                 answers = await judge.ask(context, questions)
             except Exception as exc:
-                print(f"[JEV recall] 呼叫失敗，使用 fallback: {type(exc).__name__}")
                 answers = None
-            timing["jev_ms"] = ms(step)
-            recall_jev = {"question_hash": question_hash(questions), "question_keys": list(questions),
-                          "state": context, "answers": answers, "duration_sec": round(timing["jev_ms"] / 1000, 4),
-                          "error": None if isinstance(answers, dict) else "jev_call_failed"}
+                attempt_errors.append(type(exc).__name__)
+                continue
             if isinstance(answers, dict):
-                choices = {card["key"]: _judge_answer(answers.get(labels[card["key"]])) for card in cards}
+                break
+            answers = None  # call_jev 失敗時回 None
+            attempt_errors.append("jev_call_failed")
+        timing["jev_ms"] = ms(step)
+        recall_jev = {"question_hash": question_hash(questions), "question_keys": list(questions),
+                      "state": context, "answers": answers,
+                      "attempts": len(attempt_errors) + (answers is not None), "attempt_errors": attempt_errors,
+                      "duration_sec": round(timing["jev_ms"] / 1000, 4),
+                      "error": None if answers is not None else "jev_call_failed"}
+        choices: dict[str, tuple[str, str | None]] = (
+            {card["key"]: _judge_answer(answers.get(labels[card["key"]])) for card in cards}
+            if answers is not None else {})
+
+        def record(projections: list[dict], status: dict[str, str]) -> None:
+            projected = {item["id"] for item in projections}
+            trace("retrieval", {**trace_base, "embedding_available": query_embedding is not None,
+                "candidates": [{"rank": index + 1,
+                    **{key: row.get(key) for key in ("id", "group_id", "canonical_text", "memory_type", "subject_key",
+                        "similarity", "status", "valid_from", "valid_to", "expires_at", "has_conflict",
+                        "pending_change", "card_score", "card_rank")},
+                    "card_id": str(row["card_id"]) if row.get("card_id") else UNCARDED_KEY,
+                    "projection": "selected" if str(row["id"]) in projected else "not_projected"}
+                    for index, row in enumerate(rows)],
+                "candidate_cards": [{"rank": index + 1, "label": labels[card["key"]], "card_id": card["key"],
+                    "domain": card["domain"], "title": card["title"], "score": card["score"],
+                    "routes": card["routes"], "summary_stale": card["summary_stale"], "mood": card["mood"],
+                    "item_count": len(card["items"]),
+                    "judge": choices[card["key"]][0] if choices else None,
+                    "judge_reason": choices[card["key"]][1] if choices else None,
+                    "selection": choices[card["key"]][0] if choices else "not_judged",
+                    "injection": status.get(card["key"], "not_selected")}
+                    for index, card in enumerate(cards)],
+                "recall_jev": recall_jev, "projections": projections, "timing": timing,
+                "errors": errors, "duration_sec": round(time.monotonic() - started, 4)}, event_id)
+
+        if answers is None:
+            # 重試後仍失敗：不以粗篩分數代替語意判斷，留下紀錄後讓聊天端停止整輪。
+            print(f"[JEV recall] {RECALL_JEV_ATTEMPTS} 次呼叫都失敗，停止本輪: {attempt_errors}")
+            errors.append({"stage": "recall_jev", "error": "jev_call_failed"})
+            timing.update(total_ms=ms(started), candidate_card_count=len(cards), injected_card_count=0)
+            record([], {})
+            raise RecallJudgeError("召回 JEV 重試後仍失敗")
+
         step = time.monotonic()
-        fallback = not choices
-        if fallback:
-            # JEV 失敗或沒有判斷函式：只採粗篩分數達門檻或名稱命中的卡，依分數排序。
-            ordered = sorted(
-                (card for card in cards if (card["score"] or 0) >= CHAT_RETRIEVAL_MIN_SIMILARITY
-                 or "name" in card["routes"]),
-                key=lambda card: -(card["score"] or 0))
-            selection = {card["key"]: "fallback_selected" for card in ordered}
-        else:
-            ordered = ([card for card in cards if choices[card["key"]][0] == "key"]
-                       + [card for card in cards if choices[card["key"]][0] == "assist"])
-            selection = {card["key"]: choices[card["key"]][0] for card in cards}
+        # 必要記憶在前、補充記憶在後；兩區共用注入卡數上限與字元預算。
+        ordered = [card for choice in ("necessary", "supplementary") for card in cards
+                   if choices[card["key"]][0] == choice]
         profile, projections, injected_keys, profiled = _project_profile(ordered)
         lines: list[str] = []
         used = 0
+        section = None
         status: dict[str, str] = {key: "profile" for key in injected_keys}
         for card in ordered:
             items = [row for row in card["items"] if str(row["id"]) not in profiled]
@@ -297,9 +337,13 @@ class MemoryRetriever:
             if len(injected_keys) >= CHAT_CARD_INJECT_LIMIT and card["key"] not in injected_keys:
                 status[card["key"]] = "inject_limit"
                 continue
+            choice = choices[card["key"]][0]
+            # 進入新分區時先放分區標題；標題跟卡片一起計入字元預算。
+            title = SECTION_HEADERS[choice] if choice != section else None
             header = card_header(card["domain"], card["title"], card["mood"])
             separator = 1 if lines else 0
-            cost = separator + len(header)
+            title_cost = len(title) + 1 if title else 0
+            cost = separator + title_cost + len(header)
             block_items = []
             for row in items:
                 text = _format_memory_projection(row, mode)
@@ -310,7 +354,7 @@ class MemoryRetriever:
             if not block_items:
                 status[card["key"]] = "memory_budget_exhausted"
                 continue
-            block = [header, *(text for _, text in block_items)]
+            block = [*([title] if title else []), header, *(text for _, text in block_items)]
             hidden = len(items) - len(block_items)
             if hidden:
                 # 卡片超出預算時不改寫要點；有新鮮概要就補上，並標示未列出的筆數。
@@ -322,43 +366,25 @@ class MemoryRetriever:
                 if used + cost + 1 + len(note) <= MEMORY_CHAR_BUDGET:
                     block.append(note)
                     cost += 1 + len(note)
-            cursor = used + separator + len(header) + 1
+            cursor = used + separator + title_cost + len(header) + 1
             for row, text in block_items:
                 projections.append({"id": str(row["id"]), "destination": "memory", "text": text,
-                                    "offset": cursor, "card_id": card["key"]})
+                                    "offset": cursor, "card_id": card["key"], "section": choice})
                 cursor += len(text) + 1
             lines.extend(block)
             used += cost
+            section = choice
             status[card["key"]] = "selected" if not hidden else "partial"
             if card["key"] not in injected_keys:
                 injected_keys.append(card["key"])
         timing["project_ms"] = ms(step)
         memory = "\n".join(lines)
-        if judge is not None:
-            judge.selected_card_ids = [card["card_id"] for card in cards
-                                       if card["key"] in injected_keys and card["card_id"] is not None]
+        judge.selected_card_ids = [card["card_id"] for card in cards
+                                   if card["key"] in injected_keys and card["card_id"] is not None]
         timing.update(total_ms=ms(started), candidate_card_count=len(cards), injected_card_count=len(injected_keys))
-        projected = {item["id"] for item in projections}
-        trace("retrieval", {**trace_base, "embedding_available": query_embedding is not None, "fallback": fallback,
-            "candidates": [{"rank": index + 1,
-                **{key: row.get(key) for key in ("id", "group_id", "canonical_text", "memory_type", "subject_key",
-                    "similarity", "status", "valid_from", "valid_to", "expires_at", "has_conflict",
-                    "pending_change", "card_score", "card_rank")},
-                "card_id": str(row["card_id"]) if row.get("card_id") else UNCARDED_KEY,
-                "projection": "selected" if str(row["id"]) in projected else "not_projected"}
-                for index, row in enumerate(rows)],
-            "candidate_cards": [{"rank": index + 1, "label": labels[card["key"]], "card_id": card["key"],
-                "domain": card["domain"], "title": card["title"], "score": card["score"], "routes": card["routes"],
-                "summary_stale": card["summary_stale"], "mood": card["mood"], "item_count": len(card["items"]),
-                "judge": None if fallback else choices[card["key"]][0],
-                "judge_reason": None if fallback else choices[card["key"]][1],
-                "selection": selection.get(card["key"], "fallback_dropped"),
-                "injection": status.get(card["key"], "not_selected")}
-                for index, card in enumerate(cards)],
-            "recall_jev": recall_jev, "projections": projections, "timing": timing,
-            "errors": errors, "duration_sec": round(time.monotonic() - started, 4)}, event_id)
+        record(projections, status)
         if event_id is not None:
             print("[Memory] recall: " + json.dumps({
                 "event_id": str(event_id), "cards": len(cards), "injected": len(injected_keys),
-                "fallback": fallback, "timing": timing}, separators=(",", ":")))
+                "timing": timing}, separators=(",", ":")))
         return profile, memory

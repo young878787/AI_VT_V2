@@ -165,7 +165,7 @@ class EmotionContractTests(unittest.TestCase):
         self.assertEqual(list(questions), ["card_1", "card_2", "card_3"])
         for name, item in questions.items():
             self.assertEqual(item["type"], "choice")
-            self.assertEqual(list(item["criteria"]), ["key", "assist", "none"])
+            self.assertEqual(list(item["criteria"]), ["necessary", "supplementary", "none"])
             self.assertIn(name, item["instructions"])
             self.assertIn("不可信資料", item["instructions"])
         self.assertEqual(build_recall_questions(0), {})

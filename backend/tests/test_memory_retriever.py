@@ -9,13 +9,13 @@ BACKEND_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from services.memory.retriever import (MEMORY_CHAR_BUDGET, MemoryRetriever, RecallJudge, build_retrieval_query,
+from services.memory.retriever import (MEMORY_CHAR_BUDGET, RECALL_JEV_ATTEMPTS, RECALL_MIN_CONFIDENCE,
+                                       MemoryRetriever, RecallJudge, RecallJudgeError, build_retrieval_query,
                                        _format_memory_projection)
 from domain.jev_questions import build_recall_questions, question_hash
 from domain.memory.scope import MemoryScope
 from infrastructure.memory.repository import MemoryRepository, MIN_RETRIEVAL_SIMILARITY
-from infrastructure.memory.repository import (CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE,
-                                              CHAT_RETRIEVAL_MIN_SIMILARITY)
+from infrastructure.memory.repository import CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE
 
 
 def card_rows(rank, texts, *, score=.8, routes=("item",), domain="preference", title=None, summary=None,
@@ -32,6 +32,13 @@ def card_rows(rank, texts, *, score=.8, routes=("item",), domain="preference", t
 def judge_with(choices, confidence=.9):
     async def ask(context, questions):
         return {key: {"choice": choice, "confidence": confidence} for key, choice in zip(questions, choices)}
+    return RecallJudge(ask=AsyncMock(side_effect=ask))
+
+
+def judge_all():
+    """投影類測試用：每張候選卡都判為必要。"""
+    async def ask(context, questions):
+        return {key: {"choice": "necessary", "confidence": .9} for key in questions}
     return RecallJudge(ask=AsyncMock(side_effect=ask))
 
 
@@ -104,7 +111,7 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
         for question in ("上個月聚餐訂哪間餐廳？", "明天照我的習慣怎麼安排？", "依照我的口味怎麼選？"):
             await MemoryRetriever(repository, embedding).retrieve(question,
-                recent_dialogue=[dict(role="user", content="之前討論生日蛋糕")])
+                recent_dialogue=[dict(role="user", content="之前討論生日蛋糕")], judge=judge_all())
             self.assertEqual(repository.locate_cards.await_args.kwargs["limit"], CHAT_CARD_CANDIDATE_LIMIT)
             self.assertEqual(repository.locate_cards.await_args.kwargs["min_score"], CHAT_CARD_MIN_SCORE)
         self.assertIn("生日蛋糕", repository.locate_cards.await_args.args[0])
@@ -178,7 +185,7 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Event().wait()
         repo = SimpleNamespace(locate_cards=AsyncMock(return_value=[]))
         retriever = MemoryRetriever(repo, SimpleNamespace(embed=slow_embed))
-        task = asyncio.create_task(retriever.retrieve("問題"))
+        task = asyncio.create_task(retriever.retrieve("問題", judge=judge_all()))
         await started.wait()
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
@@ -197,11 +204,11 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         ]
         repository = SimpleNamespace(locate_cards=AsyncMock(return_value=rows))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
-        profile, relevant = await MemoryRetriever(repository, embedding).retrieve("我的喜好")
+        profile, relevant = await MemoryRetriever(repository, embedding).retrieve("我的喜好", judge=judge_all())
         self.assertEqual(profile, {"recent_interests": ["喜歡天文"]})
         # 未歸卡要點歸在「其他」標題下。
         self.assertEqual(relevant,
-                         "【其他／未分類】\n- 喜歡拿鐵（status=active）")
+                         "必要記憶：\n【其他／未分類】\n- 喜歡拿鐵（status=active）")
 
     async def test_projection_never_marks_partial_record_as_selected(self):
         rows = card_rows(1, ["事實" + str(index) + "字" * 250 for index in range(8)], score=.9,
@@ -209,7 +216,7 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         repository = SimpleNamespace(locate_cards=AsyncMock(return_value=rows))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
         with patch("services.memory.retriever.trace") as trace:
-            _, relevant = await MemoryRetriever(repository, embedding).retrieve("完整配置", uuid4())
+            _, relevant = await MemoryRetriever(repository, embedding).retrieve("完整配置", uuid4(), judge=judge_all())
         evidence = trace.call_args.args[1]
         selected = {projection["id"] for projection in evidence["projections"]}
         self.assertLessEqual(len(relevant), MEMORY_CHAR_BUDGET)
@@ -231,7 +238,8 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         repository = SimpleNamespace(locate_cards=AsyncMock(return_value=rows))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
         with patch("services.memory.retriever.trace") as trace:
-            profile, relevant = await MemoryRetriever(repository, embedding).retrieve("回覆風格", uuid4())
+            profile, relevant = await MemoryRetriever(repository, embedding).retrieve("回覆風格", uuid4(),
+                                                                                       judge=judge_all())
         self.assertEqual(profile, {"communication_style": "請詳細"})
         self.assertEqual(relevant, "")
         evidence = trace.call_args.args[1]
@@ -239,9 +247,9 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["projection"] for row in evidence["candidates"]], ["not_projected", "selected"])
         self.assertEqual([row["id"] for row in evidence["projections"]], [str(rows[-1]["id"])])
         self.assertEqual((evidence["limit"], evidence["inject_limit"], evidence["min_score"],
-                          evidence["fallback_min_similarity"]),
+                          evidence["min_confidence"], evidence["jev_attempts"]),
                          (CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE,
-                          CHAT_RETRIEVAL_MIN_SIMILARITY))
+                          RECALL_MIN_CONFIDENCE, RECALL_JEV_ATTEMPTS))
 
     async def test_five_complete_facts_reach_single_long_term_prompt_section(self):
         from datetime import datetime, timezone
@@ -257,7 +265,8 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
                  "valid_to": None, "similarity": .8, "exact_match": True} for fact in facts]
         repo = SimpleNamespace(locate_cards=AsyncMock(return_value=rows))
         with patch("services.memory.retriever.trace") as trace:
-            profile, notes = await MemoryRetriever(repo, SimpleNamespace(embed=AsyncMock(return_value=[1.0]))).retrieve("整體架構")
+            profile, notes = await MemoryRetriever(repo, SimpleNamespace(embed=AsyncMock(return_value=[1.0]))).retrieve(
+                "整體架構", judge=judge_all())
         self.assertEqual(repo.locate_cards.await_args.kwargs["limit"], CHAT_CARD_CANDIDATE_LIMIT)
         self.assertEqual(len(trace.call_args.args[1]["projections"]), 5)
         self.assertLess(len(notes), 600)
@@ -315,7 +324,8 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
                "valid_from": datetime.now(timezone.utc) + timedelta(days=7), "valid_to": None,
                "similarity": .8, "exact_match": True}
         repo = SimpleNamespace(locate_cards=AsyncMock(return_value=[row]))
-        profile, notes = await MemoryRetriever(repo, SimpleNamespace(embed=AsyncMock(return_value=[1.0]))).retrieve("回覆習慣")
+        profile, notes = await MemoryRetriever(repo, SimpleNamespace(embed=AsyncMock(return_value=[1.0]))).retrieve(
+            "回覆習慣", judge=judge_all())
         self.assertEqual(profile, {})
         self.assertIn(row["canonical_text"], notes)
         self.assertIn("valid_from=", notes)
@@ -324,45 +334,55 @@ class MemoryRetrieverTests(unittest.IsolatedAsyncioTestCase):
 class CardRecallTests(unittest.IsolatedAsyncioTestCase):
     """A-04：候選卡、JEV 判斷與分組投影。"""
 
-    async def recall(self, rows, judge=None, text="問題"):
+    async def recall(self, rows, judge, text="問題"):
         repository = SimpleNamespace(locate_cards=AsyncMock(return_value=rows))
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0]))
         with patch("services.memory.retriever.trace") as trace:
             profile, memory = await MemoryRetriever(repository, embedding).retrieve(text, uuid4(), judge=judge)
         return profile, memory, trace.call_args.args[1], repository
 
-    async def test_key_cards_precede_assist_and_none_is_not_injected(self):
+    async def test_necessary_section_precedes_supplementary_and_none_is_not_injected(self):
         first = card_rows(1, ["使用者喜歡烏龍茶"], title="茶飲")
         second = card_rows(2, ["使用者的朋友小岑喜歡巧克力"], domain="relation", title="小岑", mood="pleased")
         third = card_rows(3, ["使用者養了一隻貓"], domain="daily", title="寵物")
-        judge = judge_with(["assist", "key", "none"])
-        _, memory, evidence, _ = await self.recall(first + second + third, judge)
+        fourth = card_rows(4, ["使用者喜歡紅茶"], title="紅茶")
+        judge = judge_with(["supplementary", "necessary", "none", "supplementary"])
+        _, memory, evidence, _ = await self.recall(first + second + third + fourth, judge)
+        # 每個分區只出現一次標題；必要記憶在前，補充記憶在後。
         self.assertEqual(memory.splitlines(), [
-            "【人際關係／小岑】（露西亞當時的心情：開心）", "- 使用者的朋友小岑喜歡巧克力（status=active）",
-            "【喜好與興趣／茶飲】", "- 使用者喜歡烏龍茶（status=active）"])
+            "必要記憶：", "【人際關係／小岑】（露西亞當時的心情：開心）", "- 使用者的朋友小岑喜歡巧克力（status=active）",
+            "補充記憶：", "【喜好與興趣／茶飲】", "- 使用者喜歡烏龍茶（status=active）",
+            "【喜好與興趣／紅茶】", "- 使用者喜歡紅茶（status=active）"])
         self.assertNotIn("貓", memory)
-        self.assertEqual([card["selection"] for card in evidence["candidate_cards"]], ["assist", "key", "none"])
-        self.assertEqual(judge.selected_card_ids, [first[0]["card_id"], second[0]["card_id"]])
-        self.assertFalse(evidence["fallback"])
+        self.assertEqual([card["selection"] for card in evidence["candidate_cards"]],
+                         ["supplementary", "necessary", "none", "supplementary"])
+        self.assertEqual(judge.selected_card_ids, [first[0]["card_id"], second[0]["card_id"], fourth[0]["card_id"]])
+        self.assertNotIn("fallback", evidence)
+
+    async def test_only_supplementary_cards_have_no_necessary_header(self):
+        _, memory, _, _ = await self.recall(card_rows(1, ["補充要點"]), judge_with(["supplementary"]))
+        self.assertEqual(memory.splitlines(), ["補充記憶：", "【喜好與興趣／卡片1】", "- 補充要點（status=active）"])
 
     async def test_projection_offsets_point_to_each_verbatim_fact(self):
         rows = card_rows(1, ["事實甲", "事實乙"]) + card_rows(2, ["事實丙"], domain="event")
-        _, memory, evidence, _ = await self.recall(rows, judge_with(["key", "assist"]))
+        _, memory, evidence, _ = await self.recall(rows, judge_with(["necessary", "supplementary"]))
         memories = [item for item in evidence["projections"] if item["destination"] == "memory"]
         self.assertEqual(len(memories), 3)
+        # 分區標題也要算進 offset，注入位置才對得上實際 prompt。
+        self.assertEqual([item["section"] for item in memories], ["necessary", "necessary", "supplementary"])
         for item in memories:
             self.assertEqual(memory[item["offset"]:item["offset"] + len(item["text"])], item["text"])
             self.assertIn(rows[[str(row["id"]) for row in rows].index(item["id"])]["canonical_text"], item["text"])
 
     async def test_inject_limit_and_char_budget(self):
         rows = [row for rank in range(1, 8) for row in card_rows(rank, [f"第{rank}張卡的要點"])]
-        _, memory, evidence, _ = await self.recall(rows, judge_with(["key"] * 7))
+        _, memory, evidence, _ = await self.recall(rows, judge_with(["necessary"] * 7))
         self.assertEqual(memory.count("【"), CHAT_CARD_INJECT_LIMIT)
         self.assertEqual(evidence["timing"]["injected_card_count"], CHAT_CARD_INJECT_LIMIT)
         self.assertEqual([card["injection"] for card in evidence["candidate_cards"]][-2:],
                          ["inject_limit", "inject_limit"])
         long_rows = [row for rank in range(1, 4) for row in card_rows(rank, ["長" * 700])]
-        _, memory, evidence, _ = await self.recall(long_rows, judge_with(["key"] * 3))
+        _, memory, evidence, _ = await self.recall(long_rows, judge_with(["necessary"] * 3))
         self.assertLessEqual(len(memory), MEMORY_CHAR_BUDGET)
         self.assertEqual(memory.count("【"), 2)
         self.assertEqual(evidence["candidate_cards"][2]["injection"], "memory_budget_exhausted")
@@ -373,14 +393,14 @@ class CardRecallTests(unittest.IsolatedAsyncioTestCase):
         rows = (card_rows(1, ["使用者現在喝拿鐵"], card_id=card_id)
                 + card_rows(1, ["使用者以前喝美式"], card_id=card_id, status="superseded"))
         rows[1]["valid_to"] = datetime(2026, 10, 1, tzinfo=timezone.utc)
-        _, memory, _, _ = await self.recall(rows, judge_with(["key"]))
+        _, memory, _, _ = await self.recall(rows, judge_with(["necessary"]))
         self.assertIn("- 使用者以前喝美式（status=superseded; valid_to=2026-10-01T00:00:00+00:00）", memory)
         self.assertLess(memory.index("拿鐵"), memory.index("美式"))
 
     async def test_jev_sees_summary_or_first_points_when_stale(self):
         fresh = card_rows(1, ["要點一", "要點二", "要點三"], summary="新鮮概要", stale=False)
         stale = card_rows(2, ["舊要點一", "舊要點二", "舊要點三"], summary="過期概要", stale=True)
-        judge = judge_with(["key", "key"])
+        judge = judge_with(["necessary", "necessary"])
         await self.recall(fresh + stale, judge)
         context, questions = judge.ask.await_args.args
         cards = context["candidate_cards"]
@@ -395,43 +415,60 @@ class CardRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("舊要點一", str(questions))
         self.assertNotIn("新鮮概要", str(questions))
 
-    async def test_jev_failure_falls_back_to_score_or_name_hit(self):
-        strong = card_rows(1, ["高分要點"], score=.6)
-        named = card_rows(2, ["名稱命中要點"], score=.3, routes=("item", "name"))
-        weak = card_rows(3, ["低分要點"], score=.4)
-        judge = RecallJudge(ask=AsyncMock(return_value=None))
-        _, memory, evidence, _ = await self.recall(strong + named + weak, judge)
-        self.assertIn("高分要點", memory)
-        self.assertIn("名稱命中要點", memory)
-        self.assertNotIn("低分要點", memory)
-        self.assertTrue(evidence["fallback"])
-        self.assertEqual(evidence["recall_jev"]["error"], "jev_call_failed")
-        raising = RecallJudge(ask=AsyncMock(side_effect=RuntimeError("timeout")))
-        _, memory, _, _ = await self.recall(strong + weak, raising)
-        self.assertEqual(memory.splitlines()[1:], ["- 高分要點（status=active）"])
+    async def test_jev_failure_retries_once_then_stops_without_score_fallback(self):
+        rows = card_rows(1, ["高分要點"], score=.9) + card_rows(2, ["名稱命中要點"], routes=("item", "name"))
+        for name, ask in (("none", AsyncMock(return_value=None)),
+                          ("raise", AsyncMock(side_effect=RuntimeError("timeout")))):
+            with self.subTest(name=name):
+                judge = RecallJudge(ask=ask)
+                repository = SimpleNamespace(locate_cards=AsyncMock(return_value=rows))
+                with patch("services.memory.retriever.trace") as trace, self.assertRaises(RecallJudgeError):
+                    await MemoryRetriever(repository, SimpleNamespace(embed=AsyncMock(return_value=[1.0]))).retrieve(
+                        "問題", uuid4(), judge=judge)
+                self.assertEqual(ask.await_count, RECALL_JEV_ATTEMPTS)
+                evidence = trace.call_args.args[1]
+                self.assertEqual(evidence["recall_jev"]["error"], "jev_call_failed")
+                self.assertEqual(evidence["recall_jev"]["attempts"], RECALL_JEV_ATTEMPTS)
+                self.assertEqual(evidence["projections"], [])
+                self.assertEqual({card["selection"] for card in evidence["candidate_cards"]}, {"not_judged"})
+                self.assertEqual({card["injection"] for card in evidence["candidate_cards"]}, {"not_selected"})
+                self.assertEqual(judge.selected_card_ids, [])
+
+    async def test_jev_retry_success_is_used(self):
+        answers = {"card_1": {"choice": "necessary", "confidence": .9}}
+        judge = RecallJudge(ask=AsyncMock(side_effect=[None, answers]))
+        _, memory, evidence, _ = await self.recall(card_rows(1, ["重試後要點"]), judge)
+        self.assertIn("重試後要點", memory)
+        self.assertEqual((evidence["recall_jev"]["attempts"], evidence["recall_jev"]["attempt_errors"]),
+                         (2, ["jev_call_failed"]))
+        self.assertIsNone(evidence["recall_jev"]["error"])
 
     async def test_low_confidence_or_invalid_answer_is_not_injected(self):
-        rows = card_rows(1, ["低信心要點"]) + card_rows(2, ["無效答案要點"])
+        rows = (card_rows(1, ["低信心要點"]) + card_rows(2, ["剛過下限要點"]) + card_rows(3, ["無效答案要點"])
+                + card_rows(4, ["舊代號要點"]))
 
         async def ask(context, questions):
-            return {"card_1": {"choice": "key", "confidence": .3}, "card_2": {"choice": "maybe", "confidence": .9}}
+            # 信心值 ≤ 下限濾掉；剛好高於下限保留；舊的 key 代號已不是合法選項。
+            return {"card_1": {"choice": "necessary", "confidence": RECALL_MIN_CONFIDENCE},
+                    "card_2": {"choice": "supplementary", "confidence": RECALL_MIN_CONFIDENCE + .01},
+                    "card_3": {"choice": "maybe", "confidence": .9}, "card_4": {"choice": "key", "confidence": .9}}
         _, memory, evidence, _ = await self.recall(rows, RecallJudge(ask=ask))
-        self.assertEqual(memory, "")
+        self.assertEqual(memory.splitlines(), ["補充記憶：", "【喜好與興趣／卡片2】", "- 剛過下限要點（status=active）"])
         self.assertEqual([card["judge_reason"] for card in evidence["candidate_cards"]],
-                         ["low_confidence", "invalid_choice"])
+                         ["low_confidence", None, "invalid_choice", "invalid_choice"])
 
     async def test_profile_comes_only_from_selected_cards(self):
         chosen = card_rows(1, ["喜歡天文"], memory_type="profile")
         chosen[0]["subject_key"] = "profile.recent_interests"
         dropped = card_rows(2, ["喜歡登山"], memory_type="profile")
         dropped[0]["subject_key"] = "profile.recent_interests"
-        profile, memory, _, _ = await self.recall(chosen + dropped, judge_with(["key", "none"]))
+        profile, memory, _, _ = await self.recall(chosen + dropped, judge_with(["necessary", "none"]))
         self.assertEqual(profile, {"recent_interests": ["喜歡天文"]})
         self.assertEqual(memory, "")
 
     async def test_previous_cards_are_passed_and_timing_recorded(self):
         previous = uuid4()
-        judge = judge_with(["key"])
+        judge = judge_with(["necessary"])
         judge.previous_card_ids = (previous,)
         _, _, evidence, repository = await self.recall(card_rows(1, ["要點"]), judge)
         self.assertEqual(repository.locate_cards.await_args.kwargs["previous_card_ids"], (previous,))
@@ -443,7 +480,7 @@ class CardRecallTests(unittest.IsolatedAsyncioTestCase):
     async def test_embedding_failure_returns_empty_projection(self):
         repository = SimpleNamespace(locate_cards=AsyncMock(return_value=card_rows(1, ["要點"])))
         embedding = SimpleNamespace(embed=AsyncMock(side_effect=RuntimeError("offline")))
-        judge = judge_with(["key"])
+        judge = judge_with(["necessary"])
         with patch("services.memory.retriever.trace") as trace:
             result = await MemoryRetriever(repository, embedding).retrieve("問題", uuid4(), judge=judge)
         self.assertEqual(result, ({}, ""))

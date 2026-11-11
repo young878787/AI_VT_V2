@@ -38,6 +38,13 @@ from services.memory.db_manager import MemoryDBManager
 from services.memory.legacy_import import read_legacy_entries
 from services.memory.library import MemoryLibraryService
 from services.memory.retriever import MemoryRetriever, RecallJudge
+
+
+def judge_all():
+    """每張候選卡都判為必要；DB 測試只驗證粗篩與投影。"""
+    async def ask(context, questions):
+        return {key: {"choice": "necessary", "confidence": .9} for key in questions}
+    return RecallJudge(ask=AsyncMock(side_effect=ask))
 from services.memory.worker import MemoryWorker
 from tools.chat_test_cli import MemoryRunStore, wait_memory_job
 
@@ -543,10 +550,12 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         embedding = SimpleNamespace(embed=AsyncMock(return_value=below))
         question = "依照我的喜好和今晚的安排，現在喝什麼好？"
         dialogue = [dict(role="user", content="我今晚要早睡，今天暫時避開咖啡因。")]
-        # 粗篩分數低於 fallback 門檻：只有 JEV 判斷為 key／assist 時才注入。
-        _, fallback = await MemoryRetriever(self.repo, embedding).retrieve(question, recent_dialogue=dialogue)
-        self.assertEqual(fallback, "")
-        judge = RecallJudge(ask=AsyncMock(return_value={"card_1": {"choice": "key", "confidence": .9}}))
+        # 粗篩分數偏低的卡：JEV 判為無就不注入，判為必要才注入；沒有分數 fallback。
+        rejected = RecallJudge(ask=AsyncMock(return_value={"card_1": {"choice": "none", "confidence": .9}}))
+        _, skipped = await MemoryRetriever(self.repo, embedding).retrieve(question, recent_dialogue=dialogue,
+                                                                           judge=rejected)
+        self.assertEqual(skipped, "")
+        judge = RecallJudge(ask=AsyncMock(return_value={"card_1": {"choice": "necessary", "confidence": .9}}))
         with patch("services.memory.retriever.trace") as retrieval_trace:
             _, relevant = await MemoryRetriever(self.repo, embedding).retrieve(
                 question, recent_dialogue=dialogue, judge=judge)
@@ -586,7 +595,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         fresh_event = await self.repo.accept("fresh-session-with-no-history", "turn-1")
         embedding = SimpleNamespace(embed=AsyncMock(return_value=VECTOR))
         profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve(
-            "你還記得我喜歡什麼茶嗎", event_id=fresh_event,
+            "你還記得我喜歡什麼茶嗎", event_id=fresh_event, judge=judge_all(),
         )
         self.assertEqual(profile, {})
         self.assertIn(item["canonical_text"], relevant)
@@ -603,7 +612,7 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "WHERE id = %s", (item["id"],),
                 )
         embedding = SimpleNamespace(embed=AsyncMock(return_value=[0.0, 1.0] + [0.0] * 1022))
-        profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve("完全無關主題")
+        profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve("完全無關主題", judge=judge_all())
         self.assertEqual((profile, relevant), ({}, ""))
 
     async def test_cli_store_waits_for_route_and_cleans_isolated_schema(self):
@@ -699,7 +708,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
         llm.decide.assert_awaited_once()
         # 候選查詢、要點 document、當輪原話 document（證據向量）各一次。
         self.assertEqual(embedding.embed.await_count, 3)
-        profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve("你記得我喜歡什麼茶嗎")
+        profile, relevant = await MemoryRetriever(self.repo, embedding).retrieve("你記得我喜歡什麼茶嗎",
+                                                                                 judge=judge_all())
         self.assertEqual(profile, {})
         self.assertIn("使用者喜歡茶", relevant)
         self.assertEqual((await self._query("SELECT status FROM memory_jobs WHERE id = %s", (event,)))[0][0], "done")
@@ -879,7 +889,8 @@ class MemoryDatabaseIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_f3_unknown_profile_key_has_general_projection(self):
         item = await self._create()
         await self._query("UPDATE memory_items SET memory_type = 'profile', subject_key = 'profile.location', canonical_text = '台北' WHERE id = %s", (item["id"],))
-        profile, relevant = await MemoryRetriever(self.repo, SimpleNamespace(embed=AsyncMock(return_value=VECTOR))).retrieve("居住地")
+        profile, relevant = await MemoryRetriever(self.repo, SimpleNamespace(embed=AsyncMock(return_value=VECTOR))).retrieve(
+            "居住地", judge=judge_all())
         self.assertEqual(profile, {})
         self.assertIn("台北", relevant)
 

@@ -29,7 +29,7 @@ from domain.emotion_state import (
 from domain.memory.source import MemoryEventConflict, MemoryEventReplay
 from backend.tests.chat_session_fakes import FakeChatSessionRepository, make_chat_session_service
 from services.chat.session_service import ChatSessionService
-from services.memory.retriever import RecallJudge
+from services.memory.retriever import RecallJudge, RecallJudgeError
 
 
 def emotion_answers(**scores):
@@ -674,7 +674,7 @@ class RecallJudgeWebSocketTests(unittest.TestCase):
             if "card_1" in questions:
                 recall_started.set()
                 await asyncio.wait_for(emotion_started.wait(), 2)  # 情緒角色同時在進行
-                return {"card_1": {"choice": "key", "confidence": .9}}
+                return {"card_1": {"choice": "necessary", "confidence": .9}}
             role = jev_role(questions)
             if role == "emotion":
                 emotion_started.set()
@@ -684,7 +684,7 @@ class RecallJudgeWebSocketTests(unittest.TestCase):
         async def retrieve(text, *, event_id, recent_dialogue, summary, judge):
             previous.append(judge.previous_card_ids)
             answers = await judge.ask({"current_user_input": text}, {"card_1": {"type": "choice"}})
-            judge.selected_card_ids = [card_id] if answers["card_1"]["choice"] == "key" else []
+            judge.selected_card_ids = [card_id] if answers["card_1"]["choice"] == "necessary" else []
             return {}, "【喜好與興趣／茶飲】\n- 使用者喜歡烏龍茶（status=active）"
 
         socket, captured = self._run([{"content": "我喜歡喝什麼？"}, {"content": "那甜點呢？"}],
@@ -703,7 +703,7 @@ class RecallJudgeWebSocketTests(unittest.TestCase):
         self.assertEqual(set(mood), set(EMOTION_FIELDS))
         self.assertEqual([payload["type"] for payload in socket.payloads].count("stream_end"), 2)
 
-    def test_recall_failure_does_not_change_three_roles(self):
+    def test_recall_failure_stops_turn_without_changing_three_roles(self):
         async def fake_jev(state, questions):
             if "card_1" in questions:
                 raise RuntimeError("recall timeout")
@@ -713,10 +713,18 @@ class RecallJudgeWebSocketTests(unittest.TestCase):
             try:
                 await judge.ask({}, {"card_1": {"type": "choice"}})
             except RuntimeError:
-                pass
+                raise RecallJudgeError("召回 JEV 重試後仍失敗")
             return {}, ""
 
         socket, captured = self._run([{"content": "嗨"}], AsyncMock(side_effect=retrieve), fake_jev)
+        # 召回重試後仍失敗：整輪停止、不生成回覆，只送出明確錯誤。
+        types = [payload["type"] for payload in socket.payloads]
+        self.assertNotIn("stream_end", types)
+        self.assertNotIn("text_stream", types)
+        self.assertEqual(captured["prompts"], [])
+        error = next(payload for payload in socket.payloads if payload["type"] == "error")
+        self.assertEqual(error["code"], "memory_recall_failed")
+        self.assertTrue(error.get("turn_id"))
         emotion = next(payload for payload in socket.payloads if payload["type"] == "emotion_update"
                        and payload.get("turn_id"))
         self.assertEqual(emotion["source"], "jev")
@@ -724,7 +732,6 @@ class RecallJudgeWebSocketTests(unittest.TestCase):
         self.assertEqual(plan["debug"]["jevDecisionSource"], "jev")
         captured["runtime"].route_background.assert_called_once()
         self.assertIsNotNone(captured["runtime"].route_background.call_args.args[2])
-        self.assertIn("stream_end", [payload["type"] for payload in socket.payloads])
 
     def test_new_input_cancels_pending_recall_without_stale_events(self):
         entered, cancelled, completed = asyncio.Event(), [], asyncio.Event()

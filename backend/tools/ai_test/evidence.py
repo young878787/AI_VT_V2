@@ -616,16 +616,20 @@ def check_turn(suite, case, record, previous, before, state, fixture_ids):
                                         if "name" in (card.get("routes") or [])} & all_required),
             "vector_coverage": len({str(c["id"]) for c in candidates if isinstance(c.get("similarity"), (float, int))
                                     and c["similarity"] >= CHAT_CARD_MIN_SCORE} & all_required),
-            # JEV（或 fallback）選中的必要記憶；與粗篩、投影、注入分開，用來區分漏找與未選。
+            # JEV 選中的必要記憶；與粗篩、投影、注入分開，用來區分漏找與未選。
             "required_selected": len({target for target, card in item_cards.items() if card.get("selection") in
-                                      {"key", "assist", "fallback_selected"}} & all_required),
+                                      {"necessary", "supplementary"}} & all_required),
+            # 必要記憶落在「必要記憶」區的數量，只記錄、不列為通過條件。
+            "required_in_necessary": len({str(item.get("id")) for item in retrieval.get("projections", [])
+                                          if item.get("destination") == "memory"
+                                          and item.get("section") == "necessary"} & all_required),
             "candidate_card_count": len(candidate_cards),
             "injected_card_count": sum(card.get("injection") in _INJECTED_CARD_STATES for card in candidate_cards),
             # 非必要卡被注入的數量先記錄，不列為通過條件（計劃書第 15 節）。
             "non_required_injected_cards": sum(card.get("injection") in _INJECTED_CARD_STATES
                                                and str(card.get("card_id")) not in required_cards
                                                for card in candidate_cards),
-            "fallback": bool(retrieval.get("fallback")),
+            "recall_failed": bool((retrieval.get("recall_jev") or {}).get("error")),
         }
 
     try:

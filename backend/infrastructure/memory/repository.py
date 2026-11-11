@@ -16,8 +16,7 @@ from core.prompt_logger import test_log_dir, trace, trace_event, trace_turn
 
 
 MIN_RETRIEVAL_SIMILARITY = 0.75
-# Chat 召回：粗篩取候選卡（不漏），JEV 判斷是否注入（不多）；JEV 失敗時以 fallback 門檻判斷。
-CHAT_RETRIEVAL_MIN_SIMILARITY = 0.50
+# Chat 召回：粗篩取候選卡（不漏），JEV 判斷是否注入（不多）；JEV 失敗時停止整輪，不以分數代替。
 CHAT_CARD_CANDIDATE_LIMIT = 12
 CHAT_CARD_INJECT_LIMIT = 5
 CHAT_CARD_MIN_SCORE = 0.25

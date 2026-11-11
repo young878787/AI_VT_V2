@@ -61,7 +61,7 @@ from services.chat.session_service import ChatSessionInUseError
 from services.context.tools import ContextTools
 from services.context.ai_test_context import fixture_timestamp
 from services.memory.events import recent_memory_events, subscribe_memory_events
-from services.memory.retriever import RecallJudge
+from services.memory.retriever import RecallJudge, RecallJudgeError
 from services.expression.avatar_runtime import AvatarRuntime
 
 
@@ -723,14 +723,22 @@ async def websocket_endpoint(websocket: WebSocket):
             cancelled = True
             raise
         except Exception as exc:
-            print(f"[Chat error][{CHAT_PROVIDER.upper()}] Model={CHAT_MODEL_NAME} | {exc}")
+            recall_failed = isinstance(exc, RecallJudgeError)
+            if recall_failed:
+                print("[Chat] 召回 JEV 重試後仍失敗，本輪停止、不送 Chat")
+            else:
+                print(f"[Chat error][{CHAT_PROVIDER.upper()}] Model={CHAT_MODEL_NAME} | {exc}")
             if active_turn_id == turn_id:
                 if short_term_enabled and not active_turn_committed:
                     try:
                         await finish_durable_turn(turn_id, active_turn_partial or None, "failed")
                     except Exception:
                         session_failed = True
-                await send({"type": "error", "content": f"API 錯誤: {exc}", "turn_id": turn_id})
+                if recall_failed:
+                    await send({"type": "error", "code": "memory_recall_failed",
+                                "content": "長期記憶召回判斷失敗，本輪已停止，請再試一次。", "turn_id": turn_id})
+                else:
+                    await send({"type": "error", "content": f"API 錯誤: {exc}", "turn_id": turn_id})
         finally:
             for task in (action_task, recall_task):
                 if task is not None and not task.done():

@@ -116,9 +116,9 @@ class MemoryRuntime:
         task.add_done_callback(self._route_tasks.discard)
 
     async def retrieve(self, text: str, event_id: UUID | None = None,
-                       recent_dialogue: list[dict] | None = None, summary: str = "",
-                       judge=None) -> tuple[dict, str]:
-        # judge 為 retriever.RecallJudge；沒傳入時走粗篩分數 fallback。
+                       recent_dialogue: list[dict] | None = None, summary: str = "", *,
+                       judge) -> tuple[dict, str]:
+        # judge 為 retriever.RecallJudge；召回 JEV 重試後仍失敗時拋出 RecallJudgeError。
         return await self.retriever.retrieve(text, event_id=event_id, recent_dialogue=recent_dialogue,
                                              summary=summary, judge=judge)
 

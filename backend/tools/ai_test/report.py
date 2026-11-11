@@ -246,6 +246,7 @@ def _metrics(records: list[dict], cases: dict, checks: list[dict], attention: li
     named = _sum_metric(retrieval, "name_route_coverage")
     vector = _sum_metric(retrieval, "vector_coverage")
     chosen = _sum_metric(retrieval, "required_selected")
+    necessary = _sum_metric(retrieval, "required_in_necessary")
     candidate_count = sum(len(row["candidate_ids"]) for row in retrieval) if all(isinstance(row.get("candidate_ids"), list) for row in retrieval) else None
     selection, delivery = [], []
     delivery_codes = {"receipt_pairs", "receipt_content", "receipt_contents", "image_delivery", "image_hash",
@@ -271,8 +272,9 @@ def _metrics(records: list[dict], cases: dict, checks: list[dict], attention: li
             "name_route_coverage": {"covered": named, "required": required, "rate": _rate(named, required)},
             "vector_coverage": {"covered": vector, "required": required, "rate": _rate(vector, required)},
             "card_selection": {"required": required, "selected": chosen, "rate": _rate(chosen, required)},
+            "necessary_section": {"required": required, "in_necessary": necessary, "rate": _rate(necessary, required)},
             "non_required_injected_cards": _sum_metric(retrieval, "non_required_injected_cards"),
-            "recall_fallback_turns": sum(row.get("fallback") is True for row in retrieval),
+            "recall_failed_turns": sum(row.get("recall_failed") is True for row in retrieval),
             "tool_selection": checked(selection), "tool_delivery": checked(delivery),
             "check_pass_rates": {name: _metric(checks, stages) for name, stages in (
                 ("retrieval", ("retrieval", "recall")), ("projection", ("projection",)),
