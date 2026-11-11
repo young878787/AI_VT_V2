@@ -45,10 +45,18 @@
         "required_tools": [],
         "expected_operation": "store",
         "expected_state_facts": [
-          "資管",
+          [
+            "資管",
+            "資訊管理"
+          ],
           "草莓蛋糕",
           "咖啡",
-          "不喜歡太甜"
+          [
+            "不喜歡太甜",
+            "不愛太甜",
+            "不要太甜",
+            "低甜"
+          ]
         ]
       },
       "source": "fixed",
@@ -107,12 +115,25 @@
           ]
         },
         "expected_state_facts": [
-          "Live2D 負責顯示角色",
-          "JEV 負責維護情緒",
-          "Live2D 動作由主模型負責",
+          [
+            "Live2D 負責顯示角色",
+            "Live2D 顯示角色"
+          ],
+          [
+            "JEV 負責維護情緒",
+            "JEV 維護情緒"
+          ],
+          [
+            "Live2D 動作由主模型負責",
+            "主模型負責動作",
+            "主模型負責 Live2D 動作"
+          ],
           "Chat Model 負責對話",
           "Memory System 在背景執行",
-          "設計保持簡潔"
+          [
+            "設計保持簡潔",
+            "保持設計簡潔"
+          ]
         ]
       },
       "source": "fixed",

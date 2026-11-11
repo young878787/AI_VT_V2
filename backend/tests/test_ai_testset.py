@@ -73,6 +73,17 @@ class DatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "curve_checks"):
             load_suite("chat", chat)
 
+    def test_expected_state_facts_accept_synonym_lists_only(self):
+        data = load_suite("memory")
+        mem_001 = next(case for case in data["cases"] if case["case_id"] == "mem_001")
+        self.assertEqual(mem_001["oracle"]["expected_state_facts"][1], "草莓蛋糕")
+        self.assertIn("不喜歡太甜", mem_001["oracle"]["expected_state_facts"][2])
+        for value in ("草莓蛋糕", [""], [[]], [["資管", 1]], [{"any": "資管"}]):
+            changed = copy.deepcopy(data)
+            next(case for case in changed["cases"] if case["case_id"] == "mem_001")["oracle"]["expected_state_facts"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "expected_state_facts"):
+                load_suite("memory", changed)
+
     def test_memory_correction_dependency_skips_unneeded_recall(self):
         cases = select_cases(load_suite("memory"), "mem_006")
         self.assertEqual([case["case_id"] for case in cases], ["mem_003", "mem_005", "mem_006"])

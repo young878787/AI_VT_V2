@@ -102,6 +102,12 @@ def _validate(data: dict, suite: str) -> None:
         for key in ("required_facts", "forbidden_claims", "required_memory_ids", "forbidden_memory_ids", "source_case_ids", "required_tools"):
             if not isinstance(oracle.get(key), list) or any(not isinstance(item, str) or not item for item in oracle[key]):
                 raise ValueError(f"oracle.{key} 必須為字串陣列")
+        state_facts = oracle.get("expected_state_facts", [])
+        if not isinstance(state_facts, list) or any(
+                not (isinstance(fact, str) and fact) and not (
+                    isinstance(fact, list) and fact and all(isinstance(alt, str) and alt for alt in fact))
+                for fact in state_facts):
+            raise ValueError("oracle.expected_state_facts 每項必須為字串或非空的同義寫法字串陣列")
         if not set(oracle["required_memory_ids"] + oracle["forbidden_memory_ids"]) <= memory_ids:
             raise ValueError("oracle 記憶引用不存在")
         if not set(oracle["source_case_ids"]) <= seen:

@@ -222,6 +222,32 @@ class AiTestEvidenceTests(unittest.TestCase):
         self.assertNotIn("status", observation)
         self.assertNotIn("reason", observation)
 
+    def test_expected_state_facts_must_all_be_saved_by_this_turn(self):
+        case, record, state, _ = fixture("operation", {"expected_operation": "store",
+                                                       "expected_state_facts": [["資訊管理系", "資管"], "草莓蛋糕"]})
+        before = copy.deepcopy(state)
+        before["items"] = {"old": item("使用者最喜歡草莓蛋糕。")}
+        state["items"] = {"old": before["items"]["old"], "major": item("使用者就讀資訊管理系。")}
+        state["sources"] = [{"id": EVENT, "speaker": "user"}]
+        state["evidence"] = [{"source_id": EVENT, "memory_id": "major"}]
+        record["memory_audit"] = [{"action": "CREATE", "target_id": "major"}]
+        # 沒連到本輪來源的舊要點不算本輪保存。
+        checks = run_checks(case, record, before, state)
+        self.assertEqual(checks["expected_state_facts_saved"]["status"], "failed")
+        self.assertEqual(checks["expected_state_facts_saved"]["actual"]["missing_facts"], ["草莓蛋糕"])
+        state["items"]["cake"] = item("使用者最喜歡草莓 蛋糕。")
+        state["evidence"].append({"source_id": EVENT, "memory_id": "cake"})
+        record["memory_audit"].append({"action": "CREATE", "target_id": "cake"})
+        self.assertEqual(run_checks(case, record, before, state)["expected_state_facts_saved"]["status"], "passed")
+        # 同義寫法任一命中即可；已失效的版本不算保存。
+        state["items"]["major"] = item("使用者讀資管。")
+        self.assertEqual(run_checks(case, record, before, state)["expected_state_facts_saved"]["status"], "passed")
+        state["items"]["cake"] = item("使用者最喜歡草莓蛋糕。", "superseded")
+        self.assertEqual(run_checks(case, record, before, state)["expected_state_facts_saved"]["status"], "failed")
+        # 只套用 memory 與 integration。
+        self.assertNotIn("expected_state_facts_saved",
+                         run_checks(case, record, before, state, suite="memory-calibration"))
+
     def test_dynamic_forget_wording_is_observed_but_actual_deletion_requires_audit_and_barriers(self):
         case, record, state, _ = fixture("operation", {"expected_operation": "forget", "operation_scope": {
             "source_case_ids": ["old-case"], "identity_terms": [["低甜"]]}})

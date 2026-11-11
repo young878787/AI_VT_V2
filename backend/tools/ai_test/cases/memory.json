@@ -2041,9 +2041,18 @@
         "required_tools": [],
         "expected_operation": "store",
         "expected_state_facts": [
-          "資訊管理系",
+          [
+            "資訊管理系",
+            "資訊管理",
+            "資管"
+          ],
           "草莓蛋糕",
-          "不愛太甜"
+          [
+            "不愛太甜",
+            "不喜歡太甜",
+            "不要太甜",
+            "低甜"
+          ]
         ]
       },
       "source": "fixed",
@@ -2125,7 +2134,10 @@
           "AI VT",
           "主模型",
           "Minecraft",
-          "週末"
+          [
+            "週末",
+            "周末"
+          ]
         ],
         "reinforced_memory_ids": [
           "game_minecraft"

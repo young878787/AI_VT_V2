@@ -455,6 +455,17 @@ def check_turn(suite, case, record, previous, before, state, fixture_ids):
                   and mutation_targets <= targets and mutation_targets <= state.get("items", {}).keys(),
                   {"audit_target_ids": sorted(mutation_targets, key=str), "evidence_target_ids": sorted(targets)})
         record["committed_target_ids"] = sorted(targets)
+        expected_facts = oracle.get("expected_state_facts") or []
+        if expected_facts and suite in {"memory", "integration"}:
+            # 本輪實際存入／補強的有效要點須涵蓋每項事實；每項可列同義寫法，任一命中即算保存。
+            items = state.get("items", {})
+            saved = [_text(items[target]) for target in sorted(targets, key=str)
+                     if target in items and items[target].get("status") == "active"]
+            haystack = _normalized("".join(saved))
+            missing = [fact for fact in expected_facts
+                       if not any(_normalized(alt) in haystack for alt in ([fact] if isinstance(fact, str) else fact))]
+            check("transaction", "expected_state_facts_saved", not missing,
+                  {"saved_texts": saved, "missing_facts": missing}, expected_facts)
         if operation in {"store", "reinforce", "correct"}:
             record["operation_observations"].append({"operation": operation, "observed": {
                 "audit_actions": [entry.get("action") for entry in audit],
