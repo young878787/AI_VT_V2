@@ -357,7 +357,8 @@ class AiTestReportTests(unittest.TestCase):
         rows = [record("mem_013", checks=[{"stage": "retrieval", "status": "passed", "evidence": "trace"}],
                        retrieval_metrics={"required_count": 2, "required_recalled": 1, "required_projected": 1,
                           "required_injected": 0, "candidate_ids": ["a", "b", "c"], "candidate_precision": 1 / 3,
-                          "non_target_candidates": 2, "lexical_coverage": 1, "vector_coverage": 0})]
+                          "non_target_candidates": 2, "name_route_coverage": 1, "vector_coverage": 0,
+                          "required_selected": 1, "non_required_injected_cards": 1, "fallback": False})]
         self.save(rows)
         metrics = self.write(metadata, rows)["metrics"]
         self.assertEqual(metrics["retrieval"]["rate"], 0.5)
@@ -366,10 +367,31 @@ class AiTestReportTests(unittest.TestCase):
         self.assertEqual(metrics["check_pass_rates"]["retrieval"]["rate"], 1)
         self.assertAlmostEqual(metrics["candidate_precision"]["rate"], 1 / 3)
         self.assertEqual(metrics["non_target_candidates"], 2)
-        self.assertEqual(metrics["lexical_coverage"]["rate"], 0.5)
+        self.assertEqual(metrics["name_route_coverage"]["rate"], 0.5)
         self.assertEqual(metrics["vector_coverage"]["rate"], 0)
+        self.assertEqual(metrics["card_selection"]["rate"], 0.5)
+        self.assertEqual(metrics["non_required_injected_cards"], 1)
         self.assertNotIn("unknown_honesty", metrics)
         self.assertNotIn("semantic_facts", metrics)
+
+    def test_timing_lists_median_and_max_without_affecting_overall(self):
+        metadata = self.initialize("memory", [{"case_id": "mem_001"}, {"case_id": "mem_002"}])
+        rows = [record("mem_001", trace=[{"stage": "retrieval", "timing": {"total_ms": 30.0, "jev_ms": None}},
+                                         {"stage": "reply", "first_text_ms": 400, "stream_end_ms": 900},
+                                         {"stage": "memory_card", "timing": {"organize_ms": 5000, "generate_ms": 0}}]),
+                record("mem_002", trace=[{"stage": "retrieval", "timing": {"total_ms": 10.0}},
+                                         {"stage": "retrieval", "timing": {"total_ms": 50.0}},
+                                         {"stage": "reply", "first_text_ms": 600, "stream_end_ms": 1100}])]
+        self.save(rows)
+        run = self.write(metadata, rows)
+        timing = run["timing"]
+        self.assertEqual(timing["recall.total_ms"], {"count": 3, "median": 30.0, "max": 50.0})
+        self.assertEqual(timing["recall.jev_ms"], {"count": 0, "median": None, "max": None})
+        self.assertEqual(timing["reply.first_text_ms"], {"count": 2, "median": 500.0, "max": 600})
+        self.assertEqual(timing["card.organize_ms"]["max"], 5000)
+        report = (self.directory / "report.md").read_text(encoding="utf-8")
+        self.assertIn("| `recall.total_ms` | 3 | 30.0 | 50.0 |", report)
+        self.assertNotIn("timing", json.dumps(run["acceptance"]))
 
     def test_tool_metrics_use_saved_reason_codes_even_when_stage_is_tools(self):
         metadata = self.initialize("tools", [{"case_id": "to_001", "oracle": {"required_tools": ["get_datetime"]}}])

@@ -14,6 +14,7 @@ from uuid import UUID, uuid5
 
 from sqlalchemy import text
 
+from domain.memory.cards import aggregate_mood, card_document, normalize_key
 from domain.memory.embedding import normalize_embedding
 from domain.memory.scope import conversation_id, message_id
 from domain.memory.settings import load_memory_settings
@@ -39,7 +40,8 @@ class DocumentVectors:
     """cache 初始 corpus document；同 ID 文字或契約漂移一律停止載入。
 
     含日期模板的記憶（vector_source=live）每天代換後文字不同，每次即時 embed 且不寫入 cache；
-    新增的記憶只補算缺少的那幾筆，既有向量不重算。
+    新增的記憶只補算缺少的那幾筆，既有向量不重算。卡片與另有原話的 document 也存在同一份 cache，
+    key 分別為 ``card:<情境>:<owner>:<主題>:<副主題>`` 與 ``source:<原話 key>``。
     """
 
     def __init__(self, path: Path, settings, client_factory=None):
@@ -48,7 +50,7 @@ class DocumentVectors:
         self.cost = {"calls": 0, "cache_hits": 0, "live_documents": 0, "duration_sec": 0.0,
                      "input_tokens": None, "service_version": "unverified"}
 
-    async def load(self, memories: list[dict]) -> dict[str, list[float]]:
+    async def load(self, memories: list[dict], *, record_corpus: bool = True) -> dict[str, list[float]]:
         cached = [item for item in memories if item.get("vector_source") != "live"]
         corpus_hash = fingerprint(sorted(({"id": item["id"], "text": item["text"]} for item in cached),
                                          key=lambda item: item["id"]))
@@ -100,8 +102,11 @@ class DocumentVectors:
                 await client.client.close()
             if any(digest is not None for _, digest in missing):
                 # corpus_sha256 只記錄本次 cache 涵蓋的 corpus，不作為拒絕條件；漂移由逐筆 text_sha256 把關。
-                data.update(contract=contract, corpus_sha256=corpus_hash, documents=documents,
+                # 卡片／原話等衍生 document 補算時不改寫 corpus 指紋。
+                data.update(contract=contract, documents=documents,
                             serving_model=self.settings.embedding_serving_model, service_version="unverified")
+                if record_corpus or data.get("corpus_sha256") is None:
+                    data["corpus_sha256"] = corpus_hash
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 temporary = self.path.with_suffix(".tmp")
                 temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -152,7 +157,9 @@ class FixtureLoader:
             selected = [by_id[key] for key in ids]
             self.memory_ids = {key: str(uuid5(self.store.owner["user_id"], f"fixture:{scenario}:{key}"))
                                for key in by_id}
-            await asyncio.to_thread(self._seed_memories, selected, reference, scenario)
+            cards = self._cards(selected, scenario)
+            await self._derived_vectors(selected, cards)
+            await asyncio.to_thread(self._seed_memories, selected, reference, scenario, cards)
             self.scenario = scenario
             self._seen_scenarios.add(scenario)
         session_id = "fixture_" + uuid5(self.store.owner["user_id"], f"{scenario}:{case['session']}").hex
@@ -185,21 +192,98 @@ class FixtureLoader:
             temporary.replace(self.manifest_path)
         return manifest
 
-    def _seed_memories(self, memories: list[dict], reference: datetime, scenario: str) -> None:
+    def _owner(self, memory: dict) -> dict:
+        owner = dict(self.store.owner)
+        if memory.get("owner", "self") == "other":
+            owner["user_id"] = uuid5(owner["user_id"], "fixture_other_owner")
+        return owner
+
+    def _cards(self, memories: list[dict], scenario: str) -> dict:
+        """依 fixture 的 card 欄位分組；有效要點、心情與卡片 document 的算法對齊 runtime 的卡片同步。"""
+        cards = {}
+        for memory in memories:
+            card = memory.get("card")
+            if card is None:
+                continue
+            owner_name = memory.get("owner", "self")
+            entry = cards.setdefault((owner_name, card["domain"], card["title"]), {
+                "key": f"card:{scenario}:{owner_name}:{card['domain']}:{card['title']}",
+                "domain": card["domain"], "title": card["title"], "members": [],
+                # 卡片 ID 不含情境：外來 owner 的資料不隨 reset 清除，跨情境同名卡沿用同一列。
+                "id": uuid5(self._owner(memory)["user_id"], f"fixture:card:{card['domain']}:{card['title']}")})
+            entry["members"].append(memory)
+        for entry in cards.values():
+            # 同日要點以 fixture ID 排序；DB ID 由每次隨機 owner 推導，拿來排序會讓 document 文字逐次漂移。
+            entry["members"].sort(key=lambda item: (item.get("observed_days", -30), item["id"]))
+            current = [item for item in entry["members"] if item["status"] in {"active", "conflict"}
+                       and (item.get("expires_in_days") is None or item["expires_in_days"] > 0)]
+            # 錯誤 contract 的要點不進卡片 document，避免經卡片向量繞過 contract 過濾。
+            points = [item["text"] for item in current if not item.get("wrong_contract")]
+            entry["document"] = card_document(entry["domain"], entry["title"], None, points) if points else None
+            entry["live"] = any(item.get("vector_source") == "live" for item in current)
+        return cards
+
+    @staticmethod
+    def _source_key(memory: dict) -> str | None:
+        if "source_text" not in memory:
+            return None
+        return "source:" + (memory.get("source_key") or memory["id"])
+
+    async def _derived_vectors(self, memories: list[dict], cards: dict) -> None:
+        """原話與卡片向量也走固定 document cache；文字或 contract 漂移一律 fixture_invalid。"""
+        entries = {}
+        for memory in memories:
+            key = self._source_key(memory)
+            if key is not None:
+                entries[key] = {"id": key, "text": memory["source_text"]}
+        for card in cards.values():
+            if card["document"] is not None:
+                entries[card["key"]] = {"id": card["key"], "text": card["document"],
+                                        **({"vector_source": "live"} if card["live"] else {})}
+        if self._vectors is None:
+            self._vectors = {}
+        missing = [entry for key, entry in entries.items()
+                   if key not in self._vectors or entry.get("vector_source") == "live"]
+        if not missing:
+            return
+        settings = self.settings or load_memory_settings()
+        cache = DocumentVectors(self.vector_path, settings, self.client_factory)
+        self._vectors.update(await cache.load(missing, record_corpus=False))
+        self.settings = settings
+        for name in ("calls", "cache_hits", "duration_sec"):
+            self.embedding_cost[name] = self.embedding_cost.get(name, 0) + cache.cost[name]
+
+    def _seed_memories(self, memories: list[dict], reference: datetime, scenario: str, cards: dict) -> None:
         if not memories:
             return
-        schema, base = self.store.schema, self.store.owner
+        schema = self.store.schema
         with self.store.engine.begin() as connection:
             connection.exec_driver_sql(f'SET LOCAL search_path TO "{schema}", public')
+            occurred_at = {memory["id"]: min(reference + timedelta(days=memory.get("observed_days", -30)),
+                                             datetime.now(reference.tzinfo)) for memory in memories}
+            for card in cards.values():
+                owner = self._owner(card["members"][0])
+                connection.execute(text("""INSERT INTO memory_scope_state (user_id,character_id)
+                    VALUES (:user_id,:character_id) ON CONFLICT DO NOTHING"""), owner)
+                vector = self._vectors.get(card["key"]) if card["document"] is not None else None
+                connection.execute(text("""INSERT INTO memory_cards
+                    (id,user_id,character_id,domain,title,title_key,summary_stale,embedding,embedding_contract)
+                    VALUES (:id,:user_id,:character_id,:domain,:title,:title_key,true,
+                     CAST(:embedding AS vector),:contract)
+                    ON CONFLICT (user_id,character_id,domain,title_key) DO UPDATE SET
+                     embedding = EXCLUDED.embedding, embedding_contract = EXCLUDED.embedding_contract,
+                     summary = NULL, summary_fingerprint = NULL, summary_stale = true, updated_at = now()"""),
+                    {**owner, "id": card["id"], "domain": card["domain"], "title": card["title"],
+                     "title_key": normalize_key(card["title"]),
+                     "embedding": "[" + ",".join(str(value) for value in vector) + "]" if vector else None,
+                     "contract": self.settings.embedding_contract if vector else None})
+            card_ids = {member["id"]: card["id"] for card in cards.values() for member in card["members"]}
             for memory in memories:
-                owner = dict(base)
-                if memory.get("owner", "self") == "other":
-                    owner["user_id"] = uuid5(base["user_id"], "fixture_other_owner")
+                owner = self._owner(memory)
                 identifier = UUID(self.memory_ids[memory["id"]])
                 previous = memory.get("supersedes_id")
                 group_id = UUID(self.memory_ids[previous]) if previous else identifier
-                occurred = min(reference + timedelta(days=memory.get("observed_days", -30)),
-                               datetime.now(reference.tzinfo))
+                occurred = occurred_at[memory["id"]]
                 def date_offset(key, default=None):
                     offset = memory.get(key, default)
                     return reference + timedelta(days=offset) if offset is not None else None
@@ -212,26 +296,33 @@ class FixtureLoader:
                     "model": self.settings.embedding_model,
                     "contract": "fixture_wrong_contract" if memory.get("wrong_contract") else self.settings.embedding_contract,
                     "occurred": occurred, "valid_from": date_offset("valid_from_days", -60),
-                    "valid_to": date_offset("valid_to_days"), "expires": date_offset("expires_in_days")}
+                    "valid_to": date_offset("valid_to_days"), "expires": date_offset("expires_in_days"),
+                    "card_id": card_ids.get(memory["id"])}
                 connection.execute(text("""INSERT INTO memory_scope_state (user_id,character_id)
                     VALUES (:user_id,:character_id) ON CONFLICT DO NOTHING"""), owner)
                 connection.execute(text("""INSERT INTO memory_items
                     (id,user_id,character_id,group_id,memory_type,canonical_text,subject_key,keywords,status,
                      importance,confidence,retention_class,embedding,embedding_model,embedding_contract,
-                     observed_at,valid_from,valid_to,expires_at,created_at,updated_at)
+                     observed_at,valid_from,valid_to,expires_at,created_at,updated_at,card_id)
                     VALUES (:id,:user_id,:character_id,:group_id,:memory_type,:canonical,:subject,:keywords,:status,
                      .5,1,:retention,CAST(:embedding AS vector),:model,:contract,:occurred,:valid_from,:valid_to,
-                     :expires,:occurred,:occurred)"""), params)
+                     :expires,:occurred,:occurred,:card_id)"""), params)
                 # source_key 表示多筆要點共用同一句原話；同情境內只建立一列 source。
                 shared = memory.get("source_key")
                 source_id = (uuid5(owner["user_id"], f"fixture:{scenario}:source:{shared}") if shared
                              else uuid5(identifier, "fixture_user_source"))
+                # 原話向量只來自使用者原話；與要點同文字時沿用要點向量。
+                source_vector = self._vectors[self._source_key(memory) or memory["id"]]
                 source = {**owner, "source_id": source_id, "conversation": conversation_id(f"fixture:{scenario}"),
                           "message_id": message_id(f"fixture:{scenario}", shared or memory["id"]),
-                          "canonical": memory.get("source_text", memory["text"]), "occurred": occurred}
+                          "canonical": memory.get("source_text", memory["text"]), "occurred": occurred,
+                          "embedding": "[" + ",".join(str(value) for value in source_vector) + "]",
+                          "contract": params["contract"], "mood": memory.get("mood", "calm")}
                 connection.execute(text("""INSERT INTO memory_sources
-                    (id,user_id,character_id,conversation_id,message_id,speaker,raw_text,occurred_at)
-                    VALUES (:source_id,:user_id,:character_id,:conversation,:message_id,'user',:canonical,:occurred)
+                    (id,user_id,character_id,conversation_id,message_id,speaker,raw_text,occurred_at,
+                     embedding,embedding_contract,mood)
+                    VALUES (:source_id,:user_id,:character_id,:conversation,:message_id,'user',:canonical,:occurred,
+                     CAST(:embedding AS vector),:contract,:mood)
                     ON CONFLICT DO NOTHING"""), source)
                 connection.execute(text("""INSERT INTO memory_evidence
                     (user_id,character_id,memory_id,source_id,kind)
@@ -244,12 +335,32 @@ class FixtureLoader:
                     {**owner, "audit_id": uuid5(identifier, "fixture_audit"), "operation_key": f"fixture:{scenario}:{memory['id']}",
                      "target": identifier, "source": source_id, "occurred": occurred,
                      "decision": json.dumps({"source": "synthetic_fixture", "logical_id": memory["id"]})})
+            self._sync_cards(connection, cards)
             for memory in memories:
                 if memory.get("supersedes_id"):
                     connection.execute(text("""INSERT INTO memory_relations (user_id,character_id,from_id,to_id,kind)
                         VALUES (:user_id,:character_id,:current,:previous,'supersedes')"""),
-                        {**base, "current": UUID(self.memory_ids[memory["id"]]),
+                        {**self.store.owner, "current": UUID(self.memory_ids[memory["id"]]),
                          "previous": UUID(self.memory_ids[memory["supersedes_id"]])})
+
+    def _sync_cards(self, connection, cards: dict) -> None:
+        """依 DB 實際要點重算有效數與心情（最常見、同數取最近），與 runtime 的卡片同步相同。"""
+        for card in cards.values():
+            owner = {**self._owner(card["members"][0]), "id": card["id"]}
+            active = connection.execute(text("""SELECT count(*) FROM memory_items
+                WHERE card_id = :id AND user_id = :user_id AND character_id = :character_id
+                AND status IN ('active', 'conflict') AND (expires_at IS NULL OR expires_at > now())"""),
+                owner).scalar_one()
+            moods = connection.execute(text("""SELECT DISTINCT source.id, source.mood, source.occurred_at
+                FROM memory_items AS item JOIN memory_evidence AS evidence
+                ON (evidence.memory_id, evidence.user_id, evidence.character_id) = (item.id, item.user_id, item.character_id)
+                JOIN memory_sources AS source
+                ON (source.id, source.user_id, source.character_id) = (evidence.source_id, evidence.user_id, evidence.character_id)
+                WHERE item.card_id = :id AND item.user_id = :user_id AND item.character_id = :character_id
+                AND source.mood IS NOT NULL"""), owner).all()
+            connection.execute(text("""UPDATE memory_cards SET active_count = :active, mood = :mood
+                WHERE id = :id AND user_id = :user_id AND character_id = :character_id"""),
+                {**owner, "active": active, "mood": aggregate_mood([(mood, moment) for _, mood, moment in moods])})
 
     def _seed_session(self, session_id: str, context: dict, reference: datetime) -> None:
         history, summary = context.get("history", []), context.get("summary", "")
@@ -278,8 +389,8 @@ class FixtureLoader:
         """讓 runner 對照外來 owner 的完整長期狀態，不只比較筆數。"""
         state = {}
         with self.store.engine.connect() as connection:
-            for table in ("memory_items", "memory_sources", "memory_evidence", "memory_relations", "memory_jobs",
-                          "memory_audit", "memory_scope_state", "memory_forget_barriers"):
+            for table in ("memory_cards", "memory_items", "memory_sources", "memory_evidence", "memory_relations",
+                          "memory_jobs", "memory_audit", "memory_scope_state", "memory_forget_barriers"):
                 rows = connection.execute(text(f'SELECT * FROM "{self.store.schema}".{table} '
                     'WHERE user_id <> :user_id OR character_id <> :character_id'), self.store.owner).mappings()
                 values = json.loads(json.dumps([dict(row) for row in rows], default=str))

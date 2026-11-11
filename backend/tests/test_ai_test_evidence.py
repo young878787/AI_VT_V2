@@ -38,7 +38,8 @@ def fixture(phase="recall", oracle=None):
              {"stage": "test_mode", "mode": mode.value, "short_term_enabled": mode.short_term,
               "memory_read_enabled": mode.memory_read, "memory_write_enabled": mode.memory_write}]
     if mode.memory_read:
-        trace.append({"stage": "retrieval", "embedding_available": True, "candidates": [], "projections": [], "errors": []})
+        trace.append({"stage": "retrieval", "embedding_available": True, "candidates": [], "candidate_cards": [],
+                      "projections": [], "errors": []})
     record = {"case_id": case["case_id"], "turn_id": "turn", "user": case["input"], "reply": "回答",
               "trace": trace, "stream_complete": True, "expression": "neutral", "errors": [],
               "expression_debug": {"jevDecisionSource": "jev", "jevBaseEmotionChoice": "neutral",
@@ -56,12 +57,20 @@ def run_checks(case, record, before, state=None, previous=None, aliases=None, su
         suite, case, record, previous or [], before, state if state is not None else before, aliases or {})}
 
 
-def inject(record, context, state, target="target", canonical="完整事實", projection=None):
+def candidate(retrieval, target, canonical, card="card", selection="key", injection="selected"):
+    """候選要點帶所屬卡片；卡片列記錄粗篩分數、選擇來源（JEV 或 fallback）與注入結果。"""
+    retrieval["candidates"].append({"id": target, "card_id": card, "similarity": 0.8, "canonical_text": canonical})
+    if all(entry["card_id"] != card for entry in retrieval["candidate_cards"]):
+        retrieval["candidate_cards"].append({"card_id": card, "score": 0.8, "routes": ["item"],
+                                             "selection": selection, "injection": injection})
+
+
+def inject(record, context, state, target="target", canonical="完整事實", projection=None, card="card"):
     state["items"][target] = item(canonical)
     text = projection if projection is not None else "- " + canonical + "（status=active）"
     retrieval = next(trace for trace in record["trace"] if trace["stage"] == "retrieval")
-    retrieval["candidates"].append({"id": target, "exact_match": True, "canonical_text": canonical})
-    retrieval["projections"].append({"id": target, "text": text, "destination": "memory"})
+    candidate(retrieval, target, canonical, card)
+    retrieval["projections"].append({"id": target, "text": text, "destination": "memory", "card_id": card})
     context["messages"][0]["content"] += "\n" + text
     context["injected_memory_ids"].append(target)
     context["memory_fragments"].append({"id": target, "text": text, "destination": "memory", "complete": True})
@@ -317,6 +326,11 @@ class AiTestEvidenceTests(unittest.TestCase):
         case, record, state, context = fixture(oracle={"capacity": True, "required_memory_ids": list(aliases)})
         for index in range(5):
             inject(record, context, state, target=f"target{index}", canonical=f"架構事實{index}")
+        # 字元預算用完：第六筆仍是同卡候選，但沒有投影與注入。
+        state["items"]["target5"] = item("架構事實5")
+        retrieval = next(trace for trace in record["trace"] if trace["stage"] == "retrieval")
+        candidate(retrieval, "target5", "架構事實5")
+        retrieval["candidate_cards"][0]["injection"] = "partial"
         checks = run_checks(case, record, state, aliases=aliases)
         self.assertEqual(checks["six_independent_facts"]["status"], "failed")
         self.assertEqual(checks["required_prompt_injection"]["status"], "failed")

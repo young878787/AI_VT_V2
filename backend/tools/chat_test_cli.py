@@ -30,6 +30,8 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from domain.jev_questions import JEV_ROLES  # noqa: E402
 RUNS_DIR = BACKEND_ROOT / "log" / "ai_tests"
 JEV_TRACE_WAIT_SEC = 15.0
+# 卡片整理在 commit 後執行，上限為 worker 的單次 attempt 時限加緩衝。
+CARD_TRACE_WAIT_SEC = 110.0
 ENV_PATH = BACKEND_ROOT.parent / ".env"
 
 
@@ -57,6 +59,9 @@ def test_database_url() -> str:
 
 class MemoryRunStore:
     """只連線至專用測試 DB，擁有並清理本次建立的 schema。"""
+
+    # 隔離 backend 的 trace 檔；runner 設定後用來等待 commit 後的卡片整理紀錄。
+    trace_path: Path | None = None
 
     def __init__(self, database_url: str, schema: str, user_id: uuid.UUID, character_id: uuid.UUID):
         if not schema.startswith("test_") or len(schema) != 37 or any(c not in "0123456789abcdef" for c in schema[5:]):
@@ -94,7 +99,7 @@ class MemoryRunStore:
                 f'SELECT id, canonical_text, memory_type, status, embedding IS NOT NULL AS has_embedding, '
                 f'embedding_model, group_id, subject_key, valid_from, valid_to, expires_at, observed_at '
                 f', embedding_contract, importance, confidence, retention_class, keywords, '
-                f'md5(embedding::text) AS embedding_md5 '
+                f'md5(embedding::text) AS embedding_md5, card_id '
                 f'FROM "{self.schema}".memory_items '
                 'WHERE user_id = :user_id AND character_id = :character_id ORDER BY id'
             ), self.owner).mappings()
@@ -103,7 +108,8 @@ class MemoryRunStore:
                                       "embedding_model": row["embedding_model"],
                                       **{key: row[key] for key in ("embedding_contract", "importance", "confidence", "retention_class", "keywords", "embedding_md5")},
                                       **{key: str(row[key]) if row[key] is not None else None for key in
-                                         ("group_id", "subject_key", "valid_from", "valid_to", "expires_at", "observed_at")}}
+                                         ("group_id", "subject_key", "valid_from", "valid_to", "expires_at", "observed_at",
+                                          "card_id")}}
                     for row in rows}
 
     def job(self, event_id: str) -> dict | None:
@@ -143,7 +149,10 @@ class MemoryRunStore:
         state = {}
         with self.engine.connect() as connection:
             for table, columns in {
-                "sources": ("memory_sources", "id, conversation_id, message_id, speaker, raw_text, occurred_at"),
+                "sources": ("memory_sources", "id, conversation_id, message_id, speaker, raw_text, occurred_at, "
+                            "embedding IS NOT NULL AS has_embedding, embedding_contract, mood"),
+                "cards": ("memory_cards", "id, domain, title, title_key, summary, summary_fingerprint, summary_stale, "
+                          "mood, active_count, embedding IS NOT NULL AS has_embedding, embedding_contract"),
                 "evidence": ("memory_evidence", "memory_id, source_id, kind"),
                 "relations": ("memory_relations", "from_id, to_id, kind"),
                 "audit": ("memory_audit", "action, target_id, operation_key, reason_class, decision, source_event_id, deleted_count"),
@@ -160,8 +169,8 @@ class MemoryRunStore:
         # 全列指紋涵蓋未投影的metadata、向量與lease等；報告不複製1024維向量。
         with self.engine.connect() as connection:
             state["row_hashes"] = {}
-            for table in ("memory_items", "memory_sources", "memory_evidence", "memory_relations", "memory_audit",
-                          "memory_jobs", "memory_scope_state", "memory_forget_barriers"):
+            for table in ("memory_cards", "memory_items", "memory_sources", "memory_evidence", "memory_relations",
+                          "memory_audit", "memory_jobs", "memory_scope_state", "memory_forget_barriers"):
                 state["row_hashes"][table] = sorted(connection.execute(text(
                     f'SELECT md5(to_jsonb(row)::text) FROM "{self.schema}".{table} AS row '
                     'WHERE user_id = :user_id AND character_id = :character_id'), self.owner).scalars())
@@ -189,6 +198,27 @@ async def wait_memory_job(store: MemoryRunStore, event_id: str | None, timeout: 
             return job
         await asyncio.sleep(0.2)
     return {"status": "timeout", "error": "記憶工作等待逾時"}
+
+
+async def wait_card_trace(path: Path | None, event_id: str, timeout: float = CARD_TRACE_WAIT_SEC) -> bool:
+    """概要與卡片向量在 commit 後才整理；回傳是否在時限內看到該工作的 memory_card 紀錄。"""
+    if path is None:
+        return False
+    # WS 送來的 event_id 是無連字號 hex，trace 寫入帶連字號的 UUID；一律轉成 UUID 再比對。
+    target = str(uuid.UUID(str(event_id)))
+    deadline = time.monotonic() + timeout
+    while True:
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    item = json.loads(line)
+                except ValueError:
+                    continue
+                if item.get("stage") == "memory_card" and item.get("memory_event_id") == target:
+                    return True
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.2)
 
 
 def archive_run_dir(latest: Path, history: Path) -> Path:
@@ -401,6 +431,13 @@ async def run_turn(
     except Exception as exc:
         errors.append(f"讀取記憶工作失敗：{type(exc).__name__}")
     memory_status = job["status"] if job else None
+    card_traced = None
+    if memory_status == "done" and (job.get("agent_diagnostics") or {}).get("cards"):
+        try:
+            card_traced = await wait_card_trace(getattr(store, "trace_path", None), event_id)
+        except asyncio.CancelledError:
+            interrupted = True
+            errors.append("使用者中斷測試")
     memory_wait_sec = round(time.monotonic() - memory_wait_started, 3)
     if job and memory_status in {"failed", "cancelled", "timeout", "missing"}:
         errors.append(job.get("error") or f"記憶工作狀態：{memory_status}")
@@ -450,6 +487,7 @@ async def run_turn(
         "memory_route_finalized": job.get("route_finalized") if job else None,
         "memory_job_created_at": job.get("created_at") if job else None,
         "memory_job_updated_at": job.get("updated_at") if job else None,
+        "memory_card_refresh_traced": card_traced,
         "errors": errors,
         "latency_first_text_sec": first_text_sec,
         "latency_emotion_sec": emotion_sec,
@@ -498,13 +536,12 @@ def locate_injected_fragments(context: dict, projections: list[dict]) -> None:
     from domain.agent_a_prompts import _build_profile_section
     profile = context.get("profile", {})
     profile_section = _build_profile_section(profile)
-    memory_cursor = context.get("memory_section_start")
+    memory_start = context.get("memory_section_start")
     for projection in projections:
         text_value = projection["text"]
         if projection["destination"] == "memory":
-            start = memory_cursor
-            if start is not None:
-                memory_cursor += len(text_value) + 1
+            offset = projection.get("offset")
+            start = memory_start + offset if memory_start is not None and isinstance(offset, int) else None
         else:
             value = profile.get(projection["field"])
             if text_value != value and (not isinstance(value, list) or text_value not in value):
@@ -550,7 +587,11 @@ async def control_step(ws, action: str, session_id: str, timeout: float, test_mo
 
 def provenance(dataset):
     from tools.ai_test.testset import fingerprint
-    from infrastructure.memory.repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
+    from infrastructure.memory.repository import (
+        CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE, CHAT_RETRIEVAL_MIN_SIMILARITY,
+        CHAT_UNCARDED_LIMIT,
+    )
+    from domain.jev_questions import CONFIDENCE_THRESHOLD
     from services.memory.retriever import MEMORY_CHAR_BUDGET
     root = BACKEND_ROOT.parent
 
@@ -570,8 +611,10 @@ def provenance(dataset):
                             for p in files if p.is_file()},
             "cases_sha256": fingerprint(dataset), "models": model_metadata(),
             "reference_time": dataset.get("reference_time"),
-            "retrieval": {"limit": CHAT_RETRIEVAL_LIMIT, "min_similarity": CHAT_RETRIEVAL_MIN_SIMILARITY,
-                          "projection_char_budget": MEMORY_CHAR_BUDGET},
+            "retrieval": {"candidate_card_limit": CHAT_CARD_CANDIDATE_LIMIT, "inject_card_limit": CHAT_CARD_INJECT_LIMIT,
+                          "min_card_score": CHAT_CARD_MIN_SCORE, "uncarded_limit": CHAT_UNCARDED_LIMIT,
+                          "fallback_min_similarity": CHAT_RETRIEVAL_MIN_SIMILARITY,
+                          "jev_confidence_threshold": CONFIDENCE_THRESHOLD, "projection_char_budget": MEMORY_CHAR_BUDGET},
             "compression": {"keep_recent_messages": 2, "trigger_messages": 16}}
 
 
@@ -714,6 +757,7 @@ async def run(args):
         metadata["provenance"]["test_scope"] = {"schema": schema, "user_id": str(user_id),
                                                  "character_id": str(character_id), "database_guard": "verified_distinct_database"}
         store = MemoryRunStore(database_url, schema, user_id, character_id)
+        store.trace_path = memory_dir / "trace.jsonl"
         await asyncio.to_thread(store.open)
         settings = load_memory_settings({**os.environ, "AI_VT_TEST_MODE": "true", "MEMORY_TEST_DATABASE_URL": database_url,
                                          "MEMORY_DATABASE_SCHEMA": schema, "MEMORY_DEFAULT_USER_ID": str(user_id),

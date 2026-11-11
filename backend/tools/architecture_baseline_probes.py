@@ -121,9 +121,10 @@ async def compression_race_probe():
 
 async def projection_probe(future=False):
     from domain.memory.decisions import normalize_proposal
-    from services.memory.retriever import MemoryRetriever
+    from services.memory.retriever import MEMORY_CHAR_BUDGET, MemoryRetriever
     source_id, memory_id = uuid4(), uuid4()
-    text = "請詳細回答" if future else "測" * 801
+    # 單筆事實比記憶字元預算長一字：投影不得切斷事實。
+    text = "請詳細回答" if future else "測" * (MEMORY_CHAR_BUDGET + 1)
     proposal = normalize_proposal({
         "action": "CREATE", "source_ids": [str(source_id)], "reason": "明確使用者來源",
         "canonical_text": text, "memory_type": "profile" if future else "project",
@@ -133,7 +134,7 @@ async def projection_probe(future=False):
            "memory_type": proposal["memory_type"], "status": "active", "similarity": .9,
            "exact_match": True, "subject_key": "profile.communication_style" if future else "project",
            "valid_from": "2099-01-01T00:00:00+00:00", "valid_to": "2099-02-01T00:00:00+00:00"}
-    repository = SimpleNamespace(related_items=AsyncMock(return_value=[row]))
+    repository = SimpleNamespace(locate_cards=AsyncMock(return_value=[row]))
     embedding = SimpleNamespace(embed=AsyncMock(return_value=[1.0] + [0.0] * 1023))
     with patch("services.memory.retriever.trace") as trace:
         profile, memory = await MemoryRetriever(repository, embedding).retrieve("未來的回覆風格" if future else "測試配置")
@@ -142,7 +143,7 @@ async def projection_probe(future=False):
                     "validity_retained": "2099" in json.dumps(profile) + memory}
         return record("V8", bool(profile) and not observed["validity_retained"], observed)
     observed = {"proposal_accepted": True, "fact_characters": len(text), "memory_characters": len(memory),
-                "projection": trace.call_args.args[1]["candidates"][0]["projection"]}
+                "projection": trace.call_args.args[1]["candidate_cards"][0]["injection"]}
     return record("V5", not memory and observed["projection"] == "memory_budget_exhausted", observed)
 
 

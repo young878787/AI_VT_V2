@@ -57,6 +57,48 @@ class VectorCacheTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError, "fixture_invalid"):
                 await DocumentVectors(path, changed).load(memories)
 
+    def test_card_document_order_does_not_depend_on_random_owner(self):
+        # 同日要點的順序不得隨每次 run 的隨機 owner（與由它推導的 DB ID）改變，否則快取比對會漂移。
+        memories = [{"id": name, "text": f"要點{name}", "status": "active", "observed_days": -3,
+                     "card": {"domain": "preference", "title": "茶飲"}} for name in ("a", "b", "c", "d")]
+        documents = set()
+        for _ in range(8):
+            store = SimpleNamespace(schema="test_" + "0" * 32, created=True,
+                                    owner={"user_id": uuid4(), "character_id": uuid4()})
+            loader = FixtureLoader(store, settings=settings())
+            loader.memory_ids = {item["id"]: str(uuid4()) for item in memories}
+            documents.add(next(iter(loader._cards(memories, "corpus").values()))["document"])
+        self.assertEqual(len(documents), 1)
+
+    async def test_card_and_source_documents_share_cache_and_drift_fails(self):
+        memories = [{"id": "tea", "text": "使用者喜歡烏龍茶", "subject_key": "preference.drink",
+                     "memory_type": "preference", "status": "active", "card": {"domain": "preference", "title": "茶飲"},
+                     "source_key": "tea_source", "source_text": "我最近都喝烏龍茶"}]
+        client = SimpleNamespace(embed=AsyncMock(return_value=VECTOR), client=SimpleNamespace(close=AsyncMock()))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "vectors.json"
+            store = SimpleNamespace(schema="test_" + "0" * 32, created=True, owner={"user_id": uuid4(), "character_id": uuid4()})
+            loader = FixtureLoader(store, vector_path=path, settings=settings(), client_factory=lambda _: client)
+            loader._vectors = {"tea": VECTOR}
+            loader.memory_ids = {"tea": str(uuid4())}
+            cards = loader._cards(memories, "corpus")
+            await loader._derived_vectors(memories, cards)
+            documents = json.loads(path.read_text(encoding="utf-8"))["documents"]
+            self.assertEqual(set(documents), {"source:tea_source", "card:corpus:self:preference:茶飲"})
+            self.assertEqual({call.args[0] for call in client.embed.await_args_list},
+                             {"我最近都喝烏龍茶", "喜好與興趣／茶飲：使用者喜歡烏龍茶"})
+            # 卡片文字改變（例如要點換了）或 contract 不同：一律 fixture_invalid，不沿用舊向量。
+            changed = [{**memories[0], "text": "使用者喜歡紅茶"}]
+            drifted = FixtureLoader(store, vector_path=path, settings=settings(), client_factory=lambda _: client)
+            drifted._vectors, drifted.memory_ids = {"tea": VECTOR}, dict(loader.memory_ids)
+            with self.assertRaisesRegex(ValueError, "fixture_invalid"):
+                await drifted._derived_vectors(changed, drifted._cards(changed, "corpus"))
+            other = SimpleNamespace(**{**settings().__dict__, "embedding_contract": "different"})
+            contract = FixtureLoader(store, vector_path=path, settings=other, client_factory=lambda _: client)
+            contract._vectors, contract.memory_ids = {"tea": VECTOR}, dict(loader.memory_ids)
+            with self.assertRaisesRegex(ValueError, "fixture_invalid"):
+                await contract._derived_vectors(memories, contract._cards(memories, "corpus"))
+
     async def test_templated_documents_are_embedded_live_and_never_cached(self):
         live = {"id": "demo", "text": "下次展示預定於 2026-11-24 舉行。", "vector_source": "live"}
         fixed = {"id": "background", "text": "合成背景"}
@@ -235,7 +277,12 @@ class FixtureDatabaseTests(unittest.IsolatedAsyncioTestCase):
         store.open()
         try:
             dataset = load_suite("memory")
-            loader = FixtureLoader(store, settings=settings())
+            # 卡片與原話向量走暫存 cache 與替身 client，不碰正式向量檔與外部 embedding。
+            client = SimpleNamespace(embed=AsyncMock(return_value=VECTOR), client=SimpleNamespace(close=AsyncMock()))
+            directory = tempfile.TemporaryDirectory()
+            self.addCleanup(directory.cleanup)
+            loader = FixtureLoader(store, vector_path=Path(directory.name) / "vectors.json", settings=settings(),
+                                   client_factory=lambda _: client)
             # 只驗證fixture/DB契約；此固定向量不代表模型召回能力。
             loader._vectors = {item["id"]: VECTOR for item in dataset["memories"]}
             for case in dataset["cases"]:
@@ -251,7 +298,25 @@ class FixtureDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 future_observed = connection.execute(text(f'SELECT count(*) FROM "{store.schema}".memory_items '
                     'WHERE observed_at > now()')).scalar_one()
                 self.assertEqual(future_observed, 0)
+                # 有 card 欄位的 fixture 都歸卡；卡片有效要點數與實際列一致，沒有空卡。
+                uncarded = connection.execute(text(f'SELECT count(*) FROM "{store.schema}".memory_items '
+                    'WHERE card_id IS NULL')).scalar_one()
+                self.assertEqual(uncarded, 0)
+                mismatched = connection.execute(text(f'SELECT count(*) FROM "{store.schema}".memory_cards c WHERE '
+                    f'c.active_count <> (SELECT count(*) FROM "{store.schema}".memory_items i WHERE i.card_id = c.id '
+                    "AND i.user_id = c.user_id AND i.status IN ('active','conflict') "
+                    'AND (i.expires_at IS NULL OR i.expires_at > now())) OR NOT EXISTS (SELECT 1 FROM '
+                    f'"{store.schema}".memory_items i WHERE i.card_id = c.id AND i.user_id = c.user_id)')).scalar_one()
+                self.assertEqual(mismatched, 0)
+                cards = connection.execute(text(f'SELECT count(*), count(*) FILTER (WHERE mood IS NULL) '
+                    f'FROM "{store.schema}".memory_cards')).one()
+                self.assertGreater(cards[0], 0)
+                self.assertEqual(cards[1], 0)
+                unembedded = connection.execute(text(f'SELECT count(*) FROM "{store.schema}".memory_sources '
+                    'WHERE embedding IS NULL OR embedding_contract IS NULL OR mood IS NULL')).scalar_one()
+                self.assertEqual(unembedded, 0)
             self.assertTrue(loader.other_owner_state()["memory_items"])
+            self.assertTrue(loader.other_owner_state()["memory_cards"])
         finally:
             store.close()
 
@@ -287,6 +352,9 @@ class FixtureDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(state["sources"]), 2)
                 self.assertEqual(len(state["relations"]), 1)
                 self.assertTrue(all(a["action"] == "FIXTURE_CREATE" for a in state["audit"]))
+                # 沒有 card 欄位的 fixture 維持未歸卡，不建立卡片列。
+                self.assertEqual(state["cards"], [])
+                self.assertTrue(all(row["card_id"] is None for row in state["items"].values()))
                 with store.engine.begin() as connection:
                     messages = connection.execute(text(f'SELECT role,content,sequence,turn_state,memory_source '
                         f'FROM "{store.schema}".chat_messages WHERE session_id=:session ORDER BY sequence'),

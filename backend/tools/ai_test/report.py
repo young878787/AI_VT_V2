@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import statistics
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -242,8 +243,9 @@ def _metrics(records: list[dict], cases: dict, checks: list[dict], attention: li
     recalled = _sum_metric(retrieval, "required_recalled")
     projected = _sum_metric(retrieval, "required_projected")
     injected = _sum_metric(retrieval, "required_injected")
-    lexical = _sum_metric(retrieval, "lexical_coverage")
+    named = _sum_metric(retrieval, "name_route_coverage")
     vector = _sum_metric(retrieval, "vector_coverage")
+    chosen = _sum_metric(retrieval, "required_selected")
     candidate_count = sum(len(row["candidate_ids"]) for row in retrieval) if all(isinstance(row.get("candidate_ids"), list) for row in retrieval) else None
     selection, delivery = [], []
     delivery_codes = {"receipt_pairs", "receipt_content", "receipt_contents", "image_delivery", "image_hash",
@@ -266,14 +268,48 @@ def _metrics(records: list[dict], cases: dict, checks: list[dict], attention: li
             "candidate_precision": {"relevant_candidates": recalled, "candidate_count": candidate_count,
                                     "rate": _rate(recalled, candidate_count)},
             "non_target_candidates": _sum_metric(retrieval, "non_target_candidates"),
-            "lexical_coverage": {"covered": lexical, "required": required, "rate": _rate(lexical, required)},
+            "name_route_coverage": {"covered": named, "required": required, "rate": _rate(named, required)},
             "vector_coverage": {"covered": vector, "required": required, "rate": _rate(vector, required)},
+            "card_selection": {"required": required, "selected": chosen, "rate": _rate(chosen, required)},
+            "non_required_injected_cards": _sum_metric(retrieval, "non_required_injected_cards"),
+            "recall_fallback_turns": sum(row.get("fallback") is True for row in retrieval),
             "tool_selection": checked(selection), "tool_delivery": checked(delivery),
             "check_pass_rates": {name: _metric(checks, stages) for name, stages in (
                 ("retrieval", ("retrieval", "recall")), ("projection", ("projection",)),
                 ("injection", ("injection", "prompt")))},
             "errors": sum(len(record.get("errors") or []) for record in records),
             "missing_evidence": sum(item["reason_code"] in ("missing_evidence", "missing_image", "missing_artifact") for item in attention)}
+
+
+# 計劃書第 8 節的速度欄位：只記錄，不影響 overall。
+TIMING_FIELDS = (
+    ("recall.embedding_ms", "retrieval", "embedding_ms"), ("recall.locate_ms", "retrieval", "locate_ms"),
+    ("recall.jev_ms", "retrieval", "jev_ms"), ("recall.project_ms", "retrieval", "project_ms"),
+    ("recall.total_ms", "retrieval", "total_ms"),
+    ("recall.candidate_card_count", "retrieval", "candidate_card_count"),
+    ("recall.injected_card_count", "retrieval", "injected_card_count"),
+    ("reply.first_text_ms", "reply", "first_text_ms"), ("reply.stream_end_ms", "reply", "stream_end_ms"),
+    ("card.organize_ms", "memory_card", "organize_ms"), ("card.generate_ms", "memory_card", "generate_ms"),
+    ("card.edit_ms", "memory_card", "edit_ms"),
+)
+
+
+def _timing(records: list[dict]) -> dict:
+    """逐輪 trace 的後端自量時間；各欄位列樣本數、中位數與最大值。"""
+    result = {}
+    for name, stage, key in TIMING_FIELDS:
+        values = []
+        for record in records:
+            for item in record.get("trace") or []:
+                if item.get("stage") != stage:
+                    continue
+                source = item if stage == "reply" else item.get("timing") or {}
+                value = source.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    values.append(value)
+        result[name] = {"count": len(values), "median": statistics.median(values) if values else None,
+                        "max": max(values) if values else None}
+    return result
 
 
 def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], states: list[dict],
@@ -457,7 +493,7 @@ def write_reports(run_dir: str | Path, metadata: dict, records: list[dict], stat
                          "failure_stage": (metadata.get("failure") or {}).get("stage") or ((error.get("stage") if isinstance(error, dict) else "execution") if error else None),
                          "failure": metadata.get("failure")},
            "acceptance": acceptance, "counts": counts,
-           "metrics": _metrics(records, by_case, all_checks, attention),
+           "metrics": _metrics(records, by_case, all_checks, attention), "timing": _timing(records),
            "cost": _cost(metadata, records), "attention": attention[:ATTENTION_LIMIT],
            "attention_total": len(attention), "cleanup": cleanup if cleanup is not None else {"status": "pending"},
            "artifacts": artifacts, "review": {"stale": review_stale, "basis": basis,
@@ -495,7 +531,10 @@ def _render_report(directory: Path, run: dict, cases: dict, outcomes: dict, grou
              *([f"- 情緒曲線（人工判定，不計入驗收）：{acceptance['curve']}"] if "curve" in acceptance else []),
              f"- 人工指紋：{'已過期，判定不採用' if run['review']['stale'] else '與本次證據一致'}", "",
              "依賴與版本：", "", "```json", _json(run["provenance"]), "```", "",
-             "成本（null 表示未取得；各階段累計不等於壁鐘耗時）：", "", "```json", _json(run["cost"]), "```", ""]
+             "成本（null 表示未取得；各階段累計不等於壁鐘耗時）：", "", "```json", _json(run["cost"]), "```", "",
+             "速度紀錄（後端自量，毫秒；不影響驗收）：", "", "| 欄位 | 樣本 | 中位數 | 最大值 |", "|---|---|---|---|",
+             *(f"| `{name}` | {value['count']} | {_cell(value['median'])} | {_cell(value['max'])} |"
+               for name, value in run.get("timing", {}).items()), ""]
     if acceptance["capacity"] == "failed":
         lines.extend(["**核心通過、容量缺口未解。**" if acceptance["fixed_core"] == "passed" else "**容量缺口未解，整組驗收失敗。**", ""])
     if execution.get("error"):

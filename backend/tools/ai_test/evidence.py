@@ -15,7 +15,10 @@ from domain.emotion_state import (
 )
 from domain.jev_questions import JEV_ROLES
 from domain.runtime_context import CONTEXT_TOOL_NAMES, project_snapshot
-from infrastructure.memory.repository import CHAT_RETRIEVAL_LIMIT, CHAT_RETRIEVAL_MIN_SIMILARITY
+from infrastructure.memory.repository import (
+    CHAT_CARD_CANDIDATE_LIMIT, CHAT_CARD_INJECT_LIMIT, CHAT_CARD_MIN_SCORE, CHAT_UNCARDED_LIMIT,
+)
+from services.memory.retriever import MEMORY_CHAR_BUDGET, UNCARDED_KEY
 from tools.context_test_evidence import collect_tools
 
 JEV_EVIDENCE_VERSION = "raw_choice_confidence_gate_v2"
@@ -103,6 +106,17 @@ def _complete_injection(item_id, projection, context):
                     and fragment.get("text") == projection.get("text")
                     and fragment.get("destination") == projection.get("destination")
                     for fragment in context.get("memory_fragments", [])))
+
+
+# 卡片可經名稱、共用證據或上一輪選中加入候選，這三路不要求分數。
+_UNSCORED_CARD_ROUTES = {"name", "link", "session"}
+_INJECTED_CARD_STATES = {"selected", "partial", "profile"}
+
+
+def _card_qualified(card):
+    score = card.get("score")
+    return bool(_UNSCORED_CARD_ROUTES & set(card.get("routes") or [])) or (
+        isinstance(score, (int, float)) and score >= CHAT_CARD_MIN_SCORE)
 
 
 def _receipt_map(record):
@@ -525,15 +539,26 @@ def check_turn(suite, case, record, previous, before, state, fixture_ids):
                   for target, item in before.get("items", {}).items() if target not in mutable))
 
     candidates = retrieval.get("candidates", [])
+    candidate_cards = retrieval.get("candidate_cards", [])
     candidate_ids = {str(c.get("id")) for c in candidates}
     projections = {str(p.get("id")): p for p in retrieval.get("projections", [])}
     projected_ids = set(projections)
     injected_ids = set(context.get("injected_memory_ids", []))
     if mode.memory_read:
         check("retrieval", "retrieval_complete", bool(retrieval) and not retrieval.get("errors") and retrieval.get("embedding_available"))
-        check("retrieval", "candidate_qualification", len(candidates) <= CHAT_RETRIEVAL_LIMIT and all(
-            c.get("exact_match") or isinstance(c.get("similarity"), (float, int))
-            and c["similarity"] >= CHAT_RETRIEVAL_MIN_SIMILARITY for c in candidates))
+        # 卡片政策：候選卡與未歸卡要點各有上限，每張卡須達粗篩分數或經不計分路徑加入，注入卡數有上限。
+        card_keys = {str(card.get("card_id")) for card in candidate_cards}
+        uncarded = [c for c in candidates if c.get("card_id") == UNCARDED_KEY]
+        injected_cards = [card for card in candidate_cards if card.get("injection") in _INJECTED_CARD_STATES]
+        check("retrieval", "candidate_qualification",
+              sum(card.get("card_id") != UNCARDED_KEY for card in candidate_cards) <= CHAT_CARD_CANDIDATE_LIMIT
+              and len(uncarded) <= CHAT_UNCARDED_LIMIT and len(injected_cards) <= CHAT_CARD_INJECT_LIMIT
+              and all(str(c.get("card_id")) in card_keys for c in candidates)
+              and all(isinstance(c.get("similarity"), (int, float)) and c["similarity"] >= CHAT_CARD_MIN_SCORE
+                      for c in uncarded)
+              and all(_card_qualified(card) for card in candidate_cards),
+              {"candidate_cards": len(candidate_cards), "uncarded": len(uncarded),
+               "injected_cards": len(injected_cards)})
         check("isolation", "candidate_owner", candidate_ids <= state.get("items", {}).keys(), sorted(candidate_ids - state.get("items", {}).keys()))
         forbidden = {fixture_ids[k] for k in oracle.get("forbidden_memory_ids", []) if k in fixture_ids}
         missing_forbidden = set(oracle.get("forbidden_memory_ids", [])) - fixture_ids.keys()
@@ -574,8 +599,12 @@ def check_turn(suite, case, record, previous, before, state, fixture_ids):
             # 六項架構決定（mem_014）沿用原檢查名稱；其他容量題要求全部必要記憶完整注入。
             check("capacity", "six_independent_facts" if len(required) == 6 else "all_capacity_facts_injected",
                   bool(required) and required <= complete_injections,
-                  {"retrieval_limit": CHAT_RETRIEVAL_LIMIT, "required": len(required), "complete_injected": len(required & complete_injections)})
+                  {"inject_limit": CHAT_CARD_INJECT_LIMIT, "memory_char_budget": MEMORY_CHAR_BUDGET,
+                   "required": len(required), "complete_injected": len(required & complete_injections)})
         all_required = required | {target for ids in source_ids.values() for target in ids}
+        cards_by_key = {str(card.get("card_id")): card for card in candidate_cards}
+        item_cards = {str(c["id"]): cards_by_key.get(str(c.get("card_id")), {}) for c in candidates}
+        required_cards = {str(c.get("card_id")) for c in candidates if str(c.get("id")) in all_required}
         record["retrieval_metrics"] = {
             "required_ids": sorted(all_required), "candidate_ids": sorted(candidate_ids),
             "projection_ids": sorted(projected_ids), "injected_ids": sorted(injected_ids),
@@ -583,9 +612,20 @@ def check_turn(suite, case, record, previous, before, state, fixture_ids):
             "required_injected": len(all_required & complete_injections), "required_count": len(all_required),
             "candidate_precision": len(all_required & candidate_ids) / len(candidate_ids) if candidate_ids else None,
             "non_target_candidates": len(candidate_ids - all_required),
-            "lexical_coverage": len({str(c["id"]) for c in candidates if c.get("exact_match")} & all_required),
+            "name_route_coverage": len({target for target, card in item_cards.items()
+                                        if "name" in (card.get("routes") or [])} & all_required),
             "vector_coverage": len({str(c["id"]) for c in candidates if isinstance(c.get("similarity"), (float, int))
-                                    and c["similarity"] >= CHAT_RETRIEVAL_MIN_SIMILARITY} & all_required),
+                                    and c["similarity"] >= CHAT_CARD_MIN_SCORE} & all_required),
+            # JEV（或 fallback）選中的必要記憶；與粗篩、投影、注入分開，用來區分漏找與未選。
+            "required_selected": len({target for target, card in item_cards.items() if card.get("selection") in
+                                      {"key", "assist", "fallback_selected"}} & all_required),
+            "candidate_card_count": len(candidate_cards),
+            "injected_card_count": sum(card.get("injection") in _INJECTED_CARD_STATES for card in candidate_cards),
+            # 非必要卡被注入的數量先記錄，不列為通過條件（計劃書第 15 節）。
+            "non_required_injected_cards": sum(card.get("injection") in _INJECTED_CARD_STATES
+                                               and str(card.get("card_id")) not in required_cards
+                                               for card in candidate_cards),
+            "fallback": bool(retrieval.get("fallback")),
         }
 
     try:

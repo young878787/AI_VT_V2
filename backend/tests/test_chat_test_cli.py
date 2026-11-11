@@ -313,6 +313,16 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["case_id"] for r in records if r["status"] == "failed"], ["je_008"])
         self.assertEqual(run_dir, root / "jev-emotion" / "latest")
 
+    async def test_card_trace_matches_hex_event_id_from_websocket(self):
+        # WS 的 event_id 是無連字號 hex，trace 寫帶連字號 UUID；兩者須視為同一工作。
+        event = uuid4()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trace.jsonl"
+            path.write_text(json.dumps({"stage": "memory_card", "memory_event_id": str(event)}) + "\n",
+                            encoding="utf-8")
+            self.assertTrue(await cli.wait_card_trace(path, event.hex, timeout=0))
+            self.assertFalse(await cli.wait_card_trace(path, uuid4().hex, timeout=0))
+
     async def test_turn_does_not_retry_sent_user_input_on_connection_failure(self):
         socket = SimpleNamespace(send=AsyncMock(), recv=AsyncMock(side_effect=OSError("closed")))
         store = SimpleNamespace(snapshot=Mock(return_value={}), case_state=Mock(return_value={}))
