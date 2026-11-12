@@ -29,13 +29,15 @@ SPLIT_SUGGESTION_COUNT = 12
 
 # 寫進 Memory agent prompt 的四條歸類規則（計劃書 4.3）。
 CLASSIFICATION_RULES = (
-    "Card rules for CREATE: either pick a candidate card code (card) or give domain plus a 2-16 character "
-    "subtopic naming the person, object or event (not the fact itself).\n"
-    "1. Subject before content: a friend's preference belongs to relation/<friend>, not to the user's preference card.\n"
-    "2. Project before event: a demo or deadline of a named project belongs to project/<project>.\n"
-    "3. If a candidate card covers the same thing, reuse its code or its exact subtopic text; "
+    "Every CREATE belongs to a card; a card groups facts about one person, object, project or event. A CREATE either "
+    "names a candidate card code (card) or gives domain plus a 2-16 character subtopic naming the person, object or "
+    "event, not the fact itself.\n"
+    "1. Subject comes before content: a friend's preference belongs to relation/<friend>, not to the user's "
+    "preference card.\n"
+    "2. Project comes before event: a demo or deadline of a named project belongs to project/<project>.\n"
+    "3. A candidate card covering the same thing is reused through its code or its exact subtopic text; "
     "a different time or preference direction is not a new subtopic.\n"
-    "4. A sentence spanning several topics becomes several atomic facts, each placed in its own card.\n"
+    "4. A sentence spanning several topics becomes several atomic facts, each in its own card.\n"
     "Domains: " + ", ".join(f"{key}={name}" for key, name in DOMAINS.items()) + "."
 )
 

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from core.ai_request_params import no_thinking_extra_body, provider_from_url
 from infrastructure.llm import ai_client
-from services.memory.agent_client import MemoryAgentClient
+from services.memory.agent_client import TEMPERATURE, MemoryAgentClient
 
 
 class AIRequestParamsTests(unittest.IsolatedAsyncioTestCase):
@@ -63,6 +63,7 @@ class AIRequestParamsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request["tool_choice"], "required")
             self.assertFalse(request["parallel_tool_calls"])
             self.assertEqual(request["max_completion_tokens"], 1024)
+            self.assertEqual(request["temperature"], TEMPERATURE)
         finally:
             await agent.client.close()
 

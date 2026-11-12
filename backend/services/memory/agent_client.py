@@ -8,6 +8,8 @@ from openai import AsyncOpenAI, BadRequestError
 from core.ai_request_params import no_thinking_extra_body, provider_from_url
 
 CALL_TIMEOUT_SEC = 35
+# 調低取樣溫度，讓同一輸入的提案與結案判斷較穩定。
+TEMPERATURE = 0.6
 CUMULATIVE_DIAGNOSTIC_FIELDS = (
     "calls", "input_tokens", "output_tokens", "latency_ms", "input_token_estimate",
     "embedding_calls", "logical_steps", "search_calls", "read_calls", "corrections",
@@ -28,7 +30,7 @@ class MemoryAgentClient:
         if input_tokens > 8000:
             raise ValueError("Memory agent input budget exceeded")
         request = dict(model=self.model, messages=messages, tools=tools, tool_choice="required",
-                       parallel_tool_calls=False, max_completion_tokens=1024)
+                       parallel_tool_calls=False, max_completion_tokens=1024, temperature=TEMPERATURE)
         extra_body = no_thinking_extra_body(self.provider)
         if extra_body:
             request["extra_body"] = extra_body
